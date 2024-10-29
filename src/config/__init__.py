@@ -12,11 +12,11 @@ class Settings(BaseSettings):
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/parachutes"
     )
     storage_client: Minio = Minio(
-        os.getenv("MINIO_HOST", "127.0.0.1"),
+        os.getenv("MINIO_ENDPOINT", "127.0.0.1"),
         access_key=os.getenv("MINIO_ACCESS_KEY", "REPLACEME"),
         secret_key=os.getenv("MINIO_SECRET_KEY", "REPLACEME"),
     )
-    storage_bucket: str
+    storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
 
 
 settings = Settings()

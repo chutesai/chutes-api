@@ -14,3 +14,5 @@ black==24.10.0
 flake8==7.1.1
 miniopy-async>=1.21.1
 loguru==0.7.2
+passlib==1.7.4
+python-multipart==0.0.16
