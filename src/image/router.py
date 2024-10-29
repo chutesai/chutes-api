@@ -1,6 +1,7 @@
 """
 Routes for images.
 """
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession

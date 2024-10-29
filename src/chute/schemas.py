@@ -1,17 +1,19 @@
 """
 ORM definitions for Chutes.
 """
+
 import re
+import uuid
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
+from sqlalchemy import event, Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
-from database import Base, generate_uuid
+from database import Base
 
 
 class Chute(Base):
     __tablename__ = "chutes"
-    chute_id = Column(String, primary_key=True, default=generate_uuid)
+    chute_id = Column(String, primary_key=True, default="replaceme")
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
     name = Column(String)
     image_id = Column(String, ForeignKey("images.image_id"))
@@ -44,3 +46,13 @@ class Chute(Base):
         if set(cord) - {"path", "stream"}:
             raise ValueError("Extraneous parameters passed to cord")
         return cord
+
+
+@event.listens_for(Chute, "before_insert")
+def generate_uid(_, __, chute):
+    """
+    Set the chute_id deterministically.
+    """
+    chute.chute_id = str(
+        uuid.uuid5(uuid.NAMESPACE_OID, f"{chute.user_id}::chute::{chute.name}")
+    )
