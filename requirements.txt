@@ -1,0 +1,12 @@
+aiohttp[speedups]>=3.10,<4
+backoff>=2.2,<3
+requests>=2.32
+loguru==0.7.2
+fastapi>=0.115
+uvicorn>=0.32.0
+pydantic>=2.9
+pybase64>=1.4.0
+orjson>=3.10
+SQLAlchemy==2.0.36
+pydantic_settings>=2.6.0,<3
+asyncpg>=0.30.0
