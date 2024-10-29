@@ -2,7 +2,9 @@
 Routes for images.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import uuid
+from loguru import logger
+from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
 from sqlalchemy import or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -12,6 +14,7 @@ from chute.schemas import Chute
 from user.schemas import User
 from user.service import get_current_user
 from database import get_db_session
+from config import settings
 
 router = APIRouter()
 
@@ -110,3 +113,54 @@ async def delete_image(
     await db.delete(image)
     await db.commit()
     return {"image_id": image_id, "deleted": True}
+
+
+@router.post("/", status_code=status.HTTP_202_ACCEPTED)
+async def create_image(
+    build_context: UploadFile = File(...),
+    name: str = Form(...),
+    tag: str = Form(...),
+    dockerfile: str = Form(...),
+    image: str = Form(...),
+    public: bool = Form(...),
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Create an image; really here we're just storing the metadata
+    in the DB and kicking off the image build asynchronously.
+    """
+    image_id = str(
+        uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.user_id}/{name}:{tag}")
+    )
+    if await db.query(exists().where(Image.image_id == image_id)).scalar():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Image with {name=} and {tag=} aready exists",
+        )
+
+    # Upload the build context to our S3-compatible storage backend.
+    destination = f"build-context-{image_id}.zip"
+    result = await settings.storage_client.put_object(
+        settings.storage_bucket,
+        destination,
+        build_context,
+        length=-1,
+        part_size=10 * 1024 * 1024,
+    )
+    logger.success(
+        f"Uploaded build context for {image_id=} to {settings.storage_bucket}/{destination} etag={result.etag}"
+    )
+
+    # Create the image once we've persisted the context, which will trigger the build via events.
+    image = Image(
+        image_id=image_id,
+        user_id=current_user.user_id,
+        name=name,
+        tag=tag,
+        public=public,
+    )
+    db.add(image)
+    db.commit()
+    db.refresh(image)
+    return image

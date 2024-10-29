@@ -2,11 +2,9 @@
 ORM definitions for images.
 """
 
-import uuid
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import (
-    event,
     Column,
     String,
     DateTime,
@@ -35,14 +33,4 @@ class Image(Base):
         Index("idx_name_public", "name", "public"),
         Index("idx_name_created_at", "name", "created_at"),
         UniqueConstraint("name", "tag", name="constraint_image_name_tag"),
-    )
-
-
-@event.listens_for(Image, "before_insert")
-def generate_uid(_, __, image):
-    """
-    Set the image_id deterministically.
-    """
-    image.image_id = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, f"{image.user_id}/{image.name}:{image.tag}")
     )
