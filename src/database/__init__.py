@@ -1,3 +1,4 @@
+import uuid
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -23,3 +24,10 @@ async def get_db_session():
     """
     async with SessionLocal() as session:
         yield session
+
+
+def generate_uuid():
+    """
+    Helper for uuid generation.
+    """
+    return str(uuid.uuid4())

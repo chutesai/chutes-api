@@ -2,11 +2,12 @@
 Routes for images.
 """
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
 from image.schemas import Image
+from chute.schemas import Chute
 from user.schemas import User
 from user.service import get_current_user
 from database import get_db_session
@@ -97,6 +98,13 @@ async def delete_image(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found, or does not belong to you",
+        )
+
+    # No deleting images that have an associated chute.
+    if await db.query(exists().where(Chute.image_id == image_id)).scalar():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Image is in use by one or more chutes",
         )
     await db.delete(image)
     await db.commit()
