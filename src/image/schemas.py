@@ -1,5 +1,5 @@
 """
-ORM definitions for tracking images.
+ORM definitions for images.
 """
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
