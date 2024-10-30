@@ -9,12 +9,12 @@ from sqlalchemy import or_, exists
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
-from image.schemas import Image
-from chute.schemas import Chute
-from user.schemas import User
-from user.service import get_current_user
-from database import get_db_session
-from config import settings
+from run_api.image.schemas import Image
+from run_api.chute.schemas import Chute
+from run_api.user.schemas import User
+from run_api.user.service import get_current_user
+from run_api.database import get_db_session
+from run_api.config import settings
 
 router = APIRouter()
 

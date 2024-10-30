@@ -8,8 +8,8 @@ from sqlalchemy import func, Column, String, DateTime
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import Base, get_db_session, generate_uuid
 from passlib.context import CryptContext
+from run_api.database import Base, get_db_session, generate_uuid
 
 api_key_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 

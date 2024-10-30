@@ -2,7 +2,7 @@ import uuid
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from config import settings
+from run_api.config import settings
 
 engine = create_async_engine(
     settings.sqlalchemy,

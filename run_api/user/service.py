@@ -5,8 +5,8 @@ User logic/code.
 from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from database import get_db_session
-from user.schemas import User
+from run_api.database import get_db_session
+from run_api.user.schemas import User
 
 
 async def get_current_user(

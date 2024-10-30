@@ -30,8 +30,8 @@ services:
       - minio_data:/data
 
   api:
-    image: python:3.12
-    working_dir: /app
+    build:
+      context: .
     volumes:
       - ./:/app
     environment:
@@ -41,7 +41,6 @@ services:
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - STORAGE_BUCKET=parachutes
-    command: sh -c "pip install -r requirements.txt && cd src && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
     ports:
       - "8000:8000"
     depends_on:

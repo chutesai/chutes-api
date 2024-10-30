@@ -13,7 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     UniqueConstraint,
 )
-from database import Base
+from run_api.database import Base
 
 
 class Image(Base):

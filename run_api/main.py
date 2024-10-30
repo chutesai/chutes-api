@@ -1,8 +1,8 @@
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
-from chute.router import router as chute_router
-from image.router import router as image_router
-from database import Base, engine
+from run_api.chute.router import router as chute_router
+from run_api.image.router import router as image_router
+from run_api.database import Base, engine
 
 app = FastAPI(default_response_class=ORJSONResponse)
 

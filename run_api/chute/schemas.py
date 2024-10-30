@@ -8,7 +8,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy import event, Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
-from database import Base
+from run_api.database import Base
 
 
 class Chute(Base):

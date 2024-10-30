@@ -1,6 +1,6 @@
 import uuid
 from sqlalchemy import event
-from image.schemas import Image
+from run_api.image.schemas import Image
 
 
 @event.listens_for(Image, "before_insert")
