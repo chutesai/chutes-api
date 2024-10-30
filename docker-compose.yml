@@ -157,8 +157,3 @@ networks:
   kind:
     external: true
     name: kind
-
-
-# ENV STORAGE_DRIVER=vfs
-# ENV BUILDAH_FORMAT=docker
-# ENV BUILDAH_ISOLATION=chroot
