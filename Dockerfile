@@ -1,4 +1,6 @@
-FROM python:3.12
+FROM python:3.10
+RUN apt install -y apt-transport-https ca-certificates curl
+RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && mv kubectl /usr/local/bin/ && chmod 755 /usr/local/bin/kubectl
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
 ADD --chown=chutes . /app
 USER chutes
