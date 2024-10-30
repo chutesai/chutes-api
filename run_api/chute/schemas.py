@@ -23,7 +23,7 @@ class Chute(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
     image = relationship("Image", back_populates="chutes", lazy="joined")
-    user = relationship("User", back_populates="chutes")
+    user = relationship("User", back_populates="chutes", lazy="joined")
 
     @validates("cords")
     def validate_cords(self, _, cords):

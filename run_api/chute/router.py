@@ -3,20 +3,22 @@ Routes for chutes.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
 from run_api.chute.schemas import Chute
+from run_api.chute.response import ChuteResponse
 from run_api.user.schemas import User
 from run_api.user.service import get_current_user
 from run_api.image.schemas import Image
 from run_api.database import get_db_session
+from run_api.pagination import PaginatedResponse
 
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
     name: Optional[str] = None,
@@ -53,11 +55,21 @@ async def list_chutes(
             )
         )
 
+    # Perform a count.
+    total_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(total_query)
+    total = total_result.scalar() or 0
+
     # Pagination.
     query = query.offset((page or 0) * (limit or 25)).limit((limit or 25))
 
     result = await db.execute(query)
-    return result.scalars().all()
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": [ChuteResponse.from_orm(item) for item in result.scalars().all()],
+    }
 
 
 @router.get("/{chute_id}")
