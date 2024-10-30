@@ -19,11 +19,15 @@ from run_api.database import Base
 class Image(Base):
     __tablename__ = "images"
     image_id = Column(String, primary_key=True, default="replaceme")
-    user_id = Column(String, ForeignKey("users.user_id"))
-    name = Column(String)
-    tag = Column(String)
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
+    name = Column(String, nullable=False)
+    tag = Column(String, nullable=False)
     public = Column(Boolean, default=False)
+    status = Column(String, default="pending build")
+    stored_at = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    build_started_at = Column(DateTime(timezone=True))
+    build_completed_at = Column(DateTime(timezone=True))
 
     chutes = relationship("Chute", back_populates="image")
     user = relationship("User", back_populates="images", lazy="joined")

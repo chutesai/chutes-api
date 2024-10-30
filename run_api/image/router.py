@@ -193,7 +193,7 @@ async def create_image(
         )
 
     # Upload the build context to our S3-compatible storage backend.
-    destination = f"build-context-{image_id}.zip"
+    destination = f"build-contexts/{current_user.user_id}/{image_id}.zip"
     result = await settings.storage_client.put_object(
         settings.storage_bucket,
         destination,

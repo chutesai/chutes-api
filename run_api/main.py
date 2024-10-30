@@ -4,6 +4,8 @@ from run_api.chute.router import router as chute_router
 from run_api.image.router import router as image_router
 from run_api.database import Base, engine
 from run_api.config import settings
+import run_api.chute.events
+import run_api.image.events
 
 app = FastAPI(default_response_class=ORJSONResponse)
 

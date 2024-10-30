@@ -16,6 +16,9 @@ services:
     image: redis:7
     ports:
       - "6379:6379"
+    command: ["redis-server", "--requirepass", "redispassword", "on"]
+    environment:
+      - REDIS_PASSWORD=redispassword
     networks:
       - kind
 
@@ -30,6 +33,23 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    networks:
+      - kind
+
+  registry:
+    image: registry:2
+    ports:
+      - "5000:5000"
+    environment:
+      REGISTRY_STORAGE: s3
+      REGISTRY_STORAGE_S3_REGION: local
+      REGISTRY_STORAGE_S3_BUCKET: parachutes
+      REGISTRY_STORAGE_S3_ACCESSKEY: minioadmin
+      REGISTRY_STORAGE_S3_SECRETKEY: minioadmin
+      REGISTRY_STORAGE_S3_REGIONENDPOINT: http://minio:9000
+      REGISTRY_HTTP_SECRET: "registry"
+    depends_on:
+      - minio
     networks:
       - kind
 
@@ -69,16 +89,18 @@ services:
   api:
     build:
       context: .
+      target: api
     volumes:
       - ./:/app
       - kube_config:/home/chutes/.kube
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/parachutes
-      - REDIS=redis://redis_cache:6379/0
+      - REDIS_URL=redis://:redispassword@redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
       - STORAGE_BUCKET=parachutes
+      - REGISTRY_PASSWORD=registry
     ports:
       - "8000:8000"
     depends_on:
@@ -86,6 +108,42 @@ services:
       - redis
       - minio
       - kind
+      - registry
+    networks:
+      - kind
+
+  forge:
+    build:
+      context: .
+      target: forge
+    volumes:
+      - ./:/forge
+    environment:
+      - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/parachutes
+      - REDIS_URL=redis://default:redispassword@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - STORAGE_BUCKET=parachutes
+      - REGISTRY_PASSWORD=registry
+
+      # Environment variables specific to buildah
+      - STORAGE_DRIVER=vfs
+      - BUILDAH_FORMAT=docker
+      - BUILDAH_ISOLATION=chroot
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - registry
+    cap_add:
+      - SETUID
+      - SETGID
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:./data/forge-seccomp.json
+      - apparmor:unconfined
+      - label:disable
     networks:
       - kind
 
@@ -99,3 +157,8 @@ networks:
   kind:
     external: true
     name: kind
+
+
+# ENV STORAGE_DRIVER=vfs
+# ENV BUILDAH_FORMAT=docker
+# ENV BUILDAH_ISOLATION=chroot
