@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         os.getenv("MINIO_ENDPOINT", "127.0.0.1"),
         access_key=os.getenv("MINIO_ACCESS_KEY", "REPLACEME"),
         secret_key=os.getenv("MINIO_SECRET_KEY", "REPLACEME"),
+        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
     )
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
 

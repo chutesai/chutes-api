@@ -3,13 +3,10 @@ ORM definitions for users.
 """
 
 import re
-from fastapi import Depends, Header, HTTPException, status
 from sqlalchemy import func, Column, String, DateTime
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 from passlib.context import CryptContext
-from run_api.database import Base, get_db_session, generate_uuid
+from run_api.database import generate_uuid, Base
 
 api_key_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -47,35 +44,11 @@ class User(Base):
         """
         Verify the hash of an API key.
         """
-        # TODO: integrate with Nam's auth stuff or replace.
-        # XXX: actual code should be something like this:
-        # return api_key_context.verify(api_key, self.api_key_hash)
-        return api_key == "TEST"
+        # TODO: integrate with Nam's auth stuff or whatever we want here.
+        return api_key_context.verify(api_key, self.api_key_hash)
 
     def __repr__(self):
+        """
+        String representation.
+        """
         return f"<User(user_id={self.user_id}>"
-
-
-async def get_current_user(
-    user_id: str = Header(..., alias="X-Parachutes-UserID"),
-    authorization: str = Header(..., alias="Authorization"),
-    db: AsyncSession = Depends(get_db_session),
-) -> User:
-    """
-    Load the current user from the database.
-    """
-    token = authorization.split(" ")[1] if " " in authorization else None
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid or missing authorization token",
-        )
-    query = select(User).where(User.user_id == user_id)
-    result = await db.execute(query)
-    user = result.scalar_one_or_none()
-    if not user or not user.verify_api_key(token):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token or user not found",
-        )
-    return user

@@ -26,7 +26,7 @@ class Image(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     chutes = relationship("Chute", back_populates="image")
-    user = relationship("User", back_populates="image")
+    user = relationship("User", back_populates="images", lazy="joined")
 
     __table_args__ = (
         Index("idx_image_name_tag", "name", "tag"),

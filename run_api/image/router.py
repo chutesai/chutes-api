@@ -2,10 +2,11 @@
 Routes for images.
 """
 
+import re
 import uuid
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
-from sqlalchemy import or_, exists
+from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
@@ -15,11 +16,13 @@ from run_api.user.schemas import User
 from run_api.user.service import get_current_user
 from run_api.database import get_db_session
 from run_api.config import settings
+from run_api.image.response import ImageResponse
+from run_api.pagination import PaginatedResponse
 
 router = APIRouter()
 
 
-@router.get("/")
+@router.get("/", response_model=PaginatedResponse)
 async def list_images(
     include_public: Optional[bool] = False,
     name: Optional[str] = None,
@@ -51,14 +54,24 @@ async def list_images(
     if tag and tag.strip():
         query = query.owhere(Image.tag.ilike(f"%{tag}%"))
 
+    # Perform a count.
+    total_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(total_query)
+    total = total_result.scalar() or 0
+
     # Pagination.
     query = query.offset((page or 0) * (limit or 25)).limit((limit or 25))
 
     result = await db.execute(query)
-    return result.scalars().all()
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": [ImageResponse.from_orm(item) for item in result.scalars().all()],
+    }
 
 
-@router.get("/{image_id}")
+@router.get("/{image_id}", response_model=ImageResponse)
 async def get_image(
     image_id: str,
     db: AsyncSession = Depends(get_db_session),
@@ -71,6 +84,46 @@ async def get_image(
         select(Image)
         .where(or_(Image.public.is_(True), Image.user_id == current_user.user_id))
         .where(Image.image_id == image_id)
+    )
+    result = await db.execute(query)
+    image = result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found, or does not belong to you",
+        )
+    return image
+
+
+@router.get("/{image_name:path}", response_model=ImageResponse)
+async def get_image_by_name(
+    image_name: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Load a single image by ID.
+    """
+    name_match = re.match(
+        r"([a-z0-9][a-z0-9_-]*)/([a-z0-9][a-z0-9_-]*):([a-z0-9][a-z0-9_\.-]*)$",
+        image_name,
+        re.I,
+    )
+    if not name_match:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Image not found, or does not belong to you (re): {image_name}",
+        )
+    username = name_match.group(1)
+    image_name = name_match.group(2)
+    tag = name_match.group(3)
+    query = (
+        select(Image)
+        .join(User, Image.user_id == User.user_id)
+        .where(or_(Image.public.is_(True), Image.user_id == current_user.user_id))
+        .where(User.username == username)
+        .where(Image.name == image_name)
+        .where(Image.tag == tag)
     )
     result = await db.execute(query)
     image = result.scalar_one_or_none()
@@ -133,7 +186,7 @@ async def create_image(
     image_id = str(
         uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.user_id}/{name}:{tag}")
     )
-    if await db.query(exists().where(Image.image_id == image_id)).scalar():
+    if (await db.execute(select(exists().where(Image.image_id == image_id)))).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Image with {name=} and {tag=} aready exists",
@@ -161,6 +214,6 @@ async def create_image(
         public=public,
     )
     db.add(image)
-    db.commit()
-    db.refresh(image)
+    await db.commit()
+    await db.refresh(image)
     return image

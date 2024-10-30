@@ -2,7 +2,9 @@
 User logic/code.
 """
 
+from loguru import logger
 from fastapi import Depends, Header, HTTPException, status
+from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from run_api.database import get_db_session
@@ -17,18 +19,24 @@ async def get_current_user(
     """
     Load the current user from the database.
     """
+    logger.info("Attempting to authenticate {user_id=}")
     token = authorization.split(" ")[1] if " " in authorization else None
     if not token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing authorization token",
         )
-    query = select(User).where(User.user_id == user_id)
+    logger.info("GOT HERE 1")
+    query = select(User).where(or_(User.user_id == user_id, User.username == user_id))
+    logger.info("GOT HERE 2")
     result = await db.execute(query)
+    logger.info("GOT HERE 3")
     user = result.scalar_one_or_none()
+    logger.info("GOT HERE 4")
     if not user or not user.verify_api_key(token):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token or user not found",
         )
+    logger.success("GOT A USER")
     return user
