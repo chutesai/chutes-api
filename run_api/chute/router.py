@@ -2,7 +2,6 @@
 Routes for chutes.
 """
 
-import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,9 +9,11 @@ from sqlalchemy.future import select
 from typing import Optional
 from run_api.chute.schemas import Chute, ChuteArgs
 from run_api.chute.response import ChuteResponse
+from run_api.chute.util import get_chute_by_id_or_name
 from run_api.user.schemas import User
 from run_api.user.service import get_current_user
 from run_api.image.schemas import Image
+from run_api.image.util import get_image_by_id_or_name
 from run_api.database import get_db_session
 from run_api.pagination import PaginatedResponse
 
@@ -73,60 +74,16 @@ async def list_chutes(
     }
 
 
-@router.get("/{chute_id}", response_model=ChuteResponse)
+@router.get("{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
-    chute_id: str,
+    chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Load a single chute by ID.
+    Load a chute by ID or name.
     """
-    query = (
-        select(Chute)
-        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-        .where(Chute.chute_id == chute_id)
-    )
-    result = await db.execute(query)
-    chute = result.scalar_one_or_none()
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or does not belong to you",
-        )
-    return chute
-
-
-@router.get("{chute_name:path}", response_model=ChuteResponse)
-async def get_chute_by_name(
-    chute_name: str,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Load a chute by username/name.
-    """
-    name_match = re.match(
-        r"([a-z0-9][a-z0-9_-]*)/([a-z0-9][a-z0-9_-]*)$",
-        chute_name.lstrip("/"),
-        re.I,
-    )
-    if not name_match:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Chute not found, or does not belong to you: {chute_name}",
-        )
-    username = name_match.group(1)
-    name = name_match.group(2)
-    query = (
-        select(Chute)
-        .join(User, Chute.user_id == User.user_id)
-        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-        .where(User.username == username)
-        .where(Chute.name.ilike(name))
-    )
-    result = await db.execute(query)
-    chute = result.scalar_one_or_none()
+    chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user)
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -144,14 +101,8 @@ async def delete_chute(
     """
     Delete a chute by ID or name.
     """
-    query = (
-        select(Chute)
-        .where(Chute.user_id == current_user.user_id)
-        .where(or_(Chute.chute_id == chute_id_or_name, Chute.name == chute_id_or_name))
-    )
-    result = await db.execute(query)
-    chute = result.scalar_one_or_none()
-    if not chute:
+    chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user)
+    if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
@@ -171,15 +122,7 @@ async def deploy_chute(
     """
     Deploy a chute!
     """
-    image_id_or_name = chute_args.image
-    query = select(Image).where(Image.user_id == current_user.user_id)
-    if image_id_or_name.count(":") == 1:
-        name, tag = image_id_or_name.split(":")
-        query = query.where(Image.name == name).where(Image.tag == tag)
-    else:
-        query = query.where(Image.image_id == image_id_or_name)
-    result = await db.execute(query)
-    image = result.scalar_one_or_none()
+    image = await get_image_by_id_or_name(chute_args.image, db, current_user)
     if not image:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

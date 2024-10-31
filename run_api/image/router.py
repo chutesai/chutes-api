@@ -3,7 +3,6 @@ Routes for images.
 """
 
 import io
-import re
 import uuid
 import time
 import asyncio
@@ -22,6 +21,7 @@ from run_api.user.service import get_current_user
 from run_api.database import get_db_session
 from run_api.config import settings
 from run_api.image.response import ImageResponse
+from run_api.image.util import get_image_by_id_or_name
 from run_api.pagination import PaginatedResponse
 
 router = APIRouter()
@@ -76,62 +76,16 @@ async def list_images(
     }
 
 
-@router.get("/{image_id}", response_model=ImageResponse)
+@router.get("/{image_id_or_name:path}", response_model=ImageResponse)
 async def get_image(
-    image_id: str,
+    image_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Load a single image by ID.
+    Load a single image by ID or name.
     """
-    query = (
-        select(Image)
-        .where(or_(Image.public.is_(True), Image.user_id == current_user.user_id))
-        .where(Image.image_id == image_id)
-    )
-    result = await db.execute(query)
-    image = result.scalar_one_or_none()
-    if not image:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found, or does not belong to you",
-        )
-    return image
-
-
-@router.get("/{image_name:path}", response_model=ImageResponse)
-async def get_image_by_name(
-    image_name: str,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Load a single image by ID.
-    """
-    name_match = re.match(
-        r"([a-z0-9][a-z0-9_-]*)/([a-z0-9][a-z0-9_-]*):([a-z0-9][a-z0-9_\.-]*)$",
-        image_name.lstrip("/"),
-        re.I,
-    )
-    if not name_match:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Image not found, or does not belong to you: {image_name}",
-        )
-    username = name_match.group(1)
-    image_name = name_match.group(2)
-    tag = name_match.group(3)
-    query = (
-        select(Image)
-        .join(User, Image.user_id == User.user_id)
-        .where(or_(Image.public.is_(True), Image.user_id == current_user.user_id))
-        .where(User.username == username)
-        .where(Image.name == image_name)
-        .where(Image.tag == tag)
-    )
-    result = await db.execute(query)
-    image = result.scalar_one_or_none()
+    image = await get_image_by_id_or_name(image_id_or_name, db, current_user)
     if not image:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -149,15 +103,8 @@ async def delete_image(
     """
     Delete an image by ID or name:tag.
     """
-    query = select(Image).where(Image.user_id == current_user.user_id)
-    if image_id_or_name.count(":") == 1:
-        name, tag = image_id_or_name.split(":")
-        query = query.where(Image.name == name).where(Image.tag == tag)
-    else:
-        query = query.where(Image.image_id == image_id_or_name)
-    result = await db.execute(query)
-    image = result.scalar_one_or_none()
-    if not image:
+    image = await get_image_by_id_or_name(image_id_or_name, db, current_user)
+    if not image or image.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found, or does not belong to you",
