@@ -4,6 +4,7 @@ Response object representation, to hide some fields if desired.
 
 from pydantic import BaseModel
 from datetime import datetime
+from typing import Optional
 from run_api.user.response import UserResponse
 
 
@@ -12,7 +13,10 @@ class ImageResponse(BaseModel):
     name: str
     tag: str
     public: bool
+    status: str
     created_at: datetime
+    build_started_at: Optional[datetime]
+    build_completed_at: Optional[datetime]
     user: UserResponse
 
     class Config:

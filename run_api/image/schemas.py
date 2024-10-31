@@ -24,7 +24,6 @@ class Image(Base):
     tag = Column(String, nullable=False)
     public = Column(Boolean, default=False)
     status = Column(String, default="pending build")
-    stored_at = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     build_started_at = Column(DateTime(timezone=True))
     build_completed_at = Column(DateTime(timezone=True))

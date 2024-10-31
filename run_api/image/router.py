@@ -5,8 +5,12 @@ Routes for images.
 import io
 import re
 import uuid
+import time
+import asyncio
 from loguru import logger
+import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
+from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -136,20 +140,21 @@ async def get_image_by_name(
     return image
 
 
-@router.delete("/{image_id}")
+@router.delete("/{image_id_or_name:path}")
 async def delete_image(
-    image_id: str,
+    image_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Delete an image by ID.
+    Delete an image by ID or name:tag.
     """
-    query = (
-        select(Image)
-        .where(Image.user_id == current_user.user_id)
-        .where(Image.image_id == image_id)
-    )
+    query = select(Image).where(Image.user_id == current_user.user_id)
+    if image_id_or_name.count(":") == 1:
+        name, tag = image_id_or_name.split(":")
+        query = query.where(Image.name == name).where(Image.tag == tag)
+    else:
+        query = query.where(Image.image_id == image_id_or_name)
     result = await db.execute(query)
     image = result.scalar_one_or_none()
     if not image:
@@ -159,11 +164,14 @@ async def delete_image(
         )
 
     # No deleting images that have an associated chute.
-    if await db.query(exists().where(Chute.image_id == image_id)).scalar():
+    if (
+        await db.execute(select(exists().where(Chute.image_id == image.image_id)))
+    ).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Image is in use by one or more chutes",
         )
+    image_id = image.image_id
     await db.delete(image)
     await db.commit()
     return {"image_id": image_id, "deleted": True}
@@ -171,6 +179,7 @@ async def delete_image(
 
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)
 async def create_image(
+    wait: bool = Form(...),
     build_context: UploadFile = File(...),
     name: str = Form(...),
     tag: str = Form(...),
@@ -195,14 +204,14 @@ async def create_image(
 
     # Upload the build context to our S3-compatible storage backend.
     for obj, destination in (
-        (build_context, f"build-contexts/{current_user.user_id}/{image_id}.zip"),
+        (build_context, f"forge/{current_user.user_id}/{image_id}.zip"),
         (
             io.BytesIO(dockerfile.encode()),
-            f"build-contexts/{current_user.user_id}/{image_id}.Dockerfile",
+            f"forge/{current_user.user_id}/{image_id}.Dockerfile",
         ),
         (
             io.BytesIO(image.encode()),
-            f"build-contexts/{current_user.user_id}/{image_id}.pickle",
+            f"forge/{current_user.user_id}/{image_id}.pickle",
         ),
     ):
         result = await settings.storage_client.put_object(
@@ -227,4 +236,38 @@ async def create_image(
     db.add(image)
     await db.commit()
     await db.refresh(image)
+
+    # Stream logs for clients who set the "wait" flag.
+    async def _stream():
+        redis_client = redis.Redis.from_url(settings.redis_url)
+        started_at = time.time()
+        last_offset = None
+        while True:
+            stream_result = None
+            try:
+                stream_result = await redis_client.xrange(
+                    f"forge:{image_id}:stream", last_offset or "-", "+"
+                )
+            except Exception as exc:
+                logger.error(f"Error fetching stream result: {exc}")
+                yield f"data: ERROR: {exc}"
+                return
+            if not stream_result:
+                await asyncio.sleep(1.0)
+                continue
+            for offset, data in stream_result:
+                last_offset = offset.decode()
+                parts = last_offset.split("-")
+                last_offset = parts[0] + "-" + str(int(parts[1]) + 1)
+                if data[b"data"] == b"DONE":
+                    break
+                yield f"data: {data[b'data'].decode()}\n\n"
+        delta = time.time() - started_at
+        logger.success(
+            "\N{hammer and wrench} "
+            + f"finished building image {image_id} in {round(delta, 5)} seconds"
+        )
+
+    if wait:
+        return StreamingResponse(_stream())
     return image

@@ -7,6 +7,9 @@ import zipfile
 import os
 import tempfile
 import traceback
+import time
+import orjson as json
+import redis.asyncio as redis
 from loguru import logger
 from run_api.config import settings
 from run_api.database import SessionLocal
@@ -60,6 +63,31 @@ async def build_and_push_image(image):
     short_tag = f"{image.user.user_id}/{image.name}:{image.tag}"
     full_image_tag = f"{settings.registry_host.rstrip('/')}/{short_tag}"
 
+    # Helper to capture and stream logs.
+    redis_client = redis.Redis.from_url(settings.redis_url)
+    started_at = time.time()
+
+    async def _capture_logs(stream, name):
+        log_method = logger.info if name == "stdout" else logger.warning
+        with open(f"{name}.log", "w") as outfile:
+            while True:
+                line = await stream.readline()
+                if line:
+                    decoded_line = line.decode().strip()
+                    log_method(f"[build {short_tag}]: {decoded_line}")
+                    outfile.write(decoded_line.strip() + "\n")
+                    await redis_client.xadd(
+                        f"forge:{image.image_id}:stream",
+                        {
+                            "data": json.dumps(
+                                {"log_type": name, "log": decoded_line}
+                            ).decode()
+                        },
+                    )
+                else:
+                    break
+
+    # Build.
     try:
         process = await asyncio.create_subprocess_exec(
             "buildah",
@@ -72,25 +100,54 @@ async def build_and_push_image(image):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=settings.build_timeout
+
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=settings.build_timeout,
         )
-        logger.info(f"[build stdout]\n{stdout.decode()}")
-        logger.error(f"[build stderr]\n{stderr.decode()}")
         if process.returncode == 0:
-            logger.success(f"Successfull built {full_image_tag}, pushing...")
+            message = f"Successfull built {full_image_tag}, pushing..."
+            logger.success(message)
+            await redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+            )
         else:
-            logger.error("Image build failed, check logs for more details!")
+            message = "Image build failed, check logs for more details!"
+            logger.error(message)
+            await redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
             raise BuildFailure(f"Build of {full_image_tag} failed!")
     except asyncio.TimeoutError:
-        logger.error(f"Error waiting for build of {full_image_tag} to finish!")
+        message = f"Build of {full_image_tag} timed out after {settings.build_timeout} seconds."
+        logger.error(message)
+        await redis_client.xadd(
+            f"forge:{image.image_id}:stream",
+            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+        )
+        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
-        raise BuildTimeout(
-            f"Build of {full_image_tag} timed out after {settings.build_timeout} seconds."
-        )
+        raise BuildTimeout(message)
+    finally:
+        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
 
-    # Push the image.
+    # Push.
+    await redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {
+            "data": json.dumps(
+                {"log_type": "stdout", "log": "pushing image to registry..."}
+            ).decode()
+        },
+    )
     try:
         process = await asyncio.create_subprocess_exec(
             "buildah",
@@ -99,13 +156,26 @@ async def build_and_push_image(image):
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=settings.push_timeout
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=settings.build_timeout,
         )
-        logger.info(f"[push stdout]\n{stdout.decode()}")
-        logger.error(f"[push stderr]\n{stderr.decode()}")
         if process.returncode == 0:
             logger.success(f"Successfull pushed {full_image_tag}, done!")
+            delta = time.time() - started_at
+            message = (
+                "\N{hammer and wrench} "
+                + f"finished building image {image.image_id} in {round(delta, 5)} seconds"
+            )
+            await redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+            )
+            logger.success(message)
         else:
             logger.error("Image push failed, check logs for more details!")
             raise PushFailure(f"Push of {full_image_tag} failed!")
@@ -116,6 +186,9 @@ async def build_and_push_image(image):
         raise PushTimeout(
             f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
         )
+    finally:
+        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+
     return short_tag
 
 
@@ -167,6 +240,24 @@ async def forge(image_id: str):
             error_message = str(exc)
         finally:
             os.chdir(starting_dir)
+
+        # Upload logs.
+        log_paths = []
+        if os.path.exists(log_path := os.path.join(build_dir, "stdout.log")):
+            log_paths.append(log_path)
+        if os.path.exists(log_path := os.path.join(build_dir, "sterror.log")):
+            log_paths.append(log_path)
+        for path in log_paths:
+            destination = (
+                f"forge/{image.user_id}/{image.image_id}.{os.path.basename(path)}"
+            )
+            await settings.storage_client.put_object(
+                settings.storage_bucket,
+                destination,
+                open(path, "rb"),
+                length=-1,
+                part_size=10 * 1024 * 1024,
+            )
 
     # Update status.
     async with SessionLocal() as session:
