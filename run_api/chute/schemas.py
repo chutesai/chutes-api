@@ -9,14 +9,20 @@ from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from run_api.database import Base
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List
+
+
+class Cord(BaseModel):
+    method: str
+    path: str
+    stream: bool
 
 
 class ChuteArgs(BaseModel):
     name: str
     image: str
     public: bool
-    cords: List[Dict[str, str]]
+    cords: List[Cord]
 
 
 class Chute(Base):
@@ -43,14 +49,12 @@ class Chute(Base):
                 "Must include between 1 and 25 valid cords to create a chute"
             )
         for cord in cords:
-            path = cord.get("path")
+            path = cord.path
             if not isinstance(path, str) or not re.match(
                 r"^(/[a-z][a-z0-9_]*)+$", path, re.I
             ):
                 raise ValueError("Invalid cord path: {path}")
-            stream = cord.get("stream")
+            stream = cord.stream
             if stream not in (None, True, False):
                 raise ValueError(f"Invalid cord stream value: {stream}")
-        if set(cord) - {"path", "stream"}:
-            raise ValueError("Extraneous parameters passed to cord")
-        return cord
+        return [cord.dict() for cord in cords]

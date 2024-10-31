@@ -108,7 +108,7 @@ async def get_chute_by_name(
     """
     name_match = re.match(
         r"([a-z0-9][a-z0-9_-]*)/([a-z0-9][a-z0-9_-]*)$",
-        chute_name,
+        chute_name.lstrip("/"),
         re.I,
     )
     if not name_match:
@@ -135,19 +135,19 @@ async def get_chute_by_name(
     return chute
 
 
-@router.delete("/{chute_id}")
+@router.delete("/{chute_id_or_name:path}")
 async def delete_chute(
-    chute_id: str,
+    chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Delete a chute by ID.
+    Delete a chute by ID or name.
     """
     query = (
         select(Chute)
         .where(Chute.user_id == current_user.user_id)
-        .where(Chute.chute_id == chute_id)
+        .where(or_(Chute.chute_id == chute_id_or_name, Chute.name == chute_id_or_name))
     )
     result = await db.execute(query)
     chute = result.scalar_one_or_none()
@@ -156,6 +156,7 @@ async def delete_chute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
+    chute_id = chute.chute_id
     await db.delete(chute)
     await db.commit()
     return {"chute_id": chute_id, "deleted": True}

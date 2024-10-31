@@ -111,7 +111,7 @@ async def get_image_by_name(
     """
     name_match = re.match(
         r"([a-z0-9][a-z0-9_-]*)/([a-z0-9][a-z0-9_-]*):([a-z0-9][a-z0-9_\.-]*)$",
-        image_name,
+        image_name.lstrip("/"),
         re.I,
     )
     if not name_match:
