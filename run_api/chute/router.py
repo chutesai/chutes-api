@@ -2,8 +2,10 @@
 Routes for chutes.
 """
 
+import aiohttp
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status
+from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -16,6 +18,7 @@ from run_api.user.service import get_current_user
 from run_api.image.schemas import Image
 from run_api.image.util import get_image_by_id_or_name
 from run_api.instance.schemas import Instance
+from run_api.instance.response import InstanceResponse
 from run_api.instance.util import discover_chute_targets
 from run_api.database import get_db_session
 from run_api.pagination import PaginatedResponse
@@ -164,13 +167,49 @@ async def deploy_chute(
     return chute
 
 
+async def _invoke_one(
+    chute: Chute, path: str, stream: bool, args: str, kwargs: str, target: Instance
+):
+    """
+    Try invoking a chute/cord with a single instance.
+    """
+    async with aiohttp.ClientSession(raise_for_status=True) as session:
+        print(InstanceResponse.from_orm(target).dict())
+        print(f"TRYING: http://{target.ip}:{target.port}{path}")
+        async with session.post(
+            f"http://{target.ip}:{target.port}{path}",
+            json={"args": args, "kwargs": args},
+        ) as response:
+            if stream:
+
+                async def _stream():
+                    async for chunk in response:
+                        yield chunk
+
+                return StreamingResponse(_stream)
+            return await response.json()
+
+
 async def _invoke_via(
-    chute: Chute, path: str, args: str, kwargs: str, targets: List[Instance]
+    chute: Chute,
+    path: str,
+    stream: bool,
+    args: str,
+    kwargs: str,
+    targets: List[Instance],
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
     """
     logger.info(f"Trying function invocation with up to {len(targets)} targets")
+    for target in targets:
+        try:
+            return await _invoke_one(chute, path, stream, args, kwargs, target)
+        except Exception as exc:
+            logger.error(
+                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {exc}"
+            )
+    return {"error": "Exhausted all available targets!"}
 
 
 @router.post("/{chute_id}/{path:path}")
@@ -209,12 +248,14 @@ async def invoke(
     cord = None
     path = "/" + path.lstrip("/")
     identified = False
+    stream = False
     for cord in chute.cords:
         if cord["path"] == path:
             identified = True
+            stream = cord["stream"]
     if not identified:
         raise Exception("foo bad cord")
 
     # Do the deed.
-    db.close()
-    return await _invoke_via(chute, path, args, kwargs, targets)
+    await db.close()
+    return await _invoke_via(chute, path, stream, args, kwargs, targets)

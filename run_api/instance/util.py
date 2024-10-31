@@ -20,7 +20,7 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str):
     """
     subquery = (
         select(InstanceAlias.miner_coldkey, func.count().label("instance_count"))
-        .where(InstanceAlias.active._is(True), InstanceAlias.chute_id == chute_id)
+        .where(InstanceAlias.active.is_(True), InstanceAlias.chute_id == chute_id)
         .group_by(InstanceAlias.miner_coldkey)
         .subquery()
     )

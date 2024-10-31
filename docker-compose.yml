@@ -112,6 +112,9 @@ services:
       - registry
     networks:
       - kind
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 
   forge:
     build:
