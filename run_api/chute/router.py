@@ -14,6 +14,7 @@ from run_api.user.schemas import User
 from run_api.user.service import get_current_user
 from run_api.image.schemas import Image
 from run_api.image.util import get_image_by_id_or_name
+from run_api.instance.schemas import Instance
 from run_api.database import get_db_session
 from run_api.pagination import PaginatedResponse
 
@@ -158,5 +159,59 @@ async def deploy_chute(
     db.add(chute)
     await db.commit()
     await db.refresh(chute)
-
     return chute
+
+
+async def _invoke_via(
+    chute: Chute, path: str, args: str, kwargs: str, targets: List[Instance]
+):
+    """
+    Helper to actual perform function invocations, retrying when a target fails.
+    """
+    logger.info(f"Trying function invocation with up to {len(targets)} targets")
+
+
+@router.post("/{chute_id}/{path:path}")
+async def invoke(
+    chute_id: str,
+    path: str,
+    args: str,
+    kwargs: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Invoke a "chute" aka function.
+    """
+    query = (
+        select(Chute)
+        .join(User, Chute.user_id == User.user_id)
+        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
+        .where(Chute.chute_id == chute_id)
+    )
+    result = await db.execute(query)
+    chute = result.scalar_one_or_none()
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or you do not have permission to use",
+        )
+
+    # Find a target to query.
+    targets = await discover_chute_targets(db, chute_id)
+    if not targets:
+        raise Exception("foo no targets")
+
+    # Identify the upstream path to call.
+    cord = None
+    path = "/" + path.lstrip("/")
+    identified = False
+    for cord in chute.cords:
+        if cord.path == path:
+            identified = True
+    if not identified:
+        raise Exception("foo bad cord")
+
+    # Do the deed.
+    db.close()
+    return await _invoke_via(chute, path, args, kwargs, targets)

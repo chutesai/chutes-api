@@ -18,6 +18,7 @@ class Instance(Base):
     gpus = Column(JSONB, nullable=False)
     miner_uid = Column(Integer, nullable=False)
     miner_hotkey = Column(String, nullable=False)
+    miner_coldkey = Column(String, nullable=False)
     region = Column(String)
     active = Column(Boolean, default=False)
     verified = Column(Boolean, default=False)
