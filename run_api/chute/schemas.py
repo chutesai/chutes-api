@@ -48,6 +48,7 @@ class Chute(Base):
 
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
+    instances = relationship("Instance", back_populates="chute", lazy="dynamic")
 
     @validates("cords")
     def validate_cords(self, _, cords):
