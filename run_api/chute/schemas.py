@@ -8,8 +8,8 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from run_api.database import Base
-from pydantic import BaseModel
-from typing import List
+from pydantic import BaseModel, Field
+from typing import List, Optional
 
 
 class Cord(BaseModel):
@@ -18,10 +18,19 @@ class Cord(BaseModel):
     stream: bool
 
 
+class NodeSelector(BaseModel):
+    gpu_count: Optional[int] = Field(1, ge=1, le=8)
+    min_vram_gb_per_gpu: Optional[int] = Field(16, ge=16, le=80)
+    exclude: Optional[List[str]] = []
+    include: Optional[List[str]] = None
+    require_sxm: Optional[bool] = False
+
+
 class ChuteArgs(BaseModel):
     name: str
     image: str
     public: bool
+    node_selector: NodeSelector
     cords: List[Cord]
 
 
@@ -33,6 +42,7 @@ class Chute(Base):
     image_id = Column(String, ForeignKey("images.image_id"))
     public = Column(Boolean, default=False)
     cords = Column(JSONB, nullable=False)
+    node_selector = Column(JSONB, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -58,3 +68,10 @@ class Chute(Base):
             if stream not in (None, True, False):
                 raise ValueError(f"Invalid cord stream value: {stream}")
         return [cord.dict() for cord in cords]
+
+    @validates("node_selector")
+    def validate_node_selector(self, _, node_selector):
+        """
+        Convert back to dict.
+        """
+        return node_selector.dict()

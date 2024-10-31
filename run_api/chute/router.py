@@ -128,6 +128,11 @@ async def deploy_chute(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Chute image not found, or does not belong to you",
         )
+    if chute_args.public and not image.public:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Chute cannot be public when image is not public!",
+        )
     if (
         await db.execute(
             select(
@@ -148,6 +153,7 @@ async def deploy_chute(
         name=chute_args.name,
         public=chute_args.public,
         cords=chute_args.cords,
+        node_selector=chute_args.node_selector,
     )
     db.add(chute)
     await db.commit()
