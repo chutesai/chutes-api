@@ -101,6 +101,7 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - STORAGE_BUCKET=parachutes
       - REGISTRY_PASSWORD=registry
+      - REGISTRY_INSECURE=true
     ports:
       - "8000:8000"
     depends_on:
@@ -126,6 +127,7 @@ services:
       - MINIO_SECRET_KEY=minioadmin
       - STORAGE_BUCKET=parachutes
       - REGISTRY_PASSWORD=registry
+      - REGISTRY_INSECURE=true
 
       # Environment variables specific to buildah
       - STORAGE_DRIVER=vfs

@@ -117,7 +117,7 @@ async def get_image_by_name(
     if not name_match:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Image not found, or does not belong to you (re): {image_name}",
+            detail=f"Image not found, or does not belong to you: {image_name}",
         )
     username = name_match.group(1)
     image_name = name_match.group(2)
@@ -260,6 +260,8 @@ async def create_image(
                 parts = last_offset.split("-")
                 last_offset = parts[0] + "-" + str(int(parts[1]) + 1)
                 if data[b"data"] == b"DONE":
+                    await redis_client.delete(f"forge:{image_id}:stream")
+                    yield "DONE\n"
                     break
                 yield f"data: {data[b'data'].decode()}\n\n"
         delta = time.time() - started_at

@@ -8,6 +8,15 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from run_api.database import Base
+from pydantic import BaseModel
+from typing import List, Dict
+
+
+class ChuteArgs(BaseModel):
+    name: str
+    image: str
+    public: bool
+    cords: List[Dict[str, str]]
 
 
 class Chute(Base):

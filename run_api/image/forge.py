@@ -136,8 +136,6 @@ async def build_and_push_image(image):
         process.kill()
         await process.communicate()
         raise BuildTimeout(message)
-    finally:
-        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
 
     # Push.
     await redis_client.xadd(
@@ -149,8 +147,10 @@ async def build_and_push_image(image):
         },
     )
     try:
+        verify = str(not settings.registry_insecure).lower()
         process = await asyncio.create_subprocess_exec(
             "buildah",
+            f"--tls-verify={verify}",
             "push",
             full_image_tag,
             stdout=asyncio.subprocess.PIPE,
@@ -169,7 +169,7 @@ async def build_and_push_image(image):
             delta = time.time() - started_at
             message = (
                 "\N{hammer and wrench} "
-                + f"finished building image {image.image_id} in {round(delta, 5)} seconds"
+                + f" finished building image {image.image_id} in {round(delta, 5)} seconds"
             )
             await redis_client.xadd(
                 f"forge:{image.image_id}:stream",
@@ -201,7 +201,7 @@ async def forge(image_id: str):
         result = await session.execute(
             select(Image).where(Image.image_id == image_id).limit(1)
         )
-        image = result.scalars().first()
+        image = result.scalar_one_or_none()
         if not image:
             logger.error(f"Image does not exist: {image_id=}")
             return
@@ -222,12 +222,12 @@ async def forge(image_id: str):
         context_path = os.path.join(build_dir, "chute.zip")
         await settings.storage_client.fget_object(
             settings.storage_bucket,
-            f"build-contexts/{image.user_id}/{image_id}.zip",
+            f"forge/{image.user_id}/{image_id}.zip",
             context_path,
         )
         await settings.storage_client.fget_object(
             settings.storage_bucket,
-            f"build-contexts/{image.user_id}/{image_id}.Dockerfile",
+            f"forge/{image.user_id}/{image_id}.Dockerfile",
             os.path.join(build_dir, "Dockerfile"),
         )
         try:
@@ -264,7 +264,7 @@ async def forge(image_id: str):
         result = await session.execute(
             select(Image).where(Image.image_id == image_id).limit(1)
         )
-        image = result.scalars().first()
+        image = result.scalar_one_or_none()
         if not image:
             logger.warning(f"Image vanished while building! {image_id}")
             return

@@ -2,12 +2,13 @@
 Routes for chutes.
 """
 
+import re
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_, func
+from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
-from run_api.chute.schemas import Chute
+from run_api.chute.schemas import Chute, ChuteArgs
 from run_api.chute.response import ChuteResponse
 from run_api.user.schemas import User
 from run_api.user.service import get_current_user
@@ -72,7 +73,7 @@ async def list_chutes(
     }
 
 
-@router.get("/{chute_id}")
+@router.get("/{chute_id}", response_model=ChuteResponse)
 async def get_chute(
     chute_id: str,
     db: AsyncSession = Depends(get_db_session),
@@ -85,6 +86,44 @@ async def get_chute(
         select(Chute)
         .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
         .where(Chute.chute_id == chute_id)
+    )
+    result = await db.execute(query)
+    chute = result.scalar_one_or_none()
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    return chute
+
+
+@router.get("{chute_name:path}", response_model=ChuteResponse)
+async def get_chute_by_name(
+    chute_name: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Load a chute by username/name.
+    """
+    name_match = re.match(
+        r"([a-z0-9][a-z0-9_-]*)/([a-z0-9][a-z0-9_-]*)$",
+        chute_name,
+        re.I,
+    )
+    if not name_match:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chute not found, or does not belong to you: {chute_name}",
+        )
+    username = name_match.group(1)
+    name = name_match.group(2)
+    query = (
+        select(Chute)
+        .join(User, Chute.user_id == User.user_id)
+        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
+        .where(User.username == username)
+        .where(Chute.name.ilike(name))
     )
     result = await db.execute(query)
     chute = result.scalar_one_or_none()
@@ -120,3 +159,54 @@ async def delete_chute(
     await db.delete(chute)
     await db.commit()
     return {"chute_id": chute_id, "deleted": True}
+
+
+@router.post("/", response_model=ChuteResponse)
+async def deploy_chute(
+    chute_args: ChuteArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Deploy a chute!
+    """
+    image_id_or_name = chute_args.image
+    query = select(Image).where(Image.user_id == current_user.user_id)
+    if image_id_or_name.count(":") == 1:
+        name, tag = image_id_or_name.split(":")
+        query = query.where(Image.name == name).where(Image.tag == tag)
+    else:
+        query = query.where(Image.image_id == image_id_or_name)
+    result = await db.execute(query)
+    image = result.scalar_one_or_none()
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chute image not found, or does not belong to you",
+        )
+    if (
+        await db.execute(
+            select(
+                exists()
+                .where(Chute.name.ilike(chute_args.name))
+                .where(Chute.user_id == current_user.user_id)
+            )
+        )
+    ).scalar():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Chute with name={chute_args.name} already exists",
+        )
+
+    chute = Chute(
+        image_id=image.image_id,
+        user_id=current_user.user_id,
+        name=chute_args.name,
+        public=chute_args.public,
+        cords=chute_args.cords,
+    )
+    db.add(chute)
+    await db.commit()
+    await db.refresh(chute)
+
+    return chute
