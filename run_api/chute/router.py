@@ -2,12 +2,13 @@
 Routes for chutes.
 """
 
+from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from typing import Optional
-from run_api.chute.schemas import Chute, ChuteArgs
+from typing import Optional, List
+from run_api.chute.schemas import Chute, ChuteArgs, Invocation
 from run_api.chute.response import ChuteResponse
 from run_api.chute.util import get_chute_by_id_or_name
 from run_api.user.schemas import User
@@ -15,6 +16,7 @@ from run_api.user.service import get_current_user
 from run_api.image.schemas import Image
 from run_api.image.util import get_image_by_id_or_name
 from run_api.instance.schemas import Instance
+from run_api.instance.util import discover_chute_targets
 from run_api.database import get_db_session
 from run_api.pagination import PaginatedResponse
 
@@ -175,14 +177,15 @@ async def _invoke_via(
 async def invoke(
     chute_id: str,
     path: str,
-    args: str,
-    kwargs: str,
+    invocation: Invocation,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
     """
     Invoke a "chute" aka function.
     """
+    args = invocation.args
+    kwargs = invocation.kwargs
     query = (
         select(Chute)
         .join(User, Chute.user_id == User.user_id)
@@ -207,7 +210,7 @@ async def invoke(
     path = "/" + path.lstrip("/")
     identified = False
     for cord in chute.cords:
-        if cord.path == path:
+        if cord["path"] == path:
             identified = True
     if not identified:
         raise Exception("foo bad cord")

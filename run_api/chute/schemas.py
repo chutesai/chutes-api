@@ -34,6 +34,11 @@ class ChuteArgs(BaseModel):
     cords: List[Cord]
 
 
+class Invocation(BaseModel):
+    args: str
+    kwargs: str
+
+
 class Chute(Base):
     __tablename__ = "chutes"
     chute_id = Column(String, primary_key=True, default="replaceme")
