@@ -1,6 +1,7 @@
 FROM quay.io/buildah/stable:v1.37.3 AS base
 
 # Setup the various configurations/requirements for buildah.
+RUN dnf install -y iputils procps vim
 RUN touch /etc/subgid /etc/subuid \
   && chmod g=u /etc/subgid /etc/subuid /etc/passwd \
   && echo build:10000:65536 > /etc/subuid \
@@ -28,10 +29,12 @@ ENTRYPOINT ["poetry", "run", "taskiq", "worker", "run_api.image.forge:broker", "
 # And finally our application code.
 FROM base AS api
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
-ADD --chown=chutes . /app
 USER chutes
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH=$PATH:/home/chutes/.local/bin
+ADD pyproject.toml /app/
+ADD poetry.lock /app/
 WORKDIR /app
 RUN poetry install
+ADD --chown=chutes . /app
 ENTRYPOINT ["poetry", "run", "uvicorn", "run_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

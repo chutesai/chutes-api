@@ -16,7 +16,7 @@ services:
     image: redis:7
     ports:
       - "6379:6379"
-    command: ["redis-server", "--requirepass", "redispassword", "on"]
+    command: ["redis-server", "--requirepass", "redispassword"]
     environment:
       - REDIS_PASSWORD=redispassword
     networks:
@@ -120,7 +120,7 @@ services:
       - ./:/forge
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/parachutes
-      - REDIS_URL=redis://default:redispassword@redis:6379/0
+      - REDIS_URL=redis://:redispassword@redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin

@@ -6,6 +6,7 @@ import asyncio
 import zipfile
 import os
 import tempfile
+import traceback
 from loguru import logger
 from run_api.config import settings
 from run_api.database import SessionLocal
@@ -19,6 +20,7 @@ from run_api.exceptions import (
 from run_api.image.schemas import Image
 from sqlalchemy import func
 from sqlalchemy.future import select
+from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 
 
@@ -27,6 +29,15 @@ broker = ListQueueBroker(
 ).with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
 )
+
+
+@broker.on_event(TaskiqEvents.WORKER_STARTUP)
+async def initialize_mappings(*_, **__):
+    """
+    Ensure ORM modules are all loaded.
+    """
+    from run_api.chute.schemas import Chute
+    from run_api.user.schemas import User
 
 
 def safe_extract(zip_path):
@@ -109,7 +120,7 @@ async def build_and_push_image(image):
 
 
 @broker.task
-async def build_image(image_id: str):
+async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
@@ -121,7 +132,7 @@ async def build_image(image_id: str):
         if not image:
             logger.error(f"Image does not exist: {image_id=}")
             return
-        if image.status != "pending":
+        if image.status != "pending build":
             logger.error(
                 f"Image status is not pending: {image_id=} status={image.status}"
             )
@@ -141,12 +152,18 @@ async def build_image(image_id: str):
             f"build-contexts/{image.user_id}/{image_id}.zip",
             context_path,
         )
+        await settings.storage_client.fget_object(
+            settings.storage_bucket,
+            f"build-contexts/{image.user_id}/{image_id}.Dockerfile",
+            os.path.join(build_dir, "Dockerfile"),
+        )
         try:
             starting_dir = os.getcwd()
             os.chdir(build_dir)
             safe_extract(context_path)
             short_tag = await build_and_push_image(image)
         except Exception as exc:
+            logger.error(f"Error building {image_id=}: {exc}\n{traceback.format_exc()}")
             error_message = str(exc)
         finally:
             os.chdir(starting_dir)

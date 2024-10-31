@@ -2,6 +2,7 @@
 Routes for images.
 """
 
+import io
 import re
 import uuid
 from loguru import logger
@@ -193,17 +194,27 @@ async def create_image(
         )
 
     # Upload the build context to our S3-compatible storage backend.
-    destination = f"build-contexts/{current_user.user_id}/{image_id}.zip"
-    result = await settings.storage_client.put_object(
-        settings.storage_bucket,
-        destination,
-        build_context,
-        length=-1,
-        part_size=10 * 1024 * 1024,
-    )
-    logger.success(
-        f"Uploaded build context for {image_id=} to {settings.storage_bucket}/{destination} etag={result.etag}"
-    )
+    for obj, destination in (
+        (build_context, f"build-contexts/{current_user.user_id}/{image_id}.zip"),
+        (
+            io.BytesIO(dockerfile.encode()),
+            f"build-contexts/{current_user.user_id}/{image_id}.Dockerfile",
+        ),
+        (
+            io.BytesIO(image.encode()),
+            f"build-contexts/{current_user.user_id}/{image_id}.pickle",
+        ),
+    ):
+        result = await settings.storage_client.put_object(
+            settings.storage_bucket,
+            destination,
+            obj,
+            length=-1,
+            part_size=10 * 1024 * 1024,
+        )
+        logger.success(
+            f"Uploaded build context component {image_id=} to {settings.storage_bucket}/{destination} etag={result.etag}"
+        )
 
     # Create the image once we've persisted the context, which will trigger the build via events.
     image = Image(
