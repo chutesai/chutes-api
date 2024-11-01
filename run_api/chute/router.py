@@ -18,7 +18,6 @@ from run_api.user.service import get_current_user
 from run_api.image.schemas import Image
 from run_api.image.util import get_image_by_id_or_name
 from run_api.instance.schemas import Instance
-from run_api.instance.response import InstanceResponse
 from run_api.instance.util import discover_chute_targets
 from run_api.database import get_db_session
 from run_api.pagination import PaginatedResponse
@@ -173,21 +172,26 @@ async def _invoke_one(
     """
     Try invoking a chute/cord with a single instance.
     """
-    async with aiohttp.ClientSession(raise_for_status=True) as session:
-        print(InstanceResponse.from_orm(target).dict())
-        print(f"TRYING: http://{target.ip}:{target.port}{path}")
-        async with session.post(
-            f"http://{target.ip}:{target.port}{path}",
-            json={"args": args, "kwargs": args},
-        ) as response:
-            if stream:
+    session = aiohttp.ClientSession(raise_for_status=True)
+    response = await session.post(
+        f"http://{target.ip}:{target.port}/{chute.chute_id}{path}",
+        json={"args": args, "kwargs": kwargs},
+    )
+    if stream:
 
-                async def _stream():
-                    async for chunk in response:
-                        yield chunk
+        async def _stream():
+            try:
+                async for chunk in response.content:
+                    yield chunk
+            finally:
+                await response.release()
+                await session.close()
 
-                return StreamingResponse(_stream)
-            return await response.json()
+        return StreamingResponse(_stream())
+    data = await response.json()
+    await response.release()
+    await session.close()
+    return data
 
 
 async def _invoke_via(

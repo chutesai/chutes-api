@@ -9,6 +9,7 @@ from run_api.database import SessionLocal
 from run_api.user.schemas import User
 from run_api.chute.schemas import Chute
 from run_api.image.schemas import Image
+from run_api.instance.schemas import Instance
 
 
 async def main():
@@ -21,6 +22,12 @@ async def main():
         type=str,
         required=True,
         help="Username to add",
+    )
+    parser.add_argument(
+        "--id",
+        type=str,
+        default=None,
+        help="Explicitly set user_id"
     )
     parser.add_argument(
         "--api-key",
@@ -40,6 +47,8 @@ async def main():
             sys.exit(1)
         user = User(username=args.username)
         user.set_api_key(args.api_key)
+        if args.id:
+            user.user_id = args.id
         session.add(user)
         await session.commit()
     logger.success(

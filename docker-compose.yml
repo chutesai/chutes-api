@@ -115,7 +115,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
-
   forge:
     build:
       context: .
@@ -149,6 +148,30 @@ services:
       - seccomp:./data/forge-seccomp.json
       - apparmor:unconfined
       - label:disable
+    networks:
+      - kind
+
+  vllm:
+    build:
+      context: ./data
+      dockerfile: vllm.Dockerfile
+    volumes:
+      - ./data/vllm_example.py:/workspace/vllm_example.py
+      - ./data/dev-config.ini:/home/vllm/.parachutes/config.ini
+      - /home/jdurbin/git/chutes/dist/:/usr/src/chutes/
+    user: vllm
+    environment:
+      - PARACHUTES_EXECUTION_CONTEXT=REMOTE
+    command: chutes run vllm_example:chute --port 8101 --host 0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ports:
+      - "8101:8101"
     networks:
       - kind
 
