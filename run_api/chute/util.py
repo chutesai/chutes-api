@@ -22,7 +22,7 @@ from run_api.instance.schemas import Instance
 from run_api.utils import sse, now_str
 
 
-REQUEST_SAMPLE_RATIO = 10.05
+REQUEST_SAMPLE_RATIO = 0.05
 TRACK_INVOCATION = text(
     """
 INSERT INTO invocations (
