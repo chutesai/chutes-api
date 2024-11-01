@@ -28,6 +28,7 @@ ENTRYPOINT ["poetry", "run", "taskiq", "worker", "run_api.image.forge:broker", "
 
 # And finally our application code.
 FROM base AS api
+RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
 USER chutes
 RUN curl -sSL https://install.python-poetry.org | python3 -
