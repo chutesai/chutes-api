@@ -3,6 +3,7 @@ Main API entrypoint.
 """
 
 import asyncio
+import fickling
 from loguru import logger
 from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
@@ -18,6 +19,8 @@ app = FastAPI(default_response_class=ORJSONResponse)
 
 app.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
 app.include_router(image_router, prefix="/images", tags=["Images"])
+
+fickling.always_check_safety()
 
 
 @app.on_event("startup")

@@ -43,5 +43,9 @@ async def main():
             continue
         print(json.dumps(data, indent=2))
 
+    print("*" * 80)
+    request["json"].pop("stream")
+    print(json.dumps(await chute.chat(**request), indent=2))
+
 if __name__ == "__main__":
     asyncio.run(main())

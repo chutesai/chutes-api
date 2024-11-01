@@ -252,7 +252,7 @@ async def invoke(
                     {
                         "invocation_id": invocation_id,
                         "error": f"{exc}\n{traceback.format_exc()}",
-                        "response": None,
+                        "response_path": None,
                     },
                 )
                 await session.commit()
