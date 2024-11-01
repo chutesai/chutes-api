@@ -1,6 +1,7 @@
 -- migrate:up
 -- store invocations in a partitioned table, where each partition stores one week of data
 CREATE TABLE partitioned_invocations (
+    invocation_id TEXT NOT NULL,
     chute_id TEXT NOT NULL,
     function_name TEXT NOT NULL,
     user_id TEXT NOT NULL,
@@ -11,8 +12,8 @@ CREATE TABLE partitioned_invocations (
     started_at TIMESTAMP DEFAULT NOW(),
     completed_at TIMESTAMP,
     error TEXT,
-    request JSONB,
-    response JSONB
+    request_path TEXT,
+    response_PATH TEXT
 ) PARTITION BY RANGE (started_at);
 
 -- make a view so we can do some fancy insert logic in a function and make queries easier
@@ -41,7 +42,7 @@ BEGIN
 
     -- insert directly into the new partition
     INSERT INTO partitioned_invocations VALUES (NEW.*);
-    RETURN NULL;
+    RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
 

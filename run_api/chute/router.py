@@ -216,5 +216,7 @@ async def invoke_(
     # Do the deed.
     await db.close()
     return StreamingResponse(
-        invoke(chute, path, function, stream, args, kwargs, targets)
+        invoke(
+            chute, current_user.user_id, path, function, stream, args, kwargs, targets
+        )
     )
