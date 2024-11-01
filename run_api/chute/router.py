@@ -258,7 +258,10 @@ async def invoke(
             identified = True
             stream = cord["stream"]
     if not identified:
-        raise Exception("foo bad cord")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chute has no available instances to execute on (yet)",
+        )
 
     # Do the deed.
     await db.close()
