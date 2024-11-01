@@ -15,6 +15,7 @@ from typing import List, Optional
 class Cord(BaseModel):
     method: str
     path: str
+    function: str
     stream: bool
 
 
@@ -34,7 +35,7 @@ class ChuteArgs(BaseModel):
     cords: List[Cord]
 
 
-class Invocation(BaseModel):
+class InvocationArgs(BaseModel):
     args: str
     kwargs: str
 
