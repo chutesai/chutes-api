@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "3600"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
+    netuid: int = int(os.getenv("NETUID", "19"))
 
 
 settings = Settings()

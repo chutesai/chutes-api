@@ -6,15 +6,23 @@ import re
 import time
 import hashlib
 import pybase64 as base64
+from sqlalchemy import exists
+from sqlalchemy.future import select
+from typing import Optional
 from fastapi import APIRouter, Request, Response, HTTPException, status
 from substrateinterface import Keypair, KeypairType
 from run_api.config import settings
+from metasync.shared import create_metagraph_node_class
+from run_api.database import Base, SessionLocal
 
+MetagraphNode = create_metagraph_node_class(Base)
 
 router = APIRouter()
 
 
-async def authenticate_request(request: Request, purpose: str = None) -> None:
+async def authenticate_request(
+    request: Request, purpose: str = None, registered_to: Optional[int] = None
+) -> None:
     """
     Helper to authenticate miner requests.
     """
@@ -75,14 +83,32 @@ async def authenticate_request(request: Request, purpose: str = None) -> None:
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid request signature"
         )
 
+    # Require a registered hotkey?
+    if registered_to is not None:
+        async with SessionLocal() as session:
+            if not (
+                await session.execute(
+                    select(
+                        exists()
+                        .where(MetagraphNode.hotkey == ss58_address)
+                        .where(MetagraphNode.netuid == registered_to)
+                    )
+                )
+            ).scalar():
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Hotkey is not registered on netuid {settings.netuid}",
+                )
+
 
 @router.get("/registry")
 async def registry_auth(request: Request, response: Response):
     """
     Authentication registry/docker pull requests.
     """
-    # TODO: ensure hotkey is registered to the subnet.
-    await authenticate_request(request, purpose="registry")
+    await authenticate_request(
+        request, purpose="registry", registered_to=settings.netuid
+    )
     auth_string = base64.b64encode(f":{settings.registry_password}".encode())
     response.headers["Authorization"] = f"Basic {auth_string}"
     return {"authenticated": True}
