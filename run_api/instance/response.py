@@ -23,5 +23,4 @@ class InstanceResponse(BaseModel):
     chute: ChuteResponse
 
     class Config:
-        orm_mode = True
         from_attributes = True
