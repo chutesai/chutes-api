@@ -30,7 +30,7 @@ async def list_chutes(
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
     List (and optionally filter/paginate) chutes.
@@ -80,7 +80,7 @@ async def list_chutes(
 async def get_chute(
     chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
     Load a chute by ID or name.
@@ -98,7 +98,7 @@ async def get_chute(
 async def delete_chute(
     chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
     Delete a chute by ID or name.
@@ -119,7 +119,7 @@ async def delete_chute(
 async def deploy_chute(
     chute_args: ChuteArgs,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user()),
 ):
     """
     Deploy a chute!
@@ -169,7 +169,7 @@ async def invoke_(
     path: str,
     invocation: InvocationArgs,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user()),
 ):
     """
     Invoke a "chute" aka function.

@@ -9,7 +9,9 @@ image = (
     .with_python("3.12.7")
     .apt_install(["google-perftools", "git"])
     .run_command("useradd vllm -s /sbin/nologin")
-    .run_command("mkdir -p /workspace /home/vllm && chown vllm:vllm /workspace /home/vllm")
+    .run_command(
+        "mkdir -p /workspace /home/vllm && chown vllm:vllm /workspace /home/vllm"
+    )
     .set_user("vllm")
     .set_workdir("/workspace")
     .with_env("PATH", "/opt/python/bin:$PATH")
@@ -23,8 +25,9 @@ chute = build_vllm_chute(
     image=image,
     node_selector=NodeSelector(
         gpu_count=1,
-    )
+    ),
 )
+
 
 async def main():
     request = {
@@ -46,6 +49,7 @@ async def main():
     print("*" * 80)
     request["json"].pop("stream")
     print(json.dumps(await chute.chat(**request), indent=2))
+
 
 if __name__ == "__main__":
     asyncio.run(main())

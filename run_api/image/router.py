@@ -35,7 +35,7 @@ async def list_images(
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user(purpose="images")),
 ):
     """
     List (and optionally filter/paginate) images.
@@ -80,7 +80,7 @@ async def list_images(
 async def get_image(
     image_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user(purpose="images")),
 ):
     """
     Load a single image by ID or name.
@@ -98,7 +98,7 @@ async def get_image(
 async def delete_image(
     image_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user(purpose="images")),
 ):
     """
     Delete an image by ID or name:tag.
@@ -134,7 +134,7 @@ async def create_image(
     image: str = Form(...),
     public: bool = Form(...),
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user()),
 ):
     """
     Create an image; really here we're just storing the metadata
