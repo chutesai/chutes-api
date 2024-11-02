@@ -3,9 +3,11 @@
 CREATE TABLE partitioned_invocations (
     invocation_id TEXT NOT NULL,
     chute_id TEXT NOT NULL,
+    chute_user_id TEXT NOT NULL,
     function_name TEXT NOT NULL,
     user_id TEXT NOT NULL,
     image_id TEXT NOT NULL,
+    image_user_id TEXT NOT NULL,
     instance_id TEXT NOT NULL,
     miner_uid INTEGER NOT NULL,
     miner_hotkey TEXT NOT NULL,

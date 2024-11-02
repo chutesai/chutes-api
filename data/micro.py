@@ -34,7 +34,7 @@ async def initialize(self):
 
 @chute.cord()
 async def echo(input_str: str):
-    return f"{self.billygoat} says: {input_str}"
+    return f"{chute.billygoat} says: {input_str}"
 
 
 async def main():
