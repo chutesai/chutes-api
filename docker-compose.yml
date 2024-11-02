@@ -156,6 +156,21 @@ services:
     networks:
       - kind
 
+  metasync:
+    build:
+      context: .
+      target: metasync
+    volumes:
+      - ./:/app
+    environment:
+      - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/parachutes
+      - REDIS_URL=redis://:redispassword@redis:6379/0
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - kind
+
   vllm:
     build:
       context: ./data

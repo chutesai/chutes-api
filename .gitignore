@@ -125,6 +125,7 @@ celerybeat.pid
 .venv
 env/
 venv/
+metasync-venv
 ENV/
 env.bak/
 venv.bak/

@@ -26,6 +26,21 @@ RUN poetry install
 ADD . /forge
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "run_api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
 
+# Layer for the metagraph syncer.
+FROM base AS metasync
+RUN dnf install -y git cmake gcc gcc-c++ python3-devel
+RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
+USER chutes
+RUN python3 -m venv /home/chutes/venv
+ENV PATH=/home/chutes/venv/bin:$PATH
+ADD pyproject.toml /tmp/
+RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/"//g' > /tmp/requirements.txt
+RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr && pip install -r /tmp/requirements.txt
+ADD --chown=chutes . /app
+WORKDIR /app
+ENV PYTHONPATH=/app
+ENTRYPOINT ["python", "metasync/sync_metagraph.py"]
+
 # And finally our application code.
 FROM base AS api
 RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
