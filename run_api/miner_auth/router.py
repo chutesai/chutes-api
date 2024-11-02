@@ -42,7 +42,7 @@ async def authenticate_request(request: Request, purpose: str = None) -> None:
             [
                 ss58_address,
                 nonce,
-                hashlib.sha256(payload).hexdigest(),
+                hashlib.sha256(body).hexdigest(),
             ]
         )
     else:

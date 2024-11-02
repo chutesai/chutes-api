@@ -13,7 +13,9 @@ CREATE TABLE partitioned_invocations (
     completed_at TIMESTAMP,
     error TEXT,
     request_path TEXT,
-    response_PATH TEXT
+    response_PATH TEXT,
+    reported_at TIMESTAMP,
+    report_reason TEXT
 ) PARTITION BY RANGE (started_at);
 
 -- make a view so we can do some fancy insert logic in a function and make queries easier

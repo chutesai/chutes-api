@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.responses import ORJSONResponse
 from run_api.chute.router import router as chute_router
 from run_api.image.router import router as image_router
+from run_api.invocation.router import router as invocation_router
 from run_api.miner_auth.router import router as miner_auth_router
 from run_api.instance.schemas import Instance  # noqa: F401
 from run_api.database import Base, engine
@@ -20,6 +21,7 @@ app = FastAPI(default_response_class=ORJSONResponse)
 
 app.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
 app.include_router(image_router, prefix="/images", tags=["Images"])
+app.include_router(invocation_router, prefix="/invocations", tags=["Invocations"])
 app.include_router(miner_auth_router, prefix="/authentication", tags=["Authentication"])
 
 fickling.always_check_safety()

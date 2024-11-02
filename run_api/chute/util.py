@@ -38,7 +38,9 @@ INSERT INTO invocations (
     completed_at,
     error,
     request_path,
-    response_path
+    response_path,
+    reported_at,
+    report_reason
 ) VALUES (
     :invocation_id,
     :chute_id,
@@ -52,6 +54,8 @@ INSERT INTO invocations (
     NULL,
     NULL,
     :request_path,
+    NULL,
+    NULL,
     NULL
 ) RETURNING to_char(date_trunc('week', started_at), 'IYYY_IW') AS suffix
 """
@@ -97,7 +101,7 @@ async def _invoke_one(
     """
     # Update last query time for this target.
     async with SessionLocal() as session:
-        result = await session.execute(
+        await session.execute(
             update(Instance)
             .where(Instance.instance_id == target.instance_id)
             .values({"last_queried_at": func.now()})
@@ -184,7 +188,6 @@ async def invoke(
                 },
             )
             partition_suffix = result.scalar()
-            print(f"PARTITION SUFFIX: {partition_suffix}")
             await session.commit()
 
         try:

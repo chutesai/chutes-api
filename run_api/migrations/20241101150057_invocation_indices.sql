@@ -1,5 +1,5 @@
 -- migrate:up
-CREATE INDEX idx_inv_id ON partitioned_invocations (started_at, invocation_id);
+CREATE INDEX idx_inv_id ON partitioned_invocations (invocation_id);
 CREATE INDEX idx_inv_chute_err ON partitioned_invocations (started_at, chute_id, error);
 CREATE INDEX idx_inv_response ON partitioned_invocations (started_at, response_path);
 
