@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     registry_external_host: str = os.getenv(
         "REGISTRY_EXTERNAL_HOST", "registry.parachutes.ai"
     )
+    registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "3600"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))

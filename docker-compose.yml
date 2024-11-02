@@ -38,8 +38,6 @@ services:
 
   registry:
     image: registry:2
-    ports:
-      - "5000:5000"
     environment:
       REGISTRY_STORAGE: s3
       REGISTRY_STORAGE_S3_REGION: local
@@ -50,6 +48,15 @@ services:
       REGISTRY_HTTP_SECRET: "registry"
     depends_on:
       - minio
+    networks:
+      - kind
+
+  registry_public:
+    image: nginx
+    ports:
+      - "5100:5100"
+    volumes:
+      - ./data/registry-auth-nginx.conf:/etc/nginx/nginx.conf
     networks:
       - kind
 
@@ -112,8 +119,6 @@ services:
       - registry
     networks:
       - kind
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
 
   forge:
     build:

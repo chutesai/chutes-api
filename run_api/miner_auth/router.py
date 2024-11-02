@@ -5,8 +5,10 @@ Miner authentication.
 import re
 import time
 import hashlib
-from fastapi import APIRouter, Request, HTTPException, status
+import pybase64 as base64
+from fastapi import APIRouter, Request, Response, HTTPException, status
 from substrateinterface import Keypair, KeypairType
+from run_api.config import settings
 
 
 router = APIRouter()
@@ -75,10 +77,12 @@ async def authenticate_request(request: Request, purpose: str = None) -> None:
 
 
 @router.get("/registry")
-async def registry_auth(request: Request):
+async def registry_auth(request: Request, response: Response):
     """
     Authentication registry/docker pull requests.
     """
     # TODO: ensure hotkey is registered to the subnet.
     await authenticate_request(request, purpose="registry")
+    auth_string = base64.b64encode(f":{settings.registry_password}".encode())
+    response.headers["Authorization"] = f"Basic {auth_string}"
     return {"authenticated": True}
