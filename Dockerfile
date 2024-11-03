@@ -17,12 +17,15 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 
 # Layer for the buildah daemon.
 FROM base AS forge
+RUN dnf install -y jq
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ADD pyproject.toml /forge/
 ADD poetry.lock /forge/
 WORKDIR /forge/
 ENV PATH=$PATH:/root/.local/bin
 RUN poetry install
+ADD data/buildah_cleanup.sh /usr/local/bin/buildah_cleanup.sh
+ADD data/generate_fs_challenge.sh /usr/local/bin/generate_fs_challenge.sh
 ADD . /forge
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "run_api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
 

@@ -184,9 +184,12 @@ async def create_image(
     await db.commit()
     await db.refresh(image)
 
+    # Clean up any previous streams, just in case of retry.
+    redis_client = redis.Redis.from_url(settings.redis_url)
+    await redis_client.delete(f"forge:{image_id}:stream")
+
     # Stream logs for clients who set the "wait" flag.
     async def _stream():
-        redis_client = redis.Redis.from_url(settings.redis_url)
         started_at = time.time()
         last_offset = None
         while True:

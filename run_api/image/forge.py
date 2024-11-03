@@ -5,6 +5,7 @@ Image forge -- build images and push to local registry with buildah.
 import asyncio
 import zipfile
 import os
+import glob
 import tempfile
 import traceback
 import time
@@ -111,7 +112,8 @@ async def build_and_push_image(image):
             timeout=settings.build_timeout,
         )
         if process.returncode == 0:
-            message = f"Successfull built {full_image_tag}, pushing..."
+            delta = time.time() - started_at
+            message = f"Successfull built {full_image_tag} in {round(delta, 5)} seconds, pushing..."
             logger.success(message)
             await redis_client.xadd(
                 f"forge:{image.image_id}:stream",
@@ -170,7 +172,7 @@ async def build_and_push_image(image):
             delta = time.time() - started_at
             message = (
                 "\N{hammer and wrench} "
-                + f" finished building image {image.image_id} in {round(delta, 5)} seconds"
+                + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
             )
             await redis_client.xadd(
                 f"forge:{image.image_id}:stream",
@@ -178,18 +180,105 @@ async def build_and_push_image(image):
             )
             logger.success(message)
         else:
-            logger.error("Image push failed, check logs for more details!")
+            message = "Image push failed, check logs for more details!"
+            logger.error(message)
+            await redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
             raise PushFailure(f"Push of {full_image_tag} failed!")
     except asyncio.TimeoutError:
-        logger.error("Error waiting for image push to finish!")
+        message = (
+            f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
+        )
+        logger.error(message)
+        await redis_client.xadd(
+            f"forge:{image.image_id}:stream",
+            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+        )
+        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise PushTimeout(
             f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
         )
-    finally:
-        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
 
+    # Generate filesystem challenge data.
+    message = "Generating filesystem challenge data..."
+    await redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+    )
+    logger.info(message)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "bash",
+            "/usr/local/bin/generate_fs_challenge.sh",
+            short_tag,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=300,
+        )
+        if process.returncode == 0:
+            for path in glob.glob("/tmp/fschallenge_*.data"):
+                destination = f"fschallenge/{image.user_id}/{image.image_id}/{os.path.basename(path)}"
+                await settings.storage_client.put_object(
+                    settings.storage_bucket,
+                    destination,
+                    open(path, "rb"),
+                    length=-1,
+                    part_size=10 * 1024 * 1024,
+                )
+                message = f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
+                await redis_client.xadd(
+                    f"forge:{image.image_id}:stream",
+                    {
+                        "data": json.dumps(
+                            {"log_type": "stdout", "log": message}
+                        ).decode()
+                    },
+                )
+                logger.success(message)
+        else:
+            message = "Error generating filesystem challenge data."
+            await redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            logger.error(message)
+    except Exception as exc:
+        try:
+            message = f"Error generating filesystem challenge data: {exc}"
+            logger.error(message)
+            await redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            process.kill()
+            await process.communicate()
+        except Exception:
+            ...
+
+    # DONE!
+    delta = time.time() - started_at
+    message = (
+        "\N{hammer and wrench} "
+        + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
+    )
+    await redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+    )
+    logger.success(message)
+    await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
     return short_tag
 
 
@@ -198,6 +287,7 @@ async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")
     async with SessionLocal() as session:
         result = await session.execute(
             select(Image).where(Image.image_id == image_id).limit(1)
@@ -278,3 +368,6 @@ async def forge(image_id: str):
             image.status = f"error: {error_message}"
         await session.commit()
         await session.refresh(image)
+
+    # Cleanup.
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")
