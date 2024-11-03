@@ -10,5 +10,5 @@ done
 
 buildah images --quiet | while read image_id
 do
-  buildah rmi $image_id --force
+  buildah rmi --force $image_id
 done
