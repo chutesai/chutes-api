@@ -2,6 +2,8 @@
 ORM for API keys/scopes.
 """
 
+import re
+import string
 from sqlalchemy import (
     Column,
     String,
@@ -10,8 +12,9 @@ from sqlalchemy import (
     func,
     Enum,
     Boolean,
+    UniqueConstraint,
 )
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 import secrets
 from passlib.hash import argon2
 import enum
@@ -28,6 +31,18 @@ class Method(enum.Enum):
     IVOKE = "invoke"
 
 
+class ScopeArgs(BaseModel):
+    object_type: str
+    object_id: Optional[str] = None
+    method: Optional[Method] = None
+
+
+class APIKeyArgs(BaseModel):
+    admin: bool
+    name: str
+    scopes: Optional[List[ScopeArgs]] = []
+
+
 class APIKeyScope(Base):
     __tablename__ = "api_key_scopes"
 
@@ -42,11 +57,16 @@ class APIKeyScope(Base):
     # Relationships
     api_key = relationship("APIKey", back_populates="scopes")
 
-
-class ScopeArgs(BaseModel):
-    object_type: str
-    object_id: Optional[str] = None
-    method: Optional[str] = None
+    @validates("object_type")
+    async def validate_object_type(_, __, type_):
+        """
+        Limit which types of objects we can manipulate with API keys.
+        """
+        if type_ not in ("images", "chutes", "invocations"):
+            raise ValueError(
+                "Invalid object_type, must be one of images, chutes, invocations"
+            )
+        return type_
 
 
 class APIKey(Base):
@@ -71,45 +91,57 @@ class APIKey(Base):
         lazy="joined",
     )
 
+    __table_args__ = (
+        UniqueConstraint("user_id", "name", name="constraint_api_key_user_name"),
+    )
+
     @classmethod
-    def generate_key(cls):
+    def generate_key(cls, user_id: str):
         """
         Generate a new API key with format: prefix_base64chars
         """
-        return f"cpk_{secrets.token_urlsafe(32)}"
+        secret = "".join(
+            secrets.choice(string.ascii_letters + string.digits) for _ in range(32)
+        )
+        return f"cpk_{user_id.replace('-', '')}.{secret}"
 
     @classmethod
-    def create(
-        cls, name: str, user_id: int, admin: bool = False, scopes: List[ScopeArgs] = []
-    ):
+    def create(cls, user_id: str, args: APIKeyArgs):
         """
         Helper to create a new API key with scopes.
-
-        scopes format: [
-            {"object_type": "chutes", "object_id": "000"},   # any action on chute.000
-            {"object_type": "chutes", "method": Method.READ} # read any chute
-        ]
         """
         # We need to return the plain text key when initially created.
-        api_key = cls.generate_key()
+        secret = cls.generate_key(user_id)
         instance = cls(
-            key_hash=argon2.hash(api_key),
-            name=name,
+            api_key_id=generate_uuid(),
+            key_hash=argon2.hash(secret),
+            name=args.name,
             user_id=user_id,
-            admin=admin,
+            admin=args.admin,
         )
-        if not admin:
-            for scope in scopes:
+        if not args.admin:
+            for scope in args.scopes:
                 instance.scopes.append(
-                    APIKeyScope(chute_id=scope.get("chute_id"), method=scope["method"])
+                    APIKeyScope(
+                        scope_id=generate_uuid(),
+                        api_key_id=instance.api_key_id,
+                        object_type=scope.object_type,
+                        object_id=scope.object_id,
+                        method=args.method,
+                    )
                 )
-        return instance, api_key
+
+        return instance, secret
 
     def verify_key(self, key: str) -> bool:
         """
         Verify if provided key matches stored key
         """
-        if not key.startswith(self.prefix) or len(key) != 36:
+        if (
+            not key.startswith(self.prefix)
+            or len(key) != 69
+            or not re.match(r"^cpk_[a-f0-9]+{32}\.[a-z0-9]{32}$")
+        ):
             return False
         return argon2.verify(key, self.key_hash)
 

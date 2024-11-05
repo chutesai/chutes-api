@@ -10,6 +10,7 @@ from loguru import logger
 from fastapi import FastAPI, Request, APIRouter
 from fastapi.responses import ORJSONResponse
 from run_api.api_key.schemas import APIKey  # noqa: F401
+from run_api.api_key.router import router as api_key_router
 from run_api.chute.router import router as chute_router
 from run_api.image.router import router as image_router
 from run_api.invocation.router import router as invocation_router
@@ -35,6 +36,9 @@ default_router.include_router(
 )
 default_router.include_router(
     registry_router, prefix="/registry", tags=["Authentication"]
+)
+default_router.include_router(
+    api_key_router, prefix="/api_keys", tags=["Authentication"]
 )
 
 fickling.always_check_safety()

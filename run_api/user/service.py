@@ -18,7 +18,10 @@ router = APIRouter()
 
 
 def get_current_user(
-    purpose: str = None, registered_to: int = None, raise_not_found: bool = False
+    purpose: str = None,
+    registered_to: int = None,
+    raise_not_found: bool = False,
+    allow_api_key=False,
 ):
     """
     Authentication dependency builder.
