@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from sqlalchemy import func, Column, String, DateTime, BigInteger
 from sqlalchemy.orm import relationship, validates
 from substrateinterface import SubstrateInterface
-from substrateinterface.utils.ss58 import ss58_encode
 from run_api.database import Base
 from run_api.config import settings
 
@@ -31,6 +30,9 @@ class User(Base):
 
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")
+    api_keys = relationship(
+        "APIKey", back_populates="user", cascade="all, delete-orphan"
+    )
 
     @validates("username")
     def validate_username(self, _, value):

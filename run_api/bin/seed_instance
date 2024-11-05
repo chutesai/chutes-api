@@ -6,6 +6,7 @@ import argparse
 from loguru import logger
 from run_api.database import SessionLocal
 from run_api.user.schemas import User
+from run_api.api_key.schemas import APIKey
 from run_api.chute.schemas import Chute
 from run_api.image.schemas import Image
 from run_api.instance.schemas import Instance

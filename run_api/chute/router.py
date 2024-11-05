@@ -2,6 +2,10 @@
 Routes for chutes.
 """
 
+import re
+import random
+import string
+from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status
 from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
@@ -107,7 +111,7 @@ async def delete_chute(
     if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Chute not found, or does not belong to you: {chute} {current_user}",
+            detail="Chute not found, or does not belong to you",
         )
     chute_id = chute.chute_id
     await db.delete(chute)
@@ -157,6 +161,24 @@ async def deploy_chute(
         cords=chute_args.cords,
         node_selector=chute_args.node_selector,
     )
+
+    # Generate a unique slug (subdomain).
+    chute.slug = re.sub(
+        r"[^a-z0-9-]+$", "-", slugify(f"{current_user.username}-{chute.name}").lower()
+    )
+    base_slug = chute.slug
+    already_exists = (
+        await db.execute(select(exists().where(Chute.slug == chute.slug)))
+    ).scalar()
+    while already_exists:
+        suffix = "".join(
+            random.choice(string.ascii_lowercase + string.digits) for _ in range(6)
+        )
+        chute.slug = f"{base_slug}-{suffix}"
+        already_exists = (
+            await db.execute(select(exists().where(Chute.slug == chute.slug)))
+        ).scalar()
+
     db.add(chute)
     await db.commit()
     await db.refresh(chute)
@@ -193,7 +215,10 @@ async def invoke_(
     # Find a target to query.
     targets = await discover_chute_targets(db, chute_id)
     if not targets:
-        raise Exception("foo no targets")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="No instances available (yet) for {chute_id=}",
+        )
 
     # Identify the upstream path to call.
     cord = None
@@ -209,8 +234,8 @@ async def invoke_(
             function = cord["function"]
     if not identified:
         raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Chute has no available instances to execute on (yet)",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute has no cord matching your request",
         )
 
     # Do the deed.

@@ -2,19 +2,22 @@
 Main API entrypoint.
 """
 
+import re
 import asyncio
 import fickling
 import hashlib
 from loguru import logger
-from fastapi import FastAPI, Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from fastapi import FastAPI, Request, APIRouter
 from fastapi.responses import ORJSONResponse
+from run_api.api_key.schemas import APIKey  # noqa: F401
 from run_api.chute.router import router as chute_router
 from run_api.image.router import router as image_router
 from run_api.invocation.router import router as invocation_router
+from run_api.invocation.router import host_invocation_router
 from run_api.registry.router import router as registry_router
 from run_api.user.router import router as user_router
 from run_api.instance.schemas import Instance  # noqa: F401
+from run_api.chute.util import chute_id_by_slug
 from run_api.database import Base, engine
 from run_api.config import settings
 import run_api.chute.events  # noqa: F401
@@ -23,31 +26,48 @@ import run_api.user.events  # noqa: F401
 
 app = FastAPI(default_response_class=ORJSONResponse)
 
-app.include_router(user_router, prefix="/users", tags=["Users"])
-app.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
-app.include_router(image_router, prefix="/images", tags=["Images"])
-app.include_router(invocation_router, prefix="/invocations", tags=["Invocations"])
-app.include_router(registry_router, prefix="/registry", tags=["Authentication"])
+default_router = APIRouter()
+default_router.include_router(user_router, prefix="/users", tags=["Users"])
+default_router.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
+default_router.include_router(image_router, prefix="/images", tags=["Images"])
+default_router.include_router(
+    invocation_router, prefix="/invocations", tags=["Invocations"]
+)
+default_router.include_router(
+    registry_router, prefix="/registry", tags=["Authentication"]
+)
 
 fickling.always_check_safety()
 
 
-class SHA256BodyHashMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
-        if request.method in ["POST", "PUT", "PATCH"]:
-            body = await request.body()
-            sha256_hash = hashlib.sha256(body).hexdigest()
-            request.state.body_sha256 = sha256_hash
-            # async def receive() -> dict:
-            #    return {"type": "http.request", "body": body}
-            # request._receive = receive
-        else:
-            request.state.body_sha256 = None
-        response = await call_next(request)
-        return response
+@app.middleware("http")
+async def host_router_middleware(request: Request, call_next):
+    """
+    Route differentiation for hostname-based simple invocations.
+    """
+    host_based_invocation = False
+    request.state.chute_id = None
+    host = request.headers.get("host", "")
+    host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
+    if host_parts and (chute_id := await chute_id_by_slug(host_parts.group(1).lower())):
+        request.state.chute_id = chute_id
+        host_based_invocation = True
+    if host_based_invocation:
+        app.include_router(host_invocation_router)
+    else:
+        app.include_router(default_router)
+    return await call_next(request)
 
 
-app.add_middleware(SHA256BodyHashMiddleware)
+@app.middleware("http")
+async def request_body_checksum(request: Request, call_next):
+    if request.method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        sha256_hash = hashlib.sha256(body).hexdigest()
+        request.state.body_sha256 = sha256_hash
+    else:
+        request.state.body_sha256 = None
+    return await call_next(request)
 
 
 @app.on_event("startup")

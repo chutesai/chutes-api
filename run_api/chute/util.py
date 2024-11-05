@@ -77,11 +77,15 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
     """
     Helper to load a chute by ID or full chute name (optional username/chute name)
     """
+    if not chute_id_or_name:
+        return None
     name_match = re.match(
         r"(?:([a-z0-9][a-z0-9_-]*)/)?([a-z0-9][a-z0-9_-]*)$",
         chute_id_or_name.lstrip("/"),
         re.I,
     )
+    if not name_match:
+        return None
     query = (
         select(Chute)
         .join(User, Chute.user_id == User.user_id)
@@ -94,6 +98,18 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
     )
     result = await db.execute(query)
     return result.scalar_one_or_none()
+
+
+async def chute_id_by_slug(slug: str):
+    """
+    Check if a chute exists with the specified slug (which is a subdomain for standard apps).
+    """
+    async with SessionLocal() as session:
+        if chute_id := (
+            await session.execute(select(Chute.chute_id).where(Chute.slug == slug))
+        ).scalar_one_or_none():
+            return chute_id
+    return None
 
 
 async def _invoke_one(
