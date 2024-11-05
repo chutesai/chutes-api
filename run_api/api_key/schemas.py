@@ -74,7 +74,9 @@ class APIKey(Base):
     api_key_id = Column(String, primary_key=True, default=generate_uuid)
     key_hash = Column(String, nullable=False)
     user_id = Column(
-        String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
+        String,
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
     )
     admin = Column(Boolean, default=True)
     name = Column(String, nullable=False)
@@ -82,7 +84,7 @@ class APIKey(Base):
     last_used_at = Column(DateTime, nullable=True)
 
     # Relationships
-    user = relationship("User", back_populates="api_keys")
+    user = relationship("User", back_populates="api_keys", lazy="joined")
     scopes = relationship(
         "APIKeyScope",
         back_populates="api_key",
@@ -95,14 +97,14 @@ class APIKey(Base):
     )
 
     @classmethod
-    def generate_key(cls, user_id: str):
+    def generate_key(cls, user_id: str, api_key_id: str):
         """
         Generate a new API key with format: prefix_base64chars
         """
         secret = "".join(
             secrets.choice(string.ascii_letters + string.digits) for _ in range(32)
         )
-        return f"cpk_{user_id.replace('-', '')}.{secret}"
+        return f"cpk_{user_id.replace('-', '')}.{api_key_id.replace('-', '')}.{secret}"
 
     @classmethod
     def create(cls, user_id: str, args: APIKeyArgs):
@@ -110,9 +112,10 @@ class APIKey(Base):
         Helper to create a new API key with scopes.
         """
         # We need to return the plain text key when initially created.
-        secret = cls.generate_key(user_id)
+        api_key_id = generate_uuid()
+        secret = cls.generate_key(api_key_id, user_id)
         instance = cls(
-            api_key_id=generate_uuid(),
+            api_key_id=api_key_id,
             key_hash=argon2.hash(secret),
             name=args.name,
             user_id=user_id,
@@ -132,15 +135,30 @@ class APIKey(Base):
 
         return instance, secret
 
-    def verify_key(self, key: str) -> bool:
+    @staticmethod
+    def could_be_valid(key: str) -> bool:
+        """
+        Fast check for token validity.
+        """
+        print(key)
+        print(f"startsiwth: {key.startswith('cpk_')}")
+        print(f"length: {len(key)}")
+        print(
+            f"match: {re.match(r'^cpk_[a-f0-9]{32}\.[a-f0-9]{32}\.[a-zA-Z0-9]{32}$', key)}"
+        )
+        if (
+            not key.startswith("cpk_")
+            or len(key) != 102
+            or not re.match(r"^cpk_[a-f0-9]{32}\.[a-f0-9]{32}\.[a-zA-Z0-9]{32}$", key)
+        ):
+            return False
+        return True
+
+    def verify(self, key: str) -> bool:
         """
         Verify if provided key matches stored key
         """
-        if (
-            not key.startswith(self.prefix)
-            or len(key) != 69
-            or not re.match(r"^cpk_[a-f0-9]+{32}\.[a-z0-9]{32}$")
-        ):
+        if not self.could_be_valid(key):
             return False
         return argon2.verify(key, self.key_hash)
 

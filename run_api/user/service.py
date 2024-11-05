@@ -13,6 +13,7 @@ from run_api.config import settings
 from run_api.metasync import MetagraphNode
 from run_api.database import SessionLocal
 from run_api.user.schemas import User
+from run_api.api_key.util import get_and_check_api_key
 
 router = APIRouter()
 
@@ -31,9 +32,17 @@ def get_current_user(
         """
         Helper to authenticate requests.
         """
+        authorization = request.headers.get("Authorization")
         hotkey = request.headers.get("X-Parachutes-Hotkey")
         signature = request.headers.get("X-Parachutes-Signature")
         if not hotkey or not signature:
+            # API key validation.
+            if authorization:
+                token = authorization.split(" ")[-1]
+                if token:
+                    api_key = await get_and_check_api_key(token, request)
+                    request.state.api_key = api_key
+                    return api_key.user
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid or missing credentials",

@@ -5,7 +5,7 @@ from chutes.chute import NodeSelector
 from chutes.chute.template.vllm import build_vllm_chute
 
 image = (
-    Image("vllm-custom", "0.6.3")
+    Image("vllm-custom", "0.6.2")
     .with_python("3.12.7")
     .apt_install(["google-perftools", "git"])
     .run_command("useradd vllm -s /sbin/nologin")
@@ -15,7 +15,8 @@ image = (
     .set_user("vllm")
     .set_workdir("/workspace")
     .with_env("PATH", "/opt/python/bin:$PATH")
-    .run_command("/opt/python/bin/pip install --no-cache vllm==0.6.3 wheel packaging")
+    .with_env("LD_PRELOAD", "/lib/x86_64-linux-gnu/libtcmalloc.so.4")
+    .run_command("/opt/python/bin/pip install --no-cache vllm==0.6.2 wheel packaging")
     .run_command("/opt/python/bin/pip install --no-cache flash-attn==2.6.3")
     .run_command("/opt/python/bin/pip uninstall -y xformers")
 )

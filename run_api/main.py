@@ -57,8 +57,26 @@ async def host_router_middleware(request: Request, call_next):
         request.state.chute_id = chute_id
         host_based_invocation = True
     if host_based_invocation:
+        request.state.auth_method = "invoke"
+        request.state.auth_object_type = "chutes"
+        request.state.auth_object_id = chute_id
         app.include_router(host_invocation_router)
     else:
+        request.state.auth_method = "read"
+        if request.method.lower() in ("post", "put", "patch"):
+            request.state.auth_method = "write"
+        elif request.method.lower() == "delete":
+            request.state.auth_method = "delete"
+        print(f"REQUEST: {request}")
+        request.state.auth_object_type = request.url.path.split("/")[1]
+        # XXX at some point, perhaps we can support objects by name too, but for
+        # now, for auth to work (easily) we just need to only support UUIDs when
+        # using API keys.
+        path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
+        if path_match:
+            request.state.auth_object_id = path_match.group(1)
+        else:
+            request.state.auth_object_id = "__list_or_invalid__"
         app.include_router(default_router)
     return await call_next(request)
 

@@ -8,7 +8,7 @@ import gzip
 import orjson as json
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
-from sqlalchemy import text, String, select
+from sqlalchemy import text, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from run_api.chute.util import get_chute_by_id_or_name, invoke
 from run_api.user.schemas import User
@@ -68,13 +68,10 @@ async def report_invocation(
 async def hostname_invocation(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
-    # current_user: User = Depends(get_current_user()),
+    current_user: User = Depends(get_current_user()),
 ):
-    # XXX hacked until API keys are working.
-    user = (await db.execute(select(User))).scalar_one_or_none()
-
     # This call will perform auth/access checks.
-    chute = await get_chute_by_id_or_name(request.state.chute_id, db, user)
+    chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None
@@ -114,7 +111,7 @@ async def hostname_invocation(
         async def _stream_response():
             async for chunk in invoke(
                 chute,
-                user.user_id,
+                current_user.user_id,
                 selected_cord["path"],
                 selected_cord["function"],
                 stream,
@@ -131,7 +128,7 @@ async def hostname_invocation(
     error = None
     async for chunk in invoke(
         chute,
-        user.user_id,
+        current_user.user_id,
         selected_cord["path"],
         selected_cord["function"],
         stream,
