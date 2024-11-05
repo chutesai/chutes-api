@@ -171,6 +171,26 @@ services:
     networks:
       - kind
 
+  vault:
+    image: vault:1.13.3
+    ports:
+      - "777:777"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=supersecrettoken
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:777
+    cap_add:
+      - IPC_LOCK
+    volumes:
+      - vault_data:/vault/data
+    command: vault server -dev
+    healthcheck:
+      test: ["CMD", "vault", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - kind
+
   vllm:
     build:
       context: ./data
@@ -200,6 +220,7 @@ volumes:
   minio_data:
   kind_data:
   kube_config:
+  vault_data:
 
 networks:
   kind:

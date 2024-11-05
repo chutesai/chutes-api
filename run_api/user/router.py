@@ -5,7 +5,7 @@ User routes.
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from run_api.database import get_db_session
 from run_api.user.schemas import UserRequest, User
-from run_api.user.response import UserResponse
+from run_api.user.response import RegistrationResponse
 from run_api.user.service import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter()
 
 
-@router.post("/register", response_model=UserResponse)
+@router.post("/register", response_model=RegistrationResponse)
 async def register(
     request: Request,
     user_args: UserRequest,

@@ -87,12 +87,11 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
         .join(User, Chute.user_id == User.user_id)
         .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
     )
-    if name_match:
-        username = name_match.group(1) or current_user.username
-        chute_name = name_match.group(2)
-        query = query.where(User.username == username).where(Chute.name == chute_name)
-    else:
-        query = query.where(Chute.chute_id == chute_id_or_name)
+    username = name_match.group(1) or current_user.username
+    chute_name = name_match.group(2)
+    query = query.where(User.username == username).where(
+        or_(Chute.name == chute_name, Chute.chute_id == chute_id_or_name)
+    )
     result = await db.execute(query)
     return result.scalar_one_or_none()
 

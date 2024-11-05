@@ -107,7 +107,7 @@ async def delete_chute(
     if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or does not belong to you",
+            detail=f"Chute not found, or does not belong to you: {chute} {current_user}",
         )
     chute_id = chute.chute_id
     await db.delete(chute)

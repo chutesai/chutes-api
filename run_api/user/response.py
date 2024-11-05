@@ -13,3 +13,9 @@ class UserResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class RegistrationResponse(UserResponse):
+    hotkey: str
+    coldkey: str
+    payment_address: str

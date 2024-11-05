@@ -23,7 +23,7 @@ async def report_invocation(
     invocation_id: str,
     report: Report,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="invocations")),
+    current_user: User = Depends(get_current_user()),
 ):
     result = await db.execute(CHECK_EXISTS, {"invocation_id": invocation_id})
     item = result.fetchone()
