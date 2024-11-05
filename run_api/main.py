@@ -49,14 +49,11 @@ async def host_router_middleware(request: Request, call_next):
     """
     Route differentiation for hostname-based simple invocations.
     """
-    host_based_invocation = False
     request.state.chute_id = None
     host = request.headers.get("host", "")
     host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
     if host_parts and (chute_id := await chute_id_by_slug(host_parts.group(1).lower())):
         request.state.chute_id = chute_id
-        host_based_invocation = True
-    if host_based_invocation:
         request.state.auth_method = "invoke"
         request.state.auth_object_type = "chutes"
         request.state.auth_object_id = chute_id
@@ -67,7 +64,6 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_method = "write"
         elif request.method.lower() == "delete":
             request.state.auth_method = "delete"
-        print(f"REQUEST: {request}")
         request.state.auth_object_type = request.url.path.split("/")[1]
         # XXX at some point, perhaps we can support objects by name too, but for
         # now, for auth to work (easily) we just need to only support UUIDs when

@@ -24,7 +24,7 @@ async def get_and_check_api_key(key: str, request: Request):
     if not APIKey.could_be_valid(key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Missing or invalid authorization header(s): {key}",
+            detail="Missing or invalid authorization header(s)",
         )
     part_match = re.match(
         r"^cpk_([a-f0-9]{32})\.([a-f0-9]{32})\.([a-zA-Z0-9]{32})$", key
@@ -43,7 +43,7 @@ async def get_and_check_api_key(key: str, request: Request):
         if not api_token or not api_token.verify(key):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid token or user not found: {api_token}",
+                detail="Invalid token or user not found",
             )
         if not api_token.has_access(
             request.state.auth_object_type,

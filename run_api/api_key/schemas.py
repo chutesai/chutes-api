@@ -27,7 +27,7 @@ class Action(enum.Enum):
     READ = "read"
     WRITE = "write"
     DELETE = "delete"
-    IVOKE = "invoke"
+    INVOKE = "invoke"
 
 
 class ScopeArgs(BaseModel):
@@ -140,12 +140,6 @@ class APIKey(Base):
         """
         Fast check for token validity.
         """
-        print(key)
-        print(f"startsiwth: {key.startswith('cpk_')}")
-        print(f"length: {len(key)}")
-        print(
-            f"match: {re.match(r'^cpk_[a-f0-9]{32}\.[a-f0-9]{32}\.[a-zA-Z0-9]{32}$', key)}"
-        )
         if (
             not key.startswith("cpk_")
             or len(key) != 102
@@ -172,7 +166,7 @@ class APIKey(Base):
             if scope.object_type != object_type:
                 continue
             if scope.object_id in (None, object_id) and (
-                not scope.action or scope.action == action
+                not scope.action or scope.action.value == action
             ):
                 return True
         return False
