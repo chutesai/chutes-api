@@ -60,7 +60,7 @@ def get_current_user(
             )
         else:
             payload = request.headers.get("X-Parachutes-Auth") or ""
-            payload_match = re.match(r"^([a-z]+):([0-9]+):([a-z0-9]+)$", payload, re.I)
+            payload_match = re.match(r"^([a-z_]+):([0-9]+):([a-z0-9]+)$", payload, re.I)
             if not payload_match:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,

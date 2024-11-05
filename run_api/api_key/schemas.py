@@ -23,8 +23,7 @@ from pydantic import BaseModel
 from run_api.database import Base, generate_uuid
 
 
-class Method(enum.Enum):
-    CREATE = "create"
+class Action(enum.Enum):
     READ = "read"
     WRITE = "write"
     DELETE = "delete"
@@ -34,7 +33,7 @@ class Method(enum.Enum):
 class ScopeArgs(BaseModel):
     object_type: str
     object_id: Optional[str] = None
-    method: Optional[Method] = None
+    action: Optional[Action] = None
 
 
 class APIKeyArgs(BaseModel):
@@ -52,13 +51,13 @@ class APIKeyScope(Base):
     )
     object_type = Column(String, nullable=False)
     object_id = Column(String)
-    method = Column(Enum(Method))
+    action = Column(Enum(Action))
 
     # Relationships
     api_key = relationship("APIKey", back_populates="scopes")
 
     @validates("object_type")
-    async def validate_object_type(_, __, type_):
+    def validate_object_type(_, __, type_):
         """
         Limit which types of objects we can manipulate with API keys.
         """
@@ -127,7 +126,7 @@ class APIKey(Base):
                         api_key_id=instance.api_key_id,
                         object_type=scope.object_type,
                         object_id=scope.object_id,
-                        method=args.method,
+                        action=scope.action,
                     )
                 )
 
@@ -145,7 +144,7 @@ class APIKey(Base):
             return False
         return argon2.verify(key, self.key_hash)
 
-    def has_access(self, object_type: str, object_id: str, method: str) -> bool:
+    def has_access(self, object_type: str, object_id: str, action: str) -> bool:
         """
         Check if the user's API key has access to the specified thing.
         """
@@ -155,7 +154,7 @@ class APIKey(Base):
             if scope.object_type != object_type:
                 continue
             if scope.object_id in (None, object_id) and (
-                not scope.method or scope.method == method
+                not scope.action or scope.action == action
             ):
                 return True
         return False
