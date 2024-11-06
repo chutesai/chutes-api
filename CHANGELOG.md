@@ -16,4 +16,4 @@
 - Added fingerprint
 - Restructed event listeners to enforce order
 - Coldkey optional - defaults to payment address
-- Hotkey optional - defaults to ZERO_HOTKEY
+- Hotkey optional - defaults to ZERO_HOTKEY [NOTE: need to handle / check for this better]
