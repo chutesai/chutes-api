@@ -98,7 +98,9 @@ services:
       context: .
       target: api
     volumes:
-      - ./:/app
+      - ./metasync:/app/metasync
+      - ./run_api:/app/run_api
+      - ./data:/app/data
       - kube_config:/home/chutes/.kube
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/parachutes

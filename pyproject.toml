@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "parachutes-run-api"
+name = "chutes-api"
 version = "0.0.1"
 description = "ParachutesAI run platform API"
 authors = ["Jon Durbin <jon@jondurbin.com>"]

@@ -49,6 +49,7 @@ ENTRYPOINT ["python", "metasync/sync_metagraph.py"]
 FROM base AS api
 RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
+RUN mkdir -p /app && chown chutes:chutes /app
 USER chutes
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH=$PATH:/home/chutes/.local/bin

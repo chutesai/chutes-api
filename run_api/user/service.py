@@ -2,33 +2,37 @@
 User logic/code.
 """
 
+from typing import Optional
 import uuid
 import re
 import time
 from sqlalchemy import exists
 from sqlalchemy.future import select
-from fastapi import APIRouter, Request, HTTPException, status
+from fastapi import APIRouter, Request, HTTPException, Security, status
 from substrateinterface import Keypair, KeypairType
 from run_api.config import settings
 from run_api.metasync import MetagraphNode
 from run_api.database import SessionLocal
 from run_api.user.schemas import User
 from run_api.api_key.util import get_and_check_api_key
+from fastapi.security import APIKeyHeader
 
 router = APIRouter()
+api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
 def get_current_user(
     purpose: str = None,
     registered_to: int = None,
     raise_not_found: bool = False,
-    allow_api_key=False,
 ):
     """
     Authentication dependency builder.
     """
 
-    async def _authenticate(request: Request):
+    async def _authenticate(
+        request: Request, api_key: Optional[str] = Security(api_key_header)
+    ):
         """
         Helper to authenticate requests.
         """
