@@ -3,7 +3,8 @@
 
 ### Dev
 - Dev instructions & bootstrap script for easier start devving
-- Added invoke tasks for easy setup
+- Added invoke tasks for easier dev setup
+
 
 ### Docker
 - Changed api volumes to be the 3 dir's it needs, so it doesn't pull gitignore stuff (such as .venv's)
@@ -11,3 +12,8 @@
 - Added API Key Header so auto doc builders (e.g. swagger) let you use api keys. Removed the unused allow_api_key flag.
 - Added various notes to api key utils
 
+### Users
+- Added fingerprint
+- Restructed event listeners to enforce order
+- Coldkey optional - defaults to payment address
+- Hotkey optional - defaults to ZERO_HOTKEY

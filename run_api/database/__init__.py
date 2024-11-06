@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from run_api.config import settings
-
+from typing import AsyncGenerator
 
 engine = create_async_engine(
     settings.sqlalchemy,
@@ -19,7 +19,7 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
-async def get_db_session():
+async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     """
     Obtain a DB session.
     """

@@ -5,11 +5,20 @@
 Make sure you have a local GPU to run vllm with, for now.
 
 ### 1. Mac
+
+##### 1.1 Env
 ```bash
 pyenv local 3.12.4
 poetry env use $(pyenv which python)
-poetry install
+poetry install --with dev --no-root
 poetry shell
+```
+
+#### 1.2 Start stuff
+
+```bash
+docker network create kind
+docker compose up -d 
 ```
 
 ### 2. Linux
