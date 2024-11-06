@@ -31,6 +31,8 @@ hvac = "^2.3.0"
 argon2-cffi = "^23.1.0"
 python-slugify = {extras = ["unidecode"], version = "^8.0.4"}
 async-lru = "^2.0.4"
+# TODO: Pin the below version
+fiber = { git = "https://github.com/rayonlabs/fiber.git" }
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"
