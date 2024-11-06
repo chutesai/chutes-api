@@ -42,6 +42,7 @@ async def initialize_mappings(*_, **__):
     """
     from api.chute.schemas import Chute  # noqa: F401
     from api.user.schemas import User  # noqa: F401
+    from api.api_key.schemas import APIKey  # noqa: F401
     from api.instance.schemas import Instance  # noqa: F401
 
 

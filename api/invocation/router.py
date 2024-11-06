@@ -98,7 +98,7 @@ async def hostname_invocation(
     if chute.standard_template == "vllm":
         request_body = {"json": request_body, "params": request_params}
     kwargs = base64.b64encode(gzip.compress(pickle.dumps(request_body))).decode()
-    targets = await discover_chute_targets(db, chute.chute_id)
+    targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
     if not targets:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

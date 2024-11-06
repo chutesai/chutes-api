@@ -13,12 +13,13 @@ CREATE TABLE partitioned_invocations (
     miner_hotkey TEXT NOT NULL,
     started_at TIMESTAMP DEFAULT NOW(),
     completed_at TIMESTAMP,
-    error TEXT,
+    error_message TEXT,
     request_path TEXT,
     response_PATH TEXT,
     reported_at TIMESTAMP,
     report_reason TEXT,
-    compute_multiplier FLOAT NOT NULL
+    compute_multiplier FLOAT NOT NULL,
+    bounty INTEGER NOT NULL
 ) PARTITION BY RANGE (started_at);
 
 -- make a view so we can do some fancy insert logic in a function and make queries easier

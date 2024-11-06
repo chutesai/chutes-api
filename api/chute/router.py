@@ -6,7 +6,7 @@ import re
 import random
 import string
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -190,6 +190,7 @@ async def invoke_(
     chute_id: str,
     path: str,
     invocation: InvocationArgs,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -213,7 +214,7 @@ async def invoke_(
         )
 
     # Find a target to query.
-    targets = await discover_chute_targets(db, chute_id)
+    targets = await discover_chute_targets(db, chute_id, max_wait=60)
     if not targets:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
