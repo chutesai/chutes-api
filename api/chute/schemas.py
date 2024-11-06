@@ -8,7 +8,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.gpu import SUPPORTED_GPUS, GPU_BOOST
+from api.gpu import SUPPORTED_GPUS, GPU_BOOST, ALLOWED_INCLUDE
 from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional
 
@@ -25,7 +25,6 @@ class Cord(BaseModel):
 class NodeSelector(BaseModel):
     gpu_count: Optional[int] = Field(1, ge=1, le=8)
     min_vram_gb_per_gpu: Optional[int] = Field(16, ge=16, le=80)
-    minimum_clock_speed_mhz: Optional[float] = Field(585, ge=585, le=3000)
     exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
     require_sxm: Optional[bool] = False
@@ -33,13 +32,27 @@ class NodeSelector(BaseModel):
     @validator("include")
     def include_supported_gpus(cls, gpus):
         """
-        Simple validation for including specific GPUs in the filter.
+        Simple validation for including specific GPUs in the filter.  We're currently
+        only allowing high availability and likely-to-be-selected GPUs in this list.
         """
         if not gpus:
             return gpus
-        if set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
+        if set(map(lambda s: s.lower(), gpus)) - ALLOWED_INCLUDE:
             raise ValueError(
-                f"include must only be the list of currently supported GPUs: {list(SUPPORTED_GPUS)}"
+                f"include must contain only the following GPUs: {list(ALLOWED_INCLUDE)}"
+            )
+        return gpus
+
+    @validator("exclude")
+    def validate_exclude(cls, gpus):
+        """
+        Make sure people don't try to be sneaky with the exclude flag to XOR
+        the list of allowed GPUs.
+        """
+        remaining = set(SUPPORTED_GPUS) - set(gpus)
+        if not remaining & ALLOWED_INCLUDE:
+            raise ValueError(
+                f"exclude must allow for at least one the following GPUs: {list(ALLOWED_INCLUDE)}"
             )
         return gpus
 
