@@ -12,6 +12,7 @@ from fastapi.responses import ORJSONResponse
 from api.api_key.schemas import APIKey  # noqa: F401
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
+from api.bounty.router import router as bounty_router
 from api.image.router import router as image_router
 from api.invocation.router import router as invocation_router
 from api.invocation.router import host_invocation_router
@@ -30,6 +31,7 @@ app = FastAPI(default_response_class=ORJSONResponse)
 default_router = APIRouter()
 default_router.include_router(user_router, prefix="/users", tags=["Users"])
 default_router.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
+default_router.include_router(bounty_router, prefix="/bounties", tags=["Chutes"])
 default_router.include_router(image_router, prefix="/images", tags=["Images"])
 default_router.include_router(
     invocation_router, prefix="/invocations", tags=["Invocations"]
@@ -40,7 +42,10 @@ default_router.include_router(
 default_router.include_router(
     api_key_router, prefix="/api_keys", tags=["Authentication"]
 )
+app.include_router(default_router)
+app.include_router(host_invocation_router)
 
+# Pickle safety checks.
 fickling.always_check_safety()
 
 
@@ -57,7 +62,7 @@ async def host_router_middleware(request: Request, call_next):
         request.state.auth_method = "invoke"
         request.state.auth_object_type = "chutes"
         request.state.auth_object_id = chute_id
-        app.include_router(host_invocation_router)
+        app.router = host_invocation_router
     else:
         request.state.auth_method = "read"
         if request.method.lower() in ("post", "put", "patch"):
@@ -73,7 +78,7 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_object_id = path_match.group(1)
         else:
             request.state.auth_object_id = "__list_or_invalid__"
-        app.include_router(default_router)
+        app.router = default_router
     return await call_next(request)
 
 
