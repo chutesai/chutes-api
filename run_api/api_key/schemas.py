@@ -96,6 +96,17 @@ class APIKey(Base):
         UniqueConstraint("user_id", "name", name="constraint_api_key_user_name"),
     )
 
+    @validates("name")
+    def validate_key_name(_, __, name):
+        """
+        Keep the API key names simple, please...
+        """
+        if not re.match(r"[a-zA-Z0-9][a-zA-Z0-9_ -]{2,31}$", name):
+            raise ValueError(
+                "API key name should start with alphanumeric character and contain up to 32 total allowed characters (letters, numbers, dashes, underscores, or spaces)"
+            )
+        return name
+
     @classmethod
     def generate_key(cls, user_id: str, api_key_id: str):
         """

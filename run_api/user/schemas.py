@@ -39,9 +39,9 @@ class User(Base):
         """
         Simple username validation.
         """
-        if not re.match(r"^[a-zA-Z0-9_]{3,15}$", value):
+        if not re.match(r"^[a-zA-Z0-9_\.-]{3,15}$", value):
             raise ValueError(
-                "Username must be 3-15 characters and contain only alphanumeric/underscore characters"
+                "Username must be 3-15 characters and contain only alphanumeric/underscore/dash/dot characters"
             )
         return value
 

@@ -42,7 +42,8 @@ INSERT INTO invocations (
     request_path,
     response_path,
     reported_at,
-    report_reason
+    report_reason,
+    compute_multiplier
 ) VALUES (
     :invocation_id,
     :chute_id,
@@ -60,7 +61,8 @@ INSERT INTO invocations (
     :request_path,
     NULL,
     NULL,
-    NULL
+    NULL,
+    :compute_multiplier
 ) RETURNING to_char(date_trunc('week', started_at), 'IYYY_IW') AS suffix
 """
 ).columns(suffix=String)
@@ -206,6 +208,7 @@ async def invoke(
                     "miner_uid": target.miner_uid,
                     "miner_hotkey": target.miner_hotkey,
                     "request_path": request_path,
+                    "compute_multiplier": chute.node_selector.compute_multiplier,
                 },
             )
             partition_suffix = result.scalar()

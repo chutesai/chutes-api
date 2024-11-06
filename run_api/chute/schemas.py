@@ -8,7 +8,8 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from run_api.database import Base
-from pydantic import BaseModel, Field
+from run_api.gpu import SUPPORTED_GPUS, GPU_BOOST
+from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional
 
 
@@ -24,9 +25,56 @@ class Cord(BaseModel):
 class NodeSelector(BaseModel):
     gpu_count: Optional[int] = Field(1, ge=1, le=8)
     min_vram_gb_per_gpu: Optional[int] = Field(16, ge=16, le=80)
-    exclude: Optional[List[str]] = []
+    minimum_clock_speed_mhz: Optional[float] = Field(585, ge=585, le=3000)
+    exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
     require_sxm: Optional[bool] = False
+
+    @validator("include")
+    def include_supported_gpus(cls, gpus):
+        """
+        Simple validation for including specific GPUs in the filter.
+        """
+        if set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
+            raise ValueError(
+                f"include must only be the list of currently supported GPUs: {list(SUPPORTED_GPUS)}"
+            )
+        return gpus
+
+    @computed_field
+    @property
+    def compute_multiplier(self) -> float:
+        """
+        Determine a multiplier to use when calculating incentive and such,
+        e.g. a6000 < l40s < a100 < h100, 2 GPUs > 1 GPU, etc.
+
+        This operates on the MINIMUM value specified by the node multiplier.
+        """
+        base_multiplier = self.gpu_count
+        allowed_gpus = set(SUPPORTED_GPUS)
+        if self.include:
+            allowed_gpus = set(self.include)
+        if self.exclude:
+            allowed_gpus -= set(self.exclude)
+        if self.min_vram_gb_per_gpu:
+            allowed_gpus = set(
+                [
+                    gpu
+                    for gpu in allowed_gpus
+                    if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
+                ]
+            )
+        if self.require_sxm:
+            allowed_gpus = set(
+                [gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]]
+            )
+        if not allowed_gpus:
+            raise ValueError("No GPUs match specified node_selector criteria")
+
+        # Always use the minimum boost value, since miners should try to optimize
+        # to run as cheaply as possible while satisfying the requirements.
+        min_boost = min([GPU_BOOST[gpu] for gpu in allowed_gpus])
+        return base_multiplier * (1 + min_boost)
 
 
 class ChuteArgs(BaseModel):
