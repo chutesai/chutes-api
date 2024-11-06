@@ -49,6 +49,8 @@ class NodeSelector(BaseModel):
         Make sure people don't try to be sneaky with the exclude flag to XOR
         the list of allowed GPUs.
         """
+        if not gpus:
+            return gpus
         remaining = set(SUPPORTED_GPUS) - set(gpus)
         if not remaining & ALLOWED_INCLUDE:
             raise ValueError(
