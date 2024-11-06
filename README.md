@@ -3,4 +3,4 @@
 
 # Dev start
 
-[Dev docs](docs/dev.md)
+[Dev docs](dev/dev.md)
