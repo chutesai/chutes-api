@@ -35,6 +35,8 @@ class NodeSelector(BaseModel):
         """
         Simple validation for including specific GPUs in the filter.
         """
+        if not gpus:
+            return gpus
         if set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
             raise ValueError(
                 f"include must only be the list of currently supported GPUs: {list(SUPPORTED_GPUS)}"

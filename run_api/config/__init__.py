@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     signup_bonus_balance: int = int(
         os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9))
     )
+    debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
 
 settings = Settings()

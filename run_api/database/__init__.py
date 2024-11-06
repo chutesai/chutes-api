@@ -7,7 +7,7 @@ from run_api.config import settings
 
 engine = create_async_engine(
     settings.sqlalchemy,
-    echo=True,
+    echo=settings.debug,
 )
 
 SessionLocal = sessionmaker(

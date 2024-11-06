@@ -16,7 +16,7 @@ from sqlalchemy import or_, text, update, func, String
 from sqlalchemy.future import select
 from run_api.config import settings
 from run_api.database import SessionLocal
-from run_api.chute.schemas import Chute
+from run_api.chute.schemas import Chute, NodeSelector
 from run_api.user.schemas import User
 from run_api.instance.schemas import Instance
 from run_api.utils import sse, now_str
@@ -208,7 +208,9 @@ async def invoke(
                     "miner_uid": target.miner_uid,
                     "miner_hotkey": target.miner_hotkey,
                     "request_path": request_path,
-                    "compute_multiplier": chute.node_selector.compute_multiplier,
+                    "compute_multiplier": NodeSelector(
+                        **chute.node_selector
+                    ).compute_multiplier,
                 },
             )
             partition_suffix = result.scalar()
