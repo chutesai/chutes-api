@@ -27,7 +27,7 @@ RUN poetry install
 ADD data/buildah_cleanup.sh /usr/local/bin/buildah_cleanup.sh
 ADD data/generate_fs_challenge.sh /usr/local/bin/generate_fs_challenge.sh
 ADD . /forge
-ENTRYPOINT ["poetry", "run", "taskiq", "worker", "run_api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
+ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
 
 # Layer for the metagraph syncer.
 FROM base AS metasync
@@ -56,4 +56,4 @@ ADD poetry.lock /app/
 WORKDIR /app
 RUN poetry install
 ADD --chown=chutes . /app
-ENTRYPOINT ["poetry", "run", "uvicorn", "run_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
