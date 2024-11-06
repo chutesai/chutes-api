@@ -21,10 +21,10 @@ class User(Base):
 
     user_id = Column(String, primary_key=True)
     hotkey = Column(String, nullable=False)
-    coldkey = Column(String, nullable=False)
-    payment_address = Column(String)
-    balance = Column(BigInteger, default=settings.signup_bonus_balance)
-    username = Column(String, unique=True)
+    coldkey = Column(String, nullable=False)  # To receive commission payments
+    payment_address = Column(String)  # Users should send to this address to top up
+    balance = Column(BigInteger, default=settings.signup_bonus_balance)  # Current balance in Tao
+    username = Column(String, unique=True)  # Friendly name for the frontend for who created the chute
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 

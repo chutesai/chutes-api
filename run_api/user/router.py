@@ -28,7 +28,7 @@ async def register(
             status_code=status.HTTP_409_CONFLICT,
             detail="User with the provided hotkey has already registered!",
         )
-    user = User(**user_args.dict())
+    user = User(**user_args.model_dump())
     user.hotkey = request.headers["X-Parachutes-Hotkey"]
     db.add(user)
     await db.commit()

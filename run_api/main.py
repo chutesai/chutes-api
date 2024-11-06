@@ -97,6 +97,7 @@ async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # NOTE: Could we use dbmate container in docker compose to do this instead?
     # Manual DB migrations.
     process = await asyncio.create_subprocess_exec(
         "dbmate",
