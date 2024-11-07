@@ -2,32 +2,38 @@ import os
 
 os.environ["VAULT_URL"] = "http://127.0.0.1:777"
 import asyncio
-import functools
 from sqlalchemy.exc import IntegrityError
 
-from fastapi import HTTPException
-import asyncclick as click
+import typer
 from loguru import logger
 from run_api.user.schemas import User
 from run_api.api_key.schemas import APIKey, APIKeyArgs
-from run_api.database import Base, SessionLocal, get_db, engine
+from run_api.database import Base, get_db, engine
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import delete, select, func
+from sqlalchemy import delete, select
 
-# The below have to be here to prevent sqlalchemey initialisation errors
+# The below have to be here to prevent SQLAlchemy initialization errors
 from run_api.chute.schemas import Chute  # noqa: F401
 from run_api.image.schemas import Image  # noqa: F401
 from run_api.instance.schemas import Instance  # noqa: F401
 from run_api.user import events  # noqa: F401
 
-
-@click.command()
-async def run_migrations():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+app = typer.Typer()
 
 
-async def add_user(
+@app.command()
+def run_migrations():
+    """Run database migrations."""
+
+    async def _run_migrations():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Migrations run successfully.")
+
+    asyncio.run(_run_migrations())
+
+
+async def _add_user(
     username: str,
     coldkey: str | None = None,
     hotkey: str | None = None,
@@ -62,7 +68,14 @@ async def add_user(
         )
 
 
-async def add_api_key(user: User, name: str = "test-key", admin: bool = False):
+@app.command()
+def add_user(username: str, coldkey: str | None = None, hotkey: str | None = None):
+    """Add a user to the database."""
+
+    asyncio.run(_add_user(username, coldkey, hotkey))
+
+
+async def _add_api_key(user: User, name: str = "test-key", admin: bool = False):
     async with get_db() as db:
         key_args = APIKeyArgs(
             admin=admin,
@@ -94,8 +107,13 @@ async def add_api_key(user: User, name: str = "test-key", admin: bool = False):
     return actual_api_key_lol
 
 
-@click.command()
-async def dev_setup():
+@app.command()
+def add_api_key(user_id: int, name: str = "test-key", admin: bool = False):
+    """Add an API key to the database."""
+    asyncio.run(_add_api_key(user_id=user_id, name=name, admin=admin))
+
+
+async def _dev_setup():
     users = [
         User(
             username="test",
@@ -114,13 +132,10 @@ async def dev_setup():
         ),
     ]
 
-    # setup accounts, give each of them an API key
-
     accounts = []
     api_keys = []
     for user in users:
-        # create or find the account
-        account: User = await add_user(
+        account: User = await _add_user(
             username=user.username, coldkey=user.coldkey, hotkey=user.hotkey
         )
         if not account:
@@ -129,10 +144,8 @@ async def dev_setup():
                     account.username, account.fingerprint, account.coldkey
                 )
             )
-        print("sleeping!")
 
-        # attach an API key
-        api_key = await add_api_key(account)
+        api_key = await _add_api_key(account)
 
         accounts.append(account)
         api_keys.append(api_key)
@@ -141,5 +154,26 @@ async def dev_setup():
     logger.info(f"API keys: {api_keys}")
 
 
+@app.command()
+def dev_setup():
+    """Setup development environment with test users and API keys."""
+
+    asyncio.run(_dev_setup())
+
+
+async def _remove_all_users():
+    async with get_db() as db:
+        await db.execute(delete(User))
+        await db.execute(delete(APIKey))
+        await db.commit()
+
+
+@app.command()
+def remove_all_users():
+    """Remove all users from the database."""
+
+    asyncio.run(_remove_all_users())
+
+
 if __name__ == "__main__":
-    dev_setup(_anyio_backend="asyncio")
+    app()
