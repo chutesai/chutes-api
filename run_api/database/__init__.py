@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from run_api.config import settings
 from typing import AsyncGenerator
+from contextlib import asynccontextmanager
 
 engine = create_async_engine(
     settings.sqlalchemy,
@@ -26,6 +27,13 @@ async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as session:
         yield session
 
+
+
+
+@asynccontextmanager
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    async with SessionLocal() as session:
+        yield session
 
 def generate_uuid():
     """

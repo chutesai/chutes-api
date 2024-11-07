@@ -90,4 +90,4 @@ class User(Base):
         """
         String representation.
         """
-        return f"<User(user_id={self.user_id}>"
+        return f"<User(user_id={self.user_id}, username={self.username})>"
