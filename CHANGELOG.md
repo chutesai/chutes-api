@@ -3,7 +3,7 @@
 
 ### Dev
 - Dev instructions & bootstrap script for easier start devving
-- Added invoke tasks for easier dev setup
+- Added typer tasks for easier dev setup
 
 
 ### Docker
