@@ -141,7 +141,7 @@ async def _dev_setup():
         if not account:
             logger.info(
                 "Created Account: {} ({} - {})".format(
-                    account.username, account.fingerprint, account.coldkey
+                    account.username, account.fingerprint_hash, account.coldkey
                 )
             )
 

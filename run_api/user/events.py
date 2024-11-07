@@ -3,20 +3,12 @@ User event listeners.
 """
 
 import uuid
+from passlib.hash import argon2
 from sqlalchemy import event
 from substrateinterface import Keypair
 from run_api.user.schemas import User
 from run_api.config import settings
-from run_api.utils import gen_random_token
 from run_api import constants
-
-
-def generate_fingerprint(_, __, user: User):
-    """
-    Generate a fingerprint for the user.
-    Runs first
-    """
-    user.fingerprint = gen_random_token(k=16)
 
 
 def generate_uid(_, __, user: User):
@@ -24,9 +16,7 @@ def generate_uid(_, __, user: User):
     Set the user_id based on hotkey.
     Runs after fingerprint is generated.
     """
-    user.user_id = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, user.fingerprint)
-    )  # NOTE: Change to fingerprint
+    user.user_id = str(uuid.uuid5(uuid.NAMESPACE_OID, user.fingerprint_hash))
 
 
 def generate_payment_address(_, __, user: User):
@@ -66,7 +56,6 @@ def handle_user_insert(_, __, user: User):
     Handle user insert.
     """
     # Order is important here
-    generate_fingerprint(_, __, user)
     generate_uid(_, __, user)
     generate_payment_address(_, __, user)
     ensure_coldkey(_, __, user)

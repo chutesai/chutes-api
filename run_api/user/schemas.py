@@ -3,12 +3,16 @@ ORM definitions for users.
 """
 
 import re
+from typing import Self
 from pydantic import BaseModel
 from sqlalchemy import func, Column, String, DateTime, BigInteger
 from sqlalchemy.orm import relationship, validates
-from substrateinterface import SubstrateInterface
 from run_api.database import Base
 from run_api.config import settings
+import uuid
+from passlib.hash import argon2
+from run_api.config import settings
+from run_api.utils import gen_random_token
 
 
 # Other fields are populated by listeners
@@ -22,7 +26,7 @@ class UserRequest(BaseModel):
 class User(Base):
     __tablename__ = "users"
 
-    # Populated in user/events based on fingerprint
+    # Populated in user/events based on fingerprint_hash
     user_id = Column(String, primary_key=True)
 
     # An alternative to an API key.
@@ -41,8 +45,8 @@ class User(Base):
     username = Column(String, unique=True)
 
     # Gets populated in user/events.py to be a 16 digit alphanumeric which acts as an account id
-    fingerprint = Column(String, nullable=False, unique=True)
-    
+    fingerprint_hash = Column(String, nullable=False, unique=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -85,6 +89,23 @@ class User(Base):
     #             f"Free tao balance for coldkey={value} too low [{balance}], minimum: {settings.registration_minimum_balance}"
     #         )
     #     return value
+
+    @classmethod
+    def create(
+        cls, username: str, coldkey: str | None = None, hotkey: str | None = None
+    ) -> tuple[Self, str]:
+        """
+        Create a new user.
+        """
+        fingerprint = gen_random_token(k=32)
+        fingerprint_hash = argon2.hash(fingerprint)
+        user = cls(
+            username=username,
+            coldkey=coldkey,
+            hotkey=hotkey,
+            fingerprint_hash=fingerprint_hash,
+        )
+        return user, fingerprint
 
     def __repr__(self):
         """

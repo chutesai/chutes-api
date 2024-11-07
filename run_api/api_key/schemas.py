@@ -18,7 +18,7 @@ from sqlalchemy.orm import relationship, validates
 import secrets
 from passlib.hash import argon2
 import enum
-from typing import List, Optional
+from typing import List, Optional, Self
 from pydantic import BaseModel
 from run_api.database import Base, generate_uuid
 
@@ -107,7 +107,7 @@ class APIKey(Base):
         return f"cpk_{user_id.replace('-', '')}.{api_key_id.replace('-', '')}.{secret}"
 
     @classmethod
-    def create(cls, user_id: str, args: APIKeyArgs):
+    def create(cls, user_id: str, args: APIKeyArgs) -> tuple[Self, str]:
         """
         Helper to create a new API key with scopes.
         """

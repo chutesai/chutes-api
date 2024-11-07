@@ -28,9 +28,20 @@ async def register(
             status_code=status.HTTP_409_CONFLICT,
             detail="User with the provided hotkey has already registered!",
         )
-    user = User(**user_args.model_dump())
-    user.hotkey = request.headers["X-Parachutes-Hotkey"]
+    user, fingerprint = User.create(
+        username=user_args.username,
+        coldkey=user_args.coldkey,
+        hotkey=request.headers["X-Parachutes-Hotkey"],
+    )
     db.add(user)
     await db.commit()
     await db.refresh(user)
-    return user
+    return RegistrationResponse(
+        username=user.username,
+        user_id=user.user_id,
+        created_at=user.created_at,
+        hotkey=user.hotkey,
+        coldkey=user.coldkey,
+        payment_address=user.payment_address,
+        fingerprint=fingerprint,
+    )
