@@ -6,13 +6,13 @@ from sqlalchemy.exc import IntegrityError
 
 import typer
 from loguru import logger
-from run_api.user.schemas import User
 from run_api.api_key.schemas import APIKey, APIKeyArgs
 from run_api.database import Base, get_db, engine
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select
 
 # The below have to be here to prevent SQLAlchemy initialization errors
+from run_api.user.schemas import User
 from run_api.chute.schemas import Chute  # noqa: F401
 from run_api.image.schemas import Image  # noqa: F401
 from run_api.instance.schemas import Instance  # noqa: F401
@@ -21,14 +21,17 @@ from run_api.user import events  # noqa: F401
 app = typer.Typer()
 
 
+async def _run_migrations():
+    """Run database migrations."""
+
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Migrations run successfully.")
+
+
 @app.command()
 def run_migrations():
     """Run database migrations."""
-
-    async def _run_migrations():
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        logger.info("Migrations run successfully.")
 
     asyncio.run(_run_migrations())
 
@@ -39,14 +42,17 @@ async def _add_user(
     hotkey: str | None = None,
 ):
     async with get_db() as db:
-        user = User(username=username)
+        user, fingerpint = User.create(
+            username=username, coldkey=coldkey, hotkey=hotkey
+        )
 
         _query = select(User).where(User.username == username)
         existing_user = await db.execute(_query)
         existing_user = existing_user.scalars().first()
 
         if existing_user:
-            return existing_user
+            await db.execute(delete(User).where(User.username == username))
+            await db.commit()
 
         if coldkey:
             user.coldkey = coldkey
@@ -60,12 +66,7 @@ async def _add_user(
         await db.close()
 
         logger.info(f"Added user: {user}")
-        return User(
-            user_id=user.user_id,
-            username=user.username,
-            coldkey=user.coldkey,
-            hotkey=user.hotkey,
-        )
+        return user, fingerpint
 
 
 @app.command()
@@ -114,6 +115,7 @@ def add_api_key(user_id: int, name: str = "test-key", admin: bool = False):
 
 
 async def _dev_setup():
+    await _run_migrations()
     users = [
         User(
             username="test",
@@ -135,7 +137,7 @@ async def _dev_setup():
     accounts = []
     api_keys = []
     for user in users:
-        account: User = await _add_user(
+        account, fingerprint = await _add_user(
             username=user.username, coldkey=user.coldkey, hotkey=user.hotkey
         )
         if not account:
@@ -147,7 +149,7 @@ async def _dev_setup():
 
         api_key = await _add_api_key(account)
 
-        accounts.append(account)
+        accounts.append((account, fingerprint))
         api_keys.append(api_key)
 
     logger.info(f"Accounts: {accounts}")

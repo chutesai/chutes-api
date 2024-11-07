@@ -10,7 +10,7 @@ from sqlalchemy.orm import relationship, validates
 from run_api.database import Base
 from run_api.config import settings
 import uuid
-from passlib.hash import argon2
+import hashlib
 from run_api.config import settings
 from run_api.utils import gen_random_token
 
@@ -98,7 +98,7 @@ class User(Base):
         Create a new user.
         """
         fingerprint = gen_random_token(k=32)
-        fingerprint_hash = argon2.hash(fingerprint)
+        fingerprint_hash = hashlib.blake2b(fingerprint).hexdigest()
         user = cls(
             username=username,
             coldkey=coldkey,
