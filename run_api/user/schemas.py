@@ -98,7 +98,7 @@ class User(Base):
         Create a new user.
         """
         fingerprint = gen_random_token(k=32)
-        fingerprint_hash = hashlib.blake2b(fingerprint).hexdigest()
+        fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
         user = cls(
             username=username,
             coldkey=coldkey,
