@@ -32,6 +32,7 @@ argon2-cffi = "^23.1.0"
 python-slugify = {extras = ["unidecode"], version = "^8.0.4"}
 async-lru = "^2.0.4"
 aiodns = "^3.2.0"
+chutes = "^0.0.19"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"
