@@ -17,6 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import validates, relationship
 from api.gpu import SUPPORTED_GPUS
 from api.database import Base
+from api.utils import is_valid_host
 
 
 class NodeArgs(BaseModel):
@@ -53,6 +54,8 @@ class Node(Base):
         String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    verification_host = Column(String, nullable=False)
+    verification_port = Column(Integer, nullable=False)
     verified_at = Column(DateTime(timezone=True))
 
     _gpu_specs = None
@@ -87,6 +90,18 @@ class Node(Base):
         self.validate_boolean_features("concurrent_kernels", self.concurrent_kernels)
         self.validate_boolean_features("ecc", self.ecc)
         self.validate_boolean_features("sxm", self.sxm)
+
+    @validates("verification_host")
+    async def validate_host(self, host: str) -> str:
+        if await is_valid_host(host):
+            return host
+        raise ValueError(f"Invalid verification_host: {host}")
+
+    @validates("verification_port")
+    async def validate_port(self, port: int) -> int:
+        if 80 <= port <= 65535:
+            return port
+        raise ValueError(f"Invalid verification_port: {port}")
 
     @validates("name")
     def validate_gpu_model(self, name: str) -> str:

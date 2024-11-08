@@ -3,17 +3,18 @@ ORM definitions for instances (deployments of chutes and/or inventory announceme
 """
 
 from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
+from api.utils import is_valid_host
 
 
 class Instance(Base):
     __tablename__ = "instances"
     instance_id = Column(String, primary_key=True, default="replaceme")
     node_id = Column(String, ForeignKey("nodes.uuid", ondelete="CASCADE"), unique=True)
-    ip = Column(String, nullable=False)
+    host = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id"))
     gpus = Column(JSONB, nullable=False)
@@ -34,3 +35,9 @@ class Instance(Base):
     __table_args__ = (
         Index("idx_chute_active_lastq", "chute_id", "active", "last_queried_at"),
     )
+
+    @validates("host")
+    async def validate_host(self, host: str) -> str:
+        if await is_valid_host(host):
+            return host
+        raise ValueError(f"Invalid verification_host: {host}")
