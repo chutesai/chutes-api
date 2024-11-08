@@ -13,7 +13,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
-from api.database import Base
+from api.database import Base, generate_uuid
 
 
 class Challenge(Base):
@@ -22,7 +22,7 @@ class Challenge(Base):
         String, ForeignKey("nodes.uuid", ondelete="CASCADE"), primary_key=True
     )
     challenge = Column(String, nullable=False)
-    challenge_type = Column(String, default="graval")
+    challenge_type = Column(String, default="graval", primary_key=True)
     created_at = Column(DateTime, server_default=func.now())
 
     node = relationship("Node", back_populates="challenges")
@@ -30,9 +30,8 @@ class Challenge(Base):
 
 class ChallengeResult(Base):
     __tablename__ = "miner_challenge_results"
-    device_uuid = Column(
-        String, ForeignKey("nodes.uuid", ondelete="CASCADE"), primary_key=True
-    )
+    result_id = Column(String, primary_key=True, default=generate_uuid)
+    device_uuid = Column(String, ForeignKey("nodes.uuid", ondelete="CASCADE"))
     miner_hotkey = Column(String, ForeignKey("metagraph_nodes.hotkey"), nullable=False)
     challenge_type = Column(String, nullable=False)
     challenge_args = Column(JSONB, nullable=False)

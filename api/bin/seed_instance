@@ -1,61 +1,134 @@
 #!/usr/bin/env python
 
-import uuid
 import asyncio
 import argparse
 from loguru import logger
+from sqlalchemy import text
 from api.database import SessionLocal
-from api.user.schemas import User
-from api.api_key.schemas import APIKey
-from api.chute.schemas import Chute
-from api.image.schemas import Image
-from api.instance.schemas import Instance
+from api.user.schemas import User  # noqa: F401
+from api.api_key.schemas import APIKey  # noqa: F401
+from api.chute.schemas import Chute  # noqa: F401
+from api.image.schemas import Image  # noqa: F401
+from api.metasync import MetagraphNode  # noqa: F401
+from api.node.schemas import Node  # noqa: F401
+from api.instance.schemas import Instance  # noqa: F401
+from api.config import settings
+from api.challenge.schemas import ChallengeResponse  # noqa: F401
 
 
 async def main():
     """
-    Seed an instance locally.
+    Seed an instance locally, for testing.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--ip",
+        "--host",
         type=str,
-        required=True,
-        help="IP address",
+        default="vllm",
+        help="Hostname or IP address",
     )
     parser.add_argument(
         "--port",
         type=int,
-        required=True,
+        default=8101,
         help="Port",
     )
     parser.add_argument(
         "--chute-id",
         type=str,
-        required=True,
+        default="135c0f80-7e3c-5cdf-9c1b-c1ae36c9dc66",
         help="Chute ID",
     )
 
     args = parser.parse_args()
     async with SessionLocal() as session:
-        instance = Instance(
-            instance_id=str(uuid.uuid4()),
-            ip=args.ip,
-            port=args.port,
-            chute_id=args.chute_id,
-            gpus=[{"name": "Fake Nvidia A12345", "memory": 123123123123123}],
-            miner_uid=0,
-            miner_hotkey="fake-hotkey",
-            miner_coldkey="fake-coldkey",
-            region="n/a",
-            active=True,
-            verified=True,
+        await session.execute(
+            text(
+                """
+        INSERT INTO metagraph_nodes (
+          hotkey,
+          checksum,
+          coldkey,
+          node_id,
+          netuid,
+          last_updated,
+          real_host,
+          real_port
+        ) VALUES (
+          'test-hotkey',
+          '000',
+          'test-coldkey',
+          -1,
+          :netuid,
+          1010101,
+          :host,
+          :port
+        )"""
+            ),
+            {"host": args.host, "port": args.port, "netuid": settings.netuid},
         )
-        session.add(instance)
+        await session.execute(
+            text(
+                """
+        INSERT INTO nodes (
+          uuid,
+          miner_hotkey,
+          name,
+          memory,
+          major,
+          minor,
+          processors,
+          sxm,
+          clock_rate,
+          max_threads_per_processor,
+          concurrent_kernels,
+          ecc
+        ) VALUES (
+          '000',
+          'test-hotkey',
+          'RTX 4090',
+          25769803776,
+          8,
+          9,
+          128,
+          false,
+          2520000.0,
+          1536,
+          true,
+          false
+        )"""
+            )
+        )
+        await session.execute(text("UPDATE IMAGES SET status = 'built and pushed'"))
+        await session.execute(
+            text(
+                """
+        INSERT INTO instances (
+          instance_id,
+          host,
+          port,
+          chute_id,
+          miner_uid,
+          miner_hotkey,
+          region,
+          active,
+          verified
+        ) VALUES (
+          'test-instance',
+          :host,
+          :port,
+          :chute_id,
+          -1,
+          'test-hotkey',
+          'n/a',
+          true,
+          true
+        )"""
+            ),
+            {"host": args.host, "port": args.port, "chute_id": args.chute_id},
+        )
         await session.commit()
-    logger.success(
-        f"Successfully added instance with instance_id={instance.instance_id}"
-    )
+    logger.success("Successfully seeded dev instance.")
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ async def sync_and_save_metagraph(redis_client):
         hotkeys = ", ".join([f"'{node.hotkey}'" for node in nodes])
         result = await session.execute(
             text(
-                f"DELETE FROM metagraph_nodes WHERE netuid = :netuid AND hotkey NOT IN ({hotkeys})"
+                f"DELETE FROM metagraph_nodes WHERE netuid = :netuid AND hotkey NOT IN ({hotkeys}) AND node_id >= 0"
             ),
             {
                 "netuid": settings.netuid,

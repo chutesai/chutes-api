@@ -8,6 +8,7 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
+    BigInteger,
     Boolean,
     Float,
     ForeignKey,
@@ -39,7 +40,7 @@ class Node(Base):
     # Normal device info fields.
     uuid = Column(String, primary_key=True)
     name = Column(String, nullable=False)
-    memory = Column(Integer, nullable=False)
+    memory = Column(BigInteger, nullable=False)
     major = Column(Integer, nullable=False)
     minor = Column(Integer, nullable=False)
     processors = Column(Integer, nullable=False)

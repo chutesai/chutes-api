@@ -40,10 +40,13 @@ async def initialize_mappings(*_, **__):
     """
     Ensure ORM modules are all loaded.
     """
-    from api.chute.schemas import Chute  # noqa: F401
-    from api.user.schemas import User  # noqa: F401
-    from api.api_key.schemas import APIKey  # noqa: F401
-    from api.instance.schemas import Instance  # noqa: F401
+    import api.chute.schemas  # noqa: F401
+    import api.user.schemas  # noqa: F401
+    import api.api_key.schemas  # noqa: F401
+    import api.metasync  # noqa: F401
+    import api.node.schemas  # noqa: F401
+    import api.instance.schemas  # noqa: F401
+    import api.challenge.schemas  # noqa: F401
 
 
 def safe_extract(zip_path):

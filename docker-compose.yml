@@ -135,6 +135,7 @@ services:
       - STORAGE_BUCKET=parachutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
+      - PYTHONPATH=/forge
 
       # Environment variables specific to buildah
       - STORAGE_DRIVER=vfs
