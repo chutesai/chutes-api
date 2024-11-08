@@ -13,7 +13,7 @@ from api.metasync import MetagraphNode  # noqa: F401
 from api.node.schemas import Node  # noqa: F401
 from api.instance.schemas import Instance  # noqa: F401
 from api.config import settings
-from api.challenge.schemas import ChallengeResponse  # noqa: F401
+from api.challenge.schemas import ChallengeResult  # noqa: F401
 
 
 async def main():
@@ -63,7 +63,7 @@ async def main():
           1010101,
           :host,
           :port
-        )"""
+        ) ON CONFLICT (hotkey) DO NOTHING"""
             ),
             {"host": args.host, "port": args.port, "netuid": settings.netuid},
         )
@@ -82,9 +82,11 @@ async def main():
           clock_rate,
           max_threads_per_processor,
           concurrent_kernels,
-          ecc
+          ecc,
+          verification_host,
+          verification_port
         ) VALUES (
-          '000',
+          'test-node',
           'test-hotkey',
           'RTX 4090',
           25769803776,
@@ -95,9 +97,12 @@ async def main():
           2520000.0,
           1536,
           true,
-          false
-        )"""
-            )
+          false,
+          :host,
+          :port
+        ) ON CONFLICT(uuid) DO NOTHING"""
+            ),
+            {"host": args.host, "port": args.port},
         )
         await session.execute(text("UPDATE IMAGES SET status = 'built and pushed'"))
         await session.execute(
@@ -110,6 +115,7 @@ async def main():
           chute_id,
           miner_uid,
           miner_hotkey,
+          miner_coldkey,
           region,
           active,
           verified
@@ -120,12 +126,19 @@ async def main():
           :chute_id,
           -1,
           'test-hotkey',
+          'test-coldkey',
           'n/a',
           true,
           true
         )"""
             ),
             {"host": args.host, "port": args.port, "chute_id": args.chute_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO instance_nodes (instance_id, node_id) VALUES (:instance_id, :node_id)"
+            ),
+            {"instance_id": "test-instance", "node_id": "test-node"},
         )
         await session.commit()
     logger.success("Successfully seeded dev instance.")

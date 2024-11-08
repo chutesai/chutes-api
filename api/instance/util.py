@@ -29,7 +29,9 @@ async def discover_chute_targets(
     """
     subquery = (
         select(InstanceAlias.miner_coldkey, func.count().label("instance_count"))
-        .where(InstanceAlias.active.is_(True), InstanceAlias.chute_id == chute_id)
+        .where(InstanceAlias.active.is_(True))
+        .where(InstanceAlias.verified.is_(True))
+        .where(InstanceAlias.chute_id == chute_id)
         .group_by(InstanceAlias.miner_coldkey)
         .subquery()
     )
@@ -38,7 +40,9 @@ async def discover_chute_targets(
     query = (
         select(Instance)
         .join(subquery, Instance.miner_coldkey == subquery.c.miner_coldkey)
-        .where(Instance.active.is_(True), Instance.chute_id == chute_id)
+        .where(Instance.active.is_(True))
+        .where(Instance.verified.is_(True))
+        .where(Instance.chute_id == chute_id)
         .order_by(
             subquery.c.instance_count,
             case(
@@ -51,7 +55,7 @@ async def discover_chute_targets(
 
     # Execute the query asynchronously
     result = await session.execute(query)
-    instances = result.scalars().all()
+    instances = result.scalars().unique().all()
     started_at = time.time()
     if max_wait > 0:
         try:
@@ -79,7 +83,7 @@ async def discover_chute_targets(
                         )
                 await asyncio.sleep(1)
                 result = await session.execute(query)
-                instances = result.scalars().all()
+                instances = result.scalars().unique().all()
         except asyncio.CancelledError:
             logger.warning("Target discovery cancelled")
             return []

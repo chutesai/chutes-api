@@ -19,6 +19,7 @@ from sqlalchemy.orm import validates, relationship
 from api.gpu import SUPPORTED_GPUS
 from api.database import Base
 from api.utils import is_valid_host
+from api.instance.schemas import instance_nodes
 
 
 class NodeArgs(BaseModel):
@@ -64,10 +65,10 @@ class Node(Base):
 
     instance = relationship(
         "Instance",
-        back_populates="node",
+        back_populates="nodes",
+        secondary=instance_nodes,
         lazy="joined",
         uselist=False,
-        cascade="all, delete-orphan",
     )
     miner = relationship("MetagraphNode", back_populates="nodes", lazy="joined")
     challenges = relationship("Challenge", back_populates="node")

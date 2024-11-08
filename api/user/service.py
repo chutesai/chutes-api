@@ -33,8 +33,8 @@ def get_current_user(
         Helper to authenticate requests.
         """
         authorization = request.headers.get("Authorization")
-        hotkey = request.headers.get("X-Parachutes-Hotkey")
-        signature = request.headers.get("X-Parachutes-Signature")
+        hotkey = request.headers.get("X-Chutes-Hotkey")
+        signature = request.headers.get("X-Chutes-Signature")
         if not hotkey or not signature:
             # API key validation.
             if authorization:
@@ -49,7 +49,7 @@ def get_current_user(
             )
         if not purpose:
             body_sha256 = getattr(request.state, "body_sha256", None)
-            nonce = request.headers.get("X-Parachutes-Nonce")
+            nonce = request.headers.get("X-Chutes-Nonce")
             if (
                 not body_sha256
                 or not nonce
@@ -68,12 +68,12 @@ def get_current_user(
                 ]
             )
         else:
-            payload = request.headers.get("X-Parachutes-Auth") or ""
+            payload = request.headers.get("X-Chutes-Auth") or ""
             payload_match = re.match(r"^([a-z_]+):([0-9]+):([a-z0-9]+)$", payload, re.I)
             if not payload_match:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid X-Parachutes-Auth header format",
+                    detail="Invalid X-Chutes-Auth header format",
                 )
             a_purpose, a_nonce, a_ss58 = payload_match.groups()
             if (
@@ -83,7 +83,7 @@ def get_current_user(
             ):
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid X-Parachutes-Auth header value",
+                    detail="Invalid X-Chutes-Auth header value",
                 )
         if not payload:
             raise HTTPException(

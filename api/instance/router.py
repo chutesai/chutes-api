@@ -1,5 +1,5 @@
 """
-Routes for nodes.
+Routes for instances.
 """
 
 from typing import Annotated
@@ -15,8 +15,8 @@ from api.user.service import get_current_user
 router = APIRouter()
 
 
-@router.post("/")
-async def create_node(
+@router.post("/{chute_id}/")
+async def create_instance(
     node_args: NodeArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,

@@ -29,7 +29,7 @@ async def register(
             detail="User with the provided hotkey has already registered!",
         )
     user = User(**user_args.dict())
-    user.hotkey = request.headers["X-Parachutes-Hotkey"]
+    user.hotkey = request.headers["X-Chutes-Hotkey"]
     db.add(user)
     await db.commit()
     await db.refresh(user)
