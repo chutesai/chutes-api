@@ -22,3 +22,8 @@ services:
       - "8101:8101"
     networks:
       - kind
+
+networks:
+  kind:
+    external: true
+    name: kind

@@ -3,6 +3,7 @@ ORM definitions for metagraph nodes.
 """
 
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, DateTime, Integer, Float
 
 
@@ -27,6 +28,19 @@ def create_metagraph_node_class(base):
         ip_type = Column(Integer)
         port = Column(Integer)
         protocol = Column(Integer)
+        real_host = Column(String)
+        real_port = Column(Integer)
         synced_at = Column(DateTime, server_default=func.now())
+
+        nodes = relationship(
+            "Node",
+            back_populates="miner",
+            cascade="all, delete-orphan",
+        )
+        challenge_results = relationship(
+            "ChallengeResult",
+            back_populates="miner",
+            cascade="all, delete-orphan",
+        )
 
     return MetagraphNode

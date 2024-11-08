@@ -5,8 +5,10 @@ Routes for chutes.
 import re
 import random
 import string
+import orjson as json
+import redis.asyncio as redis
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +24,7 @@ from api.image.util import get_image_by_id_or_name
 from api.instance.util import discover_chute_targets
 from api.database import get_db_session
 from api.pagination import PaginatedResponse
+from api.config import settings
 
 router = APIRouter()
 
@@ -116,6 +119,18 @@ async def delete_chute(
     chute_id = chute.chute_id
     await db.delete(chute)
     await db.commit()
+
+    async with redis.from_url(settings.redis_url) as redis_client:
+        await redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_deleted",
+                    "data": {"chute_id": chute_id},
+                }
+            ).decode(),
+        )
+
     return {"chute_id": chute_id, "deleted": True}
 
 
@@ -160,6 +175,7 @@ async def deploy_chute(
         public=chute_args.public,
         cords=chute_args.cords,
         node_selector=chute_args.node_selector,
+        standard_template=chute_args.standard_template,
     )
 
     # Generate a unique slug (subdomain).
@@ -190,6 +206,7 @@ async def invoke_(
     chute_id: str,
     path: str,
     invocation: InvocationArgs,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -213,7 +230,7 @@ async def invoke_(
         )
 
     # Find a target to query.
-    targets = await discover_chute_targets(db, chute_id)
+    targets = await discover_chute_targets(db, chute_id, max_wait=60)
     if not targets:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

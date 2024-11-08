@@ -4,6 +4,16 @@ GPU constants, expected values, etc.
 
 import math
 
+# GPUs that are allowed to be passed in node_selector as "include" arg,
+# because they are likely to be specified and somewhat widely available.
+ALLOWED_INCLUDE = {
+    "4090",
+    "a6000",
+    "l40s",
+    "a100",
+    "h100",
+    "h100_sxm",
+}
 SUPPORTED_GPUS = {
     "3090": {
         "model_name_check": "RTX 3090",

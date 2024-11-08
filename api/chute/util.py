@@ -38,12 +38,13 @@ INSERT INTO invocations (
     miner_hotkey,
     started_at,
     completed_at,
-    error,
+    error_message,
     request_path,
     response_path,
     reported_at,
     report_reason,
-    compute_multiplier
+    compute_multiplier,
+    bounty
 ) VALUES (
     :invocation_id,
     :chute_id,
@@ -62,15 +63,25 @@ INSERT INTO invocations (
     NULL,
     NULL,
     NULL,
-    :compute_multiplier
+    :compute_multiplier,
+    0
 ) RETURNING to_char(date_trunc('week', started_at), 'IYYY_IW') AS suffix
 """
 ).columns(suffix=String)
 UPDATE_INVOCATION = """
+WITH removed_bounty AS (
+    DELETE FROM bounties
+    WHERE chute_id = :chute_id
+    RETURNING bounty
+)
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
-    error = :error,
-    response_path = :response_path
+    error_message = CAST(:error_message AS TEXT),
+    response_path = CAST(:response_path AS TEXT),
+    bounty = CASE
+        WHEN :error_message IS NULL THEN COALESCE((SELECT bounty FROM removed_bounty), bounty)
+        ELSE bounty
+    END
 WHERE invocation_id = :invocation_id
 """
 
@@ -132,7 +143,7 @@ async def _invoke_one(
     # Call the miner's endpoint.
     session = aiohttp.ClientSession(raise_for_status=True)
     response = await session.post(
-        f"http://{target.ip}:{target.port}/{chute.chute_id}{path}",
+        f"http://{target.host}:{target.port}/{chute.chute_id}{path}",
         json={"args": args, "kwargs": kwargs},
     )
     if stream:
@@ -251,12 +262,12 @@ async def invoke(
                     except Exception as exc:
                         logger.error(f"failed to sample request: {exc}")
                         response_path = None
-
                 await session.execute(
                     text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                     {
+                        "chute_id": chute_id,
                         "invocation_id": invocation_id,
-                        "error": None,
+                        "error_message": None,
                         "response_path": response_path,
                     },
                 )
@@ -279,8 +290,9 @@ async def invoke(
                 await session.execute(
                     text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                     {
+                        "chute_id": chute_id,
                         "invocation_id": invocation_id,
-                        "error": f"{exc}\n{traceback.format_exc()}",
+                        "error_message": f"{exc}\n{traceback.format_exc()}",
                         "response_path": None,
                     },
                 )
