@@ -12,6 +12,7 @@ from api.database import Base
 class Instance(Base):
     __tablename__ = "instances"
     instance_id = Column(String, primary_key=True, default="replaceme")
+    node_id = Column(String, ForeignKey("nodes.uuid", ondelete="CASCADE"), unique=True)
     ip = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id"))
@@ -27,6 +28,7 @@ class Instance(Base):
     updated_at = Column(DateTime(timezone=True))
     last_verified_at = Column(DateTime(timezone=True))
 
+    node = relationship("Node", back_populates="instance", lazy="joined")
     chute = relationship("Chute", back_populates="instances", lazy="joined")
 
     __table_args__ = (
