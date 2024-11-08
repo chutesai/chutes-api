@@ -84,7 +84,8 @@ async def main():
           concurrent_kernels,
           ecc,
           verification_host,
-          verification_port
+          verification_port,
+          gpu_identifier
         ) VALUES (
           'test-node',
           'test-hotkey',
@@ -99,7 +100,8 @@ async def main():
           true,
           false,
           :host,
-          :port
+          :port,
+          '4090'
         ) ON CONFLICT(uuid) DO NOTHING"""
             ),
             {"host": args.host, "port": args.port},
