@@ -21,6 +21,7 @@ from api.invocation.router import host_invocation_router
 from api.registry.router import router as registry_router
 from api.user.router import router as user_router
 from api.node.router import router as node_router
+from api.instance.router import router as instance_router
 from api.instance.schemas import Instance  # noqa: F401
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
@@ -38,6 +39,7 @@ default_router.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
 default_router.include_router(bounty_router, prefix="/bounties", tags=["Chutes"])
 default_router.include_router(image_router, prefix="/images", tags=["Images"])
 default_router.include_router(node_router, prefix="/nodes", tags=["Nodes"])
+default_router.include_router(instance_router, prefix="/instances", tags=["Instances"])
 default_router.include_router(
     invocation_router, prefix="/invocations", tags=["Invocations"]
 )

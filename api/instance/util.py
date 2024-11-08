@@ -88,3 +88,19 @@ async def discover_chute_targets(
             logger.warning("Target discovery cancelled")
             return []
     return instances
+
+
+async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
+    """
+    Helper to load an instance by ID.
+    """
+    if not instance_id:
+        return None
+    query = (
+        select(Instance)
+        .where(Instance.instance_id == instance_id)
+        .where(Instance.chute_id == chute_id)
+        .where(Instance.miner_hotkey == hotkey)
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()

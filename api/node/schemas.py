@@ -20,6 +20,7 @@ from api.gpu import SUPPORTED_GPUS
 from api.database import Base
 from api.utils import is_valid_host
 from api.instance.schemas import instance_nodes
+from api.chute.schemas import Chute, NodeSelector
 
 
 class NodeArgs(BaseModel):
@@ -55,6 +56,7 @@ class Node(Base):
     miner_hotkey = Column(
         String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
     )
+    gpu_identifier = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verification_host = Column(String, nullable=False)
     verification_port = Column(Integer, nullable=False)
@@ -182,3 +184,30 @@ class Node(Base):
                 f"{key} setting {value} does not match expected {expected} for {self._gpu_key}"
             )
         return value
+
+    def is_suitable(self, chute: Chute) -> bool:
+        """
+        Check if a node fits all requirements for a particular chute (via node selector).
+        """
+        if not self.verified_at:
+            return False
+        allowed_gpus = set(SUPPORTED_GPUS)
+        node_selector = NodeSelector(**chute.node_selector)
+        if node_selector.include:
+            allowed_gpus = set(node_selector.include)
+        if node_selector.exclude:
+            allowed_gpus -= set(node_selector.exclude)
+        if node_selector.min_vram_gb_per_gpu:
+            allowed_gpus = set(
+                [
+                    gpu
+                    for gpu in allowed_gpus
+                    if SUPPORTED_GPUS[gpu]["memory"]
+                    >= node_selector.min_vram_gb_per_gpu
+                ]
+            )
+        if node_selector.require_sxm:
+            allowed_gpus = set(
+                [gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]]
+            )
+        return self.gpu_identifier in allowed_gpus

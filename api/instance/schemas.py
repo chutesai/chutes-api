@@ -2,6 +2,7 @@
 ORM definitions for instances (deployments of chutes and/or inventory announcements).
 """
 
+from pydantic import BaseModel
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy import (
@@ -28,6 +29,12 @@ instance_nodes = Table(
     Column("node_id", String, ForeignKey("nodes.uuid", ondelete="CASCADE")),
     UniqueConstraint("instance_id", "node_id", name="uq_instance_node"),
 )
+
+
+class InstanceArgs(BaseModel):
+    node_ids: list[str]
+    host: str
+    port: int
 
 
 class Instance(Base):

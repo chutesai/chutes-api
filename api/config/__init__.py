@@ -10,7 +10,7 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     sqlalchemy: str = os.getenv(
-        "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/parachutes"
+        "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
     )
     storage_client: Minio = Minio(
         os.getenv("MINIO_ENDPOINT", "127.0.0.1"),
@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv(
-        "REGISTRY_EXTERNAL_HOST", "registry.parachutes.ai"
+        "REGISTRY_EXTERNAL_HOST", "registry.chutes.ai"
     )
     registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
