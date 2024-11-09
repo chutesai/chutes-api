@@ -127,7 +127,7 @@ def get_current_user(
         # Fetch the actual user.
         # NOTE: We should have a standard way to get this session
         async with SessionLocal() as session:
-            session: AsyncSession
+            session: AsyncSession  # For nice type hinting for IDE's
             result = await session.execute(select(User).where(User.hotkey == hotkey))
 
             user = result.scalar_one_or_none()
