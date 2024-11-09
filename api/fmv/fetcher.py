@@ -28,17 +28,18 @@ class FMVFetcher:
             session.add(FMV(ticker=ticker, price=price))
             await session.commit()
 
-    async def get_last_stored_price(self, ticker: str, not_older_than: int = None) -> Optional[float]:
+    async def get_last_stored_price(
+        self, ticker: str, not_older_than: int = None
+    ) -> Optional[float]:
         """
         Get the last stored price from database.
         """
         async with SessionLocal() as session:
-            query = (
-                select(FMV)
-                .where(FMV.ticker == ticker)
-            )
+            query = select(FMV).where(FMV.ticker == ticker)
             if not_older_than is not None:
-                query = query.where(FMV.timestamp >= func.now() - timedelta(seconds=not_older_than))
+                query = query.where(
+                    FMV.timestamp >= func.now() - timedelta(seconds=not_older_than)
+                )
             query = query.order_by(FMV.timestamp.desc()).limit(1)
             result = await session.execute(query)
             fmv = result.scalar_one_or_none()
@@ -118,7 +119,7 @@ class FMVFetcher:
         source = "cache"
         if (cached_price := await self.get_cached_price(ticker)) is not None:
             return cached_price
-        if (db_price := await self.get_last_stored_price(ticker, not_older_than=3600)):
+        if db_price := await self.get_last_stored_price(ticker, not_older_than=3600):
             await self.set_cached_price(ticker, db_price, 60)
             return db_price
         if (price := await self.get_kraken_price(ticker)) is not None:
@@ -141,7 +142,9 @@ class FMVFetcher:
         logger.error(f"Failed to get FMV for {ticker} from all sources.")
         return None
 
-    async def get_prices(self, tickers: list[str]) -> Dict[str, Optional[float]]:
+    async def get_prices(
+        self, tickers: list[str] = ["tao"]
+    ) -> Dict[str, Optional[float]]:
         """
         Get prices for multiple tickers concurrently.  A bit of a no-op
         for now since we only actually support tao.
