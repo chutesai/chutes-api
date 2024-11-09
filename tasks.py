@@ -1,4 +1,5 @@
 import os
+import time
 
 os.environ["VAULT_URL"] = "http://127.0.0.1:777"
 import asyncio
@@ -115,6 +116,9 @@ def add_api_key(user_id: int, name: str = "test-key", admin: bool = False):
 
 
 async def _dev_setup():
+
+    os.system("docker compose  up postgres vault -d")
+    time.sleep(2)
     await _run_migrations()
     users = [
         User(
