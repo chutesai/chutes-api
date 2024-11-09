@@ -8,7 +8,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.gpu import SUPPORTED_GPUS, GPU_BOOST, ALLOWED_INCLUDE
+from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE
 from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional
 
@@ -67,7 +67,6 @@ class NodeSelector(BaseModel):
 
         This operates on the MINIMUM value specified by the node multiplier.
         """
-        base_multiplier = self.gpu_count
         allowed_gpus = set(SUPPORTED_GPUS)
         if self.include:
             allowed_gpus = set(self.include)
@@ -90,8 +89,8 @@ class NodeSelector(BaseModel):
 
         # Always use the minimum boost value, since miners should try to optimize
         # to run as cheaply as possible while satisfying the requirements.
-        min_boost = min([GPU_BOOST[gpu] for gpu in allowed_gpus])
-        return base_multiplier * (1 + min_boost)
+        multiplier = min([COMPUTE_MULTIPLIER[gpu] for gpu in allowed_gpus])
+        return self.gpu_count * multiplier
 
 
 class ChuteArgs(BaseModel):

@@ -6,9 +6,12 @@ import re
 import asyncio
 import fickling
 import hashlib
+from contextlib import asynccontextmanager
 from loguru import logger
 from fastapi import FastAPI, Request, APIRouter
 from fastapi.responses import ORJSONResponse
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
 import api.database.orms  # noqa: F401
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
@@ -21,11 +24,19 @@ from api.user.router import router as user_router
 from api.node.router import router as node_router
 from api.instance.router import router as instance_router
 from api.fmv.router import router as fmv_router
+from api.payment.router import router as payment_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
 
-app = FastAPI(default_response_class=ORJSONResponse)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    FastAPICache.init(InMemoryBackend())
+    yield
+
+
+app = FastAPI(default_response_class=ORJSONResponse, lifespan=lifespan)
 
 default_router = APIRouter()
 default_router.include_router(user_router, prefix="/users", tags=["Users"])
@@ -34,6 +45,9 @@ default_router.include_router(bounty_router, prefix="/bounties", tags=["Chutes"]
 default_router.include_router(image_router, prefix="/images", tags=["Images"])
 default_router.include_router(node_router, prefix="/nodes", tags=["Nodes"])
 default_router.include_router(fmv_router, prefix="/fmv", tags=["Pricing", "FMV"])
+default_router.include_router(
+    payment_router, prefix="/payments", tags=["Pricing", "Payments"]
+)
 default_router.include_router(instance_router, prefix="/instances", tags=["Instances"])
 default_router.include_router(
     invocation_router, prefix="/invocations", tags=["Invocations"]

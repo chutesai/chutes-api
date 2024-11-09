@@ -4,6 +4,7 @@ Fair market value fetcher.
 
 import asyncio
 import aiohttp
+from functools import lru_cache
 from datetime import timedelta
 from sqlalchemy import select, func
 from loguru import logger
@@ -11,6 +12,11 @@ from typing import Dict, Optional
 from api.config import settings
 from api.database import SessionLocal
 from api.fmv.schemas import FMV
+
+
+@lru_cache()
+def get_fetcher():
+    return FMVFetcher()
 
 
 class FMVFetcher:

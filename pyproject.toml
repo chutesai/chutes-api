@@ -33,6 +33,7 @@ python-slugify = {extras = ["unidecode"], version = "^8.0.4"}
 async-lru = "^2.0.4"
 aiodns = "^3.2.0"
 chutes = "^0.0.19"
+fastapi-cache2 = "^0.2.2"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"
