@@ -2,6 +2,8 @@
 Payment related constants.
 """
 
+from api.config import settings
+
 # Payout structure, where:
 #  take: ratio of usage-based payouts to allocate to that role
 #  min_payout: minimum amount (tao) before a transfer can occur,
@@ -14,18 +16,24 @@ PAYOUT_STRUCTURE = {
     "miner": {
         "take": 0.73,
         "min_payout": 0.5,
+        "limit": None,
     },
     "validator": {
         "take": 0.1,
         "min_payout": 1.0,
+        "addresses": [settings.validator_payout_address],
+        "limit": None,
     },
     "subnet": {
         "take": 0.1,
         "min_payout": 1.0,
+        "addresses": settings.subnet_payout_addresses,
+        "limit": None,
     },
     "moderator": {
         "take": 0.02,
         "min_payout": 0.02,
+        "limit": None,
     },
     "contributions": {
         "take": 0.03,
@@ -35,10 +43,12 @@ PAYOUT_STRUCTURE = {
     "image_creator": {
         "take": 0.01,
         "min_payout": 0.25,
+        "limit": None,
     },
     "chute_creator": {
         "take": 0.01,
         "min_payout": 0.25,
+        "limit": None,
     },
 }
 

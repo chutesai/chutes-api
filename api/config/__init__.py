@@ -5,6 +5,7 @@ Application-wide settings.
 import os
 import hvac
 import redis.asyncio as redis
+from typing import Optional
 from miniopy_async import Minio
 from pydantic_settings import BaseSettings
 
@@ -47,6 +48,12 @@ class Settings(BaseSettings):
         os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9))
     )
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
+    validator_payout_address: Optional[str] = os.getenv("VALIDATOR_PAYOUT_ADDRESS")
+    subnet_payout_addresses: list[str] = [
+        address
+        for address in os.getenv("SUBNET_PAYOUT_ADDRESSES", "").split(",")
+        if address.strip()
+    ]
 
 
 settings = Settings()

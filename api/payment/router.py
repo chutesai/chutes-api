@@ -5,7 +5,7 @@ Payments router.
 from fastapi import APIRouter, status, HTTPException
 from fastapi_cache.decorator import cache
 from api.gpu import COMPUTE_MULTIPLIER, COMPUTE_MIN
-from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
+from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS, PAYOUT_STRUCTURE
 from api.fmv.fetcher import get_fetcher
 
 router = APIRouter()
@@ -66,3 +66,11 @@ async def get_pricing():
         },
         "gpu_price_estimates": gpu_price,
     }
+
+
+@router.get("/payout_structure")
+async def get_payout_structure():
+    """
+    Get the current payout structure.
+    """
+    return PAYOUT_STRUCTURE
