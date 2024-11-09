@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     func,
+    BigInteger,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.dialects.postgresql import JSONB
@@ -21,6 +22,7 @@ class Challenge(Base):
     uuid = Column(
         String, ForeignKey("nodes.uuid", ondelete="CASCADE"), primary_key=True
     )
+    seed = Column(BigInteger, primary_key=True, default=0)
     challenge = Column(String, nullable=False)
     challenge_type = Column(String, default="graval", primary_key=True)
     created_at = Column(DateTime, server_default=func.now())

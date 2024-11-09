@@ -4,6 +4,7 @@ Application-wide settings.
 
 import os
 import hvac
+import redis.asyncio as redis
 from miniopy_async import Minio
 from pydantic_settings import BaseSettings
 
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     )
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    redis_client: redis.Redis = redis.Redis.from_url(
+        os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    )
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv(
         "REGISTRY_EXTERNAL_HOST", "registry.chutes.ai"

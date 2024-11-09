@@ -6,7 +6,6 @@ import re
 import random
 import string
 import orjson as json
-import redis.asyncio as redis
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
@@ -120,16 +119,15 @@ async def delete_chute(
     await db.delete(chute)
     await db.commit()
 
-    async with redis.from_url(settings.redis_url) as redis_client:
-        await redis_client.publish(
-            "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "chute_deleted",
-                    "data": {"chute_id": chute_id},
-                }
-            ).decode(),
-        )
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "chute_deleted",
+                "data": {"chute_id": chute_id},
+            }
+        ).decode(),
+    )
 
     return {"chute_id": chute_id, "deleted": True}
 

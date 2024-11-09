@@ -9,9 +9,7 @@ import hashlib
 from loguru import logger
 from fastapi import FastAPI, Request, APIRouter
 from fastapi.responses import ORJSONResponse
-from api.api_key.schemas import APIKey  # noqa: F401
-from api.node.schemas import Node  # noqa: F401
-from api.challenge.schemas import Challenge  # noqa: F401
+import api.database.orms  # noqa: F401
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
 from api.bounty.router import router as bounty_router
@@ -22,14 +20,9 @@ from api.registry.router import router as registry_router
 from api.user.router import router as user_router
 from api.node.router import router as node_router
 from api.instance.router import router as instance_router
-from api.instance.schemas import Instance  # noqa: F401
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
-import api.chute.events  # noqa: F401
-import api.image.events  # noqa: F401
-import api.user.events  # noqa: F401
-import api.node.events  # noqa: F401
 
 app = FastAPI(default_response_class=ORJSONResponse)
 
