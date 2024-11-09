@@ -145,28 +145,3 @@ def get_current_user(
 
     return _authenticate
 
-
-# async def check_signature(
-#     request: Request,
-#     hotkey: str = Header(..., alias=HOTKEY_HEADER),
-#     signature: str = Header(..., alias=SIGNATURE_HEADER),
-#     nonce: str = Header(..., alias=NONCE_HEADER),
-# ):
-#     """Check the signature of the request is valid"""
-
-#     body = await request.body()
-#     body = body.decode()
-#     message = get_signing_message(hotkey, nonce, body)
-#     if nonce_is_valid(nonce):
-#         keypair = Keypair(hotkey)
-#         try:
-#             logger.info(f"Verifying signature for message: {message}")
-#             if keypair.verify(message, signature):
-#                 return
-#         except Exception as e:
-#             logger.error(f"Error verifying signature: {e}")
-
-#     raise HTTPException(
-#         status_code=status.HTTP_401_UNAUTHORIZED,
-#         detail=f"Invalid signature for key: {hotkey}",
-#     )
