@@ -24,15 +24,15 @@ PAYOUT_STRUCTURE = {
         "addresses": settings.maintainer_payout_addresses,
         "limit": None,
     },
-    "moderator": {
-        "take": settings.moderator_take,
-        "min_payout": 0.25,
-        "limit": None,
-    },
     "contributor": {
         "take": settings.contributor_take,
         "min_payout": 1.0,
         "limit": 100.0,
+    },
+    "moderator": {
+        "take": settings.moderator_take,
+        "min_payout": 0.25,
+        "limit": None,
     },
     "image_creator": {
         "take": settings.image_creator_take,

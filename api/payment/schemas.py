@@ -10,7 +10,6 @@ from sqlalchemy import (
     String,
     DateTime,
     Index,
-    UniqueConstraint,
 )
 from api.database import Base
 
@@ -24,30 +23,60 @@ class PayoutReason(Enum):
     CHUTE_CREATOR = "chute_creator"
 
 
-class PayoutStatus(Enum):
-    PENDING = "pending"
-    PAID = "paid"
-    CREDITED = "credited"
+class WalletPurpose(Enum):
+    CONTRIBUTOR = "contributor"
+    GENERAL = "general"
+
+
+class EpochStatus(Enum):
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class PaymentEpoch(Base):
+    __tablename__ = "payment_epochs"
+    epoch_id = Column(String, primary_key=True)
+    last_processed_timestamp = Column(DateTime(timezone=True), nullable=False)
+    start_block = Column(BigInteger, nullable=False)
+    end_block = Column(BigInteger, nullable=False)
+    processed_at = Column(DateTime(timezone=True), server_default=func.now())
+    status = Column(Enum(EpochStatus), nullable=False)
+
+    __table_args__ = (Index("idx_last_processed", "last_processed_timestamp"),)
 
 
 class Payment(Base):
     __tablename__ = "payments"
     payment_id = Column(String, nullable=False, primary_key=True)
-    payment_block = Column(BigInteger, nullable=False, index=True)
-    recipient_address = Column(String, nullable=False, index=True)
-    sending_address = Column(String, nullable=False, index=True)
-    reason = Column(Enum(PayoutReason), nullable=False, index=True)
-    status = Column(Enum(PayoutStatus), nullable=False, index=True)
+    payment_block = Column(BigInteger, nullable=False)
+    recipient_address = Column(String, nullable=False)
+    sending_address = Column(String, nullable=False)
     amount = Column(BigInteger, nullable=False)  # RAO
+    transaction_hash = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
         Index(
-            "idx_reason_status_block_created_at",
-            "reason",
-            "status",
-            "block",
+            "idx_recipient_date",
+            "recipient_address",
             "created_at",
         ),
-        UniqueConstraint("name", "tag", name="constraint_image_name_tag"),
     )
+
+
+class Transaction(Base):
+    __tablename__ = "transactions"
+    transaction_id = Column(String, nullable=False, primary_key=True)
+    recipient_address = Column(String, nullable=False)
+    sending_address = Column(String, nullable=False)
+    reason = Column(Enum(PayoutReason), nullable=False)
+    amount = Column(BigInteger, nullable=False)  # RAO
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class WalletBalance(Base):
+    __tablename__ = "wallet_balances"
+    wallet_id = Column(String, nullable=False, primary_key=True)
+    purpose = Column(Enum(WalletPurpose), default=None)
+    balance = Column(BigInteger, default=0)
