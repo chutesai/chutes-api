@@ -12,7 +12,7 @@ import traceback
 import orjson as json
 from loguru import logger
 from typing import List
-from sqlalchemy import or_, text, update, func, String
+from sqlalchemy import and_, or_, text, update, func, String
 from sqlalchemy.future import select
 from api.config import settings
 from api.database import SessionLocal
@@ -93,7 +93,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
     if not chute_id_or_name:
         return None
     name_match = re.match(
-        r"(?:([a-z0-9][a-z0-9_-]*)/)?([a-z0-9][a-z0-9_-]*)$",
+        r"/?(?:([a-zA-Z0-9_\.-]{3,15})/)?([a-z0-9][a-z0-9_\.\/-]*)$",
         chute_id_or_name.lstrip("/"),
         re.I,
     )
@@ -106,8 +106,23 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
     )
     username = name_match.group(1) or current_user.username
     chute_name = name_match.group(2)
-    query = query.where(User.username == username).where(
-        or_(Chute.name == chute_name, Chute.chute_id == chute_id_or_name)
+    chute_id_or_name = chute_id_or_name.lstrip("/")
+    query = query.where(
+        or_(
+            and_(
+                User.username == current_user.username,
+                Chute.name == chute_name,
+            ),
+            and_(
+                User.username == current_user.username,
+                Chute.name == chute_id_or_name,
+            ),
+            and_(
+                User.username == username,
+                Chute.name == chute_name,
+            ),
+            Chute.chute_id == chute_id_or_name,
+        )
     )
     result = await db.execute(query)
     return result.scalar_one_or_none()

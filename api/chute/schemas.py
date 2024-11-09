@@ -9,6 +9,8 @@ from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE
+from api.fmv.fetcher import get_fetcher
+from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional
 
@@ -91,6 +93,26 @@ class NodeSelector(BaseModel):
         # to run as cheaply as possible while satisfying the requirements.
         multiplier = min([COMPUTE_MULTIPLIER[gpu] for gpu in allowed_gpus])
         return self.gpu_count * multiplier
+
+    async def current_estimated_price(self):
+        """
+        Calculate estimated price to use this chute, per second.
+        """
+        current_tao_price = await get_fetcher().get_price("tao")
+        if current_tao_price is None:
+            return None
+        usd_price = COMPUTE_UNIT_PRICE_BASIS * self.compute_multiplier
+        tao_price = usd_price / current_tao_price
+        return {
+            "usd": {
+                "hour": usd_price,
+                "second": usd_price / 3600,
+            },
+            "tao": {
+                "hour": tao_price,
+                "second": tao_price / 3600,
+            },
+        }
 
 
 class ChuteArgs(BaseModel):
