@@ -11,7 +11,22 @@ from api.fmv.fetcher import get_fetcher
 router = APIRouter()
 
 
-@cache(expire=3600)
+@cache(expire=60)
+@router.get("/fmv")
+async def get_fmv():
+    """
+    Get the current FMV for tao.
+    """
+    prices = await get_fetcher().get_prices()
+    if not prices or not prices.get("tao"):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to fetch prices",
+        )
+    return prices
+
+
+@cache(expire=60)
 @router.get("/pricing")
 async def get_pricing():
     """
