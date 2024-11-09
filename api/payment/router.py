@@ -73,4 +73,7 @@ async def get_payout_structure():
     """
     Get the current payout structure.
     """
-    return PAYOUT_STRUCTURE
+    return {
+        key: {k: v for k, v in value.items() if not k.startswith("address")}
+        for key, value in PAYOUT_STRUCTURE.items()
+    }

@@ -14,43 +14,38 @@ from api.config import settings
 #    other recipients.
 PAYOUT_STRUCTURE = {
     "miner": {
-        "take": 0.73,
+        "take": settings.miner_take,
         "min_payout": 0.5,
         "limit": None,
     },
-    "validator": {
-        "take": 0.1,
+    "maintainer": {
+        "take": settings.maintainer_take,
         "min_payout": 1.0,
-        "addresses": [settings.validator_payout_address],
-        "limit": None,
-    },
-    "subnet": {
-        "take": 0.1,
-        "min_payout": 1.0,
-        "addresses": settings.subnet_payout_addresses,
+        "addresses": settings.maintainer_payout_addresses,
         "limit": None,
     },
     "moderator": {
-        "take": 0.02,
-        "min_payout": 0.02,
+        "take": settings.moderator_take,
+        "min_payout": 0.25,
         "limit": None,
     },
-    "contributions": {
-        "take": 0.03,
+    "contributor": {
+        "take": settings.contributor_take,
         "min_payout": 1.0,
         "limit": 100.0,
     },
     "image_creator": {
-        "take": 0.01,
+        "take": settings.image_creator_take,
         "min_payout": 0.25,
         "limit": None,
     },
     "chute_creator": {
-        "take": 0.01,
+        "take": settings.chute_creator_take,
         "min_payout": 0.25,
         "limit": None,
     },
 }
+assert sum([item["take"] for item in PAYOUT_STRUCTURE.values()]) == 1.0
 
 # The most expensive compute unit hourly price (h100 sxm5) (in USD).
 COMPUTE_UNIT_PRICE_BASIS = 2.0

@@ -5,7 +5,6 @@ Application-wide settings.
 import os
 import hvac
 import redis.asyncio as redis
-from typing import Optional
 from miniopy_async import Minio
 from pydantic_settings import BaseSettings
 
@@ -48,10 +47,20 @@ class Settings(BaseSettings):
         os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9))
     )
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
-    validator_payout_address: Optional[str] = os.getenv("VALIDATOR_PAYOUT_ADDRESS")
-    subnet_payout_addresses: list[str] = [
+    miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))
+    maintainer_take: float = float(os.getenv("MAINTAINER_TAKE", "0.2"))
+    moderator_take: float = float(os.getenv("MODERATOR_TAKE", "0.02"))
+    contributor_take: float = float(os.getenv("CONTRIBUTOR_TAKE", "0.03"))
+    image_creator_take: float = float(os.getenv("IMAGE_CREATOR_TAKE", "0.01"))
+    chute_creator_take: float = float(os.getenv("CHUTE_CREATOR_TAKE", "0.01"))
+    maintainer_payout_addresses: list[str] = [
         address
-        for address in os.getenv("SUBNET_PAYOUT_ADDRESSES", "").split(",")
+        for address in os.getenv("MAINTAINER_PAYOUT_ADDRESSES", "").split(",")
+        if address.strip()
+    ]
+    contribution_signature_addresses: list[str] = [
+        address
+        for address in os.getenv("CONTRIBUTOR_SIGNATURE_ADDRESSES", "").split(",")
         if address.strip()
     ]
 
