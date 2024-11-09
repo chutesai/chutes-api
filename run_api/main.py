@@ -76,7 +76,7 @@ async def host_router_middleware(request: Request, call_next):
         app.include_router(default_router)
     return await call_next(request)
 
-
+# NOTE: Do we really want to do this in middleware, for every request?
 @app.middleware("http")
 async def request_body_checksum(request: Request, call_next):
     if request.method in ["POST", "PUT", "PATCH"]:
@@ -133,3 +133,7 @@ async def startup():
     # Buckets.
     if not await settings.storage_client.bucket_exists(settings.storage_bucket):
         await settings.storage_client.make_bucket(settings.storage_bucket)
+
+@app.get("/ping")
+async def ping():
+    return {"message": "pong"}

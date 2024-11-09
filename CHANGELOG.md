@@ -17,3 +17,13 @@
 - Restructed event listeners to enforce order
 - Coldkey optional - defaults to payment address
 - Hotkey optional - defaults to ZERO_HOTKEY [NOTE: need to handle / check for this better]
+- Added username validation on the register endpoint
+
+### Auth
+- Added nonce and signature check to API endpoints - to ensure that hotkeys can only be assigned to the real owner of the key
+- Add validation to hotkeys, to ensure the user actually owns the hotkey
+- Enforced single user per hotkey
+
+
+### Generic
+- Util function for nonce checking

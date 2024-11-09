@@ -2,18 +2,15 @@
 ORM definitions for users.
 """
 
-import re
 from typing import Self
 from pydantic import BaseModel
 from sqlalchemy import func, Column, String, DateTime, BigInteger
 from sqlalchemy.orm import relationship, validates
 from run_api.database import Base
 from run_api.config import settings
-import uuid
 import hashlib
-from run_api.config import settings
-from run_api.utils import gen_random_token
-
+from run_api.util import gen_random_token
+from run_api.user.util import validate_the_username
 
 # Other fields are populated by listeners
 # Except hotkey which is added in the header
@@ -23,6 +20,9 @@ class UserRequest(BaseModel):
     coldkey: str
 
 
+
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -30,7 +30,7 @@ class User(Base):
     user_id = Column(String, primary_key=True)
 
     # An alternative to an API key.
-    hotkey = Column(String, nullable=False)
+    hotkey = Column(String, nullable=False, unique=True)
 
     # To receive commission payments
     coldkey = Column(String, nullable=False)
@@ -61,11 +61,7 @@ class User(Base):
         """
         Simple username validation.
         """
-        if not re.match(r"^[a-zA-Z0-9_]{3,15}$", value):
-            raise ValueError(
-                "Username must be 3-15 characters and contain only alphanumeric/underscore characters"
-            )
-        return value
+        return validate_the_username(value)
 
     # NOTE: The below can be deleted as coldkey is just for receiving payments.
     # @validates("coldkey")

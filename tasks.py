@@ -9,7 +9,6 @@ import typer
 from loguru import logger
 from run_api.api_key.schemas import APIKey, APIKeyArgs
 from run_api.database import Base, get_db, engine
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import delete, select
 
 # The below have to be here to prevent SQLAlchemy initialization errors
@@ -18,6 +17,8 @@ from run_api.chute.schemas import Chute  # noqa: F401
 from run_api.image.schemas import Image  # noqa: F401
 from run_api.instance.schemas import Instance  # noqa: F401
 from run_api.user import events  # noqa: F401
+from rich.table import Table
+from rich.console import Console
 
 app = typer.Typer()
 
@@ -179,6 +180,53 @@ def remove_all_users():
     """Remove all users from the database."""
 
     asyncio.run(_remove_all_users())
+
+
+async def _remove_user(username: str):
+    async with get_db() as db:
+        await db.execute(delete(User).where(User.username == username))
+        await db.commit()
+
+
+@app.command()
+def remove_user(username: str):
+    """Remove a user from the database."""
+
+    asyncio.run(_remove_user(username))
+
+
+async def _list_users():
+    async with get_db() as db:
+        users = await db.execute(select(User))
+        
+        # Create table
+        table = Table(show_header=True, header_style="bold magenta")
+        
+        # Add columns
+        table.add_column("Username")
+        table.add_column("Coldkey")
+        table.add_column("Hotkey")
+        table.add_column("Created At")
+        
+        # Add rows
+        for user in users.scalars().all():
+            table.add_row(
+                user.username,
+                user.coldkey,
+                user.hotkey,
+                str(user.created_at)
+            )
+        
+        # Display table
+        console = Console()
+        console.print(table)
+
+
+@app.command()
+def list_users():
+    """List all users in the database."""
+
+    asyncio.run(_list_users())
 
 
 if __name__ == "__main__":

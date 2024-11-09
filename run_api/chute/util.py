@@ -19,7 +19,7 @@ from run_api.database import SessionLocal
 from run_api.chute.schemas import Chute
 from run_api.user.schemas import User
 from run_api.instance.schemas import Instance
-from run_api.utils import sse, now_str
+from run_api.util import sse, now_str
 
 
 REQUEST_SAMPLE_RATIO = 0.05
