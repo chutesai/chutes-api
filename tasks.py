@@ -123,7 +123,7 @@ async def _dev_setup():
     await _run_migrations()
     users = [
         User(
-            username="test",
+            username="test-key",
             coldkey=None,
             hotkey=None,
         ),
