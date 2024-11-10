@@ -35,8 +35,8 @@ def get_current_user(
     async def _authenticate(
         request: Request,
         api_key: Optional[str] = Security(api_key_header),
-        hotkey: str = Header(..., alias=HOTKEY_HEADER),
-        signature: str = Header(..., alias=SIGNATURE_HEADER),
+        hotkey: str = Header(None, alias=HOTKEY_HEADER),
+        signature: str = Header(None, alias=SIGNATURE_HEADER),
         nonce: str = Header(..., alias=NONCE_HEADER),
         authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
     ):
