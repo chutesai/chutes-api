@@ -8,6 +8,7 @@ services:
       - ./data/dev-config.ini:/home/vllm/.parachutes/config.ini
       # - ./data/dev-config.ini:/home/vllm/.chutes/config.ini
       - /home/jdurbin/git/chutes/dist/:/usr/src/chutes/
+      - /home/chutes/:/workspace/chutes
     user: vllm
     environment:
       - CHUTES_EXECUTION_CONTEXT=REMOTE
