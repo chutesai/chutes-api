@@ -38,7 +38,7 @@ def ensure_hotkey(_, __, user: User):
     Sets hotkey to zero address if not provided.
     """
     if not user.hotkey:
-        user.hotkey = constants.ZERO_ADDRESS_HOTKEY
+        user.hotkey = None
 
 
 def ensure_coldkey(_, __, user: User):
