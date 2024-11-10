@@ -29,7 +29,7 @@ from api.config import settings
 class PaymentMonitor:
     def __init__(self):
         self.substrate = SubstrateInterface(url=settings.subtensor, ss58_format=42)
-        self.lock_timeout = timedelta(minutes=30)
+        self.lock_timeout = timedelta(minutes=5)
         self._payment_addresses = set()
         self._is_running = False
         self.instance_id = str(uuid.uuid4())
