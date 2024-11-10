@@ -258,6 +258,7 @@ def start_miner(
     """Start the miner."""
     # First copy chutes source dir to the data/ container
     os.system(f"cp -r {chutes_dir} /data/chutes")
+    os.sytem("docker compose -f docker-compose-miner.yml build vllm")
     os.system("docker compose -f docker-compose-miner.yml up -d vllm")
 
 
