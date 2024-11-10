@@ -30,7 +30,7 @@ class User(Base):
     user_id = Column(String, primary_key=True)
 
     # An alternative to an API key.
-    hotkey = Column(String, nullable=False, unique=True)
+    hotkey = Column(String, nullable=True, unique=True)
 
     # To receive commission payments
     coldkey = Column(String, nullable=False)
