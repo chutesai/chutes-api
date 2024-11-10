@@ -250,7 +250,7 @@ def reset():
 
 
 @app.command()
-async def start_miner(
+def start_miner(
     chutes_dir: str = typer.Option(
         default="~/chutes", help="The directory containing the chutes source code."
     )
