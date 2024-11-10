@@ -250,8 +250,14 @@ def reset():
 
 
 @app.command()
-def start_miner():
+async def start_miner(
+    chutes_dir: str = typer.Option(
+        default="~/chutes", help="The directory containing the chutes source code."
+    )
+):
     """Start the miner."""
+    # First copy chutes source dir to the data/ container
+    os.system(f"cp -r {chutes_dir} /data/chutes")
     os.system("docker compose -f docker-compose-miner.yml up -d vllm")
 
 
