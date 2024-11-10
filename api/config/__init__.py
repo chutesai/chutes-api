@@ -40,13 +40,12 @@ class Settings(BaseSettings):
     subtensor: str = os.getenv(
         "SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443"
     )
-    registration_minimum_balance: float = float(
-        os.getenv("REGISTRATION_MINIMUM_BALANCE", "0.5")
-    )
-    signup_bonus_balance: int = int(
-        os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9))
+    first_payment_bonus_balance: float = float(
+        os.getenv("PAYMENT_BONUS_BALANCE", "100.0")
     )
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
+
+    # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))
     maintainer_take: float = float(os.getenv("MAINTAINER_TAKE", "0.2"))
     moderator_take: float = float(os.getenv("MODERATOR_TAKE", "0.02"))
@@ -56,11 +55,6 @@ class Settings(BaseSettings):
     maintainer_payout_addresses: list[str] = [
         address
         for address in os.getenv("MAINTAINER_PAYOUT_ADDRESSES", "").split(",")
-        if address.strip()
-    ]
-    contribution_signature_addresses: list[str] = [
-        address
-        for address in os.getenv("CONTRIBUTOR_SIGNATURE_ADDRESSES", "").split(",")
         if address.strip()
     ]
 

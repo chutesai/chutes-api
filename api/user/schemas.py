@@ -4,7 +4,7 @@ ORM definitions for users.
 
 import re
 from pydantic import BaseModel
-from sqlalchemy import func, Column, String, DateTime, BigInteger
+from sqlalchemy import func, Column, String, DateTime, Double
 from sqlalchemy.orm import relationship, validates
 from substrateinterface import SubstrateInterface
 from api.database import Base
@@ -23,7 +23,7 @@ class User(Base):
     hotkey = Column(String, nullable=False)
     coldkey = Column(String, nullable=False)
     payment_address = Column(String)
-    balance = Column(BigInteger, default=settings.signup_bonus_balance)
+    balance = Column(Double, default=0.0)
     username = Column(String, unique=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())

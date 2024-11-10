@@ -71,9 +71,12 @@ async def get_pricing():
 @router.get("/payout_structure")
 async def get_payout_structure():
     """
-    Get the current payout structure.
+    Get the current theoretical payout structure.
     """
     return {
-        key: {k: v for k, v in value.items() if not k.startswith("address")}
-        for key, value in PAYOUT_STRUCTURE.items()
+        "notice": "This is not in effect at the moment, simply a theoretically mechansim.",
+        "theoretical_structure": {
+            key: {k: v for k, v in value.items() if not k.startswith("address")}
+            for key, value in PAYOUT_STRUCTURE.items()
+        },
     }
