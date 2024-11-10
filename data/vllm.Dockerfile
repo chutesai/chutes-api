@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.6.1-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
 RUN apt-get update
 RUN apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev libexpat1-dev lzma liblzma-dev
 WORKDIR /usr/src
