@@ -58,7 +58,7 @@ async def list_images(
     if name and name.strip():
         query = query.where(Image.name.ilike(f"%{name}%"))
     if tag and tag.strip():
-        query = query.owhere(Image.tag.ilike(f"%{tag}%"))
+        query = query.owhere(Image.tag.ilike(f"%{tag}%"))  # NOTE: owhere?
 
     # Perform a count.
     total_query = select(func.count()).select_from(query.subquery())
