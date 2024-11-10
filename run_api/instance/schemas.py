@@ -12,7 +12,7 @@ from run_api.database import Base
 class Instance(Base):
     __tablename__ = "instances"
     instance_id = Column(String, primary_key=True, default="replaceme")
-    ip = Column(String, nullable=False)
+    host = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id"))
     gpus = Column(JSONB, nullable=False)
