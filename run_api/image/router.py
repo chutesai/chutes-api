@@ -40,6 +40,7 @@ async def list_images(
     """
     List (and optionally filter/paginate) images.
     """
+    logger.debug(f"Listing images for user {current_user.username}")
     query = select(Image)
 
     # Filter by public and/or only the user's images.
