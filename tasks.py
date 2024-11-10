@@ -259,7 +259,7 @@ def start_miner(
     # First copy chutes source dir to the data/ container
     logger.info(f"Copying chutes source dir to data/chutes: {chutes_dir}")
     os.system(
-        f"rsync -av --exclude-from='.gitignore' --exclude='.git' --exclude='venv' --exclude='.venv' '{chutes_dir}/' data/chutes/"
+        f"rsync -av --exclude-from='.gitignore' --exclude='.git' --exclude='venv' --exclude='.venv' --exclude='__pycache__' '{chutes_dir}/' data/chutes/"
     )
     logger.info(
         f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner."
