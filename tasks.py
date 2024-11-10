@@ -198,25 +198,22 @@ def remove_user(username: str):
 async def _list_users():
     async with get_db() as db:
         users = await db.execute(select(User))
-        
+
         # Create table
         table = Table(show_header=True, header_style="bold magenta")
-        
+
         # Add columns
         table.add_column("Username")
         table.add_column("Coldkey")
         table.add_column("Hotkey")
         table.add_column("Created At")
-        
+
         # Add rows
         for user in users.scalars().all():
             table.add_row(
-                user.username,
-                user.coldkey,
-                user.hotkey,
-                str(user.created_at)
+                user.username, user.coldkey, user.hotkey, str(user.created_at)
             )
-        
+
         # Display table
         console = Console()
         console.print(table)
@@ -228,15 +225,18 @@ def list_users():
 
     asyncio.run(_list_users())
 
+
 async def _destroy_database():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
 
 @app.command()
 def destroy_database():
     """Destroy the database."""
 
     asyncio.run(_destroy_database())
+
 
 @app.command()
 def reset():
@@ -247,6 +247,13 @@ def reset():
         await _dev_setup()
 
     asyncio.run(run_reset())
+
+
+@app.command()
+def start_miner():
+    """Start the miner."""
+    os.system("docker compose -f docker-compose-miner.yml up -d vllm")
+
 
 if __name__ == "__main__":
     app()
