@@ -34,7 +34,7 @@ async def register(
     if current_user:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="User with the provided hotkey has already registered!",
+            detail="This hotkey is already registered to a user!",
         )
 
     # Validate the username
