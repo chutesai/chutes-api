@@ -40,3 +40,8 @@ poetry shell
 docker network create kind
 docker compose up -d 
 ```
+
+#### 2.3 Run the miner
+```bash
+docker compose -f docker-compose-miner.yml up -d vllm
+```
