@@ -29,7 +29,9 @@ from api.config import settings
 class PaymentMonitor:
     def __init__(self):
         self.substrate = SubstrateInterface(url=settings.subtensor, ss58_format=42)
+        self.max_recovery_blocks = settings.payment_recovery_blocks
         self.lock_timeout = timedelta(minutes=5)
+        self.max_recover_blocks = 32
         self._payment_addresses = set()
         self._is_running = False
         self.instance_id = str(uuid.uuid4())
@@ -124,13 +126,10 @@ class PaymentMonitor:
             result = await session.execute(
                 update(PaymentMonitorState)
                 .where(
-                    and_(
+                    or_(
                         PaymentMonitorState.is_locked.is_(False),
-                        or_(
-                            PaymentMonitorState.locked_at.is_(None),
-                            PaymentMonitorState.last_updated_at
-                            <= func.now() - self.lock_timeout,
-                        ),
+                        PaymentMonitorState.last_updated_at
+                        <= func.now() - self.lock_timeout,
                     )
                 )
                 .values(
@@ -152,9 +151,7 @@ class PaymentMonitor:
         """
         async with SessionLocal() as session:
             await session.execute(
-                update(PaymentMonitorState)
-                .where(PaymentMonitorState.instance_id == self.instance_id)
-                .values(
+                update(PaymentMonitorState).values(
                     is_locked=False,
                     lock_holder=None,
                     locked_at=None,
@@ -219,6 +216,15 @@ class PaymentMonitor:
             # Increase user balance: fair market value * amount of rao / 1e9
             user.balance += delta
 
+            # Add in the first payment bonus, if applicable.
+            if (
+                not user.bonus_used
+                and settings.first_payment_bonus > 0
+                and delta >= settings.first_payment_bonus_threshold
+            ):
+                user.balance += settings.first_payment_bonus
+                user.bonus_used = True
+
             # Track new balance for the payment_address.
             await session.execute(
                 text(
@@ -246,7 +252,15 @@ class PaymentMonitor:
         async with SessionLocal() as session:
             result = await session.execute(select(PaymentMonitorState))
             state = result.scalar_one()
-            return state.block_number, state.block_hash
+            block, hash_ = state.block_number, state.block_hash
+            current_block = self.get_latest_block()
+            if (delta := current_block - block) > self.max_recovery_blocks:
+                block = current_block - self.max_recovery_blocks
+                logger.warning(
+                    f"Payment watcher is {delta} blocks behind, skipping ahead to {block}..."
+                )
+                hash_ = self.get_block_hash(block)
+            return block, hash_
 
     async def _save_state(self, block_number: int, block_hash: str):
         """
@@ -291,8 +305,10 @@ class PaymentMonitor:
                     # Wait for the block to advance.
                     if current_block_number == latest_block_number:
                         while (
-                            latest_block_number := self.get_latest_block()
-                        ) == current_block_number:
+                            self.is_running
+                            and (latest_block_number := self.get_latest_block())
+                            == current_block_number
+                        ):
                             logger.debug("Waiting for next block...")
                             await asyncio.sleep(3)
 
@@ -306,6 +322,7 @@ class PaymentMonitor:
                     current_block_hash = self.get_block_hash(current_block_number)
                     events = self.get_events(current_block_hash)
                     payments = 0
+                    logger.info(f"Processing block {current_block_number}...")
                     for event in events:
                         event = event.value or {}
                         if (

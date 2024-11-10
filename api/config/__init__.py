@@ -40,9 +40,11 @@ class Settings(BaseSettings):
     subtensor: str = os.getenv(
         "SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443"
     )
-    first_payment_bonus_balance: float = float(
-        os.getenv("PAYMENT_BONUS_BALANCE", "100.0")
+    first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "100.0"))
+    first_payment_bonus_threshold: float = float(
+        os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 25.0)
     )
+    payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "32"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
     # XXX unused for now - future in which payouts to various parties.
