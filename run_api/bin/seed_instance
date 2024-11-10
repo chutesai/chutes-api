@@ -18,29 +18,29 @@ async def main():
     """
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--ip",
+        "--host",
         type=str,
-        required=True,
-        help="IP address",
+        help="host address",
+        default="vllm",
     )
     parser.add_argument(
         "--port",
         type=int,
-        required=True,
         help="Port",
+        default=8101
     )
     parser.add_argument(
         "--chute-id",
         type=str,
-        required=True,
         help="Chute ID",
+        default="135c0f80-7e3c-5cdf-9c1b-c1ae36c9dc66"
     )
 
     args = parser.parse_args()
     async with SessionLocal() as session:
         instance = Instance(
             instance_id=str(uuid.uuid4()),
-            ip=args.ip,
+            host=args.host,
             port=args.port,
             chute_id=args.chute_id,
             gpus=[{"name": "Fake Nvidia A12345", "memory": 123123123123123}],
