@@ -40,6 +40,8 @@ default_router.include_router(
 default_router.include_router(
     api_key_router, prefix="/api_keys", tags=["Authentication"]
 )
+app.include_router(host_invocation_router)  # NOTE: Is this OK here?
+app.include_router(default_router)
 
 fickling.always_check_safety()
 
@@ -57,7 +59,6 @@ async def host_router_middleware(request: Request, call_next):
         request.state.auth_method = "invoke"
         request.state.auth_object_type = "chutes"
         request.state.auth_object_id = chute_id
-        app.include_router(host_invocation_router)
     else:
         request.state.auth_method = "read"
         if request.method.lower() in ("post", "put", "patch"):
@@ -73,8 +74,8 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_object_id = path_match.group(1)
         else:
             request.state.auth_object_id = "__list_or_invalid__"
-        app.include_router(default_router)
     return await call_next(request)
+
 
 # NOTE: Do we really want to do this in middleware, for every request?
 @app.middleware("http")
@@ -133,6 +134,7 @@ async def startup():
     # Buckets.
     if not await settings.storage_client.bucket_exists(settings.storage_bucket):
         await settings.storage_client.make_bucket(settings.storage_bucket)
+
 
 @app.get("/ping")
 async def ping():
