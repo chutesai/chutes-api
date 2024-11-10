@@ -23,8 +23,9 @@ docker exec -it chutes-api-postgres-1 psql -U user -d parachutes -c "update imag
 chutes deploy data/vllm_example:chute --public 
 
 # Seed the instance to immitate a real miner.
+export CHUTE_ID=$(docker compose  exec postgres bash -c "psql -U user -d parachutes -c 'select instance_id from instances order by created_at desc limit 1' -t")
 export PYTHONPATH=$(pwd)
-python ./run_api/bin/seed_instance 
+python ./run_api/bin/seed_instance --chute-id $CHUTE_ID
 
 # Create an API key.
 chutes api_key --name admin --admin
