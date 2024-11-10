@@ -228,6 +228,16 @@ def list_users():
 
     asyncio.run(_list_users())
 
+async def _destroy_database():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+@app.command()
+def destroy_database():
+    """Destroy the database."""
+
+    asyncio.run(_destroy_database())
+
 
 if __name__ == "__main__":
     app()
