@@ -242,8 +242,11 @@ def destroy_database():
 def reset():
     """Reset the database and run dev setup"""
 
-    asyncio.run(_destroy_database())
-    asyncio.run(_dev_setup())
+    async def run_reset():
+        await _destroy_database()
+        await _dev_setup()
+
+    asyncio.run(run_reset())
 
 if __name__ == "__main__":
     app()
