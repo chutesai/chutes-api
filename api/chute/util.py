@@ -20,7 +20,8 @@ from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.instance.schemas import Instance
 from api.utils import sse, now_str
-
+from api.gpu import COMPUTE_MIN
+from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 
 REQUEST_SAMPLE_RATIO = 0.05
 TRACK_INVOCATION = text(
@@ -83,6 +84,7 @@ UPDATE partitioned_invocations_{suffix} SET
         ELSE bounty
     END
 WHERE invocation_id = :invocation_id
+RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
 """
 
 
@@ -261,6 +263,8 @@ async def invoke(
                     response_data.append(data)
 
             async with SessionLocal() as session:
+
+                # Save the response if we're randomly sampling this one.
                 response_path = None
                 if request_path:
                     response_path = request_path.replace(
@@ -277,7 +281,9 @@ async def invoke(
                     except Exception as exc:
                         logger.error(f"failed to sample request: {exc}")
                         response_path = None
-                await session.execute(
+
+                # Mark the invocation as complete.
+                result = await session.execute(
                     text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                     {
                         "chute_id": chute_id,
@@ -286,6 +292,25 @@ async def invoke(
                         "response_path": response_path,
                     },
                 )
+
+                # Calculate the credits used and deduct from user's balance.
+                compute_units = result.scalar_one_or_none()
+                if compute_units:
+                    balance_used = (
+                        compute_units * COMPUTE_UNIT_PRICE_BASIS * COMPUTE_MIN / 3600
+                    )
+                    result = await session.execute(
+                        update(User)
+                        .where(User.user_id == user_id)
+                        .values(balance=User.balance - balance_used)
+                        .returning(User.balance)
+                    )
+                    new_balance = result.scalar_one_or_none()
+                    if new_balance is not None:
+                        logger.debug(
+                            f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                        )
+
                 await session.commit()
 
             yield sse(
