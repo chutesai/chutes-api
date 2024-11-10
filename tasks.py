@@ -258,9 +258,12 @@ def start_miner(
     """Start the miner."""
     # First copy chutes source dir to the data/ container
     logger.info(f"Copying chutes source dir to data/chutes: {chutes_dir}")
-    os.system(f"cp -r {chutes_dir} data/chutes")
-    os.system("rm -rf data/chutes/.git venv .venv")
-    logger.info(f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner.")
+    os.system(
+        f"rsync -av --exclude-from='.gitignore' --exclude='.git' --exclude='venv' --exclude='.venv' '{chutes_dir}/' data/chutes/"
+    )
+    logger.info(
+        f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner."
+    )
     os.system("docker compose -f docker-compose-miner.yml build vllm")
     logger.info("Built the miner. Now starting the miner.")
     os.system("docker compose -f docker-compose-miner.yml up -d vllm")
