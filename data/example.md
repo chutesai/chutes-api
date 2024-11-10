@@ -20,10 +20,9 @@ chutes build data/vllm_example:chute --public --debug --wait
 docker exec -it chutes-api-postgres-1 psql -U user -d parachutes -c "update images set status = 'built and pushed'"
 
 # Deploy.
-chutes deploy vllm_example:chute --public 
+chutes deploy data/vllm_example:chute --public 
 
 # Seed the instance to immitate a real miner.
-cd ../
 export PYTHONPATH=$(pwd)
 python ./run_api/bin/seed_instance 
 
