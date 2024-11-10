@@ -12,10 +12,9 @@ docker compose -f docker-compose-miner.yml up -d vllm
 CHUTES_API_URL=http://127.0.0.1:8000 chutes register
 
 # Build an image.
-cd data/
 poetry shell
 pip install torch vllm  # Needed for this build example
-chutes build vllm_example:chute --public --debug --wait
+chutes build data/vllm_example:chute --public --debug --wait
 # Don't wait for the build, just ctrl+c and end it.
 # XXX mark it built so we don't have to wait.
 docker exec -it chutes-api-postgres-1 psql -U user -d parachutes -c "update images set status = 'built and pushed'"
