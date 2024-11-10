@@ -5,8 +5,7 @@ services:
       dockerfile: vllm.Dockerfile
     volumes:
       - ./data/vllm_example.py:/workspace/vllm_example.py
-      - ./data/dev-config.ini:/home/vllm/.parachutes/config.ini
-      # - ./data/dev-config.ini:/home/vllm/.chutes/config.ini
+      - ./data/dev-config.ini:/home/vllm/.chutes/config.ini
       - /home/jdurbin/git/chutes/dist/:/usr/src/chutes/
     user: vllm
     environment:
