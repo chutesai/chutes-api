@@ -30,6 +30,8 @@ class User(Base):
     user_id = Column(String, primary_key=True)
 
     # An alternative to an API key.
+    # Must be nullable for not all users have a hotkey, and the unique
+    # constraint prevents us using a default hotkey.
     hotkey = Column(String, nullable=True, unique=True)
 
     # To receive commission payments
