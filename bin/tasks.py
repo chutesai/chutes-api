@@ -20,7 +20,7 @@ from run_api.user import events  # noqa: F401
 from rich.table import Table
 from rich.console import Console
 
-app = typer.Typer()
+app = typer.Typer(no_args_is_help=True)
 
 
 async def _run_migrations():

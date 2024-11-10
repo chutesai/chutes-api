@@ -5,6 +5,10 @@ description = "ParachutesAI run platform API"
 authors = ["Jon Durbin <jon@jondurbin.com>", "namoray <namoray@rayonlabs.ai>"]
 license = "MIT"
 readme = "README.md"
+packages = [
+    { include = "bin" }
+]
+
 
 [tool.poetry.dependencies]
 python = "^3.12"
@@ -47,4 +51,4 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-dev = "bin.tasks:main"
+dev = "bin.tasks:app"
