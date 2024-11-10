@@ -22,7 +22,6 @@ ENV PATH=/opt/python/bin:$PATH
 RUN /opt/python/bin/pip install --no-cache vllm==0.6.2 wheel packaging
 RUN /opt/python/bin/pip install --no-cache flash-attn==2.6.3
 RUN /opt/python/bin/pip uninstall -y xformers
-RUN /opt/python/bin/pip install chutes==0.0.16
 ADD --chown=vllm chutes /workspace/chutes
 RUN /opt/python/bin/pip install -e chutes
 ENV PATH=/home/vllm/.local/bin:$PATH
