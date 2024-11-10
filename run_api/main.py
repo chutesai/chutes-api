@@ -57,7 +57,7 @@ async def host_router_middleware(request: Request, call_next):
         request.state.auth_method = "invoke"
         request.state.auth_object_type = "chutes"
         request.state.auth_object_id = chute_id
-        app.include_router(host_invocation_router)
+        app.include_router(host_invocation_router)  # NOTE: Why is this here?
     else:
         request.state.auth_method = "read"
         if request.method.lower() in ("post", "put", "patch"):
@@ -73,7 +73,7 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_object_id = path_match.group(1)
         else:
             request.state.auth_object_id = "__list_or_invalid__"
-        app.include_router(default_router)
+        app.include_router(default_router)  # NOTE: Why is this here?
     return await call_next(request)
 
 # NOTE: Do we really want to do this in middleware, for every request?
