@@ -5,11 +5,11 @@ services:
       dockerfile: vllm.Dockerfile
     volumes:
       - ./data/vllm_example.py:/workspace/vllm_example.py
-      - ./data/dev-config.ini:/home/vllm/.chutes/config.ini
+      - ./data/dev-config.ini:/home/vllm/.parachutes/config.ini
       - /home/jdurbin/git/chutes/dist/:/usr/src/chutes/
     user: vllm
     environment:
-      - CHUTES_EXECUTION_CONTEXT=REMOTE
+      - PARACHUTES_EXECUTION_CONTEXT=REMOTE
     command: chutes run vllm_example:chute --port 8101 --host 0.0.0.0
     deploy:
       resources:
@@ -17,7 +17,7 @@ services:
           devices:
             - driver: nvidia
               count: all
-              capabilities: [ gpu ]
+              capabilities: [gpu]
     ports:
       - "8101:8101"
     networks:

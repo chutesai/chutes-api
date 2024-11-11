@@ -1,0 +1,150 @@
+#!/usr/bin/env python
+
+import asyncio
+import argparse
+from loguru import logger
+from sqlalchemy import text
+from api.database import SessionLocal
+from api.user.schemas import User  # noqa: F401
+from api.api_key.schemas import APIKey  # noqa: F401
+from api.chute.schemas import Chute  # noqa: F401
+from api.image.schemas import Image  # noqa: F401
+from api.metasync import MetagraphNode  # noqa: F401
+from api.node.schemas import Node  # noqa: F401
+from api.instance.schemas import Instance  # noqa: F401
+from api.config import settings
+from api.challenge.schemas import ChallengeResult  # noqa: F401
+
+
+async def main():
+    """
+    Seed an instance locally, for testing.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="vllm",
+        help="Hostname or IP address",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8101,
+        help="Port",
+    )
+    parser.add_argument(
+        "--chute-id",
+        type=str,
+        default="135c0f80-7e3c-5cdf-9c1b-c1ae36c9dc66",
+        help="Chute ID",
+    )
+
+    args = parser.parse_args()
+    async with SessionLocal() as session:
+        await session.execute(
+            text(
+                """
+        INSERT INTO metagraph_nodes (
+          hotkey,
+          checksum,
+          coldkey,
+          node_id,
+          netuid,
+          last_updated,
+          real_host,
+          real_port
+        ) VALUES (
+          'test-hotkey',
+          '000',
+          'test-coldkey',
+          -1,
+          :netuid,
+          1010101,
+          :host,
+          :port
+        ) ON CONFLICT (hotkey) DO NOTHING"""
+            ),
+            {"host": args.host, "port": args.port, "netuid": settings.netuid},
+        )
+        await session.execute(
+            text(
+                """
+        INSERT INTO nodes (
+          uuid,
+          miner_hotkey,
+          name,
+          memory,
+          major,
+          minor,
+          processors,
+          sxm,
+          clock_rate,
+          max_threads_per_processor,
+          concurrent_kernels,
+          ecc,
+          verification_host,
+          verification_port,
+          gpu_identifier
+        ) VALUES (
+          'test-node',
+          'test-hotkey',
+          'RTX 4090',
+          25769803776,
+          8,
+          9,
+          128,
+          false,
+          2520000.0,
+          1536,
+          true,
+          false,
+          :host,
+          :port,
+          '4090'
+        ) ON CONFLICT(uuid) DO NOTHING"""
+            ),
+            {"host": args.host, "port": args.port},
+        )
+        await session.execute(text("UPDATE IMAGES SET status = 'built and pushed'"))
+        await session.execute(
+            text(
+                """
+        INSERT INTO instances (
+          instance_id,
+          host,
+          port,
+          chute_id,
+          miner_uid,
+          miner_hotkey,
+          miner_coldkey,
+          region,
+          active,
+          verified
+        ) VALUES (
+          'test-instance',
+          :host,
+          :port,
+          :chute_id,
+          -1,
+          'test-hotkey',
+          'test-coldkey',
+          'n/a',
+          true,
+          true
+        )"""
+            ),
+            {"host": args.host, "port": args.port, "chute_id": args.chute_id},
+        )
+        await session.execute(
+            text(
+                "INSERT INTO instance_nodes (instance_id, node_id) VALUES (:instance_id, :node_id)"
+            ),
+            {"instance_id": "test-instance", "node_id": "test-node"},
+        )
+        await session.commit()
+    logger.success("Successfully seeded dev instance.")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
