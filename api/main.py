@@ -140,10 +140,7 @@ async def startup():
         await settings.storage_client.make_bucket(settings.storage_bucket)
 
 
-ping_app = FastAPI()
 
-@ping_app.get("/ping")
+@app.get("/ping")
 async def ping():
     return {"message": "pong"}
-
-app.mount("/ping", ping_app)
