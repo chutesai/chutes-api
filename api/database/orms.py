@@ -1,4 +1,3 @@
-from metasync.shared import MetagraphNode  # noqa: F401
 import api.node.schemas  # noqa: F401
 import api.chute.schemas  # noqa: F401
 import api.challenge.schemas  # noqa: F401
