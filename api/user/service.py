@@ -30,12 +30,13 @@ router = APIRouter()
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
 
 
-# def get_current_user(
-#     purpose: str = None,
-#     registered_to: int = None,
-#     raise_not_found: bool = True,
-#     allow_api_key=False,
-# ):
+def get_current_user(
+    purpose: str = None,
+    registered_to: int = None,
+    raise_not_found: bool = True,
+    allow_api_key=False,
+):
+    ...
 #     """
 #     Authentication dependency builder.
 #     """
