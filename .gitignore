@@ -9,6 +9,7 @@ __pycache__/
 # C extensions
 
 *.so
+data/chutes
 
 # Distribution / packaging
 .Python
