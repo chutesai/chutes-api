@@ -142,7 +142,7 @@ async def startup():
 
 ping_app = FastAPI()
 
-@ping_app.get("/ping", include_in_schema=False)
+@ping_app.get("/ping")
 async def ping():
     return {"message": "pong"}
 
