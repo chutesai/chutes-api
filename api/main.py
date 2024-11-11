@@ -139,6 +139,11 @@ async def startup():
     if not await settings.storage_client.bucket_exists(settings.storage_bucket):
         await settings.storage_client.make_bucket(settings.storage_bucket)
 
-@app.get("/ping")
+
+ping_app = FastAPI()
+
+@ping_app.get("/ping", include_in_schema=False)
 async def ping():
     return {"message": "pong"}
+
+app.mount("/ping", ping_app)
