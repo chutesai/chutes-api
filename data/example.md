@@ -28,7 +28,7 @@ export PYTHONPATH=$(pwd)
 python ./api/bin/seed_instance --chute-id $CHUTE_ID
 
 # Create an API key.
-chutes api_key --name admin --admin
+chutes keys create --name admin --admin
 
 # Do some magic -- PASTE THE KEY from chutes_api_key at the end of the curl command:
 curl -s http://test-unsloth-llama-3-2-1b-instruct.lvh.me:8000/v1/chat/completions -d '{"model": "unsloth/Llama-3.2-1B-Instruct", "messages": [{"role": "user", "content": "What is the secret to life, the universe, everything?."}], "stream": true, "max_tokens": 25}' -H 'Authorization: Bearer '
