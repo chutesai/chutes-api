@@ -5,8 +5,7 @@ ORM definitions for metagraph nodes.
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, DateTime, Integer, Float
-from api.challenge.schemas import ChallengeResult  # noqa
-from api.node.schemas import Node  # noqa
+
 
 
 def create_metagraph_node_class(base):

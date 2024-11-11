@@ -19,7 +19,6 @@ from sqlalchemy import (
 from api.database import Base, generate_uuid
 from api.utils import is_valid_host
 
-
 # Association table.
 instance_nodes = Table(
     "instance_nodes",
@@ -36,7 +35,7 @@ class InstanceArgs(BaseModel):
     node_ids: list[str]
     host: str
     port: int
-from api.node.schemas import Node  # noqa
+
 
 class Instance(Base):
     __tablename__ = "instances"

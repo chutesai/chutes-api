@@ -13,10 +13,6 @@ from sqlalchemy import delete, select
 
 # The below have to be here to prevent SQLAlchemy initialization errors
 from api.user.schemas import User
-from api.chute.schemas import Chute  # noqa: F401
-from api.image.schemas import Image  # noqa: F401
-from api.instance.schemas import Instance  # noqa: F401
-from api.user import events  # noqa: F401
 from rich.table import Table
 from rich.console import Console
 
