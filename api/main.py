@@ -42,6 +42,9 @@ default_router.include_router(
 default_router.include_router(
     api_key_router, prefix="/api_keys", tags=["Authentication"]
 )
+
+default_router.get("/ping")(lambda: {"message": "pong"})
+
 app.include_router(default_router)
 app.include_router(host_invocation_router)
 
@@ -145,6 +148,3 @@ async def startup():
 
 
 
-@app.get("/ping")
-async def ping():
-    return {"message": "pong"}
