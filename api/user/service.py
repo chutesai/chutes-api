@@ -68,7 +68,7 @@ def get_current_user(
                     return api_key.user
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="API key not found :(",
+                detail="Can't find a user with that api key in our db :(",
             )
 
         # Otherwise we are using hotkey auth, so need to check the nonce
