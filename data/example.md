@@ -4,7 +4,7 @@
 # Re-create entire environment.
 docker compose down
 docker compose -f docker-compose-miner.yml down
-docker volume rm parachutes-api_kind_data parachutes-api_kube_config parachutes-api_minio_data parachutes-api_postgres_data
+docker volume rm chutes-api_kind_data chutes-api_kube_config chutes-api_minio_data chutes-api_postgres_data
 docker compose up -d --build
 docker compose -f docker-compose-miner.yml up -d vllm
 
@@ -23,7 +23,7 @@ docker exec -it chutes-api-postgres-1 psql -U user -d chutes -c "update images s
 chutes deploy data/vllm_example:chute --public 
 
 # Seed the instance to immitate a real miner.
-export CHUTE_ID=$(docker compose exec postgres psql -U user -d parachutes -c "select chute_id from chutes order by created_at desc limit 1" -t)
+export CHUTE_ID=$(docker compose exec postgres psql -U user -d chutes -c "select chute_id from chutes order by created_at desc limit 1" -t)
 export PYTHONPATH=$(pwd)
 python ./run_api/bin/seed_instance --chute-id $CHUTE_ID
 
