@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from api.database import Base, generate_uuid
 from api.utils import is_valid_host
+from api.node.schemas import Node  # noqa
 
 # Association table.
 instance_nodes = Table(
