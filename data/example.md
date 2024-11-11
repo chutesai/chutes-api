@@ -17,7 +17,7 @@ pip install torch vllm  # Needed for this build example
 chutes build data/vllm_example:chute --public --debug --wait
 # Don't wait for the build, just ctrl+c and end it.
 # XXX mark it built so we don't have to wait.
-docker exec -it chutes-api-postgres-1 psql -U user -d parachutes -c "update images set status = 'built and pushed'"
+docker exec -it chutes-api-postgres-1 psql -U user -d chutes -c "update images set status = 'built and pushed'"
 
 # Deploy.
 chutes deploy data/vllm_example:chute --public 
