@@ -66,6 +66,7 @@ def get_current_user(
                     api_key = await get_and_check_api_key(token, request)
                     request.state.api_key = api_key
                     return api_key.user
+            # NOTE: Need a nicer error message if the user is trying to register (and has no api key)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Can't find a user with that api key in our db :(",
