@@ -49,48 +49,48 @@ app.include_router(host_invocation_router)
 fickling.always_check_safety()
 
 
-# @app.middleware("http")
-# async def host_router_middleware(request: Request, call_next):
-#     """
-#     Route differentiation for hostname-based simple invocations.
-#     """
-#     request.state.chute_id = None
-#     host = request.headers.get("host", "")
-#     host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
-#     if host_parts and (chute_id := await chute_id_by_slug(host_parts.group(1).lower())):
-#         request.state.chute_id = chute_id
-#         request.state.auth_method = "invoke"
-#         request.state.auth_object_type = "chutes"
-#         request.state.auth_object_id = chute_id
-#         app.router = host_invocation_router
-#     else:
-#         request.state.auth_method = "read"
-#         if request.method.lower() in ("post", "put", "patch"):
-#             request.state.auth_method = "write"
-#         elif request.method.lower() == "delete":
-#             request.state.auth_method = "delete"
-#         request.state.auth_object_type = request.url.path.split("/")[1]
-#         # XXX at some point, perhaps we can support objects by name too, but for
-#         # now, for auth to work (easily) we just need to only support UUIDs when
-#         # using API keys.
-#         path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
-#         if path_match:
-#             request.state.auth_object_id = path_match.group(1)
-#         else:
-#             request.state.auth_object_id = "__list_or_invalid__"
-#         app.router = default_router
-#     return await call_next(request)
+@app.middleware("http")
+async def host_router_middleware(request: Request, call_next):
+    """
+    Route differentiation for hostname-based simple invocations.
+    """
+    request.state.chute_id = None
+    host = request.headers.get("host", "")
+    host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
+    if host_parts and (chute_id := await chute_id_by_slug(host_parts.group(1).lower())):
+        request.state.chute_id = chute_id
+        request.state.auth_method = "invoke"
+        request.state.auth_object_type = "chutes"
+        request.state.auth_object_id = chute_id
+        app.router = host_invocation_router
+    else:
+        request.state.auth_method = "read"
+        if request.method.lower() in ("post", "put", "patch"):
+            request.state.auth_method = "write"
+        elif request.method.lower() == "delete":
+            request.state.auth_method = "delete"
+        request.state.auth_object_type = request.url.path.split("/")[1]
+        # XXX at some point, perhaps we can support objects by name too, but for
+        # now, for auth to work (easily) we just need to only support UUIDs when
+        # using API keys.
+        path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
+        if path_match:
+            request.state.auth_object_id = path_match.group(1)
+        else:
+            request.state.auth_object_id = "__list_or_invalid__"
+        app.router = default_router
+    return await call_next(request)
 
-# # NOTE: Do we really want to do this in middleware, for every request?
-# @app.middleware("http")
-# async def request_body_checksum(request: Request, call_next):
-#     if request.method in ["POST", "PUT", "PATCH"]:
-#         body = await request.body()
-#         sha256_hash = hashlib.sha256(body).hexdigest()
-#         request.state.body_sha256 = sha256_hash
-#     else:
-#         request.state.body_sha256 = None
-#     return await call_next(request)
+# NOTE: Do we really want to do this in middleware, for every request?
+@app.middleware("http")
+async def request_body_checksum(request: Request, call_next):
+    if request.method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        sha256_hash = hashlib.sha256(body).hexdigest()
+        request.state.body_sha256 = sha256_hash
+    else:
+        request.state.body_sha256 = None
+    return await call_next(request)
 
 
 @app.on_event("startup")
