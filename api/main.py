@@ -54,6 +54,9 @@ async def host_router_middleware(request: Request, call_next):
     """
     Route differentiation for hostname-based simple invocations.
     """
+    if request.url.path == "/ping":
+        app.router = default_router
+        return await call_next(request)
     request.state.chute_id = None
     host = request.headers.get("host", "")
     host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
