@@ -43,6 +43,7 @@ default_router.include_router(
     api_key_router, prefix="/api_keys", tags=["Authentication"]
 )
 
+# Do not use app for this, else middleware picks it up
 default_router.get("/ping")(lambda: {"message": "pong"})
 
 app.include_router(default_router)
