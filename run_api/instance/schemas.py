@@ -6,7 +6,7 @@ from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Index
 from sqlalchemy.dialects.postgresql import JSONB
-from run_api.database import Base
+from api.database import Base
 
 
 class Instance(Base):

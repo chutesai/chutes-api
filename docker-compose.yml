@@ -99,7 +99,7 @@ services:
       target: api
     volumes:
       - ./metasync:/app/metasync
-      - ./run_api:/app/run_api
+      - ./api:/app/api
       - ./data:/app/data
       - kube_config:/home/chutes/.kube
     environment:

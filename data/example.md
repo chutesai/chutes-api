@@ -25,7 +25,7 @@ chutes deploy data/vllm_example:chute --public
 # Seed the instance to immitate a real miner.
 export CHUTE_ID=$(docker compose exec postgres psql -U user -d chutes -c "select chute_id from chutes order by created_at desc limit 1" -t)
 export PYTHONPATH=$(pwd)
-python ./run_api/bin/seed_instance --chute-id $CHUTE_ID
+python ./api/bin/seed_instance --chute-id $CHUTE_ID
 
 # Create an API key.
 chutes api_key --name admin --admin

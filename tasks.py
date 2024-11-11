@@ -7,16 +7,16 @@ from sqlalchemy.exc import IntegrityError
 
 import typer
 from loguru import logger
-from run_api.api_key.schemas import APIKey, APIKeyArgs
-from run_api.database import Base, get_db, engine
+from api.api_key.schemas import APIKey, APIKeyArgs
+from api.database import Base, get_db, engine
 from sqlalchemy import delete, select
 
 # The below have to be here to prevent SQLAlchemy initialization errors
-from run_api.user.schemas import User
-from run_api.chute.schemas import Chute  # noqa: F401
-from run_api.image.schemas import Image  # noqa: F401
-from run_api.instance.schemas import Instance  # noqa: F401
-from run_api.user import events  # noqa: F401
+from api.user.schemas import User
+from api.chute.schemas import Chute  # noqa: F401
+from api.image.schemas import Image  # noqa: F401
+from api.instance.schemas import Instance  # noqa: F401
+from api.user import events  # noqa: F401
 from rich.table import Table
 from rich.console import Console
 
