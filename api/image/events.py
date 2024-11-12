@@ -2,7 +2,6 @@ import asyncio
 import uuid
 from sqlalchemy import event
 from api.image.schemas import Image
-from api.image.forge import forge
 
 
 @event.listens_for(Image, "before_insert")
@@ -20,4 +19,5 @@ def after_insert(_, __, image):
     """
     Trigger image build after insert.
     """
+    from api.image.forge import forge
     asyncio.create_task(forge.kiq(image.image_id))

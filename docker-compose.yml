@@ -119,6 +119,7 @@ services:
       - minio
       - kind
       - registry
+      - vault
     networks:
       - kind
 
@@ -154,8 +155,6 @@ services:
     build:
       context: .
       target: forge
-    volumes:
-      - ./:/forge
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0

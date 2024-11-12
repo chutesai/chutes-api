@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "chutes-api"
 version = "0.0.1"
-description = "ParachutesAI run platform API"
+description = "chutes.ai API/validator"
 authors = ["Jon Durbin <jon@jondurbin.com>", "namoray <namoray@rayonlabs.ai>"]
 license = "MIT"
 readme = "README.md"

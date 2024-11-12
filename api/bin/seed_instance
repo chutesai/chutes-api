@@ -36,7 +36,7 @@ async def main():
     parser.add_argument(
         "--chute-id",
         type=str,
-        default="135c0f80-7e3c-5cdf-9c1b-c1ae36c9dc66",
+        default="13881abc-550d-569e-8287-0fc6ef380d00",
         help="Chute ID",
     )
 
