@@ -20,7 +20,6 @@ from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.instance.schemas import Instance
-from api.utils import sse, now_str
 from api.gpu import COMPUTE_MIN
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 

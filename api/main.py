@@ -27,10 +27,6 @@ from api.payment.router import router as payment_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
-from api.chute.util import chute_id_by_slug
-from api.database import Base, engine
-from api.config import settings
-import api.database.orms  # noqa: F401
 
 
 @asynccontextmanager

@@ -7,7 +7,6 @@ from pydantic import BaseModel
 from sqlalchemy import func, Column, String, DateTime, Double, Boolean
 from sqlalchemy.orm import relationship, validates
 from api.database import Base
-from api.config import settings
 import hashlib
 from api.util import gen_random_token
 from api.user.util import validate_the_username
@@ -43,9 +42,6 @@ class User(Base):
 
     # Flag indicating if the first payment bonus has been credited.
     bonus_used = Column(Boolean, default=False)
-
-    # Current balance in Tao
-    balance = Column(BigInteger, default=settings.signup_bonus_balance)
 
     # Friendly name for the frontend for chute creators
     username = Column(String, unique=True)
