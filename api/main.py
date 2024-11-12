@@ -33,15 +33,9 @@ default_router.include_router(bounty_router, prefix="/bounties", tags=["Chutes"]
 default_router.include_router(image_router, prefix="/images", tags=["Images"])
 default_router.include_router(node_router, prefix="/nodes", tags=["Nodes"])
 default_router.include_router(instance_router, prefix="/instances", tags=["Instances"])
-default_router.include_router(
-    invocation_router, prefix="/invocations", tags=["Invocations"]
-)
-default_router.include_router(
-    registry_router, prefix="/registry", tags=["Authentication"]
-)
-default_router.include_router(
-    api_key_router, prefix="/api_keys", tags=["Authentication"]
-)
+default_router.include_router(invocation_router, prefix="/invocations", tags=["Invocations"])
+default_router.include_router(registry_router, prefix="/registry", tags=["Authentication"])
+default_router.include_router(api_key_router, prefix="/api_keys", tags=["Authentication"])
 
 # Do not use app for this, else middleware picks it up
 default_router.get("/ping")(lambda: {"message": "pong"})
@@ -88,6 +82,7 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_object_id = "__list_or_invalid__"
         app.router = default_router
     return await call_next(request)
+
 
 # NOTE: Do we really want to do this in middleware, for every request?
 @app.middleware("http")
@@ -146,6 +141,3 @@ async def startup():
     # Buckets.
     if not await settings.storage_client.bucket_exists(settings.storage_bucket):
         await settings.storage_client.make_bucket(settings.storage_bucket)
-
-
-

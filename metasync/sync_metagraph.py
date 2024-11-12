@@ -42,24 +42,17 @@ async def sync_and_save_metagraph(redis_client):
         for node in nodes:
             node_dict = node.dict()
             node_dict.pop("last_updated", None)
-            node_dict["checksum"] = hashlib.sha256(
-                json.dumps(node_dict).encode()
-            ).hexdigest()
+            node_dict["checksum"] = hashlib.sha256(json.dumps(node_dict).encode()).hexdigest()
             statement = insert(MetagraphNode).values(node_dict)
             statement = statement.on_conflict_do_update(
                 index_elements=["hotkey"],
-                set_={
-                    key: getattr(statement.excluded, key)
-                    for key, value in node_dict.items()
-                },
+                set_={key: getattr(statement.excluded, key) for key, value in node_dict.items()},
                 where=MetagraphNode.checksum != node_dict["checksum"],
             )
             result = await session.execute(statement)
             if result.rowcount > 0:
                 logger.info(f"Detected metagraph update for {node.hotkey=}")
-                redis_client.publish(
-                    f"metagraph_change:{settings.netuid}", json.dumps(node_dict)
-                )
+                redis_client.publish(f"metagraph_change:{settings.netuid}", json.dumps(node_dict))
                 updated += 1
         if updated:
             logger.info(f"Updated {updated} nodes for netuid={settings.netuid}")

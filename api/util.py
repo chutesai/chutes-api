@@ -10,7 +10,6 @@ import time
 import orjson as json
 
 
-
 def now_str():
     """
     Return current (UTC) timestamp as string.
@@ -37,9 +36,12 @@ def nonce_is_valid(nonce: str) -> bool:
     return nonce and nonce.isdigit() and abs(time.time() - int(nonce)) < 600
 
 
-
 def get_signing_message(
-    hotkey: str, nonce: str, payload_str: str | bytes | None, purpose: str | None = None, payload_hash: str | None = None
+    hotkey: str,
+    nonce: str,
+    payload_str: str | bytes | None,
+    purpose: str | None = None,
+    payload_hash: str | None = None,
 ) -> str:
     """Get the signing message for a given hotkey, nonce, and payload."""
     if payload_str:

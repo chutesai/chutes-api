@@ -24,9 +24,7 @@ async def register(
     user_args: UserRequest,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(raise_not_found=False)),
-    hotkey: str = Header(
-        ..., description="The hotkey of the user", alias=HOTKEY_HEADER
-    ),
+    hotkey: str = Header(..., description="The hotkey of the user", alias=HOTKEY_HEADER),
 ):
     """
     Register a user.
@@ -35,7 +33,7 @@ async def register(
         # NOTE: Change when we allow register without a hotkey
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="This hotkey is already registered to a user!", 
+            detail="This hotkey is already registered to a user!",
         )
 
     # Validate the username
@@ -48,9 +46,7 @@ async def register(
         ) from e
 
     # Check if the username exists already.
-    existing_user = await db.execute(
-        select(User).where(User.username == user_args.username)
-    )
+    existing_user = await db.execute(select(User).where(User.username == user_args.username))
     if existing_user.first() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

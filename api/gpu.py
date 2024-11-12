@@ -271,9 +271,7 @@ def calculate_gpu_boost(gpu_info):
     ecc_multiplier = 1.15 if gpu_info["ecc"] else 1.0
     sxm_multiplier = 1.2 if gpu_info["sxm"] else 1.0
 
-    datacenter_multiplier = (
-        1.2 if (gpu_info["ecc"] and gpu_info["tensor_cores"] >= 300) else 1.0
-    )
+    datacenter_multiplier = 1.2 if (gpu_info["ecc"] and gpu_info["tensor_cores"] >= 300) else 1.0
 
     score = (
         arch_base_multiplier

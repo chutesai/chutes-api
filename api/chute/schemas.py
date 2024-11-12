@@ -82,9 +82,7 @@ class NodeSelector(BaseModel):
                 ]
             )
         if self.require_sxm:
-            allowed_gpus = set(
-                [gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]]
-            )
+            allowed_gpus = set([gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]])
         if not allowed_gpus:
             raise ValueError("No GPUs match specified node_selector criteria")
 
@@ -143,14 +141,10 @@ class Chute(Base):
         Basic validation on the cords, i.e. methods that can be called for this chute.
         """
         if not cords or not isinstance(cords, list):
-            raise ValueError(
-                "Must include between 1 and 25 valid cords to create a chute"
-            )
+            raise ValueError("Must include between 1 and 25 valid cords to create a chute")
         for cord in cords:
             path = cord.path
-            if not isinstance(path, str) or not re.match(
-                r"^(/[a-z][a-z0-9_]*)+$", path, re.I
-            ):
+            if not isinstance(path, str) or not re.match(r"^(/[a-z][a-z0-9_]*)+$", path, re.I):
                 raise ValueError(f"Invalid cord path: {path}")
             public_path = cord.public_api_path
             if public_path:
@@ -159,9 +153,7 @@ class Chute(Base):
                 ):
                     raise ValueError(f"Invalid cord public path: {public_path}")
                 if cord.public_api_method not in ("GET", "POST"):
-                    raise ValueError(
-                        f"Unsupported public API method: {cord.public_api_method}"
-                    )
+                    raise ValueError(f"Unsupported public API method: {cord.public_api_method}")
             stream = cord.stream
             if stream not in (None, True, False):
                 raise ValueError(f"Invalid cord stream value: {stream}")

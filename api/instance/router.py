@@ -25,9 +25,7 @@ async def create_instance(
     instance_args: InstanceArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
-    _: User = Depends(
-        get_current_user(raise_not_found=False, registered_to=settings.netuid)
-    ),
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
     chute = await get_chute_by_id_or_name(chute_id)
     if not chute:
@@ -73,9 +71,7 @@ async def create_instance(
                 detail=f"Node {node_id} is not compatible with chute node selector!",
             )
         db.execute(
-            instance_nodes.insert().values(
-                instance_id=instance.instance_id, node_id=node_id
-            )
+            instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
         )
 
     # Persist, which will raise a unique constraint error when the node is already allocated.
@@ -103,9 +99,7 @@ async def delete_instance(
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
     _: User = Depends(
-        get_current_user(
-            purpose="nodes", raise_not_found=False, registered_to=settings.netuid
-        )
+        get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)

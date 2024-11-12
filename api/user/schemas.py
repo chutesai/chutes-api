@@ -12,15 +12,13 @@ import hashlib
 from api.util import gen_random_token
 from api.user.util import validate_the_username
 
+
 # Other fields are populated by listeners
 # Except hotkey which is added in the header
 # NOTE: Can we add hotkey here instead?
 class UserRequest(BaseModel):
     username: str
     coldkey: str
-
-
-
 
 
 class User(Base):
@@ -54,9 +52,7 @@ class User(Base):
 
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")
-    api_keys = relationship(
-        "APIKey", back_populates="user", cascade="all, delete-orphan"
-    )
+    api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
 
     @validates("username")
     def validate_username(self, _, value):

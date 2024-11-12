@@ -28,9 +28,7 @@ async def get_and_check_api_key(key: str, request: Request):
             detail="Missing or invalid authorization header(s)",
         )
 
-    part_match = re.match(
-        r"^cpk_([a-f0-9]{32})\.([a-f0-9]{32})\.([a-zA-Z0-9]{32})$", key
-    )
+    part_match = re.match(r"^cpk_([a-f0-9]{32})\.([a-f0-9]{32})\.([a-zA-Z0-9]{32})$", key)
     if not part_match:
         return False
     token_id, user_id, _ = part_match.groups()
@@ -39,9 +37,7 @@ async def get_and_check_api_key(key: str, request: Request):
 
     async with SessionLocal() as session:
         session: AsyncSession
-        result = await session.execute(
-            select(APIKey).where(APIKey.api_key_id == token_id)
-        )
+        result = await session.execute(select(APIKey).where(APIKey.api_key_id == token_id))
         api_token = result.unique().scalar_one_or_none()
         if not api_token or not api_token.verify(key):
             raise HTTPException(
@@ -57,6 +53,6 @@ async def get_and_check_api_key(key: str, request: Request):
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token or user not found",
             )
-        
+
         # TODO: Add checking of the user_id?
         return api_token

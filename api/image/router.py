@@ -112,9 +112,7 @@ async def delete_image(
         )
 
     # No deleting images that have an associated chute.
-    if (
-        await db.execute(select(exists().where(Chute.image_id == image.image_id)))
-    ).scalar():
+    if (await db.execute(select(exists().where(Chute.image_id == image.image_id)))).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Image is in use by one or more chutes",
@@ -141,9 +139,7 @@ async def create_image(
     Create an image; really here we're just storing the metadata
     in the DB and kicking off the image build asynchronously.
     """
-    image_id = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.user_id}/{name}:{tag}")
-    )
+    image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.user_id}/{name}:{tag}"))
     if (await db.execute(select(exists().where(Image.image_id == image_id)))).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

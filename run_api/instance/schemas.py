@@ -29,6 +29,4 @@ class Instance(Base):
 
     chute = relationship("Chute", back_populates="instances", lazy="joined")
 
-    __table_args__ = (
-        Index("idx_chute_active_lastq", "chute_id", "active", "last_queried_at"),
-    )
+    __table_args__ = (Index("idx_chute_active_lastq", "chute_id", "active", "last_queried_at"),)

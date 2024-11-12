@@ -225,9 +225,7 @@ async def invoke(
                     "miner_uid": target.miner_uid,
                     "miner_hotkey": target.miner_hotkey,
                     "request_path": request_path,
-                    "compute_multiplier": NodeSelector(
-                        **chute.node_selector
-                    ).compute_multiplier,
+                    "compute_multiplier": NodeSelector(**chute.node_selector).compute_multiplier,
                 },
             )
             partition_suffix = result.scalar()
@@ -254,9 +252,7 @@ async def invoke(
             async with SessionLocal() as session:
                 response_path = None
                 if request_path:
-                    response_path = request_path.replace(
-                        "request.json", "response.json"
-                    )
+                    response_path = request_path.replace("request.json", "response.json")
                     try:
                         await settings.storage_client.put_object(
                             settings.storage_bucket,
