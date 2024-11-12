@@ -16,10 +16,10 @@ from sqlalchemy import or_, text, update, func, String
 from sqlalchemy.future import select
 from api.config import settings
 from api.database import SessionLocal
+from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.instance.schemas import Instance
-from api.utils import sse, now_str
 
 
 REQUEST_SAMPLE_RATIO = 0.05
@@ -219,9 +219,7 @@ async def invoke(
                     "miner_uid": target.miner_uid,
                     "miner_hotkey": target.miner_hotkey,
                     "request_path": request_path,
-                    "compute_multiplier": NodeSelector(
-                        **chute.node_selector
-                    ).compute_multiplier,
+                    "compute_multiplier": NodeSelector(**chute.node_selector).compute_multiplier,
                 },
             )
             partition_suffix = result.scalar()
@@ -248,9 +246,7 @@ async def invoke(
             async with SessionLocal() as session:
                 response_path = None
                 if request_path:
-                    response_path = request_path.replace(
-                        "request.json", "response.json"
-                    )
+                    response_path = request_path.replace("request.json", "response.json")
                     try:
                         await settings.storage_client.put_object(
                             settings.storage_bucket,

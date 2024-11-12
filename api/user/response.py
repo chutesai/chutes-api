@@ -19,3 +19,4 @@ class RegistrationResponse(UserResponse):
     hotkey: str
     coldkey: str
     payment_address: str
+    fingerprint: str

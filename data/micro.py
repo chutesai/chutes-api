@@ -1,4 +1,3 @@
-import json
 import asyncio
 from chutes.image import Image
 from chutes.chute import Chute, NodeSelector
@@ -6,9 +5,7 @@ from chutes.chute import Chute, NodeSelector
 image = (
     Image("micro", "0.0.1")
     .from_base("alpine:latest")
-    .run_command(
-        "apk add python3 py3-pip shadow && ln -sf $(which python3) /usr/bin/python"
-    )
+    .run_command("apk add python3 py3-pip shadow && ln -sf $(which python3) /usr/bin/python")
     .run_command("adduser chutes -D /home/chutes")
     .run_command("mkdir -p /home/chutes && chown chutes:chutes /home/chutes")
     .set_user("chutes")

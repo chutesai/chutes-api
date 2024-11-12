@@ -25,23 +25,15 @@ class Settings(BaseSettings):
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
-    registry_external_host: str = os.getenv(
-        "REGISTRY_EXTERNAL_HOST", "registry.chutes.ai"
-    )
+    registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
     registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "3600"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
     netuid: int = int(os.getenv("NETUID", "19"))
-    subtensor: str = os.getenv(
-        "SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443"
-    )
-    registration_minimum_balance: float = float(
-        os.getenv("REGISTRATION_MINIMUM_BALANCE", "0.5")
-    )
-    signup_bonus_balance: int = int(
-        os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9))
-    )
+    subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
+    registration_minimum_balance: float = float(os.getenv("REGISTRATION_MINIMUM_BALANCE", "0.5"))
+    signup_bonus_balance: int = int(os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9)))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
 

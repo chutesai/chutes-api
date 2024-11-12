@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.6.1-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04
 RUN apt-get update
 RUN apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev libexpat1-dev lzma liblzma-dev
 WORKDIR /usr/src
@@ -22,7 +22,8 @@ ENV PATH=/opt/python/bin:$PATH
 RUN /opt/python/bin/pip install --no-cache vllm==0.6.2 wheel packaging
 RUN /opt/python/bin/pip install --no-cache flash-attn==2.6.3
 RUN /opt/python/bin/pip uninstall -y xformers
-RUN /opt/python/bin/pip install chutes==0.0.16
+ADD --chown=vllm chutes /workspace/chutes
+RUN /opt/python/bin/pip install -e chutes
 ENV PATH=/home/vllm/.local/bin:$PATH
 ENV LD_PRELOAD=/lib/x86_64-linux-gnu/libtcmalloc.so.4
 ADD vllm_example.py /workspace/vllm_example.py
