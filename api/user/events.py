@@ -3,12 +3,8 @@ User event listeners.
 """
 
 import uuid
-from passlib.hash import argon2
 from sqlalchemy import event
 from substrateinterface import Keypair
-from api.user.schemas import User
-from api.config import settings
-from api import constants
 from api.user.schemas import User
 from api.config import settings
 

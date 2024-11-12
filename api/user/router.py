@@ -2,7 +2,7 @@
 User routes.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from api.database import get_db_session
 from api.user.schemas import UserRequest, User
 from api.user.response import RegistrationResponse

@@ -1,4 +1,3 @@
-import json
 import asyncio
 from chutes.image import Image
 from chutes.chute import Chute, NodeSelector

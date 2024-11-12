@@ -13,12 +13,6 @@ from api.user.schemas import User
 from api.user.service import get_current_user
 from api.database import get_db_session
 from api.pagination import PaginatedResponse
-from loguru import logger
-from api.api_key.schemas import APIKeyArgs, APIKey
-from api.api_key.response import APIKeyCreationResponse, APIKeyResponse
-from api.user.schemas import User
-from api.database import get_db_session
-from api.pagination import PaginatedResponse
 
 router = APIRouter()
 

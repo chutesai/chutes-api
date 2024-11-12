@@ -1,3 +1,5 @@
+# flake8: noqa=E402
+
 import os
 import time
 
@@ -40,7 +42,9 @@ async def _add_user(
     hotkey: str | None = None,
 ):
     async with get_db() as db:
-        user, fingerprint = User.create(username=username, coldkey=coldkey, hotkey=hotkey)
+        user, fingerprint = User.create(
+            username=username, coldkey=coldkey, hotkey=hotkey
+        )
 
         _query = select(User).where(User.username == username)
         existing_user = await db.execute(_query)
@@ -84,7 +88,9 @@ async def _add_api_key(user: User, name: str = "test-key", admin: bool = False):
         existing_key = existing_key.scalars().first()
 
         if existing_key:
-            await db.execute(delete(APIKey).where(APIKey.api_key_id == existing_key.api_key_id))
+            await db.execute(
+                delete(APIKey).where(APIKey.api_key_id == existing_key.api_key_id)
+            )
             await db.commit()
 
         api_key, actual_api_key_lol = APIKey.create(user.user_id, key_args)
@@ -202,7 +208,9 @@ async def _list_users():
 
         # Add rows
         for user in users.scalars().all():
-            table.add_row(user.username, user.coldkey, user.hotkey, str(user.created_at))
+            table.add_row(
+                user.username, user.coldkey, user.hotkey, str(user.created_at)
+            )
 
         # Display table
         console = Console()

@@ -18,13 +18,6 @@ from loguru import logger
 from api.constants import NONCE_HEADER
 from api.util import nonce_is_valid, get_signing_message
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import APIRouter, Request, HTTPException, status
-from substrateinterface import Keypair, KeypairType
-from api.config import settings
-from api.metasync import MetagraphNode
-from api.database import SessionLocal
-from api.user.schemas import User
-from api.api_key.util import get_and_check_api_key
 
 router = APIRouter()
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
@@ -147,11 +140,10 @@ def get_current_user(
                 f"User: {user}, not user: {not user}, user is none: {user is None}, raise not found: {raise_not_found}"
             )
             if not user and raise_not_found:
-                if use_hotkey_auth:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail=f"Could not find user with hotkey: {hotkey}",
-                    )
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail=f"Could not find user with hotkey: {hotkey}",
+                )
             logger.debug(f"Authenticated user: {user}")
             return user
 
