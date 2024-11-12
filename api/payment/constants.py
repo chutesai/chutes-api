@@ -48,4 +48,4 @@ PAYOUT_STRUCTURE = {
 assert sum([item["take"] for item in PAYOUT_STRUCTURE.values()]) == 1.0
 
 # The most expensive compute unit hourly price (h100 sxm5) (in USD).
-COMPUTE_UNIT_PRICE_BASIS = 2.0
+COMPUTE_UNIT_PRICE_BASIS = 4.0
