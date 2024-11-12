@@ -32,7 +32,9 @@ async def list_bounties(
     async with SessionLocal() as session:
         query = (
             select(Chute, text("bounties.bounty"), text("bounties.last_increased_at"))
-            .select_from(Chute.__table__.join(text("bounties"), text("bounties.chute_id = chutes.chute_id")))
+            .select_from(
+                Chute.__table__.join(text("bounties"), text("bounties.chute_id = chutes.chute_id"))
+            )
             .order_by(text("bounties.bounty DESC"))
         )
         results = await session.execute(query)

@@ -38,7 +38,9 @@ class NodeSelector(BaseModel):
         if not gpus:
             return gpus
         if set(map(lambda s: s.lower(), gpus)) - ALLOWED_INCLUDE:
-            raise ValueError(f"include must contain only the following GPUs: {list(ALLOWED_INCLUDE)}")
+            raise ValueError(
+                f"include must contain only the following GPUs: {list(ALLOWED_INCLUDE)}"
+            )
         return gpus
 
     @validator("exclude")
@@ -51,7 +53,9 @@ class NodeSelector(BaseModel):
             return gpus
         remaining = set(SUPPORTED_GPUS) - set(gpus)
         if not remaining & ALLOWED_INCLUDE:
-            raise ValueError(f"exclude must allow for at least one the following GPUs: {list(ALLOWED_INCLUDE)}")
+            raise ValueError(
+                f"exclude must allow for at least one the following GPUs: {list(ALLOWED_INCLUDE)}"
+            )
         return gpus
 
     @computed_field
@@ -71,7 +75,11 @@ class NodeSelector(BaseModel):
             allowed_gpus -= set(self.exclude)
         if self.min_vram_gb_per_gpu:
             allowed_gpus = set(
-                [gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu]
+                [
+                    gpu
+                    for gpu in allowed_gpus
+                    if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
+                ]
             )
         if self.require_sxm:
             allowed_gpus = set([gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]])
@@ -114,7 +122,9 @@ class Chute(Base):
 
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
-    instances = relationship("Instance", back_populates="chute", lazy="dynamic", cascade="all, delete-orphan")
+    instances = relationship(
+        "Instance", back_populates="chute", lazy="dynamic", cascade="all, delete-orphan"
+    )
 
     @validates("standard_template")
     def validate_standard_template(self, _, template):
@@ -138,7 +148,9 @@ class Chute(Base):
                 raise ValueError(f"Invalid cord path: {path}")
             public_path = cord.public_api_path
             if public_path:
-                if not isinstance(public_path, str) or not re.match(r"^(/[a-z][a-z0-9_]*)+$", public_path, re.I):
+                if not isinstance(public_path, str) or not re.match(
+                    r"^(/[a-z][a-z0-9_]*)+$", public_path, re.I
+                ):
                     raise ValueError(f"Invalid cord public path: {public_path}")
                 if cord.public_api_method not in ("GET", "POST"):
                     raise ValueError(f"Unsupported public API method: {cord.public_api_method}")

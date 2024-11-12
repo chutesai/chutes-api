@@ -30,7 +30,14 @@ def is_invalid_ip(ip: IPv4Address | IPv6Address) -> bool:
     """
     Check if IP address is private/local network.
     """
-    return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    )
 
 
 async def get_resolved_ips(host: str) -> Set[IPv4Address | IPv6Address]:

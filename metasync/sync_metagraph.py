@@ -32,7 +32,9 @@ async def sync_and_save_metagraph(redis_client):
     async with SessionLocal() as session:
         hotkeys = ", ".join([f"'{node.hotkey}'" for node in nodes])
         result = await session.execute(
-            text(f"DELETE FROM metagraph_nodes WHERE netuid = :netuid AND hotkey NOT IN ({hotkeys}) AND node_id >= 0"),
+            text(
+                f"DELETE FROM metagraph_nodes WHERE netuid = :netuid AND hotkey NOT IN ({hotkeys}) AND node_id >= 0"
+            ),
             {
                 "netuid": settings.netuid,
             },
@@ -74,7 +76,9 @@ async def main():
         except asyncio.TimeoutError:
             logger.error("Metagraph sync timed out!")
         except Exception as exc:
-            logger.error(f"Unhandled exception raised while syncing metagraph: {exc}\n{traceback.format_exc()}")
+            logger.error(
+                f"Unhandled exception raised while syncing metagraph: {exc}\n{traceback.format_exc()}"
+            )
         await asyncio.sleep(60)
 
 

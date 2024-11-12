@@ -16,7 +16,9 @@ router = APIRouter()
 async def registry_auth(
     request: Request,
     response: Response,
-    current_user: User = Depends(get_current_user(purpose="registry", registered_to=settings.netuid)),
+    current_user: User = Depends(
+        get_current_user(purpose="registry", registered_to=settings.netuid)
+    ),
 ):
     """
     Authentication registry/docker pull requests.

@@ -35,7 +35,9 @@ async def delete_node(
     node_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
-    _: User = Depends(get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(
+        get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
+    ),
 ):
     query = select(Node).where(Node.miner_hotkey == hotkey).where(Node.uuid == node_id)
     result = await db.execute(query)

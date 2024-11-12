@@ -136,10 +136,14 @@ async def _dev_setup():
     accounts = []
     api_keys = []
     for user in users:
-        account, fingerprint = await _add_user(username=user.username, coldkey=user.coldkey, hotkey=user.hotkey)
+        account, fingerprint = await _add_user(
+            username=user.username, coldkey=user.coldkey, hotkey=user.hotkey
+        )
         if not account:
             logger.info(
-                "Created Account: {} ({} - {})".format(account.username, account.fingerprint_hash, account.coldkey)
+                "Created Account: {} ({} - {})".format(
+                    account.username, account.fingerprint_hash, account.coldkey
+                )
             )
 
         api_key = await _add_api_key(account)
@@ -239,7 +243,9 @@ def reset():
 
 @app.command()
 def start_miner(
-    chutes_dir: str = typer.Option(default="~/chutes", help="The directory containing the chutes source code.")
+    chutes_dir: str = typer.Option(
+        default="~/chutes", help="The directory containing the chutes source code."
+    )
 ):
     """Start the miner."""
     # First copy chutes source dir to the data/ container
@@ -251,7 +257,9 @@ def start_miner(
     os.system(
         f"rsync -av --exclude-from='.gitignore' --exclude='.git' --exclude='venv' --exclude='.venv' --exclude='__pycache__' '{chutes_dir}/' data/chutes/"
     )
-    logger.info(f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner.")
+    logger.info(
+        f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner."
+    )
     os.system("docker compose -f docker-compose-miner.yml build vllm")
     logger.info("Built the miner. Now starting the miner.")
     os.system("docker compose -f docker-compose-miner.yml up -d vllm")

@@ -45,7 +45,9 @@ def get_current_user(
         Helper to authenticate requests.
         """
 
-        logger.debug(f"Authorization: {authorization}; signature: {signature}; nonce: {nonce}; hotkey: {hotkey}")
+        logger.debug(
+            f"Authorization: {authorization}; signature: {signature}; nonce: {nonce}; hotkey: {hotkey}"
+        )
         use_hotkey_auth = hotkey and signature
         # If not using hotkey auth, then just use the API key
         if not use_hotkey_auth:
@@ -116,7 +118,9 @@ def get_current_user(
                 if not (
                     await session.execute(
                         select(
-                            exists().where(MetagraphNode.hotkey == hotkey).where(MetagraphNode.netuid == registered_to)
+                            exists()
+                            .where(MetagraphNode.hotkey == hotkey)
+                            .where(MetagraphNode.netuid == registered_to)
                         )
                     )
                 ).scalar():
