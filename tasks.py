@@ -40,7 +40,7 @@ async def _add_user(
     hotkey: str | None = None,
 ):
     async with get_db() as db:
-        user, fingerpint = User.create(username=username, coldkey=coldkey, hotkey=hotkey)
+        user, fingerprint = User.create(username=username, coldkey=coldkey, hotkey=hotkey)
 
         _query = select(User).where(User.username == username)
         existing_user = await db.execute(_query)
@@ -62,7 +62,7 @@ async def _add_user(
         await db.close()
 
         logger.info(f"Added user: {user}")
-        return user, fingerpint
+        return user, fingerprint
 
 
 @app.command()
