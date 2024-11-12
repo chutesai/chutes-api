@@ -70,9 +70,7 @@ async def create_instance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Node {node_id} is not compatible with chute node selector!",
             )
-        db.execute(
-            instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
-        )
+        db.execute(instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id))
 
     # Persist, which will raise a unique constraint error when the node is already allocated.
     try:
@@ -98,9 +96,7 @@ async def delete_instance(
     instance_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
-    _: User = Depends(
-        get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
-    ),
+    _: User = Depends(get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)),
 ):
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)
     if not instance:

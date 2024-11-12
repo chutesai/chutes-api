@@ -23,11 +23,7 @@ async def get_image_by_id_or_name(image_id_or_name, db, current_user):
         username = name_match.group(1) or current_user.username
         image_name = name_match.group(2)
         tag = name_match.group(3)
-        query = (
-            query.where(User.username == username)
-            .where(Image.name == image_name)
-            .where(Image.tag == tag)
-        )
+        query = query.where(User.username == username).where(Image.name == image_name).where(Image.tag == tag)
     else:
         query = query.where(Image.image_id == image_id_or_name)
     result = await db.execute(query)

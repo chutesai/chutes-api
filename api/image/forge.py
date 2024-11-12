@@ -134,11 +134,7 @@ async def build_and_push_image(image):
     # Push.
     await redis_client.xadd(
         f"forge:{image.image_id}:stream",
-        {
-            "data": json.dumps(
-                {"log_type": "stdout", "log": "pushing image to registry..."}
-            ).decode()
-        },
+        {"data": json.dumps({"log_type": "stdout", "log": "pushing image to registry..."}).decode()},
     )
     try:
         verify = str(not settings.registry_insecure).lower()
@@ -162,8 +158,7 @@ async def build_and_push_image(image):
             logger.success(f"Successfull pushed {full_image_tag}, done!")
             delta = time.time() - started_at
             message = (
-                "\N{hammer and wrench} "
-                + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
+                "\N{hammer and wrench} " + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
             )
             await redis_client.xadd(
                 f"forge:{image.image_id}:stream",
@@ -189,9 +184,7 @@ async def build_and_push_image(image):
         await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
-        raise PushTimeout(
-            f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
-        )
+        raise PushTimeout(f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds.")
 
     # Generate filesystem challenge data.
     message = "Generating filesystem challenge data..."
@@ -218,9 +211,7 @@ async def build_and_push_image(image):
         )
         if process.returncode == 0:
             for path in glob.glob("/tmp/fschallenge_*.data"):
-                destination = (
-                    f"fschallenge/{image.user_id}/{image.image_id}/{os.path.basename(path)}"
-                )
+                destination = f"fschallenge/{image.user_id}/{image.image_id}/{os.path.basename(path)}"
                 await settings.storage_client.put_object(
                     settings.storage_bucket,
                     destination,
@@ -228,9 +219,7 @@ async def build_and_push_image(image):
                     length=-1,
                     part_size=10 * 1024 * 1024,
                 )
-                message = (
-                    f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
-                )
+                message = f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
                 await redis_client.xadd(
                     f"forge:{image.image_id}:stream",
                     {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
@@ -258,10 +247,7 @@ async def build_and_push_image(image):
 
     # DONE!
     delta = time.time() - started_at
-    message = (
-        "\N{hammer and wrench} "
-        + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
-    )
+    message = "\N{hammer and wrench} " + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
     await redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},

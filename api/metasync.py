@@ -12,10 +12,6 @@ async def get_miner_by_hotkey(hotkey, db):
     """
     if not hotkey:
         return None
-    query = (
-        select(MetagraphNode)
-        .where(MetagraphNode.hotkey == hotkey)
-        .where(MetagraphNode.netuid == settings.netuid)
-    )
+    query = select(MetagraphNode).where(MetagraphNode.hotkey == hotkey).where(MetagraphNode.netuid == settings.netuid)
     result = await db.execute(query)
     return result.scalar_one_or_none()

@@ -85,9 +85,7 @@ class User(Base):
     #     return value
 
     @classmethod
-    def create(
-        cls, username: str, coldkey: str | None = None, hotkey: str | None = None
-    ) -> tuple[Self, str]:
+    def create(cls, username: str, coldkey: str | None = None, hotkey: str | None = None) -> tuple[Self, str]:
         """
         Create a new user.
         """

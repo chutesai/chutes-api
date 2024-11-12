@@ -46,9 +46,7 @@ class APIKeyScope(Base):
     __tablename__ = "api_key_scopes"
 
     scope_id = Column(String, primary_key=True)
-    api_key_id = Column(
-        String, ForeignKey("api_keys.api_key_id", ondelete="CASCADE"), nullable=False
-    )
+    api_key_id = Column(String, ForeignKey("api_keys.api_key_id", ondelete="CASCADE"), nullable=False)
     object_type = Column(String, nullable=False)
     object_id = Column(String)
     action = Column(Enum(Action))
@@ -170,8 +168,6 @@ class APIKey(Base):
         for scope in self.scopes:
             if scope.object_type != object_type:
                 continue
-            if scope.object_id in (None, object_id) and (
-                not scope.action or scope.action.value == action
-            ):
+            if scope.object_id in (None, object_id) and (not scope.action or scope.action.value == action):
                 return True
         return False

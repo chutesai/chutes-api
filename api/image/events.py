@@ -10,9 +10,7 @@ def generate_uid(_, __, image):
     """
     Set the image_id deterministically.
     """
-    image.image_id = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, f"{image.user_id}/{image.name}:{image.tag}")
-    )
+    image.image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{image.user_id}/{image.name}:{image.tag}"))
 
 
 @event.listens_for(Image, "after_insert")

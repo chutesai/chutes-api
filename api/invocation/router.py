@@ -62,9 +62,7 @@ async def report_invocation(
     }
 
 
-@host_invocation_router.api_route(
-    "{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
-)
+@host_invocation_router.api_route("{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"])
 async def hostname_invocation(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
@@ -81,9 +79,7 @@ async def hostname_invocation(
     for cord in chute.cords:
         public_path = cord.get("public_api_path", None)
         if public_path and public_path == request.url.path:
-            if cord.get("public_api_method", "POST") == request.method and stream == cord.get(
-                "stream"
-            ):
+            if cord.get("public_api_method", "POST") == request.method and stream == cord.get("stream"):
                 selected_cord = cord
                 break
     if not selected_cord:

@@ -192,9 +192,7 @@ async def create_image(
         while True:
             stream_result = None
             try:
-                stream_result = await redis_client.xrange(
-                    f"forge:{image_id}:stream", last_offset or "-", "+"
-                )
+                stream_result = await redis_client.xrange(f"forge:{image_id}:stream", last_offset or "-", "+")
             except Exception as exc:
                 logger.error(f"Error fetching stream result: {exc}")
                 yield f"data: ERROR: {exc}"
@@ -212,10 +210,7 @@ async def create_image(
                     break
                 yield f"data: {data[b'data'].decode()}\n\n"
         delta = time.time() - started_at
-        logger.success(
-            "\N{hammer and wrench} "
-            + f"finished building image {image_id} in {round(delta, 5)} seconds"
-        )
+        logger.success("\N{hammer and wrench} " + f"finished building image {image_id} in {round(delta, 5)} seconds")
 
     if wait:
         return StreamingResponse(_stream())

@@ -42,9 +42,7 @@ async def _add_user(
     hotkey: str | None = None,
 ):
     async with get_db() as db:
-        user, fingerprint = User.create(
-            username=username, coldkey=coldkey, hotkey=hotkey
-        )
+        user, fingerprint = User.create(username=username, coldkey=coldkey, hotkey=hotkey)
 
         _query = select(User).where(User.username == username)
         existing_user = await db.execute(_query)
@@ -88,9 +86,7 @@ async def _add_api_key(user: User, name: str = "test-key", admin: bool = False):
         existing_key = existing_key.scalars().first()
 
         if existing_key:
-            await db.execute(
-                delete(APIKey).where(APIKey.api_key_id == existing_key.api_key_id)
-            )
+            await db.execute(delete(APIKey).where(APIKey.api_key_id == existing_key.api_key_id))
             await db.commit()
 
         api_key, actual_api_key_lol = APIKey.create(user.user_id, key_args)
@@ -140,14 +136,10 @@ async def _dev_setup():
     accounts = []
     api_keys = []
     for user in users:
-        account, fingerprint = await _add_user(
-            username=user.username, coldkey=user.coldkey, hotkey=user.hotkey
-        )
+        account, fingerprint = await _add_user(username=user.username, coldkey=user.coldkey, hotkey=user.hotkey)
         if not account:
             logger.info(
-                "Created Account: {} ({} - {})".format(
-                    account.username, account.fingerprint_hash, account.coldkey
-                )
+                "Created Account: {} ({} - {})".format(account.username, account.fingerprint_hash, account.coldkey)
             )
 
         api_key = await _add_api_key(account)
@@ -208,9 +200,7 @@ async def _list_users():
 
         # Add rows
         for user in users.scalars().all():
-            table.add_row(
-                user.username, user.coldkey, user.hotkey, str(user.created_at)
-            )
+            table.add_row(user.username, user.coldkey, user.hotkey, str(user.created_at))
 
         # Display table
         console = Console()
@@ -249,9 +239,7 @@ def reset():
 
 @app.command()
 def start_miner(
-    chutes_dir: str = typer.Option(
-        default="~/chutes", help="The directory containing the chutes source code."
-    )
+    chutes_dir: str = typer.Option(default="~/chutes", help="The directory containing the chutes source code.")
 ):
     """Start the miner."""
     # First copy chutes source dir to the data/ container
@@ -263,9 +251,7 @@ def start_miner(
     os.system(
         f"rsync -av --exclude-from='.gitignore' --exclude='.git' --exclude='venv' --exclude='.venv' --exclude='__pycache__' '{chutes_dir}/' data/chutes/"
     )
-    logger.info(
-        f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner."
-    )
+    logger.info(f"Copied chutes source dir to data/chutes: {chutes_dir}. Now building and starting the miner.")
     os.system("docker compose -f docker-compose-miner.yml build vllm")
     logger.info("Built the miner. Now starting the miner.")
     os.system("docker compose -f docker-compose-miner.yml up -d vllm")

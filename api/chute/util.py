@@ -118,25 +118,19 @@ async def chute_id_by_slug(slug: str):
     Check if a chute exists with the specified slug (which is a subdomain for standard apps).
     """
     async with SessionLocal() as session:
-        if chute_id := (
-            await session.execute(select(Chute.chute_id).where(Chute.slug == slug))
-        ).scalar_one_or_none():
+        if chute_id := (await session.execute(select(Chute.chute_id).where(Chute.slug == slug))).scalar_one_or_none():
             return chute_id
     return None
 
 
-async def _invoke_one(
-    chute: Chute, path: str, stream: bool, args: str, kwargs: str, target: Instance
-):
+async def _invoke_one(chute: Chute, path: str, stream: bool, args: str, kwargs: str, target: Instance):
     """
     Try invoking a chute/cord with a single instance.
     """
     # Update last query time for this target.
     async with SessionLocal() as session:
         await session.execute(
-            update(Instance)
-            .where(Instance.instance_id == target.instance_id)
-            .values({"last_queried_at": func.now()})
+            update(Instance).where(Instance.instance_id == target.instance_id).values({"last_queried_at": func.now()})
         )
         await session.commit()
 
@@ -305,7 +299,5 @@ async def invoke(
                     },
                 }
             )
-            logger.error(
-                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {exc}"
-            )
+            logger.error(f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {exc}")
     yield sse({"error": "exhausted all available targets to no avail"})

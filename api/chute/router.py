@@ -156,11 +156,7 @@ async def deploy_chute(
         )
     if (
         await db.execute(
-            select(
-                exists()
-                .where(Chute.name.ilike(chute_args.name))
-                .where(Chute.user_id == current_user.user_id)
-            )
+            select(exists().where(Chute.name.ilike(chute_args.name)).where(Chute.user_id == current_user.user_id))
         )
     ).scalar():
         raise HTTPException(
@@ -179,17 +175,13 @@ async def deploy_chute(
     )
 
     # Generate a unique slug (subdomain).
-    chute.slug = re.sub(
-        r"[^a-z0-9-]+$", "-", slugify(f"{current_user.username}-{chute.name}").lower()
-    )
+    chute.slug = re.sub(r"[^a-z0-9-]+$", "-", slugify(f"{current_user.username}-{chute.name}").lower())
     base_slug = chute.slug
     already_exists = (await db.execute(select(exists().where(Chute.slug == chute.slug)))).scalar()
     while already_exists:
         suffix = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(6))
         chute.slug = f"{base_slug}-{suffix}"
-        already_exists = (
-            await db.execute(select(exists().where(Chute.slug == chute.slug)))
-        ).scalar()
+        already_exists = (await db.execute(select(exists().where(Chute.slug == chute.slug)))).scalar()
 
     db.add(chute)
     await db.commit()
@@ -253,6 +245,4 @@ async def invoke_(
 
     # Do the deed.
     await db.close()
-    return StreamingResponse(
-        invoke(chute, current_user.user_id, path, function, stream, args, kwargs, targets)
-    )
+    return StreamingResponse(invoke(chute, current_user.user_id, path, function, stream, args, kwargs, targets))

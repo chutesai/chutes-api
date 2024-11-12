@@ -9,9 +9,7 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    sqlalchemy: str = os.getenv(
-        "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
-    )
+    sqlalchemy: str = os.getenv("POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes")
     storage_client: Minio = Minio(
         os.getenv("MINIO_ENDPOINT", "127.0.0.1"),
         access_key=os.getenv("MINIO_ACCESS_KEY", "REPLACEME"),

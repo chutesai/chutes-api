@@ -53,9 +53,7 @@ class Node(Base):
     ecc = Column(Boolean, nullable=False)
 
     # Meta/app fields.
-    miner_hotkey = Column(
-        String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
-    )
+    miner_hotkey = Column(String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False)
     gpu_identifier = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verification_host = Column(String, nullable=False)
@@ -123,9 +121,7 @@ class Node(Base):
         memory_gb = int(memory / (1024 * 1024 * 1024))
         expected_memory = self._gpu_specs["memory"]
         if not (expected_memory - 1 <= memory_gb <= expected_memory + 1):
-            raise ValueError(
-                f"Memory {memory_gb}GB does not match expected {expected_memory}GB for {self._gpu_key}"
-            )
+            raise ValueError(f"Memory {memory_gb}GB does not match expected {expected_memory}GB for {self._gpu_key}")
         return memory
 
     @validates("major", "minor")
@@ -134,9 +130,7 @@ class Node(Base):
             return value
         expected = self._gpu_specs[key]
         if value != expected:
-            raise ValueError(
-                f"Compute capability {key} {value} does not match expected {expected} for {self._gpu_key}"
-            )
+            raise ValueError(f"Compute capability {key} {value} does not match expected {expected} for {self._gpu_key}")
         return value
 
     @validates("processors")
@@ -145,9 +139,7 @@ class Node(Base):
             return processors
         expected = self._gpu_specs["processors"]
         if processors != expected:
-            raise ValueError(
-                f"Processor count {processors} does not match expected {expected} for {self._gpu_key}"
-            )
+            raise ValueError(f"Processor count {processors} does not match expected {expected} for {self._gpu_key}")
         return processors
 
     @validates("clock_rate")
@@ -180,9 +172,7 @@ class Node(Base):
             return value
         expected = self._gpu_specs[key]
         if value != expected:
-            raise ValueError(
-                f"{key} setting {value} does not match expected {expected} for {self._gpu_key}"
-            )
+            raise ValueError(f"{key} setting {value} does not match expected {expected} for {self._gpu_key}")
         return value
 
     def is_suitable(self, chute: Chute) -> bool:
@@ -199,11 +189,7 @@ class Node(Base):
             allowed_gpus -= set(node_selector.exclude)
         if node_selector.min_vram_gb_per_gpu:
             allowed_gpus = set(
-                [
-                    gpu
-                    for gpu in allowed_gpus
-                    if SUPPORTED_GPUS[gpu]["memory"] >= node_selector.min_vram_gb_per_gpu
-                ]
+                [gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["memory"] >= node_selector.min_vram_gb_per_gpu]
             )
         if node_selector.require_sxm:
             allowed_gpus = set([gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]])
