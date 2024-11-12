@@ -45,15 +45,9 @@ default_router.include_router(image_router, prefix="/images", tags=["Images"])
 default_router.include_router(node_router, prefix="/nodes", tags=["Nodes"])
 default_router.include_router(payment_router, tags=["Pricing", "Payments"])
 default_router.include_router(instance_router, prefix="/instances", tags=["Instances"])
-default_router.include_router(
-    invocation_router, prefix="/invocations", tags=["Invocations"]
-)
-default_router.include_router(
-    registry_router, prefix="/registry", tags=["Authentication"]
-)
-default_router.include_router(
-    api_key_router, prefix="/api_keys", tags=["Authentication"]
-)
+default_router.include_router(invocation_router, prefix="/invocations", tags=["Invocations"])
+default_router.include_router(registry_router, prefix="/registry", tags=["Authentication"])
+default_router.include_router(api_key_router, prefix="/api_keys", tags=["Authentication"])
 app.include_router(default_router)
 app.include_router(host_invocation_router)
 

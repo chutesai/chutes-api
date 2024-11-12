@@ -29,21 +29,15 @@ class Settings(BaseSettings):
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     )
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
-    registry_external_host: str = os.getenv(
-        "REGISTRY_EXTERNAL_HOST", "registry.chutes.ai"
-    )
+    registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
     registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "3600"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
     netuid: int = int(os.getenv("NETUID", "19"))
-    subtensor: str = os.getenv(
-        "SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443"
-    )
+    subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
     first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "100.0"))
-    first_payment_bonus_threshold: float = float(
-        os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 25.0)
-    )
+    first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 25.0))
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "32"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 

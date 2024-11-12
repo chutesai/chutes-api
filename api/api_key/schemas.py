@@ -62,9 +62,7 @@ class APIKeyScope(Base):
         Limit which types of objects we can manipulate with API keys.
         """
         if type_ not in ("images", "chutes", "invocations"):
-            raise ValueError(
-                "Invalid object_type, must be one of images, chutes, invocations"
-            )
+            raise ValueError("Invalid object_type, must be one of images, chutes, invocations")
         return type_
 
 
@@ -92,9 +90,7 @@ class APIKey(Base):
         lazy="joined",
     )
 
-    __table_args__ = (
-        UniqueConstraint("user_id", "name", name="constraint_api_key_user_name"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", "name", name="constraint_api_key_user_name"),)
 
     @validates("name")
     def validate_key_name(_, __, name):
@@ -112,9 +108,7 @@ class APIKey(Base):
         """
         Generate a new API key with format: prefix_base64chars
         """
-        secret = "".join(
-            secrets.choice(string.ascii_letters + string.digits) for _ in range(32)
-        )
+        secret = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(32))
         return f"cpk_{user_id.replace('-', '')}.{api_key_id.replace('-', '')}.{secret}"
 
     @classmethod

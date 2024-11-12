@@ -76,11 +76,7 @@ def get_current_user(
                     detail="Invalid X-Chutes-Auth header format",
                 )
             a_purpose, a_nonce, a_ss58 = payload_match.groups()
-            if (
-                a_purpose != purpose
-                or a_ss58 != hotkey
-                or abs(time.time() - int(a_nonce)) >= 600
-            ):
+            if a_purpose != purpose or a_ss58 != hotkey or abs(time.time() - int(a_nonce)) >= 600:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid X-Chutes-Auth header value",
@@ -118,9 +114,7 @@ def get_current_user(
         # Fetch the actual user.
         async with SessionLocal() as session:
             result = await session.execute(
-                select(User).where(
-                    User.user_id == str(uuid.uuid5(uuid.NAMESPACE_OID, hotkey))
-                )
+                select(User).where(User.user_id == str(uuid.uuid5(uuid.NAMESPACE_OID, hotkey)))
             )
             user = result.scalar_one_or_none()
             if not user and raise_not_found:

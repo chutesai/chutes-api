@@ -20,9 +20,7 @@ async def create_node(
     node_args: NodeArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
-    _: User = Depends(
-        get_current_user(raise_not_found=False, registered_to=settings.netuid)
-    ),
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
     node = Node(**{**node_args.dict(), **{"miner_hotkey": hotkey}})
@@ -38,9 +36,7 @@ async def delete_node(
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
     _: User = Depends(
-        get_current_user(
-            purpose="nodes", raise_not_found=False, registered_to=settings.netuid
-        )
+        get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
     query = select(Node).where(Node.miner_hotkey == hotkey).where(Node.uuid == node_id)

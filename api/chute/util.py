@@ -236,9 +236,7 @@ async def invoke(
                     "miner_uid": target.miner_uid,
                     "miner_hotkey": target.miner_hotkey,
                     "request_path": request_path,
-                    "compute_multiplier": NodeSelector(
-                        **chute.node_selector
-                    ).compute_multiplier,
+                    "compute_multiplier": NodeSelector(**chute.node_selector).compute_multiplier,
                 },
             )
             partition_suffix = result.scalar()
@@ -267,9 +265,7 @@ async def invoke(
                 # Save the response if we're randomly sampling this one.
                 response_path = None
                 if request_path:
-                    response_path = request_path.replace(
-                        "request.json", "response.json"
-                    )
+                    response_path = request_path.replace("request.json", "response.json")
                     try:
                         await settings.storage_client.put_object(
                             settings.storage_bucket,
@@ -296,9 +292,7 @@ async def invoke(
                 # Calculate the credits used and deduct from user's balance.
                 compute_units = result.scalar_one_or_none()
                 if compute_units:
-                    balance_used = (
-                        compute_units * COMPUTE_UNIT_PRICE_BASIS * COMPUTE_MIN / 3600
-                    )
+                    balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS * COMPUTE_MIN / 3600
                     result = await session.execute(
                         update(User)
                         .where(User.user_id == user_id)

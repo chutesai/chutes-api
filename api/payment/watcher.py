@@ -62,9 +62,7 @@ class PaymentMonitor:
             substrate = SubstrateInterface(url=settings.subtensor, ss58_format=42)
             self.substrate = substrate
         except Exception as exc:
-            logger.error(
-                f"Error (re)connecting to substrate @ {settings.subtensor}: {exc}"
-            )
+            logger.error(f"Error (re)connecting to substrate @ {settings.subtensor}: {exc}")
 
     @backoff.on_exception(
         backoff.constant,
@@ -128,8 +126,7 @@ class PaymentMonitor:
                 .where(
                     or_(
                         PaymentMonitorState.is_locked.is_(False),
-                        PaymentMonitorState.last_updated_at
-                        <= func.now() - self.lock_timeout,
+                        PaymentMonitorState.last_updated_at <= func.now() - self.lock_timeout,
                     )
                 )
                 .values(
@@ -187,9 +184,7 @@ class PaymentMonitor:
         """
         async with SessionLocal() as session:
             user = (
-                await session.execute(
-                    select(User).where(User.payment_address == to_address)
-                )
+                await session.execute(select(User).where(User.payment_address == to_address))
             ).scalar_one_or_none()
             if not user:
                 logger.warning(f"Failed to find user with payment address {to_address}")
@@ -197,9 +192,7 @@ class PaymentMonitor:
 
             # Store the payment record.
             payment_id = str(
-                uuid.uuid5(
-                    uuid.NAMESPACE_OID, f"{block}:{to_address}:{from_address}:{amount}"
-                )
+                uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{to_address}:{from_address}:{amount}")
             )
             delta = amount * fmv / 1e9
             payment = Payment(
@@ -236,9 +229,7 @@ class PaymentMonitor:
                 await session.commit()
             except IntegrityError as exc:
                 if "UniqueViolationError" in str(exc):
-                    logger.warning(
-                        f"Skipping (apparent) duplicate transaction: {payment_id=}"
-                    )
+                    logger.warning(f"Skipping (apparent) duplicate transaction: {payment_id=}")
                 else:
                     raise
             logger.success(
@@ -354,9 +345,7 @@ class PaymentMonitor:
                     await self._save_state(current_block_number, current_block_hash)
                     current_block_number += 1
         except Exception as exc:
-            logger.error(
-                f"Unexpected error encountered: {exc} -- {traceback.format_exc()}"
-            )
+            logger.error(f"Unexpected error encountered: {exc} -- {traceback.format_exc()}")
             raise
         finally:
             logger.info(f"Releasing process lock: instance_id={self.instance_id}")
@@ -412,8 +401,7 @@ async def get_status():
                 ).label("lock_holder_status"),
                 case(
                     (
-                        PaymentMonitorState.last_updated_at
-                        < func.now() - monitor.lock_timeout,
+                        PaymentMonitorState.last_updated_at < func.now() - monitor.lock_timeout,
                         "Updates have ceased",
                     ),
                     else_=None,

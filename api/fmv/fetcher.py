@@ -43,9 +43,7 @@ class FMVFetcher:
         async with SessionLocal() as session:
             query = select(FMV).where(FMV.ticker == ticker)
             if not_older_than is not None:
-                query = query.where(
-                    FMV.timestamp >= func.now() - timedelta(seconds=not_older_than)
-                )
+                query = query.where(FMV.timestamp >= func.now() - timedelta(seconds=not_older_than))
             query = query.order_by(FMV.timestamp.desc()).limit(1)
             result = await session.execute(query)
             fmv = result.scalar_one_or_none()
@@ -132,10 +130,7 @@ class FMVFetcher:
             source = "kraken"
         if price is None and (price := await self.get_coingecko_price(ticker)):
             source = "coingecko"
-        if (
-            price is None
-            and (price := await self.get_last_stored_price(ticker)) is not None
-        ):
+        if price is None and (price := await self.get_last_stored_price(ticker)) is not None:
             source = "database"
         if price is not None:
             logger.success(f"Fetched FMV [{ticker}] from {source}: {price}")
@@ -148,9 +143,7 @@ class FMVFetcher:
         logger.error(f"Failed to get FMV for {ticker} from all sources.")
         return None
 
-    async def get_prices(
-        self, tickers: list[str] = ["tao"]
-    ) -> Dict[str, Optional[float]]:
+    async def get_prices(self, tickers: list[str] = ["tao"]) -> Dict[str, Optional[float]]:
         """
         Get prices for multiple tickers concurrently.  A bit of a no-op
         for now since we only actually support tao.

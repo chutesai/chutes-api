@@ -42,9 +42,7 @@ async def list_images(
         "total": total,
         "page": page,
         "limit": limit,
-        "items": [
-            APIKeyResponse.from_orm(item) for item in result.scalars().unique().all()
-        ],
+        "items": [APIKeyResponse.from_orm(item) for item in result.scalars().unique().all()],
     }
 
 

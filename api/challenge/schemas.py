@@ -19,9 +19,7 @@ from api.database import Base, generate_uuid
 
 class Challenge(Base):
     __tablename__ = "miner_challenges"
-    uuid = Column(
-        String, ForeignKey("nodes.uuid", ondelete="CASCADE"), primary_key=True
-    )
+    uuid = Column(String, ForeignKey("nodes.uuid", ondelete="CASCADE"), primary_key=True)
     seed = Column(BigInteger, primary_key=True, default=0)
     challenge = Column(String, nullable=False)
     challenge_type = Column(String, default="graval", primary_key=True)

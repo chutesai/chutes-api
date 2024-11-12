@@ -31,9 +31,7 @@ class User(Base):
 
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")
-    api_keys = relationship(
-        "APIKey", back_populates="user", cascade="all, delete-orphan"
-    )
+    api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
 
     @validates("username")
     def validate_username(self, _, value):
@@ -56,9 +54,7 @@ class User(Base):
         balance = 0
         try:
             substrate = SubstrateInterface(settings.subtensor, ss58_format=42)
-            result = substrate.query(
-                module="System", storage_function="Account", params=[value]
-            )
+            result = substrate.query(module="System", storage_function="Account", params=[value])
             balance = float(result.value["data"]["free"]) / 1e9
         except Exception as e:
             raise ValueError(f"Error checking tao balance for {value}: {e}")

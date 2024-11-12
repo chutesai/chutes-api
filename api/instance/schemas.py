@@ -23,9 +23,7 @@ from api.utils import is_valid_host
 instance_nodes = Table(
     "instance_nodes",
     Base.metadata,
-    Column(
-        "instance_id", String, ForeignKey("instances.instance_id", ondelete="CASCADE")
-    ),
+    Column("instance_id", String, ForeignKey("instances.instance_id", ondelete="CASCADE")),
     Column("node_id", String, ForeignKey("nodes.uuid", ondelete="CASCADE")),
     UniqueConstraint("instance_id", "node_id", name="uq_instance_node"),
 )
@@ -42,9 +40,7 @@ class Instance(Base):
     instance_id = Column(String, primary_key=True, default=generate_uuid)
     host = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
-    chute_id = Column(
-        String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False
-    )
+    chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
     miner_uid = Column(Integer, nullable=False)
     miner_hotkey = Column(String, nullable=False)
     miner_coldkey = Column(String, nullable=False)
@@ -56,9 +52,7 @@ class Instance(Base):
     updated_at = Column(DateTime(timezone=True))
     last_verified_at = Column(DateTime(timezone=True))
 
-    nodes = relationship(
-        "Node", secondary=instance_nodes, back_populates="instance", lazy="joined"
-    )
+    nodes = relationship("Node", secondary=instance_nodes, back_populates="instance", lazy="joined")
     chute = relationship("Chute", back_populates="instances", lazy="joined")
 
     __table_args__ = (

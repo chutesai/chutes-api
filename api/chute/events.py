@@ -12,6 +12,4 @@ def generate_uuid(_, __, chute):
     """
     Set chute_id deterministically.
     """
-    chute.chute_id = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, f"{chute.user_id}::chute::{chute.name}")
-    )
+    chute.chute_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{chute.user_id}::chute::{chute.name}"))

@@ -27,9 +27,7 @@ from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 
 
-broker = ListQueueBroker(
-    url=settings.redis_url, queue_name="forge"
-).with_result_backend(
+broker = ListQueueBroker(url=settings.redis_url, queue_name="forge").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
 )
 
@@ -76,11 +74,7 @@ async def build_and_push_image(image):
                     outfile.write(decoded_line.strip() + "\n")
                     await settings.redis_client.xadd(
                         f"forge:{image.image_id}:stream",
-                        {
-                            "data": json.dumps(
-                                {"log_type": name, "log": decoded_line}
-                            ).decode()
-                        },
+                        {"data": json.dumps({"log_type": name, "log": decoded_line}).decode()},
                     )
                 else:
                     break
@@ -122,9 +116,7 @@ async def build_and_push_image(image):
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream", {"data": "DONE"}
-            )
+            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
             raise BuildFailure(f"Build of {full_image_tag} failed!")
     except asyncio.TimeoutError:
         message = f"Build of {full_image_tag} timed out after {settings.build_timeout} seconds."
@@ -133,9 +125,7 @@ async def build_and_push_image(image):
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await settings.redis_client.xadd(
-            f"forge:{image.image_id}:stream", {"data": "DONE"}
-        )
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise BuildTimeout(message)
@@ -186,22 +176,16 @@ async def build_and_push_image(image):
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream", {"data": "DONE"}
-            )
+            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
             raise PushFailure(f"Push of {full_image_tag} failed!")
     except asyncio.TimeoutError:
-        message = (
-            f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
-        )
+        message = f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
         logger.error(message)
         await settings.redis_client.xadd(
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await settings.redis_client.xadd(
-            f"forge:{image.image_id}:stream", {"data": "DONE"}
-        )
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise PushTimeout(
@@ -233,7 +217,9 @@ async def build_and_push_image(image):
         )
         if process.returncode == 0:
             for path in glob.glob("/tmp/fschallenge_*.data"):
-                destination = f"fschallenge/{image.user_id}/{image.image_id}/{os.path.basename(path)}"
+                destination = (
+                    f"fschallenge/{image.user_id}/{image.image_id}/{os.path.basename(path)}"
+                )
                 await settings.storage_client.put_object(
                     settings.storage_bucket,
                     destination,
@@ -241,14 +227,12 @@ async def build_and_push_image(image):
                     length=-1,
                     part_size=10 * 1024 * 1024,
                 )
-                message = f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
+                message = (
+                    f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
+                )
                 await settings.redis_client.xadd(
                     f"forge:{image.image_id}:stream",
-                    {
-                        "data": json.dumps(
-                            {"log_type": "stdout", "log": message}
-                        ).decode()
-                    },
+                    {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
                 )
                 logger.success(message)
         else:
@@ -293,17 +277,13 @@ async def forge(image_id: str):
     """
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
     async with SessionLocal() as session:
-        result = await session.execute(
-            select(Image).where(Image.image_id == image_id).limit(1)
-        )
+        result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
         if not image:
             logger.error(f"Image does not exist: {image_id=}")
             return
         if image.status != "pending build":
-            logger.error(
-                f"Image status is not pending: {image_id=} status={image.status}"
-            )
+            logger.error(f"Image status is not pending: {image_id=} status={image.status}")
             return
         image.status = "building"
         image.build_started_at = func.now()
@@ -343,9 +323,7 @@ async def forge(image_id: str):
         if os.path.exists(log_path := os.path.join(build_dir, "sterror.log")):
             log_paths.append(log_path)
         for path in log_paths:
-            destination = (
-                f"forge/{image.user_id}/{image.image_id}.{os.path.basename(path)}"
-            )
+            destination = f"forge/{image.user_id}/{image.image_id}.{os.path.basename(path)}"
             await settings.storage_client.put_object(
                 settings.storage_bucket,
                 destination,
@@ -356,9 +334,7 @@ async def forge(image_id: str):
 
     # Update status.
     async with SessionLocal() as session:
-        result = await session.execute(
-            select(Image).where(Image.image_id == image_id).limit(1)
-        )
+        result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
         if not image:
             logger.warning(f"Image vanished while building! {image_id}")

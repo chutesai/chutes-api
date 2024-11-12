@@ -19,9 +19,7 @@ from datetime import datetime
 InstanceAlias = aliased(Instance)
 
 
-async def discover_chute_targets(
-    session: AsyncSession, chute_id: str, max_wait: int = 0
-):
+async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait: int = 0):
     """
     Fancy query to attempt evenly distributing queries based on coldkey and
     last invocation timestamp.

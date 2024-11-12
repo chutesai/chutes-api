@@ -75,23 +75,19 @@ async def hostname_invocation(
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None
-    request_body = (
-        await request.json() if request.method in ("POST", "PUT", "PATCH") else {}
-    )
+    request_body = await request.json() if request.method in ("POST", "PUT", "PATCH") else {}
     request_params = request.query_params._dict if request.query_params else {}
     stream = request_body.get("stream", request_params.get("stream", False))
     for cord in chute.cords:
         public_path = cord.get("public_api_path", None)
         if public_path and public_path == request.url.path:
-            if cord.get(
-                "public_api_method", "POST"
-            ) == request.method and stream == cord.get("stream"):
+            if cord.get("public_api_method", "POST") == request.method and stream == cord.get(
+                "stream"
+            ):
                 selected_cord = cord
                 break
     if not selected_cord:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No matching cord found!"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching cord found!")
 
     # Wrap up the args/kwargs in the way the miner execution service expects them.
     args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
