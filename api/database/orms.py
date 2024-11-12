@@ -1,3 +1,4 @@
+import api.node.schemas  # noqa: F401
 import api.chute.schemas  # noqa: F401
 import api.challenge.schemas  # noqa: F401
 import api.api_key.schemas  # noqa: F401
@@ -5,7 +6,6 @@ import api.image.schemas  # noqa: F401
 import api.invocation.schemas  # noqa: F401
 import api.instance.schemas  # noqa: F401
 import api.user.schemas  # noqa: F401
-import api.node.schemas  # noqa: F401
 import api.fmv.schemas  # noqa: F401
 import api.payment.schemas  # noqa: F401
 import api.metasync  # noqa: F401

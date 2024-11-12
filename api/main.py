@@ -27,6 +27,10 @@ from api.payment.router import router as payment_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
+from api.chute.util import chute_id_by_slug
+from api.database import Base, engine
+from api.config import settings
+import api.database.orms  # noqa: F401
 
 
 @asynccontextmanager
@@ -48,6 +52,10 @@ default_router.include_router(instance_router, prefix="/instances", tags=["Insta
 default_router.include_router(invocation_router, prefix="/invocations", tags=["Invocations"])
 default_router.include_router(registry_router, prefix="/registry", tags=["Authentication"])
 default_router.include_router(api_key_router, prefix="/api_keys", tags=["Authentication"])
+
+# Do not use app for this, else middleware picks it up
+default_router.get("/ping")(lambda: {"message": "pong"})
+
 app.include_router(default_router)
 app.include_router(host_invocation_router)
 
@@ -60,6 +68,10 @@ async def host_router_middleware(request: Request, call_next):
     """
     Route differentiation for hostname-based simple invocations.
     """
+    logger.debug(f"Request path: {request.url.path}")
+    if request.url.path == "/ping":
+        app.router = default_router
+        return await call_next(request)
     request.state.chute_id = None
     host = request.headers.get("host", "")
     host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
@@ -88,6 +100,7 @@ async def host_router_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+# NOTE: Do we really want to do this in middleware, for every request?
 @app.middleware("http")
 async def request_body_checksum(request: Request, call_next):
     if request.method in ["POST", "PUT", "PATCH"]:
@@ -108,6 +121,7 @@ async def startup():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+    # NOTE: Could we use dbmate container in docker compose to do this instead?
     # Manual DB migrations.
     process = await asyncio.create_subprocess_exec(
         "dbmate",

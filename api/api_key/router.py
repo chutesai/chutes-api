@@ -27,6 +27,7 @@ async def list_images(
     """
     List (and optionally filter/paginate) images.
     """
+
     query = select(APIKey).where(APIKey.user_id == current_user.user_id)
 
     # Perform a count.

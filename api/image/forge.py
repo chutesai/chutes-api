@@ -25,7 +25,7 @@ from sqlalchemy import func
 from sqlalchemy.future import select
 from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
-
+from api.database import orms  # noqa
 
 broker = ListQueueBroker(url=settings.redis_url, queue_name="forge").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)

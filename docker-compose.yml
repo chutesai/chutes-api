@@ -15,7 +15,7 @@ services:
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     command: ["redis-server", "--requirepass", "redispassword"]
     environment:
       - REDIS_PASSWORD=redispassword
@@ -98,7 +98,9 @@ services:
       context: .
       target: api
     volumes:
-      - ./:/app
+      - ./metasync:/app/metasync
+      - ./api:/app/api
+      - ./data:/app/data
       - kube_config:/home/chutes/.kube
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes

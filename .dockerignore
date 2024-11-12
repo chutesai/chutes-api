@@ -3,13 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-
-#IPYNB
-*.ipynb
 # C extensions
-
 *.so
-data/chutes
 
 # Distribution / packaging
 .Python

@@ -39,6 +39,7 @@ async def list_images(
     """
     List (and optionally filter/paginate) images.
     """
+    logger.debug(f"Listing images for user {current_user.username}")
     query = select(Image)
 
     # Filter by public and/or only the user's images.
@@ -56,7 +57,7 @@ async def list_images(
     if name and name.strip():
         query = query.where(Image.name.ilike(f"%{name}%"))
     if tag and tag.strip():
-        query = query.owhere(Image.tag.ilike(f"%{tag}%"))
+        query = query.where(Image.tag.ilike(f"%{tag}%"))
 
     # Perform a count.
     total_query = select(func.count()).select_from(query.subquery())
