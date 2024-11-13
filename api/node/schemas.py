@@ -51,6 +51,7 @@ class Node(Base):
     max_threads_per_processor = Column(Integer, nullable=False)
     concurrent_kernels = Column(Boolean, nullable=False)
     ecc = Column(Boolean, nullable=False)
+    seed = Column(Integer, nullable=False)
 
     # Meta/app fields.
     miner_hotkey = Column(

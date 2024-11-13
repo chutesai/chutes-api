@@ -16,18 +16,29 @@ router = APIRouter()
 
 
 @router.post("/")
-async def create_node(
-    node_args: NodeArgs,
+async def create_nodes(
+    nodes_args: list[NodeArgs],
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
-    node = Node(**{**node_args.dict(), **{"miner_hotkey": hotkey}})
-    db.add(node)
+    server_uuid = uuid.uuid5(
+        uuid.NAMESPACE_OID, f"{hotkey}:" + ":".join([node_args.uuid for node_args in nodes_args])
+    )
+
+    # We need a deterministic seed to support more than one validator, which may or may not be necessary.
+    seed = (server_uuid.int >> 64) & ((1 << 64) - 1)
+
+    nodes = []
+    for node_args in nodes_args:
+        node = Node(**{**node_args.dict(), **{"miner_hotkey": hotkey, "seed": seed}})
+        db.add(node)
+        nodes.append(node)
     await db.commit()
-    await db.refresh(node)
-    return node
+    for idx in range(len(nodes)):
+        await db.refresh(nodes[idx])
+    return {"nodes": nodes}
 
 
 @router.delete("/{node_id}")

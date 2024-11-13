@@ -85,7 +85,8 @@ async def main():
           ecc,
           verification_host,
           verification_port,
-          gpu_identifier
+          gpu_identifier,
+          seed
         ) VALUES (
           'test-node',
           'test-hotkey',
@@ -101,7 +102,8 @@ async def main():
           false,
           :host,
           :port,
-          '4090'
+          '4090',
+          42
         ) ON CONFLICT(uuid) DO NOTHING"""
             ),
             {"host": args.host, "port": args.port},
