@@ -17,7 +17,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from api.database import Base, generate_uuid
-from api.utils import is_valid_host
+from api.util import is_valid_host
 
 # Association table.
 instance_nodes = Table(

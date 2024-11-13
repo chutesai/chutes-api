@@ -20,4 +20,5 @@ def after_insert(_, __, image):
     Trigger image build after insert.
     """
     from api.image.forge import forge
+
     asyncio.create_task(forge.kiq(image.image_id))

@@ -18,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import validates, relationship
 from api.gpu import SUPPORTED_GPUS
 from api.database import Base
-from api.utils import is_valid_host
+from api.util import is_valid_host
 from api.instance.schemas import instance_nodes
 from api.chute.schemas import Chute, NodeSelector
 
