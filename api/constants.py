@@ -4,3 +4,6 @@ SIGNATURE_HEADER = "X-Parachutes-Signature"
 NONCE_HEADER = "X-Parachutes-Nonce"
 AUTHORIZATION_HEADER = "Authorization"
 PURPOSE_HEADER = "X-Parachutes-Purpose"
+
+MINER_HEADER = "X-Chutes-Miner"
+VALIDATOR_HEADER = "X-Chutes-Validator"

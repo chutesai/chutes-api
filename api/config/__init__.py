@@ -4,7 +4,9 @@ Application-wide settings.
 
 import os
 import hvac
+from typing import Optional
 from miniopy_async import Minio
+from substrateinterface import Keypair
 from pydantic_settings import BaseSettings
 
 
@@ -22,6 +24,12 @@ class Settings(BaseSettings):
         url=os.getenv("VAULT_URL", "http://vault:777"),
         token=os.getenv("VAULT_TOKEN", "supersecrettoken"),
     )
+    validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
+    validator_keypair: Optional[Keypair] = (
+        Keypair.create_from_seed(os.environ["VALIDATOR_SEED"])
+        if os.getenv("VALIDATOR_SEED")
+        else None
+    )
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
@@ -34,6 +42,7 @@ class Settings(BaseSettings):
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
     registration_minimum_balance: float = float(os.getenv("REGISTRATION_MINIMUM_BALANCE", "0.5"))
     signup_bonus_balance: int = int(os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9)))
+    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "250"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
 

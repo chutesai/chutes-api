@@ -3,7 +3,7 @@ ORM definitions for nodes (single GPUs in miner infra).
 """
 
 import re
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import (
     Column,
     String,
@@ -35,6 +35,10 @@ class NodeArgs(BaseModel):
     max_threads_per_processor: int
     concurrent_kernels: bool
     ecc: bool
+    device_index: int = Field(gte=0, lt=8)
+    gpu_identifier: str
+    verification_host: str
+    verification_port: str
 
 
 class Node(Base):
@@ -58,9 +62,11 @@ class Node(Base):
         String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
     )
     gpu_identifier = Column(String, nullable=False)
+    device_index = Column(Integer, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verification_host = Column(String, nullable=False)
     verification_port = Column(Integer, nullable=False)
+    verification_error = Column(String)
     verified_at = Column(DateTime(timezone=True))
 
     _gpu_specs = None
@@ -80,6 +86,27 @@ class Node(Base):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._validate_all()
+
+    def graval_dict(self):
+        """
+        Dict representation as expected by graval.
+        """
+        return {
+            key: getattr(self, key, None)
+            for key in [
+                "uuid",
+                "name",
+                "memory",
+                "major",
+                "minor",
+                "processors",
+                "sxm",
+                "clock_rate",
+                "max_threads_per_processor",
+                "concurrent_kernels",
+                "ecc",
+            ]
+        }
 
     def _validate_all(self):
         """

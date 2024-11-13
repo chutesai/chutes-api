@@ -2,6 +2,7 @@
 Routes for nodes.
 """
 
+import uuid
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import select
