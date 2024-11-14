@@ -48,8 +48,6 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    ports:
-      - "8111:8000"
     networks:
       - kind
 
