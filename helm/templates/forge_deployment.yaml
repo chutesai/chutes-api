@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-forge
+  labels:
+    app: {{ $.Release.Name }}-forge
+spec:
+  replicas: {{ $.Values.chutes_api.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-forge
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app: {{ $.Release.Name }}-forge
+      annotations:
+        prometheus.io/scrape: {{ $.Values.chutes_api.prometheus_scrape }}
+        prometheus.io/path: {{ $.Values.chutes_api.prometheus_path }}
+        prometheus.io/port: {{ $.Values.chutes_api.prometheus_port }}
+    spec:
+      restartPolicy: {{ $.Values.chutes_api.restart_policy }}
+      containers:
+        - name: {{ $.Release.Name }}-forge
+          image: {{ $.Values.chutes_api.image_url }}:{{ $.Values.chutes_api.image_tag }}
+          imagePullPolicy: {{ $.Values.chutes_api.image_pull_policy }}
+          resources:
+            limits:
+              cpu: {{ $.Values.chutes_api.max_cpu }}
+              memory: {{ $.Values.chutes_api.max_mem }}
+          envFrom:
+            - secretRef:
+                name: {{ $.Release.Name }}-forge
+          ports:
+            - name: {{ $.Release.Name }}-forge-http
+              containerPort: {{ $.Values.chutes_api.http_port | toString }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ $.Release.Name }}-forge-http
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ $.Release.Name }}-forge-http
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+            periodSeconds: 10

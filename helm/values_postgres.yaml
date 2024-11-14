@@ -1,0 +1,5 @@
+image:
+  tag: "15"  # seems a bit out of date?
+
+metrics:
+  enabled: true

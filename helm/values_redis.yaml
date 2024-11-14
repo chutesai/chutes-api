@@ -1,0 +1,5 @@
+image:
+  tag: "7"
+
+metrics:
+  enabled: true

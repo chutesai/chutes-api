@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-api
+  labels:
+    app: {{ $.Release.Name }}-api
+spec:
+  replicas: {{ $.Values.chutes_api.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app: {{ $.Release.Name }}-api
+      annotations:
+        prometheus.io/scrape: {{ $.Values.chutes_api.prometheus_scrape }}
+        prometheus.io/path: {{ $.Values.chutes_api.prometheus_path }}
+        prometheus.io/port: {{ $.Values.chutes_api.prometheus_port }}
+    spec:
+      restartPolicy: {{ $.Values.chutes_api.restart_policy }}
+      initContainers:
+        - name: {{ $.Release.Name }}-api-migrations
+          image: {{ $.Values.chutes_api.image_url }}:{{ $.Values.chutes_api.image_tag }}
+          imagePullPolicy: {{ $.Values.chutes_api.image_pull_policy }}
+          command: ""
+          resources:
+            limits:
+              cpu: 125m
+              memory: 128Mi
+            envFrom:
+              - secretRef:
+                  name: {{ $.Release.Name }}-api
+      containers:
+        - name: {{ $.Release.Name }}-api
+          image: {{ $.Values.chutes_api.image_url }}:{{ $.Values.chutes_api.image_tag }}
+          imagePullPolicy: {{ $.Values.chutes_api.image_pull_policy }}
+          command: ["dbmate", "--wait", "--no-dump-schema", "up"]
+          resources:
+            limits:
+              cpu: {{ $.Values.chutes_api.max_cpu }}
+              memory: {{ $.Values.chutes_api.max_mem }}
+          envFrom:
+            - secretRef:
+                name: {{ $.Release.Name }}-api
+          ports:
+            - name: {{ $.Release.Name }}-api-http
+              containerPort: {{ $.Values.chutes_api.http_port | toString }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ $.Release.Name }}-api-http
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ $.Release.Name }}-api-http
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+            periodSeconds: 10

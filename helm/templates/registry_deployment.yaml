@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $.Release.Name }}-registry
+  labels:
+    app: {{ $.Release.Name }}-registry
+spec:
+  replicas: {{ $.Values.chutes_registry.replicas }}
+  selector:
+    matchLabels:
+      app: {{ $.Release.Name }}-registry
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app: {{ $.Release.Name }}-registry
+      annotations:
+        prometheus.io/scrape: {{ $.Values.chutes_registry.prometheus_scrape }}
+        prometheus.io/path: {{ $.Values.chutes_registry.prometheus_path }}
+        prometheus.io/port: {{ $.Values.chutes_registry.prometheus_port }}
+    spec:
+      restartPolicy: {{ $.Values.chutes_registry.restart_policy }}
+      containers:
+        - name: {{ $.Release.Name }}-registry
+          image: registry:2.8.3
+          imagePullPolicy: {{ $.Values.chutes_registry.image_pull_policy }}
+          resources:
+            limits:
+              cpu: {{ $.Values.chutes_registry.max_cpu }}
+              memory: {{ $.Values.chutes_registry.max_mem }}
+          envFrom:
+            - secretRef:
+                name: {{ $.Release.Name }}-registry
+          ports:
+            - name: {{ $.Release.Name }}-registry-http
+              containerPort: {{ $.Values.chutes_registry.http_port | toString }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ $.Release.Name }}-registry-http
+            initialDelaySeconds: 5
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: {{ $.Release.Name }}-registry-http
+            initialDelaySeconds: 5
+            timeoutSeconds: 2
+            successThreshold: 1
+            failureThreshold: 3
+            periodSeconds: 10

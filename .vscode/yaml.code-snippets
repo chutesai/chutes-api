@@ -1,0 +1,8 @@
+{
+    "Chart Variable": {
+        "prefix": "var",
+        "body": [
+            "{{ $.${1|Values,Release,Chart|}.$0 }}"
+        ]
+    }
+}
