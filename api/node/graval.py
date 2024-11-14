@@ -4,15 +4,15 @@ GraVal node validation worker.
 
 import asyncio
 import uuid
-import pybase64 as base64
-from typing import List
+import traceback
+from typing import List, Tuple
 from pydantic import BaseModel
 from graval.validator import Validator
 from loguru import logger
 from api.config import settings
 from api.database import SessionLocal
 from api.node.schemas import Node
-from sqlalchemy import update
+from sqlalchemy import update, func
 from sqlalchemy.future import select
 from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
@@ -49,7 +49,7 @@ def generate_cipher(node):
     ciphertext, iv, length = validator.encrypt(node.graval_dict(), plaintext, node.seed)
     logger.info(f"Generated {length} byte ciphertext from: {plaintext}")
     return plaintext, CipherChallenge(
-        ciphertext=base64.b64encode(ciphertext).decode(),
+        ciphertext=ciphertext.hex(),
         iv=iv.hex(),
         length=length,
         device_id=node.device_index,
@@ -69,16 +69,17 @@ async def check_encryption_challenge(
         async with miner_client.post(
             node.miner_hotkey, url, payload=challenge.dict(), timeout=5.0
         ) as response:
-            if response.status_code != 200:
-                error_message = f"Failed to perform decryption challenge: {response.status_code=} {await response.text()}"
+            if response.status != 200:
+                error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
             assert (await response.json())["plaintext"] == plaintext
     except Exception as exc:
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"
     if error_message:
+        logger.error(error_message)
         async with SessionLocal() as session:
             await session.execute(
                 update(Node)
-                .where(Node.node_id == node.node_id)
+                .where(Node.uuid == node.uuid)
                 .values({"verification_error": error_message})
             )
         await session.commit()
@@ -95,21 +96,27 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
     try:
         challenge = validator.generate_device_info_challenge(len(nodes))
         async with miner_client.get(
-            nodes[0].miner_hotkey, url, params={"challenge": challenge}, timeout=5.0
+            nodes[0].miner_hotkey,
+            url,
+            "graval",
+            params={"challenge": challenge},
+            timeout=5.0,
         ) as response:
-            if response.status_code != 200:
-                error_message = f"Failed to perform device info challenge: {response.status_code=} {await response.text()}"
-            response = await response.text()
-            assert validator.verify_device_info_challenge(
-                challenge, response, [node.graval_dict() for node in nodes]
-            )
+            if response.status != 200:
+                error_message = f"Failed to perform device info challenge: {response.status=} {await response.text()}"
+            else:
+                response = await response.text()
+                assert validator.verify_device_info_challenge(
+                    challenge, response, [node.graval_dict() for node in nodes]
+                )
     except Exception as exc:
-        error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"
+        error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc} {traceback.format_exc()}"
     if error_message:
+        logger.error(error_message)
         async with SessionLocal() as session:
             await session.execute(
                 update(Node)
-                .where(Node.node_id.in_([node.node_id for node in nodes]))
+                .where(Node.uuid.in_([node.uuid for node in nodes]))
                 .values({"verification_error": error_message})
             )
         await session.commit()
@@ -118,18 +125,20 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
 
 
 @broker.task
-async def validate_gpus(node_ids: str):
+async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     """
     Validate a single node.
     """
+    nodes = None
     async with SessionLocal() as session:
         if not (
-            nodes := (
-                await session.execute(select(Node).where(Node.node_id.in_(node_ids)))
-            ).scalar()
+            nodes := (await session.execute(select(Node).where(Node.uuid.in_(uuids))))
+            .scalars()
+            .unique()
+            .all()
         ):
             logger.warning("Found no matching nodes, did they disappear?")
-            return
+            return False, "nodes not found"
 
     # Generate ciphertexts for each GPU.
     challenges = [generate_cipher(node) for node in nodes]
@@ -138,17 +147,31 @@ async def validate_gpus(node_ids: str):
     successes = await asyncio.gather(
         *[
             check_encryption_challenge(nodes[idx], challenges[idx][1], challenges[idx][0])
-            for idx in range(len(node_ids))
+            for idx in range(len(uuids))
         ]
     )
     if not all(successes):
-        logger.warning("Skipping remaining checks, one or more decryption challenges failed.")
-        return
+        error_message = "one or more decryption challenges failed"
+        logger.warning(error_message)
+        return False, error_message
     logger.success(
         f"All encryption checks [count={len(successes)}] passed successfully, trying device challenges..."
     )
 
+    futures = []
     for _ in range(settings.device_info_challenge_count):
-        if not await check_device_info_challenge(nodes):
-            logger.warning("Failed device info challenge!")
-            return
+        futures.append(check_device_info_challenge(nodes))
+        if len(futures) == 10:
+            if not all(await asyncio.gather(*futures)):
+                error_message = "one or more device info challenges failed"
+                logger.warning(error_message)
+                return False, error_message
+            futures = []
+    logger.success(f"Nodes {uuids} passed all preliminary node validation challenges!")
+    async with SessionLocal() as session:
+        await session.execute(
+            update(Node)
+            .where(Node.uuid.in_(uuids))
+            .values({"verified_at": func.now(), "verification_error": None})
+        )
+    return True, None

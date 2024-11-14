@@ -3,10 +3,10 @@
 ```bash
 # Re-create entire environment.
 docker compose down
-docker compose -f docker-compose-miner.yml down
+docker compose -f docker-compose-gpu.yml down
 docker volume rm chutes-api_kind_data chutes-api_kube_config chutes-api_minio_data chutes-api_postgres_data
 docker compose up -d --build
-docker compose -f docker-compose-miner.yml up -d vllm
+docker compose -f docker-compose-gpu.yml up -d vllm
 
 # Register a user.
 CHUTES_API_URL=http://127.0.0.1:8000 chutes register --username test

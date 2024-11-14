@@ -1,0 +1,59 @@
+services:
+  vllm:
+    build:
+      context: ./data
+      dockerfile: vllm.Dockerfile
+    volumes:
+      - ./data/vllm_example.py:/workspace/vllm_example.py
+      - ./data/dev-config.ini:/home/vllm/.parachutes/config.ini
+      - /home/jdurbin/git/chutes/dist/:/usr/src/chutes/
+    user: vllm
+    environment:
+      - PARACHUTES_EXECUTION_CONTEXT=REMOTE
+    command: chutes run vllm_example:chute --port 8101 --host 0.0.0.0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ports:
+      - "8101:8101"
+    networks:
+      - kind
+
+  graval:
+    build:
+      context: .
+      target: graval
+    volumes:
+      - ./api:/app/api
+    entrypoint: ["poetry", "run", "taskiq", "worker", "api.node.graval:broker", "--workers", "1", "--max-async-tasks", "1"]
+    environment:
+      - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
+      - REDIS_URL=redis://:redispassword@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - STORAGE_BUCKET=chutes
+      - REGISTRY_PASSWORD=registry
+      - REGISTRY_INSECURE=true
+      - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
+      - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ports:
+      - "8111:8000"
+    networks:
+      - kind
+
+networks:
+  kind:
+    external: true
+    name: kind

@@ -42,7 +42,8 @@ class Settings(BaseSettings):
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
     registration_minimum_balance: float = float(os.getenv("REGISTRATION_MINIMUM_BALANCE", "0.5"))
     signup_bonus_balance: int = int(os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9)))
-    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "250"))
+    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "200"))
+    skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
 

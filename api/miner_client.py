@@ -6,6 +6,7 @@ import aiohttp
 import hashlib
 import time
 import orjson as json
+from contextlib import asynccontextmanager
 from loguru import logger
 from typing import Any, Dict
 from api.config import settings
@@ -45,6 +46,7 @@ def sign_request(miner_ss58: str, payload: Dict[str, Any] | str | None = None, p
         NONCE_HEADER: nonce,
     }
     signature_string = None
+    payload_string = None
     if payload is not None:
         if isinstance(payload, dict):
             headers["Content-Type"] = "application/json"
@@ -64,6 +66,7 @@ def sign_request(miner_ss58: str, payload: Dict[str, Any] | str | None = None, p
     return headers, payload_string
 
 
+@asynccontextmanager
 async def post(miner_ss58: str, url: str, payload: Dict[str, Any], **kwargs):
     """
     Perform a post request to a miner.
@@ -76,6 +79,7 @@ async def post(miner_ss58: str, url: str, payload: Dict[str, Any], **kwargs):
             yield response
 
 
+@asynccontextmanager
 async def get(miner_ss58: str, url: str, purpose: str, **kwargs):
     """
     Perform a get request to a miner.
@@ -83,6 +87,6 @@ async def get(miner_ss58: str, url: str, purpose: str, **kwargs):
     async with aiohttp.ClientSession() as session:
         headers = kwargs.pop("headers", {})
         new_headers, payload_data = sign_request(miner_ss58, purpose=purpose)
-        headers.update(headers)
+        headers.update(new_headers)
         async with session.get(url, headers=headers, **kwargs) as response:
             yield response
