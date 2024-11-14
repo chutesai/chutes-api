@@ -102,7 +102,7 @@ services:
       context: .
       target: api
     volumes:
-      - ./:/app
+      - ./api:/app/api
       - kube_config:/home/chutes/.kube
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
