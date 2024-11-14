@@ -117,6 +117,12 @@ async def hostname_invocation(
             ):
                 if chunk.startswith('data: {"result"'):
                     yield json.loads(chunk[6:])["result"]
+                elif chunk.startswith('data: {"error"'):
+                    error = json.loads(chunk[6:])["error"]
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=error or "No result returned from upstream",
+                    )
 
         return StreamingResponse(_stream_response())
 

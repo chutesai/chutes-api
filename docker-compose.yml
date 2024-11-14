@@ -9,8 +9,9 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    restart: always
     networks:
-      - kind
+      - chutes
 
   redis:
     image: redis:7
@@ -19,8 +20,9 @@ services:
     command: ["redis-server", "--requirepass", "redispassword"]
     environment:
       - REDIS_PASSWORD=redispassword
+    restart: always
     networks:
-      - kind
+      - chutes
 
   minio:
     image: minio/minio
@@ -33,8 +35,9 @@ services:
       - "9001:9001"
     volumes:
       - minio_data:/data
+    restart: always
     networks:
-      - kind
+      - chutes
 
   registry:
     image: registry:2
@@ -46,10 +49,11 @@ services:
       REGISTRY_STORAGE_S3_SECRETKEY: minioadmin
       REGISTRY_STORAGE_S3_REGIONENDPOINT: http://minio:9000
       REGISTRY_HTTP_SECRET: "registry"
+    restart: always
     depends_on:
       - minio
     networks:
-      - kind
+      - chutes
 
   registry_public:
     image: nginx
@@ -57,41 +61,9 @@ services:
       - "5100:5100"
     volumes:
       - ./data/registry-auth-nginx.conf:/etc/nginx/nginx.conf
+    restart: always
     networks:
-      - kind
-
-  kind:
-    image: docker:latest
-    entrypoint: /bin/sh -c
-    command: |
-      "if [ ! -f '/root/.kube/config' ]; then apk add --no-cache curl &&
-      curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.24.0/kind-linux-amd64 &&
-      chmod +x ./kind &&
-      mv ./kind /usr/local/bin/kind &&
-      cat <<EOF > kind-config.yaml
-      kind: Cluster
-      apiVersion: kind.x-k8s.io/v1alpha4
-      networking:
-        apiServerAddress: '0.0.0.0'
-        apiServerPort: 6443
-      nodes:
-        - role: control-plane
-          extraMounts:
-            - containerPath: /var/run/docker.sock
-              hostPath: /var/run/docker.sock
-      EOF
-      (kind create cluster --name chutes --config kind-config.yaml || true) &&
-      mkdir -p /kubeconfig &&
-      kind get kubeconfig --name chutes --internal > /root/.kube/config &&
-      chmod 644 /root/.kube/config; fi &&
-      tail -f /dev/null"
-    privileged: true
-    volumes:
-      - kind_data:/var/lib/docker
-      - kube_config:/root/.kube
-      - /var/run/docker.sock:/var/run/docker.sock
-    networks:
-      - kind
+      - chutes
 
   api:
     build:
@@ -111,17 +83,19 @@ services:
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
+      - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
+      - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
+    restart: always
     ports:
       - "8000:8000"
     depends_on:
       - postgres
       - redis
       - minio
-      - kind
       - registry
       - vault
     networks:
-      - kind
+      - chutes
 
   payment_watcher:
     build:
@@ -142,14 +116,14 @@ services:
     entrypoint: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "8222", "--reload"]
     ports:
       - "8222:8222"
+    restart: always
     depends_on:
       - postgres
       - redis
       - minio
-      - kind
       - registry
     networks:
-      - kind
+      - chutes
 
   forge:
     build:
@@ -179,12 +153,13 @@ services:
       - SETUID
       - SETGID
       - SYS_ADMIN
+    restart: always
     security_opt:
       - seccomp:./data/forge-seccomp.json
       - apparmor:unconfined
       - label:disable
     networks:
-      - kind
+      - chutes
 
   metasync:
     build:
@@ -195,11 +170,12 @@ services:
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0
+    restart: always
     depends_on:
       - postgres
       - redis
     networks:
-      - kind
+      - chutes
 
   vault:
     image: vault:1.13.3
@@ -212,6 +188,7 @@ services:
       - IPC_LOCK
     volumes:
       - vault_data:/vault/data
+    restart: always
     command: vault server -dev
     healthcheck:
       test: ["CMD", "vault", "status"]
@@ -219,16 +196,15 @@ services:
       timeout: 10s
       retries: 5
     networks:
-      - kind
+      - chutes
 
 volumes:
   postgres_data:
   minio_data:
-  kind_data:
   kube_config:
   vault_data:
 
 networks:
-  kind:
+  chutes:
     external: true
-    name: kind
+    name: chutes

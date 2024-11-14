@@ -1,0 +1,9 @@
+-- migrate:up
+ALTER TABLE nodes ADD COLUMN seed BIGINT NOT NULL DEFAULT 42;
+ALTER TABLE nodes ADD COLUMN device_index INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE nodes ADD COLUMN verification_error VARCHAR;
+
+-- migrate:down
+ALTER TABLE nodes DROP COLUMN IF EXISTS seed;
+ALTER TABLE nodes DROP COLUMN IF EXISTS device_index;
+ALTER TABLE nodes DROP COLUMN IF EXISTS verification_error;

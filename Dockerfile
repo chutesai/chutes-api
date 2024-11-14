@@ -12,7 +12,7 @@ ADD data/registries.conf /etc/containers/registries.conf
 RUN mkdir -p /root/build /forge
 
 # Kubectl.
-RUN dnf update && dnf install curl
+RUN dnf -y update && dnf install -y curl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && mv kubectl /usr/local/bin/ && chmod 755 /usr/local/bin/kubectl
 
 # Layer for the buildah daemon.
@@ -45,7 +45,7 @@ WORKDIR /app
 ENV PYTHONPATH=/app
 ENTRYPOINT ["python", "metasync/sync_metagraph.py"]
 
-# And finally our application code.
+# Main API.
 FROM base AS api
 RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
@@ -59,3 +59,33 @@ WORKDIR /app
 RUN poetry install
 ADD --chown=chutes . /app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+# GraVal
+FROM nvidia/cuda:12.2.2-devel-ubuntu22.04 AS graval
+RUN apt-get update
+RUN apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev libexpat1-dev lzma liblzma-dev libpq-dev
+WORKDIR /usr/src
+RUN wget https://www.python.org/ftp/python/3.12.7/Python-3.12.7.tgz
+RUN tar -xzf Python-3.12.7.tgz
+WORKDIR /usr/src/Python-3.12.7
+RUN ./configure --enable-optimizations --enable-shared --with-system-expat --with-ensurepip=install --prefix=/opt/python
+RUN make -j
+RUN make altinstall
+RUN ln -s /opt/python/bin/pip3.12 /opt/python/bin/pip
+RUN ln -s /opt/python/bin/python3.12 /opt/python/bin/python
+RUN echo /opt/python/lib >> /etc/ld.so.conf && ldconfig
+RUN rm -rf /usr/src/Python*
+RUN apt-get -y install google-perftools git
+RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
+RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
+RUN mkdir -p /app && chown chutes:chutes /app
+USER chutes
+ENV PATH=/opt/python/bin:$PATH
+RUN curl -sSL https://install.python-poetry.org | python -
+ENV PATH=$PATH:/home/chutes/.local/bin
+ADD pyproject.toml /app/
+ADD poetry.lock /app/
+WORKDIR /app
+RUN poetry install
+ADD --chown=chutes . /app
+ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.node.graval:broker", "--workers", "1", "--max-async-tasks", "1"]
