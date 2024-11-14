@@ -21,7 +21,7 @@ services:
     ports:
       - "8101:8101"
     networks:
-      - kind
+      - chutes
 
   graval:
     build:
@@ -49,9 +49,9 @@ services:
               count: all
               capabilities: [gpu]
     networks:
-      - kind
+      - chutes
 
 networks:
-  kind:
+  chutes:
     external: true
-    name: kind
+    name: chutes

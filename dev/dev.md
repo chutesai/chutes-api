@@ -31,7 +31,7 @@ poetry shell
 ### 1. Create the network
 
 ```bash
-docker network create kind
+docker network create chutes
 ```
 
 ### 2. Start all the things
