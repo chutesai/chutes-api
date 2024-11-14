@@ -4,11 +4,8 @@ Application-wide settings.
 
 import os
 import hvac
-<<<<<<< HEAD
 from typing import Optional
-=======
 import redis.asyncio as redis
->>>>>>> cf130113ee4b0c137bc379b9f6a9b1628a9d475a
 from miniopy_async import Minio
 from substrateinterface import Keypair
 from pydantic_settings import BaseSettings
