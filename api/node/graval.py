@@ -5,9 +5,9 @@ GraVal node validation worker.
 import asyncio
 import uuid
 import traceback
+from functools import lru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
-from graval.validator import Validator
 from loguru import logger
 from api.config import settings
 from api.database import SessionLocal
@@ -22,7 +22,13 @@ import api.miner_client as miner_client
 broker = ListQueueBroker(url=settings.redis_url, queue_name="graval").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
 )
-validator = Validator()
+
+
+@lru_cache(maxsize=1)
+def validator():
+    from graval.validator import Validator
+
+    return Validator()
 
 
 class CipherChallenge(BaseModel):
@@ -38,7 +44,7 @@ async def initialize_graval(*_, **__):
     """
     Initialize the GraVal validator instance.
     """
-    validator.initialize()
+    validator().initialize()
 
 
 def generate_cipher(node):
@@ -46,7 +52,7 @@ def generate_cipher(node):
     Encrypt some data on the validator side and see if the miner can decrypt it.
     """
     plaintext = f"decrypt me please: {uuid.uuid4()}"
-    ciphertext, iv, length = validator.encrypt(node.graval_dict(), plaintext, node.seed)
+    ciphertext, iv, length = validator().encrypt(node.graval_dict(), plaintext, node.seed)
     logger.info(f"Generated {length} byte ciphertext from: {plaintext}")
     return plaintext, CipherChallenge(
         ciphertext=ciphertext.hex(),
@@ -94,7 +100,7 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
     url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
     error_message = None
     try:
-        challenge = validator.generate_device_info_challenge(len(nodes))
+        challenge = validator().generate_device_info_challenge(len(nodes))
         async with miner_client.get(
             nodes[0].miner_hotkey,
             url,
@@ -106,7 +112,7 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
                 error_message = f"Failed to perform device info challenge: {response.status=} {await response.text()}"
             else:
                 response = await response.text()
-                assert validator.verify_device_info_challenge(
+                assert validator().verify_device_info_challenge(
                     challenge, response, [node.graval_dict() for node in nodes]
                 )
     except Exception as exc:

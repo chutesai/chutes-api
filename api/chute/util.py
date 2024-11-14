@@ -142,8 +142,9 @@ async def _invoke_one(
 
     # Call the miner's endpoint.
     session = aiohttp.ClientSession(raise_for_status=True)
+    path = path.lstrip("/")
     response = await session.post(
-        f"http://{target.host}:{target.port}/{chute.chute_id}{path}",
+        f"http://{target.host}:{target.port}/{path}",
         json={"args": args, "kwargs": kwargs},
     )
     if stream:
