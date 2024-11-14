@@ -5,7 +5,6 @@ Helper functions for instances.
 import time
 import asyncio
 import orjson as json
-import redis.asyncio as redis
 from loguru import logger
 from api.instance.schemas import Instance
 from api.config import settings
@@ -69,16 +68,15 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
                 if bounty != current_bounty:
                     logger.info(f"Bounty for {chute_id=} is now {bounty}")
                     current_bounty = bounty
-                    async with redis.from_url(settings.redis_url) as redis_client:
-                        await redis_client.publish(
-                            "miner_broadcast",
-                            json.dumps(
-                                {
-                                    "reason": "bounty_change",
-                                    "data": {"chute_id": chute_id, "bounty": bounty},
-                                }
-                            ).decode(),
-                        )
+                    await settings.redis_client.publish(
+                        "miner_broadcast",
+                        json.dumps(
+                            {
+                                "reason": "bounty_change",
+                                "data": {"chute_id": chute_id, "bounty": bounty},
+                            }
+                        ).decode(),
+                    )
                 await asyncio.sleep(1)
                 result = await session.execute(query)
                 instances = result.scalars().unique().all()

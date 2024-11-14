@@ -7,7 +7,6 @@ import uuid
 import time
 import asyncio
 from loguru import logger
-import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
 from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
@@ -182,8 +181,7 @@ async def create_image(
     await db.refresh(image)
 
     # Clean up any previous streams, just in case of retry.
-    redis_client = redis.Redis.from_url(settings.redis_url)
-    await redis_client.delete(f"forge:{image_id}:stream")
+    await settings.redis_client.delete(f"forge:{image_id}:stream")
 
     # Stream logs for clients who set the "wait" flag.
     async def _stream():
@@ -192,7 +190,7 @@ async def create_image(
         while True:
             stream_result = None
             try:
-                stream_result = await redis_client.xrange(
+                stream_result = await settings.redis_client.xrange(
                     f"forge:{image_id}:stream", last_offset or "-", "+"
                 )
             except Exception as exc:
@@ -207,7 +205,7 @@ async def create_image(
                 parts = last_offset.split("-")
                 last_offset = parts[0] + "-" + str(int(parts[1]) + 1)
                 if data[b"data"] == b"DONE":
-                    await redis_client.delete(f"forge:{image_id}:stream")
+                    await settings.redis_client.delete(f"forge:{image_id}:stream")
                     yield "DONE\n"
                     break
                 yield f"data: {data[b'data'].decode()}\n\n"

@@ -6,10 +6,7 @@ from api.config import settings
 from typing import AsyncGenerator
 from contextlib import asynccontextmanager
 
-engine = create_async_engine(
-    settings.sqlalchemy,
-    echo=settings.debug,
-)
+engine = create_async_engine(settings.sqlalchemy, echo=settings.debug)
 
 SessionLocal = sessionmaker(
     bind=engine,

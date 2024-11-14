@@ -301,4 +301,5 @@ def normalize_scores(gpu_dict):
     return normalized_scores
 
 
-GPU_BOOST = normalize_scores(SUPPORTED_GPUS)
+COMPUTE_MULTIPLIER = normalize_scores(SUPPORTED_GPUS)
+COMPUTE_MIN = min(list(COMPUTE_MULTIPLIER.values()))

@@ -4,10 +4,9 @@ ORM definitions for users.
 
 from typing import Self
 from pydantic import BaseModel
-from sqlalchemy import func, Column, String, DateTime, BigInteger
+from sqlalchemy import func, Column, String, DateTime, Double, Boolean
 from sqlalchemy.orm import relationship, validates
 from api.database import Base
-from api.config import settings
 import hashlib
 from api.util import gen_random_token
 from api.user.util import validate_the_username
@@ -38,8 +37,11 @@ class User(Base):
     # Users should send to this address to top up
     payment_address = Column(String)
 
-    # Current balance in Tao
-    balance = Column(BigInteger, default=settings.signup_bonus_balance)
+    # Balance in USD.
+    balance = Column(Double, default=0.0)
+
+    # Flag indicating if the first payment bonus has been credited.
+    bonus_used = Column(Boolean, default=False)
 
     # Friendly name for the frontend for chute creators
     username = Column(String, unique=True)
@@ -60,29 +62,6 @@ class User(Base):
         Simple username validation.
         """
         return validate_the_username(value)
-
-    # NOTE: The below can be deleted as coldkey is just for receiving payments.
-    # @validates("coldkey")
-    # def validate_coldkey(self, _, value):
-    #     """
-    #     Ensure the coldkey has a balance before allowing registration.
-    #     """
-    #     if not re.match(r"^[a-zA-Z0-9]{48}$", value):
-    #         raise ValueError("Invalid coldkey address")
-    #     balance = 0
-    #     try:
-    #         substrate = SubstrateInterface(settings.subtensor, ss58_format=42)
-    #         result = substrate.query(
-    #             module="System", storage_function="Account", params=[value]
-    #         )
-    #         balance = float(result.value["data"]["free"]) / 1e9
-    #     except Exception as e:
-    #         raise ValueError(f"Error checking tao balance for {value}: {e}")
-    #     if not balance or balance < settings.registration_minimum_balance:
-    #         raise ValueError(
-    #             f"Free tao balance for coldkey={value} too low [{balance}], minimum: {settings.registration_minimum_balance}"
-    #         )
-    #     return value
 
     @classmethod
     def create(

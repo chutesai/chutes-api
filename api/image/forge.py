@@ -10,7 +10,6 @@ import tempfile
 import traceback
 import time
 import orjson as json
-import redis.asyncio as redis
 from loguru import logger
 from api.config import settings
 from api.database import SessionLocal
@@ -38,6 +37,7 @@ async def initialize_mappings(*_, **__):
     """
     Ensure ORM modules are all loaded.
     """
+    import api.database.orms  # noqa: F401
 
 
 def safe_extract(zip_path):
@@ -61,7 +61,6 @@ async def build_and_push_image(image):
     full_image_tag = f"{settings.registry_host.rstrip('/')}/{short_tag}"
 
     # Helper to capture and stream logs.
-    redis_client = redis.Redis.from_url(settings.redis_url)
     started_at = time.time()
 
     async def _capture_logs(stream, name):
@@ -73,7 +72,7 @@ async def build_and_push_image(image):
                     decoded_line = line.decode().strip()
                     log_method(f"[build {short_tag}]: {decoded_line}")
                     outfile.write(decoded_line.strip() + "\n")
-                    await redis_client.xadd(
+                    await settings.redis_client.xadd(
                         f"forge:{image.image_id}:stream",
                         {"data": json.dumps({"log_type": name, "log": decoded_line}).decode()},
                     )
@@ -106,33 +105,33 @@ async def build_and_push_image(image):
             delta = time.time() - started_at
             message = f"Successfull built {full_image_tag} in {round(delta, 5)} seconds, pushing..."
             logger.success(message)
-            await redis_client.xadd(
+            await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
         else:
             message = "Image build failed, check logs for more details!"
             logger.error(message)
-            await redis_client.xadd(
+            await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
-            await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
             raise BuildFailure(f"Build of {full_image_tag} failed!")
     except asyncio.TimeoutError:
         message = f"Build of {full_image_tag} timed out after {settings.build_timeout} seconds."
         logger.error(message)
-        await redis_client.xadd(
+        await settings.redis_client.xadd(
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise BuildTimeout(message)
 
     # Push.
-    await redis_client.xadd(
+    await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {
             "data": json.dumps(
@@ -165,7 +164,7 @@ async def build_and_push_image(image):
                 "\N{hammer and wrench} "
                 + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
             )
-            await redis_client.xadd(
+            await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
@@ -173,20 +172,20 @@ async def build_and_push_image(image):
         else:
             message = "Image push failed, check logs for more details!"
             logger.error(message)
-            await redis_client.xadd(
+            await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
-            await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
             raise PushFailure(f"Push of {full_image_tag} failed!")
     except asyncio.TimeoutError:
         message = f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
         logger.error(message)
-        await redis_client.xadd(
+        await settings.redis_client.xadd(
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise PushTimeout(
@@ -195,7 +194,7 @@ async def build_and_push_image(image):
 
     # Generate filesystem challenge data.
     message = "Generating filesystem challenge data..."
-    await redis_client.xadd(
+    await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
     )
@@ -231,14 +230,14 @@ async def build_and_push_image(image):
                 message = (
                     f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
                 )
-                await redis_client.xadd(
+                await settings.redis_client.xadd(
                     f"forge:{image.image_id}:stream",
                     {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
                 )
                 logger.success(message)
         else:
             message = "Error generating filesystem challenge data."
-            await redis_client.xadd(
+            await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
@@ -247,7 +246,7 @@ async def build_and_push_image(image):
         try:
             message = f"Error generating filesystem challenge data: {exc}"
             logger.error(message)
-            await redis_client.xadd(
+            await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
@@ -262,12 +261,12 @@ async def build_and_push_image(image):
         "\N{hammer and wrench} "
         + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
     )
-    await redis_client.xadd(
+    await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
     )
     logger.success(message)
-    await redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+    await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
     return short_tag
 
 

@@ -3,7 +3,7 @@ Response class for Chutes, to hide sensitive data.
 """
 
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 from api.user.response import UserResponse
 from api.image.response import ImageResponse
@@ -20,6 +20,7 @@ class ChuteResponse(BaseModel):
     updated_at: datetime
     image: ImageResponse
     user: UserResponse
+    current_estimated_price: Optional[Dict[str, Any]] = None
 
     class Config:
         from_attributes = True

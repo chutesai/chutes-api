@@ -119,6 +119,35 @@ services:
       - minio
       - kind
       - registry
+      - vault
+    networks:
+      - kind
+
+  payment_watcher:
+    build:
+      context: .
+      target: api
+    volumes:
+      - ./:/app
+      - kube_config:/home/chutes/.kube
+    environment:
+      - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
+      - REDIS_URL=redis://:redispassword@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - STORAGE_BUCKET=chutes
+      - REGISTRY_PASSWORD=registry
+      - REGISTRY_INSECURE=true
+    entrypoint: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "8222", "--reload"]
+    ports:
+      - "8222:8222"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - kind
+      - registry
     networks:
       - kind
 
@@ -126,8 +155,6 @@ services:
     build:
       context: .
       target: forge
-    volumes:
-      - ./:/forge
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0

@@ -4,6 +4,7 @@ Application-wide settings.
 
 import os
 import hvac
+import redis.asyncio as redis
 from miniopy_async import Minio
 from pydantic_settings import BaseSettings
 
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     )
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    redis_client: redis.Redis = redis.Redis.from_url(
+        os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
+    )
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
     registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
@@ -32,9 +36,23 @@ class Settings(BaseSettings):
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
     netuid: int = int(os.getenv("NETUID", "19"))
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
-    registration_minimum_balance: float = float(os.getenv("REGISTRATION_MINIMUM_BALANCE", "0.5"))
-    signup_bonus_balance: int = int(os.getenv("REGISTRATION_BONUS_BALANCE", str(1 * 10**9)))
+    first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "100.0"))
+    first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 25.0))
+    payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "32"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
+
+    # XXX unused for now - future in which payouts to various parties.
+    miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))
+    maintainer_take: float = float(os.getenv("MAINTAINER_TAKE", "0.2"))
+    moderator_take: float = float(os.getenv("MODERATOR_TAKE", "0.02"))
+    contributor_take: float = float(os.getenv("CONTRIBUTOR_TAKE", "0.03"))
+    image_creator_take: float = float(os.getenv("IMAGE_CREATOR_TAKE", "0.01"))
+    chute_creator_take: float = float(os.getenv("CHUTE_CREATOR_TAKE", "0.01"))
+    maintainer_payout_addresses: list[str] = [
+        address
+        for address in os.getenv("MAINTAINER_PAYOUT_ADDRESSES", "").split(",")
+        if address.strip()
+    ]
 
 
 settings = Settings()
