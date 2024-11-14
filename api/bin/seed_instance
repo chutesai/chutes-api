@@ -86,7 +86,8 @@ async def main():
           verification_host,
           verification_port,
           gpu_identifier,
-          seed
+          seed,
+          device_index
         ) VALUES (
           'e9fb06be3936c7eaf18ddab40868b5f7',
           '5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4',
@@ -103,7 +104,8 @@ async def main():
           :host,
           :port,
           '4090',
-          42
+          42,
+          0
         ) ON CONFLICT(uuid) DO NOTHING"""
             ),
             {"host": args.host, "port": args.port},
