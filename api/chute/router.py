@@ -6,7 +6,6 @@ import re
 import random
 import string
 import orjson as json
-import redis.asyncio as redis
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
@@ -14,7 +13,7 @@ from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
-from api.chute.schemas import Chute, ChuteArgs, InvocationArgs
+from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, invoke
 from api.user.schemas import User
@@ -27,6 +26,17 @@ from api.pagination import PaginatedResponse
 from api.config import settings
 
 router = APIRouter()
+
+
+async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse):
+    """
+    Inject the current estimated price data into a response.
+    """
+    response.current_estimated_price = await NodeSelector(
+        **chute.node_selector
+    ).current_estimated_price()
+    if not response.current_estimated_price:
+        response.current_estimated_price = {"error": "pricing unavailable"}
 
 
 @router.get("/", response_model=PaginatedResponse)
@@ -75,11 +85,15 @@ async def list_chutes(
     query = query.offset((page or 0) * (limit or 25)).limit((limit or 25))
 
     result = await db.execute(query)
+    responses = []
+    for item in result.scalars().all():
+        responses.append(ChuteResponse.from_orm(item))
+        await _inject_current_estimated_price(item, responses[-1])
     return {
         "total": total,
         "page": page,
         "limit": limit,
-        "items": [ChuteResponse.from_orm(item) for item in result.scalars().all()],
+        "items": responses,
     }
 
 
@@ -98,7 +112,9 @@ async def get_chute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
-    return chute
+    response = ChuteResponse.from_orm(chute)
+    await _inject_current_estimated_price(chute, response)
+    return response
 
 
 @router.delete("/{chute_id_or_name:path}")
@@ -120,16 +136,15 @@ async def delete_chute(
     await db.delete(chute)
     await db.commit()
 
-    async with redis.from_url(settings.redis_url) as redis_client:
-        await redis_client.publish(
-            "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "chute_deleted",
-                    "data": {"chute_id": chute_id},
-                }
-            ).decode(),
-        )
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "chute_deleted",
+                "data": {"chute_id": chute_id},
+            }
+        ).decode(),
+    )
 
     return {"chute_id": chute_id, "deleted": True}
 

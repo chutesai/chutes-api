@@ -36,7 +36,7 @@ async def main():
     parser.add_argument(
         "--chute-id",
         type=str,
-        default="135c0f80-7e3c-5cdf-9c1b-c1ae36c9dc66",
+        default="13881abc-550d-569e-8287-0fc6ef380d00",
         help="Chute ID",
     )
 
@@ -55,9 +55,9 @@ async def main():
           real_host,
           real_port
         ) VALUES (
-          'test-hotkey',
+          '5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4',
           '000',
-          'test-coldkey',
+          '5GerCEPSx22bmr5Wnm2wj87SSpZiVvhVqFUrGG5795XkUbjr',
           -1,
           :netuid,
           1010101,
@@ -88,8 +88,8 @@ async def main():
           gpu_identifier,
           seed
         ) VALUES (
-          'test-node',
-          'test-hotkey',
+          'e9fb06be3936c7eaf18ddab40868b5f7',
+          '5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4',
           'RTX 4090',
           25769803776,
           8,
@@ -129,8 +129,8 @@ async def main():
           :port,
           :chute_id,
           -1,
-          'test-hotkey',
-          'test-coldkey',
+          '5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4',
+          '5GerCEPSx22bmr5Wnm2wj87SSpZiVvhVqFUrGG5795XkUbjr',
           'n/a',
           true,
           true
@@ -142,7 +142,7 @@ async def main():
             text(
                 "INSERT INTO instance_nodes (instance_id, node_id) VALUES (:instance_id, :node_id)"
             ),
-            {"instance_id": "test-instance", "node_id": "test-node"},
+            {"instance_id": "test-instance", "node_id": "e9fb06be3936c7eaf18ddab40868b5f7"},
         )
         await session.commit()
     logger.success("Successfully seeded dev instance.")

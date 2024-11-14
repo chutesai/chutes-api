@@ -27,7 +27,6 @@ async def get_and_check_api_key(key: str, request: Request):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing or invalid authorization header(s)",
         )
-
     part_match = re.match(r"^cpk_([a-f0-9]{32})\.([a-f0-9]{32})\.([a-zA-Z0-9]{32})$", key)
     if not part_match:
         return False

@@ -12,7 +12,7 @@ import traceback
 import orjson as json
 from loguru import logger
 from typing import List
-from sqlalchemy import or_, text, update, func, String
+from sqlalchemy import and_, or_, text, update, func, String
 from sqlalchemy.future import select
 from api.config import settings
 from api.database import SessionLocal
@@ -20,7 +20,8 @@ from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.instance.schemas import Instance
-
+from api.gpu import COMPUTE_MIN
+from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 
 REQUEST_SAMPLE_RATIO = 0.05
 TRACK_INVOCATION = text(
@@ -83,6 +84,7 @@ UPDATE partitioned_invocations_{suffix} SET
         ELSE bounty
     END
 WHERE invocation_id = :invocation_id
+RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
 """
 
 
@@ -93,7 +95,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
     if not chute_id_or_name:
         return None
     name_match = re.match(
-        r"(?:([a-z0-9][a-z0-9_-]*)/)?([a-z0-9][a-z0-9_-]*)$",
+        r"/?(?:([a-zA-Z0-9_\.-]{3,15})/)?([a-z0-9][a-z0-9_\.\/-]*)$",
         chute_id_or_name.lstrip("/"),
         re.I,
     )
@@ -106,8 +108,23 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
     )
     username = name_match.group(1) or current_user.username
     chute_name = name_match.group(2)
-    query = query.where(User.username == username).where(
-        or_(Chute.name == chute_name, Chute.chute_id == chute_id_or_name)
+    chute_id_or_name = chute_id_or_name.lstrip("/")
+    query = query.where(
+        or_(
+            and_(
+                User.username == current_user.username,
+                Chute.name == chute_name,
+            ),
+            and_(
+                User.username == current_user.username,
+                Chute.name == chute_id_or_name,
+            ),
+            and_(
+                User.username == username,
+                Chute.name == chute_name,
+            ),
+            Chute.chute_id == chute_id_or_name,
+        )
     )
     result = await db.execute(query)
     return result.scalar_one_or_none()
@@ -245,6 +262,8 @@ async def invoke(
                     response_data.append(data)
 
             async with SessionLocal() as session:
+
+                # Save the response if we're randomly sampling this one.
                 response_path = None
                 if request_path:
                     response_path = request_path.replace("request.json", "response.json")
@@ -259,7 +278,9 @@ async def invoke(
                     except Exception as exc:
                         logger.error(f"failed to sample request: {exc}")
                         response_path = None
-                await session.execute(
+
+                # Mark the invocation as complete.
+                result = await session.execute(
                     text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                     {
                         "chute_id": chute_id,
@@ -268,6 +289,23 @@ async def invoke(
                         "response_path": response_path,
                     },
                 )
+
+                # Calculate the credits used and deduct from user's balance.
+                compute_units = result.scalar_one_or_none()
+                if compute_units:
+                    balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS * COMPUTE_MIN / 3600
+                    result = await session.execute(
+                        update(User)
+                        .where(User.user_id == user_id)
+                        .values(balance=User.balance - balance_used)
+                        .returning(User.balance)
+                    )
+                    new_balance = result.scalar_one_or_none()
+                    if new_balance is not None:
+                        logger.debug(
+                            f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                        )
+
                 await session.commit()
 
             yield sse(
