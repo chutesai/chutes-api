@@ -262,7 +262,6 @@ async def invoke(
                     response_data.append(data)
 
             async with SessionLocal() as session:
-
                 # Save the response if we're randomly sampling this one.
                 response_path = None
                 if request_path:

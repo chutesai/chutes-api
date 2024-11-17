@@ -255,7 +255,6 @@ async def invoke_(
     stream = False
     function = None
     for cord in chute.cords:
-
         if cord["path"] == path:
             identified = True
             stream = cord["stream"]

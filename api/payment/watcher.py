@@ -292,7 +292,6 @@ class PaymentMonitor:
                 fmv = await fetcher.get_price("tao")
 
                 while self.is_running:
-
                     # Wait for the block to advance.
                     if current_block_number == latest_block_number:
                         while (

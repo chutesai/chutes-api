@@ -180,4 +180,15 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             .where(Node.uuid.in_(uuids))
             .values({"verified_at": func.now(), "verification_error": None})
         )
+
+    # Notify the miner.
+    try:
+        async with miner_client.axon_post(
+            nodes[0].miner_hotkey, "/gpus/verify", payload={"gpu_ids": uuids}
+        ) as resp:
+            resp.raise_for_status()
+    except Exception as exc:
+        # Allow exceptions here since the miner can also check.
+        logger.warning(f"Error notifying miner that GPU is verified: {exc}")
+
     return True, None

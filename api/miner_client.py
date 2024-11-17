@@ -9,6 +9,8 @@ import orjson as json
 from contextlib import asynccontextmanager
 from loguru import logger
 from typing import Any, Dict
+from api.metasync import get_miner_by_hotkey
+from api.database import SessionLocal
 from api.config import settings
 from api.constants import MINER_HEADER, VALIDATOR_HEADER, NONCE_HEADER, SIGNATURE_HEADER
 
@@ -90,3 +92,50 @@ async def get(miner_ss58: str, url: str, purpose: str, **kwargs):
         headers.update(new_headers)
         async with session.get(url, headers=headers, **kwargs) as response:
             yield response
+
+
+async def get_real_axon(miner_ss58: str):
+    """
+    Attempt refreshing the axon's real host/port via porter.
+    """
+    if (cached := await settings.redis_client.get(f"real_axon:{miner_ss58}")) is not None:
+        return cached.split(":__:")
+    async with SessionLocal() as session:
+        if (miner := await get_miner_by_hotkey(miner_ss58, session)) is None:
+            return None
+        try:
+            async with get(
+                miner_ss58, "http://{miner.ip}:{miner.port}/axon", purpose="porter", timeout=5.0
+            ) as resp:
+                result = await resp.json()
+                if result["host"] and miner.real_host != result["host"]:
+                    miner.real_host = result["host"]
+                    miner.real_port = result["port"]
+                    await session.commit()
+                    await session.refresh(miner)
+                await settings.redis_client.set(
+                    f"real_axon:{miner_ss58}", f"{miner.real_host}:__:{miner.real_port}", ex=300
+                )
+        except Exception as exc:
+            logger.warning(f"Error refreshing real axon: {exc}")
+        return f"http://{miner.real_host}:{miner.real_port}"
+
+
+@asynccontextmanager
+async def axon_post(miner_ss58: str, path: str, payload: Dict[str, Any], **kwargs):
+    """
+    Perform a post request to a miner's axon (redirecting from their porter instance, if any).
+    """
+    real_axon = await get_real_axon(miner_ss58)
+    async with post(miner_ss58, f"{real_axon}{path}", payload=payload, **kwargs) as response:
+        yield response
+
+
+@asynccontextmanager
+async def axon_get(miner_ss58: str, path: str, purpose: str, **kwargs):
+    """
+    Perform a get request to a miner's axon (redirecting from their porter instance, if any).
+    """
+    real_axon = await get_real_axon(miner_ss58)
+    async with get(miner_ss58, f"{real_axon}{path}", purpose=purpose, **kwargs) as response:
+        yield response
