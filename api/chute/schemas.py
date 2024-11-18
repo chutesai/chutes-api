@@ -167,8 +167,8 @@ class Chute(Base):
         """
         Validate the filename (the entrypoint for chutes run ...)
         """
-        if isinstance(filename, str) or not re.match(r"^[a-z][a-z0-9_]+\.py$", filename, re.I):
-            raise ValueError(f"Invalid entrypoint filename: {filename}")
+        if not isinstance(filename, str) or not re.match(r"^[a-z][a-z0-9_]*\.py$", filename):
+            raise ValueError(f"Invalid entrypoint filename: '{filename}'")
         return filename
 
     @validates("code")
