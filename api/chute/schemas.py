@@ -3,6 +3,7 @@ ORM definitions for Chutes.
 """
 
 import re
+import ast
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
@@ -117,6 +118,8 @@ class ChuteArgs(BaseModel):
     name: str
     image: str
     public: bool
+    code: str
+    filename: str
     standard_template: Optional[str] = None
     node_selector: NodeSelector
     cords: List[Cord]
@@ -138,6 +141,9 @@ class Chute(Base):
     cords = Column(JSONB, nullable=False)
     node_selector = Column(JSONB, nullable=False)
     slug = Column(String)
+    code = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    version = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -155,6 +161,26 @@ class Chute(Base):
         if template not in (None, "vllm"):
             raise ValueError(f"Invalid standard template: {template}")
         return template
+
+    @validates("filename")
+    def validate_filename(self, _, filename):
+        """
+        Validate the filename (the entrypoint for chutes run ...)
+        """
+        if not isinstance(filename, str) or not re.match(r"^[a-z][a-z0-9_]*\.py$", filename):
+            raise ValueError(f"Invalid entrypoint filename: '{filename}'")
+        return filename
+
+    @validates("code")
+    def validate_code(self, _, code):
+        """
+        Syntax check on the code.
+        """
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            raise ValueError(f"Invalid code submited: {exc}")
+        return code
 
     @validates("cords")
     def validate_cords(self, _, cords):

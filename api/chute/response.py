@@ -14,6 +14,7 @@ class ChuteResponse(BaseModel):
     chute_id: str
     name: str
     public: bool
+    version: str
     slug: Optional[str]
     cords: List[Cord]
     created_at: datetime
