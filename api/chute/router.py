@@ -178,15 +178,16 @@ async def deploy_chute(
             .where(Chute.user_id == current_user.user_id)
         )
     ).scalar_one_or_none()
-    if chute and chute.version == version:
+    if chute and chute.version == version and chute.public == chute_args.public:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"Chute with name={chute_args.name} and {version=} already exists",
+            detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
     if chute:
         chute.code = chute_args.code
         chute.filename = chute_args.filename
         chute.version = version
+        chute.public = chute_args.public
     else:
         chute = Chute(
             image_id=image.image_id,
