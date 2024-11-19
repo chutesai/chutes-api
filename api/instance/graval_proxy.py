@@ -1,0 +1,150 @@
+"""
+GraVal proxy - encrypt/decrypt traffic to/from instances.
+"""
+
+import aiohttp
+import argparse
+import uvicorn
+import asyncio
+import random
+import orjson as json
+import pybase64 as base64
+from loguru import logger
+from sqlalchemy import select
+from pydantic import BaseModel
+from graval.validator import Validator
+from fastapi import FastAPI, status, HTTPException
+from starlette.responses import StreamingResponse
+from api.instance.schemas import Instance
+from api.database import SessionLocal
+import api.database.orms  # noqa
+
+
+class Cipher(BaseModel):
+    ciphertext: str
+    iv: str
+    length: int
+    device_id: int
+    seed: int
+
+
+class Invocation(BaseModel):
+    args: str
+    kwargs: str
+    path: str
+    stream: bool
+    instance_id: str
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+    )
+    args = parser.parse_args()
+    gpu_lock = asyncio.Lock()
+    validator = Validator()
+    validator.initialize()
+
+    app = FastAPI(
+        title="GraVal proxy",
+        description="Encryption plz.",
+        version="0.0.1",
+    )
+
+    @app.post("/proxy")
+    async def proxy_request(invocation: Invocation):
+        """
+        Proxy a single request upstream to an instance, adding encryption.
+        """
+        logger.debug(f"Received invocation request: {invocation}")
+        # Load the instance (for host, port, and device info).
+        async with SessionLocal() as session:
+            instance = (
+                (
+                    await session.execute(
+                        select(Instance).filter(Instance.instance_id == invocation.instance_id)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not instance:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"{invocation.instance_id=} not found",
+                )
+            device_dicts = [node.graval_dict() for node in instance.nodes]
+
+        # Encrypt.
+        async with gpu_lock:
+            target_index = random.randint(0, len(device_dicts) - 1)
+            target_device = device_dicts[target_index]
+            seed = instance.nodes[0].seed
+            encrypted = {}
+            for key, val in [("args", invocation.args), ("kwargs", invocation.kwargs)]:
+                ciphertext, iv, length = validator.encrypt(target_device, val, seed)
+                encrypted[key] = Cipher(
+                    ciphertext=base64.b64encode(ciphertext).decode(),
+                    iv=iv.hex(),
+                    length=length,
+                    device_id=target_index,
+                    seed=seed,
+                ).dict()
+
+        # Decrypt response.
+        session = aiohttp.ClientSession(raise_for_status=True)
+        response = None
+        try:
+            logger.debug(f"Posting: {encrypted=}")
+            response = await session.post(
+                f"http://{instance.host}:{instance.port}/{invocation.path}",
+                json=encrypted,
+                headers={"X-Chutes-Encrypted": "true"},
+            )
+            if invocation.stream:
+
+                async def _stream_response():
+                    async for chunk_enc in response.content:
+                        chunk = chunk_enc.decode()
+                        if chunk.startswith("data: "):
+                            cipher = Cipher(**json.loads(chunk[6:]))
+                            async with gpu_lock:
+                                decrypted = validator.decrypt(
+                                    target_device,
+                                    base64.b64decode(cipher.ciphertext.encode()),
+                                    bytes.fromhex(cipher.iv),
+                                    cipher.length,
+                                )
+                            yield f"data: {decrypted}"
+                        else:
+                            yield chunk
+
+                return StreamingResponse(_stream_response())
+
+            # Normal/non-streamed responses.
+            cipher = Cipher(**await response.json())
+            async with gpu_lock:
+                decrypted = validator.decrypt(
+                    target_device,
+                    base64.b64decode(cipher.ciphertext.encode()),
+                    bytes.fromhex(cipher.iv),
+                    cipher.length,
+                )
+                return json.loads(decrypted)
+        finally:
+            if response:
+                await response.release()
+            await session.close()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected error, did not return response from upstream.",
+        )
+
+    uvicorn.run(app=app, host="0.0.0.0", port=args.port)
+
+
+if __name__ == "__main__":
+    main()
