@@ -97,6 +97,39 @@ services:
     networks:
       - chutes
 
+  socket:
+    build:
+      context: .
+      target: api
+    entrypoint: ["poetry", "run", "uvicorn", "api.socket:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    volumes:
+      - ./metasync:/app/metasync
+      - ./api:/app/api
+      - ./data:/app/data
+      - kube_config:/home/chutes/.kube
+    environment:
+      - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
+      - REDIS_URL=redis://:redispassword@redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - STORAGE_BUCKET=chutes
+      - REGISTRY_PASSWORD=registry
+      - REGISTRY_INSECURE=true
+      - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
+      - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
+    restart: always
+    ports:
+      - "8080:8080"
+    depends_on:
+      - postgres
+      - redis
+      - minio
+      - registry
+      - vault
+    networks:
+      - chutes
+
   payment_watcher:
     build:
       context: .
