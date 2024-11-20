@@ -7,13 +7,13 @@ import argparse
 import uvicorn
 import asyncio
 import random
-import orjson as json
 import pybase64 as base64
 from loguru import logger
 from sqlalchemy import select
 from pydantic import BaseModel
 from graval.validator import Validator
 from fastapi import FastAPI, status, HTTPException
+from fastapi.responses import ORJSONResponse
 from starlette.responses import StreamingResponse
 from api.instance.schemas import Instance
 from api.database import SessionLocal
@@ -95,53 +95,33 @@ def main():
                 ).dict()
 
         # Decrypt response.
-        session = aiohttp.ClientSession(raise_for_status=True)
-        response = None
-        try:
-            logger.debug(f"Posting: {encrypted=}")
+        async def _response_iterator():
+            session = aiohttp.ClientSession(raise_for_status=True)
             response = await session.post(
                 f"http://{instance.host}:{instance.port}/{invocation.path}",
                 json=encrypted,
                 headers={"X-Chutes-Encrypted": "true"},
             )
             if invocation.stream:
-
-                async def _stream_response():
-                    async for chunk_enc in response.content:
-                        chunk = chunk_enc.decode()
-                        if chunk.startswith("data: "):
-                            cipher = Cipher(**json.loads(chunk[6:]))
-                            async with gpu_lock:
-                                decrypted = validator.decrypt(
-                                    target_device,
-                                    base64.b64decode(cipher.ciphertext.encode()),
-                                    bytes.fromhex(cipher.iv),
-                                    cipher.length,
-                                )
-                            yield f"data: {decrypted}"
-                        else:
-                            yield chunk
-
-                return StreamingResponse(_stream_response())
-
-            # Normal/non-streamed responses.
-            cipher = Cipher(**await response.json())
-            async with gpu_lock:
-                decrypted = validator.decrypt(
-                    target_device,
-                    base64.b64decode(cipher.ciphertext.encode()),
-                    bytes.fromhex(cipher.iv),
-                    cipher.length,
-                )
-                return json.loads(decrypted)
-        finally:
-            if response:
+                try:
+                    async for chunk in response.content:
+                        yield chunk.decode()
+                finally:
+                    await response.release()
+                    await session.close()
+            else:
+                data = await response.json()
                 await response.release()
-            await session.close()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Unexpected error, did not return response from upstream.",
-        )
+                await session.close()
+                yield data
+
+        if invocation.stream:
+            return StreamingResponse(_response_iterator())
+        else:
+            result = None
+            async for data in _response_iterator():
+                result = data
+            return ORJSONResponse(result)
 
     uvicorn.run(app=app, host="0.0.0.0", port=args.port)
 
