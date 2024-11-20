@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends
 from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import class_mapper
 from typing import Any
 from api.chute.schemas import Chute
 from api.user.schemas import User
@@ -18,6 +19,13 @@ from api.config import settings
 router = APIRouter()
 
 
+def model_to_dict(obj):
+    """
+    Helper to convert object to dict.
+    """
+    return {column.key: getattr(obj, column.key) for column in class_mapper(obj.__class__).columns}
+
+
 async def _stream_items(db: AsyncSession, clazz: Any):
     """
     Streaming results helper.
@@ -25,7 +33,7 @@ async def _stream_items(db: AsyncSession, clazz: Any):
     query = select(clazz)
     result = await db.stream(query)
     async for row in result:
-        yield f"data: {json.dumps(row[0].todict())}\n\n"
+        yield f"data: {json.dumps(model_to_dict(row[0])).decode()}\n\n"
 
 
 @router.get("/chutes/")
