@@ -160,10 +160,23 @@ async def _invoke_one(
     # Call the miner's endpoint.
     session = aiohttp.ClientSession(raise_for_status=True)
     path = path.lstrip("/")
-    response = await session.post(
-        f"http://{target.host}:{target.port}/{path}",
-        json={"args": args, "kwargs": kwargs},
-    )
+    response = None
+    if settings.graval_proxy_url:
+        response = await session.post(
+            settings.graval_proxy_url,
+            json={
+                "args": args,
+                "kwargs": kwargs,
+                "path": path,
+                "stream": stream,
+                "instance_id": target.instance_id,
+            },
+        )
+    else:
+        response = await session.post(
+            f"http://{target.host}:{target.port}/{path}",
+            json={"args": args, "kwargs": kwargs},
+        )
     if stream:
         try:
             async for chunk in response.content:
