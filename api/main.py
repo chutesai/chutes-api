@@ -24,6 +24,7 @@ from api.user.router import router as user_router
 from api.node.router import router as node_router
 from api.instance.router import router as instance_router
 from api.payment.router import router as payment_router
+from api.miner.router import router as miner_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
@@ -93,6 +94,7 @@ default_router.include_router(instance_router, prefix="/instances", tags=["Insta
 default_router.include_router(invocation_router, prefix="/invocations", tags=["Invocations"])
 default_router.include_router(registry_router, prefix="/registry", tags=["Authentication"])
 default_router.include_router(api_key_router, prefix="/api_keys", tags=["Authentication"])
+default_router.include_router(miner_router, prefix="/miner", tags=["Miner"])
 
 # Do not use app for this, else middleware picks it up
 default_router.get("/ping")(lambda: {"message": "pong"})
