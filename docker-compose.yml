@@ -85,7 +85,8 @@ services:
       - REGISTRY_INSECURE=true
       - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
       - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
-      - GRAVAL_PROXY_URL=http://graval_proxy:9191/proxy
+      # XXX uncomment to test the graval encryption proxy, requires GPU
+      # - GRAVAL_PROXY_URL=http://graval_proxy:9191/proxy
     restart: always
     ports:
       - "8000:8000"
