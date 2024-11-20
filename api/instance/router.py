@@ -58,6 +58,12 @@ async def create_instance(
     db.add(instance)
 
     # Verify the GPUs are suitable.
+    gpu_count = chute.node_selector.get("gpu_count", 1)
+    if len(instance_args.node_ids) != gpu_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
+        )
     for node_id in instance_args.node_ids:
         node = get_node_by_id(node_id)
         if not node:

@@ -19,6 +19,12 @@ chute = Chute(
     image=image,
     node_selector=NodeSelector(
         gpu_count=1,
+        # All options.
+        # gpu_count: int = Field(1, ge=1, le=8)
+        # min_vram_gb_per_gpu: int = Field(16, ge=16, le=80)
+        # require_sxm: bool = False
+        # include: Optional[List[str]] = None
+        # exclude: Optional[List[str]] = None
     ),
 )
 
