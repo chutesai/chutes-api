@@ -4,6 +4,7 @@ Endpoints specific to miners.
 
 import orjson as json
 from fastapi import APIRouter, Depends, Header
+from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -15,6 +16,7 @@ from api.chute.schemas import Chute
 from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance
+from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
 from api.database import get_db_session
 from api.config import settings
@@ -78,3 +80,16 @@ async def list_instances(
             db, Instance, selector=select(Instance).where(Instance.miner_hotkey == hotkey)
         )
     )
+
+
+@cache(expire=300)
+@router.get("/metrics/")
+async def metrics(
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+):
+    async def _stream():
+        async for metric in gather_metrics():
+            yield f"data: {json.dumps(metric).decode()}\n\n"
+
+    return StreamingResponse(_stream())
