@@ -3,18 +3,22 @@ Endpoints specific to miners.
 """
 
 import orjson as json
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header
 from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import class_mapper
 from typing import Any
-from api.chute.schemas import Chute
+import api.database.orms  # noqa
 from api.user.schemas import User
-from api.user.service import get_current_user
+from api.chute.schemas import Chute
+from api.node.schemas import Node
 from api.image.schemas import Image
+from api.instance.schemas import Instance
+from api.user.service import get_current_user
 from api.database import get_db_session
 from api.config import settings
+from api.constants import HOTKEY_HEADER
 
 router = APIRouter()
 
@@ -26,13 +30,13 @@ def model_to_dict(obj):
     return {column.key: getattr(obj, column.key) for column in class_mapper(obj.__class__).columns}
 
 
-async def _stream_items(db: AsyncSession, clazz: Any):
+async def _stream_items(db: AsyncSession, clazz: Any, selector: Any = None):
     """
     Streaming results helper.
     """
-    query = select(clazz)
+    query = selector if selector is not None else select(clazz)
     result = await db.stream(query)
-    async for row in result:
+    async for row in result.unique():
         yield f"data: {json.dumps(model_to_dict(row[0])).decode()}\n\n"
 
 
@@ -50,3 +54,27 @@ async def list_images(
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
     return StreamingResponse(_stream_items(db, Image))
+
+
+@router.get("/nodes/")
+async def list_nodes(
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+):
+    return StreamingResponse(
+        _stream_items(db, Node, selector=select(Node).where(Node.miner_hotkey == hotkey))
+    )
+
+
+@router.get("/instances/")
+async def list_instances(
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+):
+    return StreamingResponse(
+        _stream_items(
+            db, Instance, selector=select(Instance).where(Instance.miner_hotkey == hotkey)
+        )
+    )
