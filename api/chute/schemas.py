@@ -70,27 +70,13 @@ class NodeSelector(BaseModel):
 
         This operates on the MINIMUM value specified by the node multiplier.
         """
-        allowed_gpus = set(SUPPORTED_GPUS)
-        if self.include:
-            allowed_gpus = set(self.include)
-        if self.exclude:
-            allowed_gpus -= set(self.exclude)
-        if self.min_vram_gb_per_gpu:
-            allowed_gpus = set(
-                [
-                    gpu
-                    for gpu in allowed_gpus
-                    if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
-                ]
-            )
-        if self.require_sxm:
-            allowed_gpus = set([gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]])
-        if not allowed_gpus:
+        supported_gpus = self.supported_gpus()
+        if not supported_gpus:
             raise ValueError("No GPUs match specified node_selector criteria")
 
         # Always use the minimum boost value, since miners should try to optimize
         # to run as cheaply as possible while satisfying the requirements.
-        multiplier = min([COMPUTE_MULTIPLIER[gpu] for gpu in allowed_gpus])
+        multiplier = min([COMPUTE_MULTIPLIER[gpu] for gpu in supported_gpus])
         return self.gpu_count * multiplier
 
     async def current_estimated_price(self):
@@ -112,6 +98,29 @@ class NodeSelector(BaseModel):
                 "second": tao_price / 3600,
             },
         }
+
+    @computed_field
+    @property
+    def supported_gpus(self) -> List[str]:
+        """
+        Generate the list of all supported GPUs (short ref string).
+        """
+        allowed_gpus = set(SUPPORTED_GPUS)
+        if self.include:
+            allowed_gpus = set(self.include)
+        if self.exclude:
+            allowed_gpus -= set(self.exclude)
+        if self.min_vram_gb_per_gpu:
+            allowed_gpus = set(
+                [
+                    gpu
+                    for gpu in allowed_gpus
+                    if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
+                ]
+            )
+        if self.require_sxm:
+            allowed_gpus = set([gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]])
+        return list(allowed_gpus)
 
 
 class ChuteArgs(BaseModel):
@@ -212,3 +221,8 @@ class Chute(Base):
         Convert back to dict.
         """
         return node_selector.dict()
+
+    @computed_field
+    @property
+    def supported_gpus(self) -> List[str]:
+        return NodeSelector(**self.node_selector).supported_gpus

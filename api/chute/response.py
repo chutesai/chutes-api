@@ -21,6 +21,7 @@ class ChuteResponse(BaseModel):
     updated_at: datetime
     image: ImageResponse
     user: UserResponse
+    supported_gpus: List[str]
     current_estimated_price: Optional[Dict[str, Any]] = None
 
     class Config:
