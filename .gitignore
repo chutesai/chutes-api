@@ -8,6 +8,8 @@ __pycache__/
 *.ipynb
 # C extensions
 
+demo*.sh
+.localenv
 *.so
 data/chutes
 

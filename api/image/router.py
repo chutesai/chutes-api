@@ -9,7 +9,7 @@ import asyncio
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
 from starlette.responses import StreamingResponse
-from sqlalchemy import or_, exists, func
+from sqlalchemy import and_, or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
@@ -145,7 +145,19 @@ async def create_image(
             detail="Cannot make images for users other than yourself!",
         )
     image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{username}/{name}:{tag}"))
-    if (await db.execute(select(exists().where(Image.image_id == image_id)))).scalar():
+    query = select(
+        exists().where(
+            or_(
+                Image.image_id == image_id,
+                and_(
+                    Image.user_id == current_user.user_id,
+                    Image.name == name,
+                    Image.tag == tag,
+                ),
+            )
+        )
+    )
+    if (await db.execute(query)).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Image with {name=} and {tag=} aready exists",

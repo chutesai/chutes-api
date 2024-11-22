@@ -105,7 +105,10 @@ async def get_real_axon(miner_ss58: str):
             return None
         try:
             async with get(
-                miner_ss58, "http://{miner.ip}:{miner.port}/axon", purpose="porter", timeout=5.0
+                miner_ss58,
+                "http://{miner.ip}:{miner.port}/axon",
+                purpose="porter",
+                timeout=5.0,
             ) as resp:
                 result = await resp.json()
                 if result["host"] and miner.real_host != result["host"]:
@@ -114,7 +117,9 @@ async def get_real_axon(miner_ss58: str):
                     await session.commit()
                     await session.refresh(miner)
                 await settings.redis_client.set(
-                    f"real_axon:{miner_ss58}", f"{miner.real_host}:__:{miner.real_port}", ex=300
+                    f"real_axon:{miner_ss58}",
+                    f"{miner.real_host}:__:{miner.real_port}",
+                    ex=300,
                 )
         except Exception as exc:
             logger.warning(f"Error refreshing real axon: {exc}")

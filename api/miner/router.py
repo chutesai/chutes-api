@@ -86,7 +86,9 @@ async def list_instances(
 ):
     return StreamingResponse(
         _stream_items(
-            db, Instance, selector=select(Instance).where(Instance.miner_hotkey == hotkey)
+            db,
+            Instance,
+            selector=select(Instance).where(Instance.miner_hotkey == hotkey),
         )
     )
 

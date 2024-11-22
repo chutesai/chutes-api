@@ -204,7 +204,9 @@ async def deploy_chute(
 
         # Generate a unique slug (subdomain).
         chute.slug = re.sub(
-            r"[^a-z0-9-]+$", "-", slugify(f"{current_user.username}-{chute.name}").lower()
+            r"[^a-z0-9-]+$",
+            "-",
+            slugify(f"{current_user.username}-{chute.name}").lower(),
         )
         base_slug = chute.slug
         already_exists = (
