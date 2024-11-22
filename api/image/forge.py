@@ -57,7 +57,7 @@ async def build_and_push_image(image):
     """
     Perform the actual image build via buildah.
     """
-    short_tag = f"{image.user.user_id}/{image.name}:{image.tag}"
+    short_tag = f"{image.user.username}/{image.name}:{image.tag}"
     full_image_tag = f"{settings.registry_host.rstrip('/')}/{short_tag}"
 
     # Helper to capture and stream logs.
