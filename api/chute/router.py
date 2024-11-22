@@ -186,6 +186,7 @@ async def deploy_chute(
     if chute:
         chute.code = chute_args.code
         chute.filename = chute_args.filename
+        chute.ref_str = chute_args.ref_str
         chute.version = version
         chute.public = chute_args.public
     else:
@@ -195,6 +196,7 @@ async def deploy_chute(
             name=chute_args.name,
             code=chute_args.code,
             filename=chute_args.filename,
+            ref_str=chute_args.ref_str,
             version=version,
             public=chute_args.public,
             cords=chute_args.cords,

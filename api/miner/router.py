@@ -30,13 +30,10 @@ def model_to_dict(obj):
     """
     Helper to convert object to dict.
     """
-    from loguru import logger
-
     mapper = class_mapper(obj.__class__)
     data = {column.key: getattr(obj, column.key) for column in mapper.columns}
     for name, value in vars(obj.__class__).items():
         if isinstance(getattr(value, "decorator_info", None), ComputedFieldInfo):
-            logger.info(f"GOT THIS THING: {name=} {value=} {getattr(obj, name)}")
             data[name] = getattr(obj, name)
     return data
 

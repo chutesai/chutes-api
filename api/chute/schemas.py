@@ -129,6 +129,7 @@ class ChuteArgs(BaseModel):
     public: bool
     code: str
     filename: str
+    ref_str: str
     standard_template: Optional[str] = None
     node_selector: NodeSelector
     cords: List[Cord]
@@ -152,6 +153,7 @@ class Chute(Base):
     slug = Column(String)
     code = Column(String, nullable=False)
     filename = Column(String, nullable=False)
+    ref_str = Column(String, nullable=False)
     version = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -179,6 +181,17 @@ class Chute(Base):
         if not isinstance(filename, str) or not re.match(r"^[a-z][a-z0-9_]*\.py$", filename):
             raise ValueError(f"Invalid entrypoint filename: '{filename}'")
         return filename
+
+    @validates("ref_str")
+    def validate_ref_str(self, _, ref_str):
+        """
+        Validate the reference string, which should be {filename (no .py ext)}:{chute var name}
+        """
+        if not isinstance(ref_str, str) or not re.match(
+            r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$", ref_str
+        ):
+            raise ValueError(f"Invalid reference string: '{ref_str}'")
+        return ref_str
 
     @validates("code")
     def validate_code(self, _, code):
