@@ -20,7 +20,6 @@ from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.instance.schemas import Instance
-from api.gpu import COMPUTE_MIN
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 
 REQUEST_SAMPLE_RATIO = 0.05
@@ -305,7 +304,7 @@ async def invoke(
                 # Calculate the credits used and deduct from user's balance.
                 compute_units = result.scalar_one_or_none()
                 if compute_units:
-                    balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS * COMPUTE_MIN / 3600
+                    balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
                     result = await session.execute(
                         update(User)
                         .where(User.user_id == user_id)

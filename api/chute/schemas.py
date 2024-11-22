@@ -70,7 +70,7 @@ class NodeSelector(BaseModel):
 
         This operates on the MINIMUM value specified by the node multiplier.
         """
-        supported_gpus = self.supported_gpus()
+        supported_gpus = self.supported_gpus
         if not supported_gpus:
             raise ValueError("No GPUs match specified node_selector criteria")
 

@@ -126,6 +126,7 @@ async def delete_image(
 async def create_image(
     wait: bool = Form(...),
     build_context: UploadFile = File(...),
+    username: str = Form(...),
     name: str = Form(...),
     tag: str = Form(...),
     dockerfile: str = Form(...),
@@ -138,7 +139,12 @@ async def create_image(
     Create an image; really here we're just storing the metadata
     in the DB and kicking off the image build asynchronously.
     """
-    image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.user_id}/{name}:{tag}"))
+    if current_user.username != username:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Cannot make images for users other than yourself!",
+        )
+    image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{username}/{name}:{tag}"))
     if (await db.execute(select(exists().where(Image.image_id == image_id)))).scalar():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

@@ -5,7 +5,7 @@ from chutes.chute import NodeSelector
 from chutes.chute.template.vllm import build_vllm_chute
 
 image = (
-    Image("vllm-custom", "0.6.2")
+    Image(username="test", name="vllm-custom", tag="0.6.2")
     .with_python("3.12.7")
     .apt_install(["google-perftools", "git"])
     .run_command("useradd vllm -s /sbin/nologin")
@@ -20,13 +20,13 @@ image = (
 )
 
 chute = build_vllm_chute(
-    "unsloth/Llama-3.2-1B-Instruct",
+    username="test",
+    model_name="unsloth/Llama-3.2-1B-Instruct",
     image=image,
     node_selector=NodeSelector(
         gpu_count=1,
     ),
 )
-
 
 async def main():
     request = {
