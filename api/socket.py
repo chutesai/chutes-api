@@ -10,6 +10,7 @@ import orjson as json
 from typing import Optional
 from datetime import datetime
 from fastapi import Request, FastAPI, HTTPException
+import api.database.orms  # noqa
 from api.config import settings
 from api.user.router import get_current_user
 from typing import Dict

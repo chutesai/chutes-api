@@ -106,7 +106,7 @@ async def get_real_axon(miner_ss58: str):
         try:
             async with get(
                 miner_ss58,
-                "http://{miner.ip}:{miner.port}/axon",
+                f"http://{miner.ip}:{miner.port}/axon",
                 purpose="porter",
                 timeout=5.0,
             ) as resp:
@@ -123,7 +123,7 @@ async def get_real_axon(miner_ss58: str):
                 )
         except Exception as exc:
             logger.warning(f"Error refreshing real axon: {exc}")
-        return f"http://{miner.real_host}:{miner.real_port}"
+        return f"http://{miner.real_host or miner.ip}:{miner.real_port or miner.port}"
 
 
 @asynccontextmanager

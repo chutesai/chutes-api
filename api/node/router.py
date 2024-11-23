@@ -4,6 +4,7 @@ Routes for nodes.
 
 import asyncio
 import random
+from taskiq_redis.exceptions import ResultIsMissingError
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import select, func
@@ -51,6 +52,11 @@ async def create_nodes(
     await db.commit()
     for idx in range(len(nodes)):
         await db.refresh(nodes[idx])
+
+    # Purge any old challenges.
+    node_uuids = [node.uuid for node in args.nodes]
+    await db.execute(delete(Challenge).where(Challenge.uuid.in_(node_uuids))
+
     task_id = "skip"
     if not verified_at:
         task = await validate_gpus.kiq([node.uuid for node in nodes])
@@ -63,7 +69,7 @@ async def check_verification_status(
     task_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="graval")),
 ):
     task_parts = task_id.split("::")
     if len(task_parts) != 2 or task_parts[0] != hotkey:
@@ -76,7 +82,10 @@ async def check_verification_status(
         return {"status": "verified"}
     if not broker.result_backend.is_result_ready(task_id):
         return {"status": "pending"}
-    result = await broker.result_backend.get_result(task_id)
+    try:
+        result = await broker.result_backend.get_result(task_id)
+    except ResultIsMissingError:
+        return {"status": "pending"}
     if result.is_err:
         return {"status": "error", "error": result.error}
     success, error_message = result.return_value
