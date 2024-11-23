@@ -203,7 +203,7 @@ services:
       context: .
       target: metasync
     volumes:
-      - ./:/app
+      - ./metasync:/app/metasync
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0

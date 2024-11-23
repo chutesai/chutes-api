@@ -12,6 +12,7 @@ demo*.sh
 .localenv
 *.so
 data/chutes
+.vllmcache
 
 # Distribution / packaging
 .Python
