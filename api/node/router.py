@@ -14,6 +14,7 @@ from api.config import settings
 from api.util import is_valid_host
 from api.node.schemas import Node, MultiNodeArgs
 from api.node.graval import validate_gpus, broker
+from api.challenge.schemas import Challenge
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.constants import HOTKEY_HEADER
@@ -69,7 +70,9 @@ async def check_verification_status(
     task_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="graval")),
+    _: User = Depends(
+        get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="graval")
+    ),
 ):
     task_parts = task_id.split("::")
     if len(task_parts) != 2 or task_parts[0] != hotkey:
