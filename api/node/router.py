@@ -2,8 +2,8 @@
 Routes for nodes.
 """
 
-import uuid
 import asyncio
+import random
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import select, func
@@ -15,6 +15,7 @@ from api.node.schemas import Node, MultiNodeArgs
 from api.node.graval import validate_gpus, broker
 from api.user.schemas import User
 from api.user.service import get_current_user
+from api.constants import HOTKEY_HEADER
 
 router = APIRouter()
 
@@ -23,19 +24,14 @@ router = APIRouter()
 async def create_nodes(
     args: MultiNodeArgs,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
-    nodes_args = args.nodes
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
-    server_uuid = uuid.uuid5(
-        uuid.NAMESPACE_OID,
-        f"{hotkey}:" + ":".join([node_args.uuid for node_args in nodes_args]),
-    )
+    nodes_args = args.nodes
 
-    # We need a deterministic seed to support more than one validator, which may or may not be necessary.
-    seed = (server_uuid.int >> 64) & ((1 << 64) - 1)
-
+    # Random seed.
+    seed = random.randint(1, 2**63 - 1)
     nodes = []
     verified_at = func.now() if settings.skip_gpu_verification else None
     if not all(await asyncio.gather(*[is_valid_host(n.verification_host) for n in args.nodes])):
@@ -66,7 +62,7 @@ async def create_nodes(
 async def check_verification_status(
     task_id: str,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
     task_parts = task_id.split("::")
