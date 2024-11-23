@@ -3,7 +3,7 @@ Endpoints specific to miners.
 """
 
 import orjson as json
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, status, HTTPException
 from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +35,8 @@ def model_to_dict(obj):
     for name, value in vars(obj.__class__).items():
         if isinstance(getattr(value, "decorator_info", None), ComputedFieldInfo):
             data[name] = getattr(obj, name)
+    if isinstance(obj, Chute):
+        data["image"] = f"{obj.image.user.username}/{obj.image.name}:{obj.image.tag}"
     return data
 
 
@@ -101,3 +103,23 @@ async def metrics(
             yield f"data: {json.dumps(metric).decode()}\n\n"
 
     return StreamingResponse(_stream())
+
+
+@router.get("/chutes/{chute_id}/{version}")
+async def get_chute(
+    chute_id: str,
+    version: str,
+    db: AsyncSession = Depends(get_db_session),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+):
+    chute = (
+        await db.execute(
+            select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+        )
+    ).scalar_one_or_none()
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{chute_id=} not found",
+        )
+    return model_to_dict(chute)

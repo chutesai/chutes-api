@@ -105,7 +105,7 @@ async def delete_instance(
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
     _: User = Depends(
-        get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
+        get_current_user(purpose="instances", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)

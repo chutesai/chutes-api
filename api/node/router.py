@@ -3,13 +3,15 @@ Routes for nodes.
 """
 
 import uuid
+import asyncio
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.database import get_db_session
 from api.config import settings
-from api.node.schemas import Node, NodeArgs
+from api.util import is_valid_host
+from api.node.schemas import Node, MultiNodeArgs
 from api.node.graval import validate_gpus, broker
 from api.user.schemas import User
 from api.user.service import get_current_user
@@ -19,11 +21,12 @@ router = APIRouter()
 
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)
 async def create_nodes(
-    nodes_args: list[NodeArgs],
+    args: MultiNodeArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
+    nodes_args = args.nodes
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
     server_uuid = uuid.uuid5(
         uuid.NAMESPACE_OID,
@@ -35,6 +38,11 @@ async def create_nodes(
 
     nodes = []
     verified_at = func.now() if settings.skip_gpu_verification else None
+    if not all(await asyncio.gather(*[is_valid_host(n.verification_host) for n in args.nodes])):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more invalid verification_hosts provided.",
+        )
     for node_args in nodes_args:
         node = Node(
             **{

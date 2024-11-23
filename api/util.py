@@ -3,6 +3,7 @@ Utility/helper functions.
 """
 
 import re
+import asyncio
 import aiodns
 import datetime
 import hashlib
@@ -120,7 +121,7 @@ async def is_valid_host(host: str) -> bool:
     except ValueError:
         # DNS hostname provided, look up IPs.
         try:
-            resolved_ips = await get_resolved_ips(host)
+            resolved_ips = await asyncio.wait_for(get_resolved_ips(host), 5.0)
             return all(not is_invalid_ip(ip) for ip in resolved_ips)
         except ValueError:
             return False

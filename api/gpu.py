@@ -81,7 +81,7 @@ SUPPORTED_GPUS = {
         "sxm": False,
     },
     "l4": {
-        "model_name_check": "L4",
+        "model_name_check": "L4(?!0)",
         "memory": 24,
         "major": 8,
         "minor": 9,
