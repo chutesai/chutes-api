@@ -2,7 +2,7 @@
 Helpers for invocations.
 """
 
-from api.database import SessionLocal
+from api.database import get_session
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from sqlalchemy import text
 
@@ -27,7 +27,7 @@ async def gather_metrics(interval: str = "5 minutes"):
        GROUP BY chute_id
    """
     )
-    async with SessionLocal() as session:
+    async with get_session() as session:
         result = await session.stream(query)
         async for row in result:
             item = dict(row._mapping)

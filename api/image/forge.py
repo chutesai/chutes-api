@@ -12,7 +12,7 @@ import time
 import orjson as json
 from loguru import logger
 from api.config import settings
-from api.database import SessionLocal
+from api.database import get_session
 from api.exceptions import (
     UnsafeExtraction,
     BuildFailure,
@@ -276,7 +276,7 @@ async def forge(image_id: str):
     Build an image and push it to the registry.
     """
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
-    async with SessionLocal() as session:
+    async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
         if not image:
@@ -333,7 +333,7 @@ async def forge(image_id: str):
             )
 
     # Update status.
-    async with SessionLocal() as session:
+    async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
         if not image:

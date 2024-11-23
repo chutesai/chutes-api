@@ -22,7 +22,7 @@ from api.fmv.fetcher import get_fetcher
 import api.database.orms  # noqa: F401
 from api.user.schemas import User
 from api.payment.schemas import Payment, PaymentMonitorState
-from api.database import SessionLocal, Base, engine
+from api.database import get_session, Base, engine
 from api.config import settings
 
 
@@ -41,7 +41,7 @@ class PaymentMonitor:
         """
         Load state from the database and lock the process.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             result = await session.execute(select(PaymentMonitorState))
             if not result.scalar_one_or_none():
                 current_block = self.get_latest_block()
@@ -120,7 +120,7 @@ class PaymentMonitor:
         Attempt acquiring a lock to ensure we aren't double tracking/crediting accounts.
         """
         acquired = False
-        async with SessionLocal() as session:
+        async with get_session() as session:
             result = await session.execute(
                 update(PaymentMonitorState)
                 .where(
@@ -146,7 +146,7 @@ class PaymentMonitor:
         """
         Unlock (e.g. release the lock after a shutdown).
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             await session.execute(
                 update(PaymentMonitorState).values(
                     is_locked=False,
@@ -160,7 +160,7 @@ class PaymentMonitor:
         """
         Refresh the set of payment addresses from database.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             query = select(User.payment_address, User.updated_at)
             if self._user_refresh_timestamp:
                 query = query.where(User.updated_at > self._user_refresh_timestamp)
@@ -182,7 +182,7 @@ class PaymentMonitor:
         """
         Process an incoming transfer.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             user = (
                 await session.execute(select(User).where(User.payment_address == to_address))
             ).scalar_one_or_none()
@@ -240,7 +240,7 @@ class PaymentMonitor:
         """
         Get current state from database.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             result = await session.execute(select(PaymentMonitorState))
             state = result.scalar_one()
             block, hash_ = state.block_number, state.block_hash
@@ -257,7 +257,7 @@ class PaymentMonitor:
         """
         Save current state to database.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             try:
                 await session.execute(
                     update(PaymentMonitorState).values(
@@ -381,7 +381,7 @@ async def get_status():
     Health check/status endpoint for the payment monitor.
     """
     try:
-        async with SessionLocal() as session:
+        async with get_session() as session:
             query = select(
                 PaymentMonitorState,
                 case(

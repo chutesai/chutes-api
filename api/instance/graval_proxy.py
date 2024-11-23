@@ -16,7 +16,7 @@ from fastapi import FastAPI, status, HTTPException
 from fastapi.responses import ORJSONResponse
 from starlette.responses import StreamingResponse
 from api.instance.schemas import Instance
-from api.database import SessionLocal
+from api.database import get_session
 import api.database.orms  # noqa
 
 
@@ -61,7 +61,7 @@ def main():
         """
         logger.debug(f"Received invocation request: {invocation}")
         # Load the instance (for host, port, and device info).
-        async with SessionLocal() as session:
+        async with get_session() as session:
             instance = (
                 (
                     await session.execute(

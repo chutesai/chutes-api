@@ -9,7 +9,7 @@ from fastapi import APIRouter, Header, Request, HTTPException, Security, status
 from substrateinterface import Keypair
 from api.config import settings
 from api.metasync import MetagraphNode
-from api.database import SessionLocal
+from api.database import get_session
 from api.user.schemas import User
 from api.api_key.util import get_and_check_api_key
 from fastapi.security import APIKeyHeader
@@ -114,7 +114,7 @@ def get_current_user(
 
         # Requires a hotkey registered to a netuid?
         if registered_to is not None:
-            async with SessionLocal() as session:
+            async with get_session() as session:
                 if not (
                     await session.execute(
                         select(
@@ -131,7 +131,7 @@ def get_current_user(
 
         # Fetch the actual user.
         # NOTE: We should have a standard way to get this session
-        async with SessionLocal() as session:
+        async with get_session() as session:
             session: AsyncSession  # For nice type hinting for IDE's
             result = await session.execute(select(User).where(User.hotkey == hotkey))
 

@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Request, HTTPException, status
 from api.api_key.schemas import APIKey
-from api.database import SessionLocal
+from api.database import get_session
 
 
 def reinject_dash(uuid_str: str) -> str:
@@ -34,7 +34,7 @@ async def get_and_check_api_key(key: str, request: Request):
     user_id = reinject_dash(user_id)
     token_id = reinject_dash(token_id)
 
-    async with SessionLocal() as session:
+    async with get_session() as session:
         session: AsyncSession
         result = await session.execute(select(APIKey).where(APIKey.api_key_id == token_id))
         api_token = result.unique().scalar_one_or_none()

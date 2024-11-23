@@ -15,7 +15,7 @@ from typing import List
 from sqlalchemy import and_, or_, text, update, func, String
 from sqlalchemy.future import select
 from api.config import settings
-from api.database import SessionLocal
+from api.database import get_session
 from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
@@ -133,7 +133,7 @@ async def chute_id_by_slug(slug: str):
     """
     Check if a chute exists with the specified slug (which is a subdomain for standard apps).
     """
-    async with SessionLocal() as session:
+    async with get_session() as session:
         if chute_id := (
             await session.execute(select(Chute.chute_id).where(Chute.slug == slug))
         ).scalar_one_or_none():
@@ -148,7 +148,7 @@ async def _invoke_one(
     Try invoking a chute/cord with a single instance.
     """
     # Update last query time for this target.
-    async with SessionLocal() as session:
+    async with get_session() as session:
         await session.execute(
             update(Instance)
             .where(Instance.instance_id == target.instance_id)
@@ -234,7 +234,7 @@ async def invoke(
             request_path = None
     partition_suffix = None
     for target in targets:
-        async with SessionLocal() as session:
+        async with get_session() as session:
             result = await session.execute(
                 TRACK_INVOCATION,
                 {
@@ -273,7 +273,7 @@ async def invoke(
                 if request_path:
                     response_data.append(data)
 
-            async with SessionLocal() as session:
+            async with get_session() as session:
                 # Save the response if we're randomly sampling this one.
                 response_path = None
                 if request_path:
@@ -332,7 +332,7 @@ async def invoke(
             )
             return
         except Exception as exc:
-            async with SessionLocal() as session:
+            async with get_session() as session:
                 await session.execute(
                     text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                     {

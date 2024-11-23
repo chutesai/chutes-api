@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from typing import Any, Dict
 from api.metasync import get_miner_by_hotkey
-from api.database import SessionLocal
+from api.database import get_session
 from api.config import settings
 from api.constants import MINER_HEADER, VALIDATOR_HEADER, NONCE_HEADER, SIGNATURE_HEADER
 
@@ -100,7 +100,7 @@ async def get_real_axon(miner_ss58: str):
     """
     if (cached := await settings.redis_client.get(f"real_axon:{miner_ss58}")) is not None:
         return cached.split(":__:")
-    async with SessionLocal() as session:
+    async with get_session() as session:
         if (miner := await get_miner_by_hotkey(miner_ss58, session)) is None:
             return None
         try:
