@@ -7,7 +7,7 @@ import random
 from taskiq_redis.exceptions import ResultIsMissingError
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.database import get_db_session
 from api.config import settings
@@ -55,7 +55,7 @@ async def create_nodes(
 
     # Purge any old challenges.
     node_uuids = [node.uuid for node in args.nodes]
-    await db.execute(delete(Challenge).where(Challenge.uuid.in_(node_uuids))
+    await db.execute(delete(Challenge).where(Challenge.uuid.in_(node_uuids)))
 
     task_id = "skip"
     if not verified_at:
