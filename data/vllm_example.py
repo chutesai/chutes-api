@@ -5,22 +5,22 @@ from chutes.chute import NodeSelector
 from chutes.chute.template.vllm import build_vllm_chute
 
 image = (
-    Image("vllm-custom", "0.6.2")
+    Image(username="test", name="vllm-custom", tag="0.6.3")
     .with_python("3.12.7")
     .apt_install(["google-perftools", "git"])
     .run_command("useradd vllm -s /sbin/nologin")
-    .run_command("mkdir -p /workspace /home/vllm && chown vllm:vllm /workspace /home/vllm")
+    .run_command("mkdir -p /app /home/vllm && chown vllm:vllm /app /home/vllm")
     .set_user("vllm")
-    .set_workdir("/workspace")
-    .with_env("PATH", "/opt/python/bin:$PATH")
-    .with_env("LD_PRELOAD", "/lib/x86_64-linux-gnu/libtcmalloc.so.4")
-    .run_command("/opt/python/bin/pip install --no-cache vllm==0.6.2 wheel packaging")
-    .run_command("/opt/python/bin/pip install --no-cache flash-attn==2.6.3")
+    .set_workdir("/app")
+    .with_env("PATH", "/opt/python/bin:/home/vllm/.local/bin:$PATH")
+    .run_command("/opt/python/bin/pip install --no-cache 'vllm<0.6.4' wheel packaging")
+    .run_command("/opt/python/bin/pip install --no-cache flash-attn")
     .run_command("/opt/python/bin/pip uninstall -y xformers")
 )
 
 chute = build_vllm_chute(
-    "unsloth/Llama-3.2-1B-Instruct",
+    username="test",
+    model_name="unsloth/Llama-3.2-1B-Instruct",
     image=image,
     node_selector=NodeSelector(
         gpu_count=1,

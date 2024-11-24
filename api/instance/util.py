@@ -8,7 +8,7 @@ import orjson as json
 from loguru import logger
 from api.instance.schemas import Instance
 from api.config import settings
-from api.database import SessionLocal
+from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, case, text
@@ -58,7 +58,7 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
         try:
             current_bounty = 0
             while not instances and time.time() - started_at < max_wait:
-                async with SessionLocal() as bounty_session:
+                async with get_session() as bounty_session:
                     result = await bounty_session.execute(
                         text("SELECT * FROM increase_bounty(:chute_id)"),
                         {"chute_id": chute_id},

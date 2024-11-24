@@ -49,6 +49,8 @@ services:
       REGISTRY_STORAGE_S3_SECRETKEY: minioadmin
       REGISTRY_STORAGE_S3_REGIONENDPOINT: http://minio:9000
       REGISTRY_HTTP_SECRET: "registry"
+    ports:
+      - "5000:5000"
     restart: always
     depends_on:
       - minio
@@ -201,7 +203,7 @@ services:
       context: .
       target: metasync
     volumes:
-      - ./:/app
+      - ./metasync:/app/metasync
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0

@@ -26,26 +26,24 @@ mountpoint=$(buildah mount $target_container)
 find $base_mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/base_filelist
 find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/target_filelist
 comm -13 /tmp/base_filelist /tmp/target_filelist > /tmp/allnew
-if [ ! -z "$working_dir" ]
+if [ -z "$working_dir" ]
 then
-  find $mountpoint$working_dir \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "$working_dir/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/workdir_filelist
-  if [ "$working_dir" != "/app" ]
-  then
-    find $mountpoint/app \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "/app/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache' >> /tmp/app_filelist
-    cat /tmp/workdir_filelist /tmp/app_filelist | sort > /tmp/w
-    mv -f /tmp/w /tmp/workdir_filelist && rm -f /tmp/app_filelist
-  fi
-  file_size=$(stat -c%s -- "/tmp/workdir_filelist")
-  if [ "$file_size" -gt 0 ]
-  then
-    comm -13 /tmp/base_filelist /tmp/workdir_filelist > /tmp/workdir
-    comm -13 /tmp/workdir /tmp/allnew > /tmp/a && mv -f /tmp/a /tmp/allnew
-  fi
+  working_dir="/app"
+fi
+find $mountpoint$working_dir \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "$working_dir/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/workdir_filelist
+file_size=$(stat -c%s -- "/tmp/workdir_filelist")
+if [ "$file_size" -gt 0 ]
+then
+  comm -13 /tmp/base_filelist /tmp/workdir_filelist > /tmp/workdir
+  comm -13 /tmp/workdir /tmp/allnew > /tmp/a && mv -f /tmp/a /tmp/allnew
 fi
 cat /tmp/allnew | shuf | head -n 1000 > /tmp/newsample
 
+# Core libs (graval/chutes)
+find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E 'packages/(chutes|graval)/' > /tmp/corelibs
+
 # Grab some data from each file.
-for input_path in /tmp/newsample /tmp/workdir
+for input_path in /tmp/newsample /tmp/workdir /tmp/corelibs
 do
   if [ ! -f "$input_path" ]
   then

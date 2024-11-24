@@ -4,6 +4,7 @@ ORM definitions for nodes (single GPUs in miner infra).
 
 import re
 from pydantic import BaseModel, Field
+from typing import List
 from sqlalchemy import (
     Column,
     String,
@@ -18,7 +19,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import validates, relationship
 from api.gpu import SUPPORTED_GPUS
 from api.database import Base
-from api.util import is_valid_host
 from api.instance.schemas import instance_nodes
 from api.chute.schemas import Chute, NodeSelector
 
@@ -38,7 +38,11 @@ class NodeArgs(BaseModel):
     device_index: int = Field(gte=0, lt=8)
     gpu_identifier: str
     verification_host: str
-    verification_port: str
+    verification_port: int
+
+
+class MultiNodeArgs(BaseModel):
+    nodes: List[NodeArgs]
 
 
 class Node(Base):
@@ -55,7 +59,7 @@ class Node(Base):
     max_threads_per_processor = Column(Integer, nullable=False)
     concurrent_kernels = Column(Boolean, nullable=False)
     ecc = Column(Boolean, nullable=False)
-    seed = Column(Integer, nullable=False)
+    seed = Column(BigInteger, nullable=False)
 
     # Meta/app fields.
     miner_hotkey = Column(
@@ -112,31 +116,25 @@ class Node(Base):
         """
         Check the miner-specified specs against expected values.
         """
-        self.validate_gpu_model(self.name)
-        self.validate_memory(self.memory)
+        self.validate_gpu_model(None, self.name)
+        self.validate_memory(None, self.memory)
         self.validate_compute_capability("major", self.major)
         self.validate_compute_capability("minor", self.minor)
-        self.validate_processors(self.processors)
-        self.validate_clock_rate(self.clock_rate)
-        self.validate_max_threads(self.max_threads_per_processor)
+        self.validate_processors(None, self.processors)
+        self.validate_clock_rate(None, self.clock_rate)
+        self.validate_max_threads(None, self.max_threads_per_processor)
         self.validate_boolean_features("concurrent_kernels", self.concurrent_kernels)
         self.validate_boolean_features("ecc", self.ecc)
         self.validate_boolean_features("sxm", self.sxm)
 
-    @validates("verification_host")
-    async def validate_host(self, host: str) -> str:
-        if await is_valid_host(host):
-            return host
-        raise ValueError(f"Invalid verification_host: {host}")
-
     @validates("verification_port")
-    async def validate_port(self, port: int) -> int:
+    def validate_port(self, _, port: int) -> int:
         if 80 <= port <= 65535:
             return port
         raise ValueError(f"Invalid verification_port: {port}")
 
     @validates("name")
-    def validate_gpu_model(self, name: str) -> str:
+    def validate_gpu_model(self, _, name: str) -> str:
         for gpu_key, specs in SUPPORTED_GPUS.items():
             if re.search(specs["model_name_check"], name):
                 self._gpu_specs = specs
@@ -145,10 +143,10 @@ class Node(Base):
         raise ValueError(f"GPU model in name '{name}' not found in supported GPUs")
 
     @validates("memory")
-    def validate_memory(self, memory: int) -> int:
+    def validate_memory(self, _, memory: int) -> int:
         if not self._gpu_specs:
             return memory
-        memory_gb = int(memory / (1024 * 1024 * 1024))
+        memory_gb = int(memory / (1000 * 1000 * 1000))
         expected_memory = self._gpu_specs["memory"]
         if not (expected_memory - 1 <= memory_gb <= expected_memory + 1):
             raise ValueError(
@@ -168,7 +166,7 @@ class Node(Base):
         return value
 
     @validates("processors")
-    def validate_processors(self, processors: int) -> int:
+    def validate_processors(self, _, processors: int) -> int:
         if not self._gpu_specs:
             return processors
         expected = self._gpu_specs["processors"]
@@ -179,12 +177,12 @@ class Node(Base):
         return processors
 
     @validates("clock_rate")
-    def validate_clock_rate(self, clock_rate: float) -> float:
+    def validate_clock_rate(self, _, clock_rate: float) -> float:
         if not self._gpu_specs:
             return clock_rate
         base_clock = self._gpu_specs["clock_rate"]["base"]
         boost_clock = self._gpu_specs["clock_rate"]["boost"]
-        clock_mhz = clock_rate / 1_000_000 if clock_rate > 10_000 else clock_rate
+        clock_mhz = clock_rate / 1000
         if not (base_clock <= clock_mhz <= boost_clock * 1.1):
             raise ValueError(
                 f"Clock rate {clock_mhz:.0f}MHz not within expected range {base_clock}-{boost_clock}MHz for {self._gpu_key}"
@@ -192,7 +190,7 @@ class Node(Base):
         return clock_rate
 
     @validates("max_threads_per_processor")
-    def validate_max_threads(self, max_threads: int) -> int:
+    def validate_max_threads(self, _, max_threads: int) -> int:
         if not self._gpu_specs:
             return max_threads
         expected = self._gpu_specs["max_threads_per_processor"]

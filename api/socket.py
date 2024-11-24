@@ -10,6 +10,7 @@ import orjson as json
 from typing import Optional
 from datetime import datetime
 from fastapi import Request, FastAPI, HTTPException
+import api.database.orms  # noqa
 from api.config import settings
 from api.user.router import get_current_user
 from typing import Dict
@@ -150,6 +151,9 @@ async def connect(session_id: str, _):
 
 @sio.event
 async def disconnect(session_id):
+    """
+    Client disconnect.
+    """
     if session_id in authenticated_sockets:
         hotkey = authenticated_sockets[session_id]
         logger.info(f"Disconnected authenticated miner: {hotkey}")
@@ -189,6 +193,9 @@ async def authenticate(session_id: str, headers: Dict[str, str]) -> bool:
 
 @sio.event
 async def miner_message(session_id, data):
+    """
+    Placeholder for miner originated messages, not really used (yet).
+    """
     if session_id not in authenticated_sockets:
         logger.warning(f"Unauthenticated message from {session_id}")
         await sio.disconnect(session_id)

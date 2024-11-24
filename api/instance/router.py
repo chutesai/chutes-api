@@ -58,6 +58,12 @@ async def create_instance(
     db.add(instance)
 
     # Verify the GPUs are suitable.
+    gpu_count = chute.node_selector.get("gpu_count", 1)
+    if len(instance_args.node_ids) != gpu_count:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
+        )
     for node_id in instance_args.node_ids:
         node = get_node_by_id(node_id)
         if not node:
@@ -99,7 +105,7 @@ async def delete_instance(
     db: AsyncSession = Depends(get_db_session),
     hotkey: Annotated[str | None, Header()] = None,
     _: User = Depends(
-        get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
+        get_current_user(purpose="instances", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)

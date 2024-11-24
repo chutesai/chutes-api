@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from typing import Any, Dict
 from api.metasync import get_miner_by_hotkey
-from api.database import SessionLocal
+from api.database import get_session
 from api.config import settings
 from api.constants import MINER_HEADER, VALIDATOR_HEADER, NONCE_HEADER, SIGNATURE_HEADER
 
@@ -100,12 +100,15 @@ async def get_real_axon(miner_ss58: str):
     """
     if (cached := await settings.redis_client.get(f"real_axon:{miner_ss58}")) is not None:
         return cached.split(":__:")
-    async with SessionLocal() as session:
+    async with get_session() as session:
         if (miner := await get_miner_by_hotkey(miner_ss58, session)) is None:
             return None
         try:
             async with get(
-                miner_ss58, "http://{miner.ip}:{miner.port}/axon", purpose="porter", timeout=5.0
+                miner_ss58,
+                f"http://{miner.ip}:{miner.port}/axon",
+                purpose="porter",
+                timeout=5.0,
             ) as resp:
                 result = await resp.json()
                 if result["host"] and miner.real_host != result["host"]:
@@ -114,11 +117,13 @@ async def get_real_axon(miner_ss58: str):
                     await session.commit()
                     await session.refresh(miner)
                 await settings.redis_client.set(
-                    f"real_axon:{miner_ss58}", f"{miner.real_host}:__:{miner.real_port}", ex=300
+                    f"real_axon:{miner_ss58}",
+                    f"{miner.real_host}:__:{miner.real_port}",
+                    ex=300,
                 )
         except Exception as exc:
             logger.warning(f"Error refreshing real axon: {exc}")
-        return f"http://{miner.real_host}:{miner.real_port}"
+        return f"http://{miner.real_host or miner.ip}:{miner.real_port or miner.port}"
 
 
 @asynccontextmanager

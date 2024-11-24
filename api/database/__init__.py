@@ -17,18 +17,29 @@ SessionLocal = sessionmaker(
 Base = declarative_base()
 
 
-async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """
-    Obtain a DB session.
-    """
-    async with SessionLocal() as session:
-        yield session
-
-
 @asynccontextmanager
-async def get_db() -> AsyncGenerator[AsyncSession, None]:
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
     async with SessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
+
+
+async def get_db_session():
+    async with SessionLocal() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
+        finally:
+            await session.close()
 
 
 def generate_uuid():

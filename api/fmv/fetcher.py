@@ -10,7 +10,7 @@ from sqlalchemy import select, func
 from loguru import logger
 from typing import Dict, Optional
 from api.config import settings
-from api.database import SessionLocal
+from api.database import get_session
 from api.fmv.schemas import FMV
 
 
@@ -30,7 +30,7 @@ class FMVFetcher:
         """
         Store current FMV in database.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             session.add(FMV(ticker=ticker, price=price))
             await session.commit()
 
@@ -40,7 +40,7 @@ class FMVFetcher:
         """
         Get the last stored price from database.
         """
-        async with SessionLocal() as session:
+        async with get_session() as session:
             query = select(FMV).where(FMV.ticker == ticker)
             if not_older_than is not None:
                 query = query.where(FMV.timestamp >= func.now() - timedelta(seconds=not_older_than))

@@ -10,7 +10,7 @@ from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
-from api.database import SessionLocal
+from api.database import get_session
 from api.node.schemas import Node
 from sqlalchemy import update, func
 from sqlalchemy.future import select
@@ -82,7 +82,7 @@ async def check_encryption_challenge(
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"
     if error_message:
         logger.error(error_message)
-        async with SessionLocal() as session:
+        async with get_session() as session:
             await session.execute(
                 update(Node)
                 .where(Node.uuid == node.uuid)
@@ -119,7 +119,7 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc} {traceback.format_exc()}"
     if error_message:
         logger.error(error_message)
-        async with SessionLocal() as session:
+        async with get_session() as session:
             await session.execute(
                 update(Node)
                 .where(Node.uuid.in_([node.uuid for node in nodes]))
@@ -136,7 +136,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     Validate a single node.
     """
     nodes = None
-    async with SessionLocal() as session:
+    async with get_session() as session:
         if not (
             nodes := (await session.execute(select(Node).where(Node.uuid.in_(uuids))))
             .scalars()
@@ -174,7 +174,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
                 return False, error_message
             futures = []
     logger.success(f"Nodes {uuids} passed all preliminary node validation challenges!")
-    async with SessionLocal() as session:
+    async with get_session() as session:
         await session.execute(
             update(Node)
             .where(Node.uuid.in_(uuids))

@@ -5,7 +5,7 @@ Routes for chutes.
 import re
 import random
 import string
-import hashlib
+import uuid
 import orjson as json
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request
@@ -134,6 +134,7 @@ async def delete_chute(
             detail="Chute not found, or does not belong to you",
         )
     chute_id = chute.chute_id
+    version = chute.version
     await db.delete(chute)
     await db.commit()
 
@@ -142,7 +143,7 @@ async def delete_chute(
         json.dumps(
             {
                 "reason": "chute_deleted",
-                "data": {"chute_id": chute_id},
+                "data": {"chute_id": chute_id, "version": version},
             }
         ).decode(),
     )
@@ -170,7 +171,7 @@ async def deploy_chute(
             status_code=status.HTTP_409_CONFLICT,
             detail="Chute cannot be public when image is not public!",
         )
-    version = hashlib.sha256(chute_args.code.encode()).hexdigest()
+    version = str(uuid.uuid5(uuid.NAMESPACE_OID, chute_args.code.encode()))
     chute = (
         await db.execute(
             select(Chute)
@@ -183,9 +184,12 @@ async def deploy_chute(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
+    old_version = None
     if chute:
+        old_version = chute.version
         chute.code = chute_args.code
         chute.filename = chute_args.filename
+        chute.ref_str = chute_args.ref_str
         chute.version = version
         chute.public = chute_args.public
     else:
@@ -195,6 +199,7 @@ async def deploy_chute(
             name=chute_args.name,
             code=chute_args.code,
             filename=chute_args.filename,
+            ref_str=chute_args.ref_str,
             version=version,
             public=chute_args.public,
             cords=chute_args.cords,
@@ -204,7 +209,9 @@ async def deploy_chute(
 
         # Generate a unique slug (subdomain).
         chute.slug = re.sub(
-            r"[^a-z0-9-]+$", "-", slugify(f"{current_user.username}-{chute.name}").lower()
+            r"[^a-z0-9-]+$",
+            "-",
+            slugify(f"{current_user.username}-{chute.name}").lower(),
         )
         base_slug = chute.slug
         already_exists = (
@@ -223,16 +230,33 @@ async def deploy_chute(
     await db.commit()
     await db.refresh(chute)
 
-    await settings.redis_client.publish(
-        "miner_broadcast",
-        json.dumps(
-            {
-                "reason": "chute_upserted",
-                "data": {"chute_id": chute.chute_id},
-            }
-        ).decode(),
-    )
-
+    if old_version:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_updated",
+                    "data": {
+                        "chute_id": chute.chute_id,
+                        "version": chute.version,
+                        "old_version": old_version,
+                    },
+                }
+            ).decode(),
+        )
+    else:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_created",
+                    "data": {
+                        "chute_id": chute.chute_id,
+                        "version": chute.version,
+                    },
+                }
+            ).decode(),
+        )
     return chute
 
 

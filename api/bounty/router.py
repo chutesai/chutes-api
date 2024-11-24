@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from sqlalchemy import text, select
 from api.chute.schemas import Chute
 from api.chute.response import ChuteResponse
-from api.database import SessionLocal
+from api.database import get_session
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.config import settings
@@ -29,7 +29,7 @@ async def list_bounties(
     """
     List available bounties, if any.
     """
-    async with SessionLocal() as session:
+    async with get_session() as session:
         query = (
             select(Chute, text("bounties.bounty"), text("bounties.last_increased_at"))
             .select_from(

@@ -2,39 +2,45 @@
 Routes for nodes.
 """
 
-import uuid
+import asyncio
+import random
+from taskiq_redis.exceptions import ResultIsMissingError
 from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlalchemy import select, func
+from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.database import get_db_session
 from api.config import settings
-from api.node.schemas import Node, NodeArgs
+from api.util import is_valid_host
+from api.node.schemas import Node, MultiNodeArgs
 from api.node.graval import validate_gpus, broker
+from api.challenge.schemas import Challenge
 from api.user.schemas import User
 from api.user.service import get_current_user
+from api.constants import HOTKEY_HEADER
 
 router = APIRouter()
 
 
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)
 async def create_nodes(
-    nodes_args: list[NodeArgs],
+    args: MultiNodeArgs,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
-    server_uuid = uuid.uuid5(
-        uuid.NAMESPACE_OID,
-        f"{hotkey}:" + ":".join([node_args.uuid for node_args in nodes_args]),
-    )
+    nodes_args = args.nodes
 
-    # We need a deterministic seed to support more than one validator, which may or may not be necessary.
-    seed = (server_uuid.int >> 64) & ((1 << 64) - 1)
-
+    # Random seed.
+    seed = random.randint(1, 2**63 - 1)
     nodes = []
     verified_at = func.now() if settings.skip_gpu_verification else None
+    if not all(await asyncio.gather(*[is_valid_host(n.verification_host) for n in args.nodes])):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="One or more invalid verification_hosts provided.",
+        )
     for node_args in nodes_args:
         node = Node(
             **{
@@ -47,6 +53,11 @@ async def create_nodes(
     await db.commit()
     for idx in range(len(nodes)):
         await db.refresh(nodes[idx])
+
+    # Purge any old challenges.
+    node_uuids = [node.uuid for node in args.nodes]
+    await db.execute(delete(Challenge).where(Challenge.uuid.in_(node_uuids)))
+
     task_id = "skip"
     if not verified_at:
         task = await validate_gpus.kiq([node.uuid for node in nodes])
@@ -58,8 +69,10 @@ async def create_nodes(
 async def check_verification_status(
     task_id: str,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="graval")
+    ),
 ):
     task_parts = task_id.split("::")
     if len(task_parts) != 2 or task_parts[0] != hotkey:
@@ -72,7 +85,10 @@ async def check_verification_status(
         return {"status": "verified"}
     if not broker.result_backend.is_result_ready(task_id):
         return {"status": "pending"}
-    result = await broker.result_backend.get_result(task_id)
+    try:
+        result = await broker.result_backend.get_result(task_id)
+    except ResultIsMissingError:
+        return {"status": "pending"}
     if result.is_err:
         return {"status": "error", "error": result.error}
     success, error_message = result.return_value
