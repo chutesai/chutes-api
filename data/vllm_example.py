@@ -12,7 +12,7 @@ image = (
     .run_command("mkdir -p /app /home/vllm && chown vllm:vllm /app /home/vllm")
     .set_user("vllm")
     .set_workdir("/app")
-    .with_env("PATH", "/opt/python/bin:$PATH")
+    .with_env("PATH", "/opt/python/bin:/home/vllm/.local/bin:$PATH")
     .run_command("/opt/python/bin/pip install --no-cache 'vllm<0.6.4' wheel packaging")
     .run_command("/opt/python/bin/pip install --no-cache flash-attn")
     .run_command("/opt/python/bin/pip uninstall -y xformers")
@@ -26,6 +26,7 @@ chute = build_vllm_chute(
         gpu_count=1,
     ),
 )
+
 
 async def main():
     request = {
