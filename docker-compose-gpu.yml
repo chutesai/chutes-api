@@ -11,7 +11,7 @@ services:
     user: vllm
     environment:
       - CHUTES_EXECUTION_CONTEXT=REMOTE
-    command: chutes run vllm_example:chute --port 8101 --host 0.0.0.0 --graval-seed 42
+    command: chutes run vllm_example:chute --port 8101 --host 0.0.0.0 --graval-seed 42 --miner-ss58 5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4 --validator-ss58 5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
     deploy:
       resources:
         reservations:

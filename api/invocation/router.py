@@ -105,6 +105,7 @@ async def hostname_invocation(
     if stream:
 
         async def _stream_response():
+            skip = False
             async for chunk in invoke(
                 chute,
                 current_user.user_id,
@@ -115,14 +116,19 @@ async def hostname_invocation(
                 kwargs,
                 targets,
             ):
+                if skip:
+                    continue
                 if chunk.startswith('data: {"result"'):
                     yield json.loads(chunk[6:])["result"]
                 elif chunk.startswith('data: {"error"'):
                     error = json.loads(chunk[6:])["error"]
-                    raise HTTPException(
-                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        detail=error or "No result returned from upstream",
+                    yield json.dumps(
+                        {
+                            "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            "detail": error or "No result returned from upstream",
+                        }
                     )
+                    skip = True
 
         return StreamingResponse(_stream_response())
 

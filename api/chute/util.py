@@ -19,6 +19,7 @@ from api.database import get_session
 from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
+from api.miner_client import sign_request
 from api.instance.schemas import Instance
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 
@@ -172,9 +173,13 @@ async def _invoke_one(
             },
         )
     else:
+        headers, payload_string = sign_request(
+            miner_ss58=target.miner_hotkey, payload={"args": args, "kwargs": kwargs}
+        )
         response = await session.post(
             f"http://{target.host}:{target.port}/{path}",
-            json={"args": args, "kwargs": kwargs},
+            data=payload_string,
+            headers=headers,
         )
     if stream:
         try:

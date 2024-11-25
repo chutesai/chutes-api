@@ -17,6 +17,7 @@ from fastapi.responses import ORJSONResponse
 from starlette.responses import StreamingResponse
 from api.instance.schemas import Instance
 from api.database import get_session
+from api.miner_client import sign_request
 import api.database.orms  # noqa
 
 
@@ -97,10 +98,14 @@ def main():
         # Decrypt response.
         async def _response_iterator():
             session = aiohttp.ClientSession(raise_for_status=True)
+            headers, payload_string = sign_request(
+                miner_ss58=instance.miner_hotkey, payload=encrypted
+            )
+            headers.update({"X-Chutes-Encrypted": "true"})
             response = await session.post(
                 f"http://{instance.host}:{instance.port}/{invocation.path}",
-                json=encrypted,
-                headers={"X-Chutes-Encrypted": "true"},
+                data=payload_string,
+                headers=headers,
             )
             if invocation.stream:
                 try:
