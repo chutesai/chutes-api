@@ -84,7 +84,7 @@ UPDATE partitioned_invocations_{suffix} SET
         WHEN :error_message IS NULL THEN COALESCE((SELECT bounty FROM removed_bounty), bounty)
         ELSE bounty
     END
-WHERE invocation_id = :invocation_id
+WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
 RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
 """
 
@@ -304,6 +304,7 @@ async def invoke(
                     {
                         "chute_id": chute_id,
                         "invocation_id": invocation_id,
+                        "miner_uid": target.miner_uid,
                         "error_message": None,
                         "response_path": response_path,
                     },
@@ -346,6 +347,7 @@ async def invoke(
                     {
                         "chute_id": chute_id,
                         "invocation_id": invocation_id,
+                        "miner_uid": target.miner_uid,
                         "error_message": f"{exc}\n{traceback.format_exc()}",
                         "response_path": None,
                     },

@@ -207,7 +207,6 @@ async def deploy_chute(
             node_selector=chute_args.node_selector,
             standard_template=chute_args.standard_template,
         )
-        chute.instances = []
 
         # Generate a unique slug (subdomain).
         chute.slug = re.sub(
@@ -230,7 +229,6 @@ async def deploy_chute(
 
         db.add(chute)
     await db.commit()
-    await db.refresh(chute)
 
     if old_version:
         await settings.redis_client.publish(
@@ -259,7 +257,7 @@ async def deploy_chute(
                 }
             ).decode(),
         )
-    return chute
+    return await get_chute_by_id_or_name(chute.chute_id, db, current_user, load_instances=True)
 
 
 @router.post("/{chute_id}/{path:path}")

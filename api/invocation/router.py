@@ -21,9 +21,9 @@ router = APIRouter()
 host_invocation_router = APIRouter()
 
 CHECK_EXISTS = text(
-    "SELECT user_id, report_reason, to_char(date_trunc('week', started_at), 'IYYY_IW') AS table_suffix FROM invocations WHERE invocation_id = :invocation_id"
+    "SELECT user_id, report_reason, to_char(date_trunc('week', started_at), 'IYYY_IW') AS table_suffix FROM invocations WHERE invocation_id = :invocation_id AND error_message IS NULL"
 ).columns(user_id=String, table_suffix=String, report_reason=String)
-SAVE_REPORT = "UPDATE partitioned_invocations_{table_suffix} SET report_reason = :report_reason, reported_at = CURRENT_TIMESTAMP WHERE invocation_id = :invocation_id RETURNING reported_at"
+SAVE_REPORT = "UPDATE partitioned_invocations_{table_suffix} SET report_reason = :report_reason, reported_at = CURRENT_TIMESTAMP WHERE invocation_id = :invocation_id AND error_message IS NULL RETURNING reported_at"
 
 
 @router.post("/{invocation_id}/report")
