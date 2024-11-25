@@ -73,7 +73,9 @@ async def hostname_invocation(
     # This call will perform auth/access checks.
     chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
     if not chute:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
+        )
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None

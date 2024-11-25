@@ -4,7 +4,7 @@ ORM definitions for instances (deployments of chutes and/or inventory announceme
 
 from pydantic import BaseModel
 from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship, validates
+from sqlalchemy.orm import relationship
 from sqlalchemy import (
     Column,
     String,
