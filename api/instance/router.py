@@ -53,7 +53,7 @@ async def create_instance(
         miner_coldkey=miner.coldkey,
         region="n/a",
         active=True,
-        verified=False,
+        verified=True,  # XXX - task for graval taskiq worker to perform filesystem challenges and such.
     )
     db.add(instance)
 
