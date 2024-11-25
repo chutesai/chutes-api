@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     graval_proxy_url: str = os.getenv("GRAVAL_PROXY_URL", "")
 
+    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "256"))
+    db_overflow: int = int(os.getenv("DB_OVERFLOW", "32"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
     # XXX unused for now - future in which payouts to various parties.
