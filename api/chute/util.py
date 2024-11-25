@@ -14,6 +14,7 @@ from loguru import logger
 from typing import List
 from sqlalchemy import and_, or_, text, update, func, String
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from api.config import settings
 from api.database import get_session
 from api.util import sse, now_str
@@ -88,7 +89,7 @@ RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multip
 """
 
 
-async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
+async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances: bool = False):
     """
     Helper to load a chute by ID or full chute name (optional username/chute name)
     """
@@ -106,6 +107,8 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user):
         .join(User, Chute.user_id == User.user_id)
         .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
     )
+    if load_instances:
+        query = query.options(selectinload(Chute.instances))
     username = name_match.group(1) or current_user.username
     chute_name = name_match.group(2)
     chute_id_or_name = chute_id_or_name.lstrip("/")

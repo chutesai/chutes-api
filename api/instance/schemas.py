@@ -17,7 +17,6 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from api.database import Base, generate_uuid
-from api.util import is_valid_host
 
 # Association table.
 instance_nodes = Table(
@@ -64,9 +63,3 @@ class Instance(Base):
             "last_queried_at",
         ),
     )
-
-    @validates("host")
-    async def validate_host(self, host: str) -> str:
-        if await is_valid_host(host):
-            return host
-        raise ValueError(f"Invalid verification_host: {host}")

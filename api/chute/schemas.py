@@ -161,7 +161,7 @@ class Chute(Base):
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
     instances = relationship(
-        "Instance", back_populates="chute", lazy="dynamic", cascade="all, delete-orphan"
+        "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
 
     @validates("standard_template")

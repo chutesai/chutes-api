@@ -13,6 +13,7 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from typing import Optional
 from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector
 from api.chute.response import ChuteResponse
@@ -53,7 +54,7 @@ async def list_chutes(
     """
     List (and optionally filter/paginate) chutes.
     """
-    query = select(Chute)
+    query = select(Chute).options(selectinload(Chute.instances))
 
     # Filter by public and/or only the user's chutes.
     if include_public:
@@ -107,7 +108,7 @@ async def get_chute(
     """
     Load a chute by ID or name.
     """
-    chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user)
+    chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances=True)
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -206,6 +207,7 @@ async def deploy_chute(
             node_selector=chute_args.node_selector,
             standard_template=chute_args.standard_template,
         )
+        chute.instances = []
 
         # Generate a unique slug (subdomain).
         chute.slug = re.sub(

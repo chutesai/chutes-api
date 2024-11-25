@@ -130,7 +130,7 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_method = "write"
         elif request.method.lower() == "delete":
             request.state.auth_method = "delete"
-        request.state.auth_object_type = request.url.path.split("/")[1]
+        request.state.auth_object_type = request.url.path.split("/")[-1]
         # XXX at some point, perhaps we can support objects by name too, but for
         # now, for auth to work (easily) we just need to only support UUIDs when
         # using API keys.

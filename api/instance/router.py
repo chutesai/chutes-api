@@ -2,19 +2,21 @@
 Routes for instances.
 """
 
-from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from api.database import get_db_session, generate_uuid
 from api.config import settings
-from api.chute.util import get_chute_by_id_or_name
+from api.constants import HOTKEY_HEADER
 from api.node.util import get_node_by_id
+from api.chute.schemas import Chute
 from api.instance.schemas import InstanceArgs, Instance, instance_nodes
 from api.instance.util import get_instance_by_chute_and_id
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
+from api.util import is_valid_host
 
 router = APIRouter()
 
@@ -24,10 +26,10 @@ async def create_instance(
     chute_id: str,
     instance_args: InstanceArgs,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
-    chute = await get_chute_by_id_or_name(chute_id)
+    chute = (await db.execute(select(Chute).where(Chute.chute_id == chute_id))).scalar_one_or_none()
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -35,11 +37,18 @@ async def create_instance(
         )
 
     # Load the miner.
-    miner = await get_miner_by_hotkey(hotkey)
+    miner = await get_miner_by_hotkey(hotkey, db)
     if not miner:
         raise HTTPException(
-            status_code=status.HTTP_401_FORBIDDEN,
+            status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Did not find miner with {hotkey=}",
+        )
+
+    # Validate the hostname.
+    if not await is_valid_host(instance_args.host):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid instance host: {instance_args.host}",
         )
 
     # Instantiate the instance.
@@ -65,7 +74,7 @@ async def create_instance(
             detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
         )
     for node_id in instance_args.node_ids:
-        node = get_node_by_id(node_id)
+        node = await get_node_by_id(node_id, db, hotkey)
         if not node:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -103,7 +112,7 @@ async def delete_instance(
     chute_id: str,
     instance_id: str,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
         get_current_user(purpose="instances", raise_not_found=False, registered_to=settings.netuid)
     ),
