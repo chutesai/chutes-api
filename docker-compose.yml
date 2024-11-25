@@ -29,6 +29,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_STORAGE_CLASS_REDIRECT_DISABLE: "true"
     command: server /data
     ports:
       - "9000:9000"
@@ -49,6 +50,7 @@ services:
       REGISTRY_STORAGE_S3_SECRETKEY: minioadmin
       REGISTRY_STORAGE_S3_REGIONENDPOINT: http://minio:9000
       REGISTRY_HTTP_SECRET: "registry"
+      REGISTRY_STORAGE_REDIRECT_DISABLE: "true"
     ports:
       - "5000:5000"
     restart: always
