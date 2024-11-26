@@ -4,7 +4,6 @@ Endpoints specific to miners.
 
 import orjson as json
 from fastapi import APIRouter, Depends, Header, status, HTTPException
-from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy.future import select
 from sqlalchemy.orm import class_mapper
@@ -87,7 +86,6 @@ async def list_instances(
     )
 
 
-@cache(expire=300)
 @router.get("/metrics/")
 async def metrics(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),

@@ -7,25 +7,26 @@ from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from sqlalchemy import text
 
 
-async def gather_metrics(interval: str = "5 minutes"):
+async def gather_metrics(interval: str = "1 hour"):
     """
     Generate invocation metrics for the last (interval).
     """
     query = text(
         f"""
-       SELECT
-           chute_id,
-           current_timestamp AS end_date,
-           current_timestamp - INTERVAL '{interval}' AS start_date,
-           AVG(compute_multiplier) AS compute_multiplier,
-           COUNT(DISTINCT invocation_id) as total_invocations,
-           SUM(EXTRACT(EPOCH FROM (completed_at - started_at))) AS total_compute_time,
-           COUNT(CASE WHEN error_message IS NOT NULL THEN 1 END) AS error_count,
-           COUNT(DISTINCT instance_id) AS instance_count
-       FROM invocations
-       WHERE started_at > NOW() - INTERVAL '{interval}'
-       GROUP BY chute_id
-   """
+SELECT
+    i.chute_id,
+    current_timestamp AS end_date,
+    current_timestamp - INTERVAL '{interval}' AS start_date,
+    AVG(i.compute_multiplier) AS compute_multiplier,
+    COUNT(DISTINCT i.invocation_id) as total_invocations,
+    SUM(EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS total_compute_time,
+    COUNT(CASE WHEN i.error_message IS NOT NULL THEN 1 END) AS error_count,
+    COUNT(DISTINCT CASE WHEN inst.active AND inst.verified THEN i.instance_id END) AS instance_count
+FROM invocations i
+LEFT JOIN instances inst ON i.instance_id = inst.instance_id
+INNER JOIN chutes c ON i.chute_id = c.chute_id
+WHERE i.started_at > NOW() - INTERVAL '{interval}'
+GROUP BY i.chute_id"""
     )
     async with get_session() as session:
         result = await session.stream(query)
