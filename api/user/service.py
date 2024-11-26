@@ -45,9 +45,7 @@ def get_current_user(
         Helper to authenticate requests.
         """
 
-        logger.debug(
-            f"Authorization: {authorization}; signature: {signature}; nonce: {nonce}; hotkey: {hotkey}"
-        )
+        logger.debug(f"Authorization: {signature=} {nonce=} {hotkey=} {purpose=} {registered_to=}")
         use_hotkey_auth = hotkey and signature
         # If not using hotkey auth, then just use the API key
         if not use_hotkey_auth:
@@ -74,7 +72,6 @@ def get_current_user(
             )
 
         # Now get the Signing message
-
         body_sha256 = getattr(request.state, "body_sha256", None)
 
         signing_message = get_signing_message(

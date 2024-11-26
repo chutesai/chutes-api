@@ -6,7 +6,6 @@ import orjson as json
 from fastapi import APIRouter, Depends, Header, status, HTTPException
 from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import class_mapper
 from typing import Any
@@ -19,7 +18,7 @@ from api.image.schemas import Image
 from api.instance.schemas import Instance
 from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
-from api.database import get_db_session
+from api.database import get_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 
@@ -40,52 +39,48 @@ def model_to_dict(obj):
     return data
 
 
-async def _stream_items(db: AsyncSession, clazz: Any, selector: Any = None):
+async def _stream_items(clazz: Any, selector: Any = None):
     """
     Streaming results helper.
     """
-    query = selector if selector is not None else select(clazz)
-    result = await db.stream(query)
-    async for row in result.unique():
-        yield f"data: {json.dumps(model_to_dict(row[0])).decode()}\n\n"
+    async with get_session() as db:
+        query = selector if selector is not None else select(clazz)
+        result = await db.stream(query)
+        async for row in result.unique():
+            yield f"data: {json.dumps(model_to_dict(row[0])).decode()}\n\n"
 
 
 @router.get("/chutes/")
 async def list_chutes(
-    db: AsyncSession = Depends(get_db_session),
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
-    return StreamingResponse(_stream_items(db, Chute))
+    return StreamingResponse(_stream_items(Chute))
 
 
 @router.get("/images/")
 async def list_images(
-    db: AsyncSession = Depends(get_db_session),
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
-    return StreamingResponse(_stream_items(db, Image))
+    return StreamingResponse(_stream_items(Image))
 
 
 @router.get("/nodes/")
 async def list_nodes(
-    db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
     return StreamingResponse(
-        _stream_items(db, Node, selector=select(Node).where(Node.miner_hotkey == hotkey))
+        _stream_items(Node, selector=select(Node).where(Node.miner_hotkey == hotkey))
     )
 
 
 @router.get("/instances/")
 async def list_instances(
-    db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
     return StreamingResponse(
         _stream_items(
-            db,
             Instance,
             selector=select(Instance).where(Instance.miner_hotkey == hotkey),
         )
@@ -109,17 +104,17 @@ async def metrics(
 async def get_chute(
     chute_id: str,
     version: str,
-    db: AsyncSession = Depends(get_db_session),
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
-    chute = (
-        await db.execute(
-            select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
-        )
-    ).scalar_one_or_none()
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"{chute_id=} not found",
-        )
-    return model_to_dict(chute)
+    async with get_session() as db:
+        chute = (
+            await db.execute(
+                select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+            )
+        ).scalar_one_or_none()
+        if not chute:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"{chute_id=} not found",
+            )
+        return model_to_dict(chute)

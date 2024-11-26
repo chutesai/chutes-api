@@ -99,4 +99,4 @@ async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
         .where(Instance.miner_hotkey == hotkey)
     )
     result = await db.execute(query)
-    return result.scalar_one_or_none()
+    return result.unique().scalar_one_or_none()
