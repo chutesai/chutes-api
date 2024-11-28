@@ -13,7 +13,7 @@ from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE
 from api.fmv.fetcher import get_fetcher
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from pydantic import BaseModel, Field, computed_field, validator
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 
 class Cord(BaseModel):
@@ -23,6 +23,9 @@ class Cord(BaseModel):
     stream: bool
     public_api_path: Optional[str] = None
     public_api_method: Optional[str] = None
+    input_schema: Optional[Dict[str, Any]] = {}
+    output_schema: Optional[Dict[str, Any]] = {}
+    minimal_input_schema: Optional[Dict[str, Any]] = {}
 
 
 class NodeSelector(BaseModel):
@@ -124,7 +127,9 @@ class NodeSelector(BaseModel):
 
 
 class ChuteArgs(BaseModel):
-    name: str
+    name: str = Field(min_length=3, max_length=128)
+    readme: Optional[str] = Field(default="", max_length=16384)
+    logo_id: Optional[str] = None
     image: str
     public: bool
     code: str
@@ -145,7 +150,9 @@ class Chute(Base):
     chute_id = Column(String, primary_key=True, default="replaceme")
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
     name = Column(String)
+    readme = Column(String, default="")
     image_id = Column(String, ForeignKey("images.image_id"))
+    logo_id = Column(String, ForeignKey("logos.logo_id", ondelete="SET NULL"), nullable=True)
     public = Column(Boolean, default=False)
     standard_template = Column(String)
     cords = Column(JSONB, nullable=False)
@@ -160,9 +167,23 @@ class Chute(Base):
 
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
+    logo = relationship("Logo", back_populates="chutes", lazy="joined")
     instances = relationship(
         "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
+
+    @validates("name")
+    def validate_name(self, _, name):
+        """
+        Basic validation on chute name.
+        """
+        if (
+            not isinstance(name, str)
+            or not re.match(r"^(?:([a-zA-Z0-9_\.-]+)/)*([a-z0-9][a-z0-9_\.\/-]*)$", name, re.I)
+            or len(name) >= 128
+        ):
+            raise ValueError(f"Invalid chute name: {name}")
+        return name
 
     @validates("standard_template")
     def validate_standard_template(self, _, template):

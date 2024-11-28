@@ -188,16 +188,20 @@ async def deploy_chute(
     old_version = None
     if chute:
         old_version = chute.version
+        chute.readme = chute_args.readme
         chute.code = chute_args.code
         chute.filename = chute_args.filename
         chute.ref_str = chute_args.ref_str
         chute.version = version
         chute.public = chute_args.public
+        chute.logo_id = chute_args.logo_id
     else:
         chute = Chute(
             image_id=image.image_id,
             user_id=current_user.user_id,
             name=chute_args.name,
+            readme=chute_args.readme,
+            logo_id=chute_args.logo_id,
             code=chute_args.code,
             filename=chute_args.filename,
             ref_str=chute_args.ref_str,

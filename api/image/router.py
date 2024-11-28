@@ -128,6 +128,8 @@ async def create_image(
     build_context: UploadFile = File(...),
     username: str = Form(...),
     name: str = Form(...),
+    readme: str = Form(...),
+    logo_id: str = Form(...),
     tag: str = Form(...),
     dockerfile: str = Form(...),
     image: str = Form(...),
@@ -191,6 +193,8 @@ async def create_image(
         image_id=image_id,
         user_id=current_user.user_id,
         name=name,
+        readme=readme,
+        logo_id=logo_id if logo_id and logo_id != "__none__" else None,
         tag=tag,
         public=public,
     )

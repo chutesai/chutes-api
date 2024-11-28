@@ -2,7 +2,7 @@
 Response class for Chutes, to hide sensitive data.
 """
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from api.user.response import UserResponse
@@ -14,6 +14,7 @@ from api.chute.schemas import Cord
 class ChuteResponse(BaseModel):
     chute_id: str
     name: str
+    readme: str
     public: bool
     version: str
     slug: Optional[str]
@@ -25,6 +26,12 @@ class ChuteResponse(BaseModel):
     supported_gpus: List[str]
     current_estimated_price: Optional[Dict[str, Any]] = None
     instances: Optional[List[MinimalInstanceResponse]] = []
+    logo_id: Optional[str]
 
     class Config:
         from_attributes = True
+
+    @computed_field
+    @property
+    def logo(self) -> Optional[str]:
+        return f"/logos/{self.logo_id}.png" if self.logo_id else None
