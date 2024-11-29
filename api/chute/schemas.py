@@ -25,6 +25,7 @@ class Cord(BaseModel):
     public_api_method: Optional[str] = None
     input_schema: Optional[Dict[str, Any]] = {}
     output_schema: Optional[Dict[str, Any]] = {}
+    output_content_type: Optional[str] = None
     minimal_input_schema: Optional[Dict[str, Any]] = {}
 
 

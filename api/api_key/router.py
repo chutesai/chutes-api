@@ -18,14 +18,14 @@ router = APIRouter()
 
 
 @router.get("/", response_model=PaginatedResponse)
-async def list_images(
+async def list_keys(
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="api_keys")),
 ):
     """
-    List (and optionally filter/paginate) images.
+    List (and optionally filter/paginate) keys.
     """
 
     query = select(APIKey).where(APIKey.user_id == current_user.user_id)
@@ -45,6 +45,24 @@ async def list_images(
         "limit": limit,
         "items": [APIKeyResponse.from_orm(item) for item in result.scalars().unique().all()],
     }
+
+
+@router.get("/{api_key_id}", response_model=APIKeyResponse)
+async def get_key(
+    api_key_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="api_keys")),
+):
+    """
+    Get a single key.
+    """
+    query = select(APIKey).where(APIKey.user_id == current_user.user_id, APIKey.api_key_id == api_key_id)
+    if (key := (await db.execute(query)).unique().scalar_one_or_none()) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"API key with id {api_key_id} not found or doesn't belong to you",
+        )
+    return key
 
 
 @router.delete("/{api_key_id}")
