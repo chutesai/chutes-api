@@ -6,6 +6,7 @@ import pybase64 as base64
 import pickle
 import gzip
 import orjson as json
+from io import BytesIO
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
 from sqlalchemy import text, String
@@ -138,6 +139,7 @@ async def hostname_invocation(
 
     # Non-streamed (which we actually do stream but we'll just return the first item)
     error = None
+    response = None
     async for chunk in invoke(
         chute,
         current_user.user_id,
@@ -148,10 +150,29 @@ async def hostname_invocation(
         kwargs,
         targets,
     ):
+        if response:
+            continue
         if chunk.startswith('data: {"result"'):
-            return json.loads(chunk[6:])["result"]
+            result = json.loads(chunk[6:])["result"]
+            if "bytes" in result:
+                raw_data = BytesIO(base64.b64decode(result["bytes"].encode()))
+                async def _streamfile():
+                    yield raw_data.getvalue()
+                response = StreamingResponse(
+                    _streamfile(),
+                    media_type=result["content_type"],
+                )
+            elif "text" in result:
+                response = Response(
+                    content=result["text"],
+                    media_type=result["content_type"]
+                )
+            else:
+                response = result
         elif chunk.startswith('data: {"error"'):
             error = json.loads(chunk[6:])["error"]
+    if response:
+        return response
     raise HTTPException(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=error or "No result returned from upstream",

@@ -10,6 +10,7 @@ import datetime
 import io
 import traceback
 import orjson as json
+import pybase64 as base64
 from loguru import logger
 from typing import List
 from sqlalchemy import and_, or_, text, update, func, String
@@ -192,7 +193,16 @@ async def _invoke_one(
             await response.release()
             await session.close()
     else:
-        data = await response.json()
+        content_type = response.headers.get("content-type")
+        if content_type in (None, "application/json"):
+            json_data = await response.json()
+            data = {"content_type": content_type, "json": json_data}
+        elif content_type.startswith("text/"):
+            text_data = await response.text()
+            data = {"content_type": content_type, "text": text_data}
+        else:
+            raw_data = await response.read()
+            data = {"content_type": content_type, "bytes": base64.b64encode(raw_data).decode()}
         await response.release()
         await session.close()
         yield data
@@ -366,6 +376,6 @@ async def invoke(
                 }
             )
             logger.error(
-                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {exc}"
+                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {exc} -- {traceback.format_exc()}"
             )
     yield sse({"error": "exhausted all available targets to no avail"})
