@@ -1,0 +1,16 @@
+grafana:
+  # visualise metrics/logs
+  enabled: true
+
+loki:
+  image:
+    tag: "2.9.3"
+
+promtail:
+  config:
+    clients:
+      - url: http://{{ .Release.Name }}-loki:3100/loki/api/v1/push
+
+prometheus:
+  # scrape application metrics
+  enabled: true

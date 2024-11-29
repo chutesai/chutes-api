@@ -1,5 +1,12 @@
 image:
   tag: "2024.11.7"
 
+auth:
+  rootUser: chutes
+  rootPassword: 557870fc18d547889ffb129541ff7dfc
+
 metrics:
   enabled: true
+
+environment:
+  NO_COLOR: "true"

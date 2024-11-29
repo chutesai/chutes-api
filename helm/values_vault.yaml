@@ -1,5 +1,5 @@
 image:
-  tag: 7.4.1
+  tag: "1.18.1"
 
 metrics:
   enabled: true

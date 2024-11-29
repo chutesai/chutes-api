@@ -26,8 +26,9 @@ spec:
       restartPolicy: {{ $.Values.chutes_registry.restart_policy }}
       containers:
         - name: {{ $.Release.Name }}-registry
-          image: registry:2.8.3
+          image: {{ $.Values.chutes_registry.image_url }}:{{ $.Values.chutes_api.image_tag }}
           imagePullPolicy: {{ $.Values.chutes_registry.image_pull_policy }}
+          # command: ["dbmate", "--wait", "--no-dump-schema", "up"]
           resources:
             limits:
               cpu: {{ $.Values.chutes_registry.max_cpu }}

@@ -37,6 +37,9 @@ chutes_forge:
   replicas: 1
 
   restart_policy: "Always"
+
+  image_url: registry
+  image_tag: "2.8.3"
   image_pull_policy: "Always"
 
   max_cpu: 1000m
