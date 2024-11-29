@@ -56,7 +56,9 @@ async def get_key(
     """
     Get a single key.
     """
-    query = select(APIKey).where(APIKey.user_id == current_user.user_id, APIKey.api_key_id == api_key_id)
+    query = select(APIKey).where(
+        APIKey.user_id == current_user.user_id, APIKey.api_key_id == api_key_id
+    )
     if (key := (await db.execute(query)).unique().scalar_one_or_none()) is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

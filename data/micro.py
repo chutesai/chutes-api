@@ -1,24 +1,26 @@
 import asyncio
+from typing import Optional
 from pydantic import BaseModel, Field
+from fastapi.responses import FileResponse
 from chutes.image import Image
 from chutes.chute import Chute, NodeSelector
 
 image = (
-    Image(username="test", name="micro", tag="0.0.1", readme="## MICRO IMAGE")
-    .from_base("alpine:latest")
-    .run_command("apk add python3 py3-pip shadow && ln -sf $(which python3) /usr/bin/python")
-    .run_command("adduser chutes -D /home/chutes")
-    .run_command("mkdir -p /app /home/chutes && chown chutes:chutes /home/chutes /app")
+     Image(username="test", name="base-python", tag="3.12.7", readme="## Base image with cuda and python 3.12.7")
+    .with_python("3.12.7")
+    .apt_install(["google-perftools", "git"])
+    .run_command("useradd chutes -s /sbin/nologin")
+    .run_command("mkdir -p /app /home/chutes && chown chutes:chutes /app /home/chutes")
     .set_user("chutes")
     .set_workdir("/app")
-    .run_command("python -m venv venv")
-    .with_env("PATH", "/app/venv/bin:$PATH")
+    .with_env("PATH", "/opt/python/bin:/home/chutes/.local/bin:$PATH")
+    .add("parachute.png", "/app/parachute.png")
 )
 
 chute = Chute(
     username="test",
-    name="micro",
-    readme="## Micro Image Test\n\n### Foo.\n\n```python\nprint('foo')```",
+    name="example",
+    readme="## Example Chute\n\n### Foo.\n\n```python\nprint('foo')```",
     image=image,
     node_selector=NodeSelector(
         gpu_count=1,
@@ -31,10 +33,23 @@ chute = Chute(
     ),
 )
 
+
 class MicroArgs(BaseModel):
     foo: str = Field(..., max_length=100)
     bar: int = Field(0, gte=0, lte=100)
     baz: bool = False
+
+
+class FullArgs(MicroArgs):
+    bunny: Optional[str] = None
+    giraffe: Optional[bool] = False
+    zebra: Optional[int] = None
+
+
+class ExampleOutput(BaseModel):
+    foo: str
+    bar: str
+    baz: Optional[str]
 
 
 @chute.on_startup()
@@ -44,12 +59,26 @@ async def initialize(self):
 
 
 @chute.cord(minimal_input_schema=MicroArgs)
-async def echo(input_args: MicroArgs) -> str:
+async def echo(input_args: FullArgs) -> str:
     return f"{chute.billygoat} says: {input_args}"
 
 
+@chute.cord()
+async def complex(input_args: MicroArgs) -> ExampleOutput:
+    return ExampleOutput(foo=input_args.foo, bar=input_args.bar, baz=input_args.baz)
+
+
+@chute.cord(
+    output_content_type="image/png",
+    public_api_path="/image",
+    public_api_method="GET",
+)
+async def image() -> FileResponse:
+    return FileResponse("parachute.png", media_type="image/png")
+
+
 async def main():
-    print(await echo("hello"))
+    print(await image())
 
 
 if __name__ == "__main__":

@@ -197,7 +197,9 @@ async def deploy_chute(
         chute.logo_id = chute_args.logo_id
     else:
         chute = Chute(
-            chute_id=str(uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}")),
+            chute_id=str(
+                uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}")
+            ),
             image_id=image.image_id,
             user_id=current_user.user_id,
             name=chute_args.name,

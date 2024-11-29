@@ -7,7 +7,7 @@ import pickle
 import gzip
 import orjson as json
 from io import BytesIO
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import text, String
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -156,17 +156,16 @@ async def hostname_invocation(
             result = json.loads(chunk[6:])["result"]
             if "bytes" in result:
                 raw_data = BytesIO(base64.b64decode(result["bytes"].encode()))
+
                 async def _streamfile():
                     yield raw_data.getvalue()
+
                 response = StreamingResponse(
                     _streamfile(),
                     media_type=result["content_type"],
                 )
             elif "text" in result:
-                response = Response(
-                    content=result["text"],
-                    media_type=result["content_type"]
-                )
+                response = Response(content=result["text"], media_type=result["content_type"])
             else:
                 response = result
         elif chunk.startswith('data: {"error"'):
