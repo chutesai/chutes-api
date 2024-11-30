@@ -35,3 +35,8 @@ class ChuteResponse(BaseModel):
     @property
     def logo(self) -> Optional[str]:
         return f"/logos/{self.logo_id}.png" if self.logo_id else None
+
+    @computed_field
+    @property
+    def hot(self) -> bool:
+        return any([instance.active and instance.verified for instance in self.instances])

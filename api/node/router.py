@@ -5,7 +5,6 @@ Routes for nodes.
 import asyncio
 import random
 from taskiq_redis.exceptions import ResultIsMissingError
-from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import select, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -101,12 +100,12 @@ async def check_verification_status(
 async def delete_node(
     node_id: str,
     db: AsyncSession = Depends(get_db_session),
-    hotkey: Annotated[str | None, Header()] = None,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
         get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
-    query = select(Node).where(Node.miner_hotkey == hotkey).where(Node.uuid == node_id)
+    query = select(Node).where(Node.miner_hotkey == hotkey, Node.uuid == node_id)
     result = await db.execute(query)
     node = result.scalar_one_or_none()
     if not node:
