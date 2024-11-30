@@ -78,8 +78,7 @@ async def image() -> FileResponse:
 
 
 async def main():
-    print(await image())
-
+    print(await echo("bar"))
 
 if __name__ == "__main__":
     asyncio.run(main())
