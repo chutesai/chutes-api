@@ -82,7 +82,7 @@ async def check_verification_status(
     task_id = task_parts[1]
     if task_id == "skip":
         return {"status": "verified"}
-    if not broker.result_backend.is_result_ready(task_id):
+    if not await broker.result_backend.is_result_ready(task_id):
         return {"status": "pending"}
     try:
         result = await broker.result_backend.get_result(task_id)
@@ -107,7 +107,7 @@ async def delete_node(
 ):
     query = select(Node).where(Node.miner_hotkey == hotkey, Node.uuid == node_id)
     result = await db.execute(query)
-    node = result.scalar_one_or_none()
+    node = result.unique().scalar_one_or_none()
     if not node:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
