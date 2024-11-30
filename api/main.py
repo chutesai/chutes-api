@@ -113,7 +113,6 @@ async def host_router_middleware(request: Request, call_next):
     """
     Route differentiation for hostname-based simple invocations.
     """
-    logger.debug(f"Request path: {request.url.path}")
     if request.url.path == "/ping":
         app.router = default_router
         return await call_next(request)

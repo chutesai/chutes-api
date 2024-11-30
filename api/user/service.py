@@ -45,7 +45,6 @@ def get_current_user(
         Helper to authenticate requests.
         """
 
-        logger.debug(f"Authorization: {signature=} {nonce=} {hotkey=} {purpose=} {registered_to=}")
         use_hotkey_auth = hotkey and signature
         # If not using hotkey auth, then just use the API key
         if not use_hotkey_auth:
@@ -133,9 +132,6 @@ def get_current_user(
             result = await session.execute(select(User).where(User.hotkey == hotkey))
 
             user = result.scalar_one_or_none()
-            logger.debug(
-                f"User: {user}, not user: {not user}, user is none: {user is None}, raise not found: {raise_not_found}"
-            )
             if not user and raise_not_found:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,

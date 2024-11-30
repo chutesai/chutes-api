@@ -182,13 +182,16 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
         )
 
     # Notify the miner.
-    try:
-        async with miner_client.axon_post(
-            nodes[0].miner_hotkey, "/gpus/verify", payload={"gpu_ids": uuids}
-        ) as resp:
-            resp.raise_for_status()
-    except Exception as exc:
-        # Allow exceptions here since the miner can also check.
-        logger.warning(f"Error notifying miner that GPU is verified: {exc}")
+    async def _verify_one(gpu_id):
+        try:
+            async with miner_client.axon_patch(
+                nodes[0].miner_hotkey, f"/gpus/{gpu_id}", payload={"verified": True}
+            ) as resp:
+                resp.raise_for_status()
+        except Exception as exc:
+            # Allow exceptions here since the miner can also check.
+            logger.warning(f"Error notifying miner that GPU is verified: {exc}")
+
+    await asyncio.gather(*[_verify_one(gpu_id) for gpu_id in uuids])
 
     return True, None

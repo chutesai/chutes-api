@@ -82,6 +82,19 @@ async def post(miner_ss58: str, url: str, payload: Dict[str, Any], **kwargs):
 
 
 @asynccontextmanager
+async def patch(miner_ss58: str, url: str, payload: Dict[str, Any], **kwargs):
+    """
+    Perform a patch request to a miner.
+    """
+    async with aiohttp.ClientSession() as session:
+        headers = kwargs.pop("headers", {})
+        new_headers, payload_data = sign_request(miner_ss58, payload=payload)
+        headers.update(new_headers)
+        async with session.patch(url, data=payload_data, headers=headers, **kwargs) as response:
+            yield response
+
+
+@asynccontextmanager
 async def get(miner_ss58: str, url: str, purpose: str, **kwargs):
     """
     Perform a get request to a miner.
@@ -133,6 +146,16 @@ async def axon_post(miner_ss58: str, path: str, payload: Dict[str, Any], **kwarg
     """
     real_axon = await get_real_axon(miner_ss58)
     async with post(miner_ss58, f"{real_axon}{path}", payload=payload, **kwargs) as response:
+        yield response
+
+
+@asynccontextmanager
+async def axon_patch(miner_ss58: str, path: str, payload: Dict[str, Any], **kwargs):
+    """
+    Perform a patch request to a miner's axon (redirecting from their porter instance, if any).
+    """
+    real_axon = await get_real_axon(miner_ss58)
+    async with patch(miner_ss58, f"{real_axon}{path}", payload=payload, **kwargs) as response:
         yield response
 
 
