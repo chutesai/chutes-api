@@ -89,6 +89,7 @@ services:
       - REGISTRY_INSECURE=true
       - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
       - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
+      - WALLET_IV=9e4b84233f791765f982780f519d4862
       # XXX uncomment to test the graval encryption proxy, requires GPU
       # - GRAVAL_PROXY_URL=http://graval_proxy:9191/proxy
     restart: always
@@ -154,6 +155,7 @@ services:
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
+      - WALLET_IV=9e4b84233f791765f982780f519d4862
     entrypoint: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "8222", "--reload"]
     ports:
       - "8222:8222"
