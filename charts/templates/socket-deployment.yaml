@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socket
+  labels:
+    {{- include "socket.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "socket.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "socket.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.socket.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.socket.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.socket.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: socket
+          image: "{{ .Values.socket.image }}"
+          imagePullPolicy: {{ .Values.socket.imagePullPolicy }}
+          command: ["poetry", "run", "uvicorn", "api.socket:app", "--host", "0.0.0.0", "--port", "{{ .Values.socket.service.targetPort }}"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.socket.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.socket.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.socket.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.socket.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.socket.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.socket.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.socket.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.socket.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.socket.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.socket.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.socket.readinessProbe.failureThreshold | default 3 }}
+          resources:
+            {{- toYaml .Values.socket.resources | nindent 12 }}

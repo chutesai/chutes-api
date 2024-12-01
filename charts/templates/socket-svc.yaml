@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: socket
+  labels:
+    {{- include "socket.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  ports:
+    - nodePort: {{ .Values.socket.service.nodePort }}
+      port: {{ .Values.socket.service.port }}
+      targetPort: {{ .Values.socket.service.targetPort }}
+      name: validator-socket
+  selector:
+    {{- include "socket.labels" . | nindent 4 }}

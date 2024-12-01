@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metasync
+  labels:
+    {{- include "metasync.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "metasync.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "metasync.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.metasync.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metasync.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.metasync.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: metasync
+          image: "{{ .Values.metasync.image }}"
+          imagePullPolicy: {{ .Values.metasync.imagePullPolicy }}
+          command: ["python", "metasync/sync_metagraph.py"]
+          env:
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+          resources:
+            {{- toYaml .Values.metasync.resources | nindent 12 }}

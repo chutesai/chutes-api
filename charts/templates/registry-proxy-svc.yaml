@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-proxy
+  labels:
+    {{- include "registryProxy.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  ports:
+    - nodePort: {{ .Values.registryProxy.service.nodePort }}
+      port: {{ .Values.registryProxy.service.port }}
+      targetPort: {{ .Values.registryProxy.service.targetPort }}
+      name: registry-proxy
+  selector:
+    {{- include "registryProxy.labels" . | nindent 4 }}

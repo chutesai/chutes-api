@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    {{- include "registryProxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.registryProxy.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "registryProxy.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "registryProxy.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.registryProxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registryProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registryProxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: proxy
+          image: "{{ .Values.registryProxy.image }}"
+          imagePullPolicy: {{ .Values.registryProxy.imagePullPolicy }}
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.registryProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: registry-proxy-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: registry-proxy-config
+          configMap:
+            name: registry-proxy-config

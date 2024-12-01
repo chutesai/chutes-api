@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "api.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "api.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.api.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.api.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: "{{ .Values.api.image }}"
+          imagePullPolicy: {{ .Values.api.imagePullPolicy }}
+          command: ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "{{ .Values.api.service.targetPort }}"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: GRAVAL_PROXY_URL
+              value: http://graval-proxy:{{ .Values.gravalProxy.service.port }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.api.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.api.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.api.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.api.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.api.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.api.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.api.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.api.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.api.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.api.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.api.readinessProbe.failureThreshold | default 3 }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}

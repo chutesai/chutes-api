@@ -1,0 +1,37 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graval
+  labels:
+    {{- include "graval.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "graval.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "graval.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.graval.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.graval.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.graval.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: graval
+          image: "{{ .Values.graval.image }}"
+          imagePullPolicy: {{ .Values.graval.imagePullPolicy }}
+          command: ["poetry", "run", "taskiq", "worker", "api.node.graval:broker", "--workers", "1", "--max-async-tasks", "1"]
+          env:
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.graval.resources | nindent 12 }}

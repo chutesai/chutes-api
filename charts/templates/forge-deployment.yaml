@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge
+  labels:
+    {{- include "forge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.forge.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "forge.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "forge.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        # Required for buildah operations
+        privileged: true
+      containers:
+        - name: forge
+          image: "{{ .Values.forge.image }}"
+          imagePullPolicy: {{ .Values.forge.imagePullPolicy | default "IfNotPresent" }}
+          env:
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: STORAGE_DRIVER
+              value: "vfs"
+            - name: BUILDAH_FORMAT
+              value: "docker"
+            - name: BUILDAH_ISOLATION
+              value: "chroot"
+            - name: PYTHONPATH
+              value: "/forge"
+          securityContext:
+            capabilities:
+              add:
+                - SETUID
+                - SETGID
+                - SYS_ADMIN
+            allowPrivilegeEscalation: true
+          resources:
+            {{- toYaml .Values.forge.resources | nindent 12 }}
+          {{- with .Values.forge.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+      {{- with .Values.forge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.forge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.forge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.forge.volumes }}
+      volumes:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,317 @@
+api:
+  image: parachutes/validator-api:latest
+  imagePullPolicy: Always
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  service:
+    type: NodePort
+    nodePort: 32000
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values: ["true"]
+  tolerations: []
+
+socket:
+  image: parachutes/validator-api:latest
+  imagePullPolicy: Always
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  service:
+    type: NodePort
+    nodePort: 32001
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values: ["true"]
+  tolerations: []
+
+forge:
+  image: parachutes/forge:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "8Gi"
+    limits:
+      cpu: "1"
+      memory: "8Gi"
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values: ["true"]
+  tolerations: []
+
+graval:
+  replicas: 1
+  image: parachutes/graval:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: In
+              values: ["true"]
+  tolerations: []
+
+paymentWatcher:
+  image: parachutes/validator-api:latest
+  imagePullPolicy: Always
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "8Gi"
+    limits:
+      cpu: "1"
+      memory: "8Gi"
+  service:
+    type: NodePort
+    nodePort: 32002
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values: ["true"]
+  tolerations: []
+
+metasync:
+  replicas: 1
+  image: parachutes/metasync:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values: ["true"]
+  tolerations: []
+
+gravalProxy:
+  replicas: 1
+  image: parachutes/graval:latest
+  imagePullPolicy: Always
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+      nvidia.com/gpu: "1"
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: In
+              values: ["true"]
+  tolerations: []
+
+redis:
+  image: redis:7
+  imagePullPolicy: IfNotPresent
+  replicaCount: 1
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+  tolerations: []
+  resources:
+    requests:
+      cpu: 1
+      memory: 1Gi
+    limits:
+      cpu: 1
+      memory: 1Gi
+  service:
+    type: ClusterIP
+    port: 6379
+  config:
+    customArgs: []
+  persistence:
+    enabled: false
+    accessMode: ReadWriteOnce
+    size: 10Gi
+    storageClass: ""
+
+registry:
+  image: registry:2
+  imagePullPolicy: IfNotPresent
+  replicaCount: 1
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+  tolerations: []
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 5000
+  config:
+    storage: s3
+    s3:
+      region: us-east-1
+      bucket: chutes
+      endpoint: https://replaceme
+    redirectDisable: true
+
+registryProxy:
+  image: nginx:1.25
+  imagePullPolicy: IfNotPresent
+  config:
+    workerProcesses: 64
+    workerConnections: 4096
+    accessLogPath: "/var/log/nginx/access.log"
+  replicaCount: 1
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+  tolerations: []
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  service:
+    type: NodePort
+    port: 5000
+    nodePort: 32003
+    targetPort: 5000

@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-watcher
+  labels:
+    {{- include "paymentWatcher.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "paymentWatcher.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "paymentWatcher.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.paymentWatcher.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.paymentWatcher.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.paymentWatcher.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: paymentWatcher
+          image: "{{ .Values.paymentWatcher.image }}"
+          imagePullPolicy: {{ .Values.paymentWatcher.imagePullPolicy }}
+          command: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "{{ .Values.paymentWatcher.service.targetPort }}"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.paymentWatcher.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: {{ .Values.paymentWatcher.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.paymentWatcher.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.paymentWatcher.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.paymentWatcher.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.paymentWatcher.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.paymentWatcher.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.paymentWatcher.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.paymentWatcher.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.paymentWatcher.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.paymentWatcher.readinessProbe.failureThreshold | default 3 }}
+          resources:
+            {{- toYaml .Values.paymentWatcher.resources | nindent 12 }}

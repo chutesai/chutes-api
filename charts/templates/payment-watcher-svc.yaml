@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-watcher
+  labels:
+    {{- include "paymentWatcher.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  ports:
+    - nodePort: {{ .Values.paymentWatcher.service.nodePort }}
+      port: {{ .Values.paymentWatcher.service.port }}
+      targetPort: {{ .Values.paymentWatcher.service.targetPort }}
+      name: validator-api
+  selector:
+    {{- include "paymentWatcher.labels" . | nindent 4 }}

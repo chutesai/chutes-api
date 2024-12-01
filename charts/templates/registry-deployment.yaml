@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    {{- include "registry.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.registry.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "registry.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "registry.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.registry.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.registry.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: registry
+          image: "{{ .Values.registry.image }}"
+          imagePullPolicy: {{ .Values.registry.imagePullPolicy }}
+          env:
+            - name: REGISTRY_STORAGE
+              value: {{ .Values.registry.config.storage }}
+            - name: REGISTRY_STORAGE_S3_REGION
+              value: {{ .Values.registry.config.s3.region }}
+            - name: REGISTRY_STORAGE_S3_BUCKET
+              value: {{ .Values.registry.config.s3.bucket }}
+            - name: REGISTRY_STORAGE_S3_ACCESSKEY
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: accessKey
+            - name: REGISTRY_STORAGE_S3_SECRETKEY
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: secretKey
+            - name: REGISTRY_STORAGE_S3_REGIONENDPOINT
+              value: {{ .Values.registry.config.s3.endpoint }}
+            - name: REGISTRY_HTTP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: httpSecret
+            - name: REGISTRY_STORAGE_REDIRECT_DISABLE
+              value: "{{ .Values.registry.config.redirectDisable }}"
+          ports:
+            - name: registry
+              containerPort: {{ .Values.registry.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.registry.resources | nindent 12 }}

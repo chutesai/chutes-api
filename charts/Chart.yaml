@@ -1,0 +1,12 @@
+apiVersion: v2
+name: chutes-api
+description: Helm chart for chutes.ai validator/API
+version: 0.0.1
+appVersion: "0.0.1"
+type: application
+maintainers:
+  - name: Jon Durbin
+    email: jon@chutes.ai
+  - name: namoray
+    email: namoray@chutes.ai
+kubeVersion: ">=1.19.0-0"
