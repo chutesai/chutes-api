@@ -42,6 +42,7 @@ class Settings(BaseSettings):
         ) as client:
             yield client
 
+    wallet_iv: str = os.getenv("WALLET_IV")
     vault_client: hvac.Client = hvac.Client(
         url=os.getenv("VAULT_URL", "http://vault:777"),
         token=os.getenv("VAULT_TOKEN", "supersecrettoken"),

@@ -6,7 +6,7 @@ import uuid
 from sqlalchemy import event
 from substrateinterface import Keypair
 from api.user.schemas import User
-from api.config import settings
+from api.payment.util import encrypt_wallet_secret
 
 
 def generate_uid(_, __, user: User):
@@ -25,10 +25,7 @@ def generate_payment_address(_, __, user: User):
     mnemonic = Keypair.generate_mnemonic(words=24)
     keypair = Keypair.create_from_mnemonic(mnemonic)
     user.payment_address = keypair.ss58_address
-    settings.vault_client.secrets.kv.v2.create_or_update_secret(
-        path=f"payments/tao/{user.user_id}",
-        secret=dict(mnemonic=mnemonic, address=user.payment_address),
-    )
+    user.wallet_secret = encrypt_wallet_secret(mnemonic)
 
 
 def ensure_hotkey(_, __, user: User):

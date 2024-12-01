@@ -41,6 +41,7 @@ fastapi-cache2 = "^0.2.2"
 python-socketio = {extras = ["asyncio-client"], version = "^5.11.4"}
 pillow = "^11.0.0"
 aioboto3 = "^13.2.0"
+cryptography = "^44.0.0"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.10.0"

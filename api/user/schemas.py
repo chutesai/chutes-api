@@ -37,6 +37,9 @@ class User(Base):
     # Users should send to this address to top up
     payment_address = Column(String)
 
+    # Secret (encrypted)
+    wallet_secret = Column(String)
+
     # Balance in USD.
     balance = Column(Double, default=0.0)
 
