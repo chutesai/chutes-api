@@ -12,7 +12,7 @@ ADD data/registries.conf /etc/containers/registries.conf
 RUN mkdir -p /root/build /forge
 
 # Kubectl.
-RUN dnf update && dnf install curl
+RUN dnf update; dnf install curl
 RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl" && mv kubectl /usr/local/bin/ && chmod 755 /usr/local/bin/kubectl
 
 # Layer for the buildah daemon.

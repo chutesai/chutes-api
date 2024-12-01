@@ -1,14 +1,14 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ $.Release.Name }}-registry
+  name: {{ $.Release.Name }}-metasync
   labels:
-    app: {{ $.Release.Name }}-registry
+    app: {{ $.Release.Name }}-metasync
 spec:
-  replicas: {{ $.Values.chutes_registry.replicas }}
+  replicas: {{ $.Values.chutes_metasync.replicas }}
   selector:
     matchLabels:
-      app: {{ $.Release.Name }}-registry
+      app: {{ $.Release.Name }}-metasync
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -17,28 +17,27 @@ spec:
   template:
     metadata:
       labels:
-        app: {{ $.Release.Name }}-registry
+        app: {{ $.Release.Name }}-metasync
       annotations:
         prometheus.io/scrape: {{ $.Values.chutes_registry.prometheus_scrape | toString | quote }}
         prometheus.io/path: {{ $.Values.chutes_registry.prometheus_path }}
         prometheus.io/port: {{ $.Values.chutes_registry.prometheus_port | toString | quote }}
     spec:
-      restartPolicy: {{ $.Values.chutes_registry.restart_policy }}
+      restartPolicy: {{ $.Values.chutes_metasync.restart_policy }}
       containers:
-        - name: {{ $.Release.Name }}-registry
-          image: "{{ $.Values.chutes_registry.image_url }}:{{ $.Values.chutes_api.image_tag }}"
-          imagePullPolicy: {{ $.Values.chutes_registry.image_pull_policy }}
-          # command: ["dbmate", "--wait", "--no-dump-schema", "up"]
+        - name: {{ $.Release.Name }}-metasync
+          image: "{{ $.Values.chutes_metasync.image_url }}:{{ $.Values.chutes_api.image_tag }}"
+          imagePullPolicy: {{ $.Values.chutes_metasync.image_pull_policy }}
           resources:
             limits:
-              cpu: {{ $.Values.chutes_registry.max_cpu }}
-              memory: {{ $.Values.chutes_registry.max_mem }}
+              cpu: {{ $.Values.chutes_metasync.max_cpu }}
+              memory: {{ $.Values.chutes_metasync.max_mem }}
           envFrom:
             - secretRef:
-                name: {{ $.Release.Name }}-registry
+                name: {{ $.Release.Name }}-metasync
           ports:
             - name: http
-              containerPort: {{ $.Values.chutes_registry.http_port | toString }}
+              containerPort: {{ $.Values.chutes_metasync.http_port | toString }}
           livenessProbe:
             tcpSocket:
               port: http
@@ -49,7 +48,7 @@ spec:
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: /v2/
+              path: /
               port: http
             initialDelaySeconds: 5
             timeoutSeconds: 2

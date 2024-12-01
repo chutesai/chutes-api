@@ -15,10 +15,47 @@ chutes_api:
 
   registry_insecure: false
 
+chutes_forge:
+  replicas: 1
+
+  restart_policy: "Always"
+  image_pull_policy: "Always"
+
+  max_cpu: 1000m
+  max_mem: 512Mi
+
+  http_port: 8000
+
+  prometheus_scrape: false
+  prometheus_path: "/metrics"
+  prometheus_port: "9090"
+
+  registry_insecure: false
+
+chutes_metasync:
+  replicas: 1
+
+  restart_policy: "Always"
+  image_pull_policy: "Always"
+
+  max_cpu: 1000m
+  max_mem: 512Mi
+
+  http_port: 8000
+
+  prometheus_scrape: false
+  prometheus_path: "/metrics"
+  prometheus_port: "9090"
+
+  registry_insecure: false
+
 chutes_registry:
   replicas: 1
 
   restart_policy: "Always"
+
+  image_url: registry
+  image_tag: "2"
   image_pull_policy: "Always"
 
   max_cpu: 1000m
@@ -31,24 +68,4 @@ chutes_registry:
   prometheus_port: "9090"
 
   storage_kind: s3
-  storage_bucket: chutes
-
-chutes_forge:
-  replicas: 1
-
-  restart_policy: "Always"
-
-  image_url: registry
-  image_tag: "2.8.3"
-  image_pull_policy: "Always"
-
-  max_cpu: 1000m
-  max_mem: 512Mi
-
-  http_port: 5000
-
-  prometheus_scrape: false
-  prometheus_path: "/metrics"
-  prometheus_port: "9090"
-
   storage_bucket: chutes

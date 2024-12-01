@@ -5,7 +5,7 @@ metadata:
   labels:
     app: {{ $.Release.Name }}-forge
 spec:
-  replicas: {{ $.Values.chutes_api.replicas }}
+  replicas: {{ $.Values.chutes_forge.replicas }}
   selector:
     matchLabels:
       app: {{ $.Release.Name }}-forge
@@ -19,28 +19,28 @@ spec:
       labels:
         app: {{ $.Release.Name }}-forge
       annotations:
-        prometheus.io/scrape: {{ $.Values.chutes_api.prometheus_scrape }}
-        prometheus.io/path: {{ $.Values.chutes_api.prometheus_path }}
-        prometheus.io/port: {{ $.Values.chutes_api.prometheus_port }}
+        prometheus.io/scrape: {{ $.Values.chutes_registry.prometheus_scrape | toString | quote }}
+        prometheus.io/path: {{ $.Values.chutes_registry.prometheus_path }}
+        prometheus.io/port: {{ $.Values.chutes_registry.prometheus_port | toString | quote }}
     spec:
-      restartPolicy: {{ $.Values.chutes_api.restart_policy }}
+      restartPolicy: {{ $.Values.chutes_forge.restart_policy }}
       containers:
         - name: {{ $.Release.Name }}-forge
-          image: {{ $.Values.chutes_api.image_url }}:{{ $.Values.chutes_api.image_tag }}
-          imagePullPolicy: {{ $.Values.chutes_api.image_pull_policy }}
+          image: "{{ $.Values.chutes_forge.image_url }}:{{ $.Values.chutes_api.image_tag }}"
+          imagePullPolicy: {{ $.Values.chutes_forge.image_pull_policy }}
           resources:
             limits:
-              cpu: {{ $.Values.chutes_api.max_cpu }}
-              memory: {{ $.Values.chutes_api.max_mem }}
+              cpu: {{ $.Values.chutes_forge.max_cpu }}
+              memory: {{ $.Values.chutes_forge.max_mem }}
           envFrom:
             - secretRef:
                 name: {{ $.Release.Name }}-forge
           ports:
-            - name: {{ $.Release.Name }}-forge-http
-              containerPort: {{ $.Values.chutes_api.http_port | toString }}
+            - name: http
+              containerPort: {{ $.Values.chutes_forge.http_port | toString }}
           livenessProbe:
             tcpSocket:
-              port: {{ $.Release.Name }}-forge-http
+              port: http
             initialDelaySeconds: 5
             timeoutSeconds: 5
             successThreshold: 1
@@ -49,7 +49,7 @@ spec:
           readinessProbe:
             httpGet:
               path: /
-              port: {{ $.Release.Name }}-forge-http
+              port: http
             initialDelaySeconds: 5
             timeoutSeconds: 2
             successThreshold: 1
