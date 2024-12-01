@@ -30,7 +30,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
       MINIO_STORAGE_CLASS_REDIRECT_DISABLE: "true"
-    command: server /data
+    entrypoint: ''
+    command: bash -c 'mkdir -p /data/chutes && minio server /data'
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -79,9 +80,10 @@ services:
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_REGION=us-east-1
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
@@ -114,9 +116,10 @@ services:
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_REGION=us-east-1
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
@@ -144,9 +147,10 @@ services:
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_REGION=us-east-1
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
@@ -169,9 +173,10 @@ services:
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_ENDPOINT_URL=http://minio:9000
+      - AWS_REGION=us-east-1
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true

@@ -240,13 +240,12 @@ async def invoke(
     if random.random() <= REQUEST_SAMPLE_RATIO:
         request_path = f"invocations/{today}/{chute_id}/request.json"
         try:
-            await settings.storage_client.put_object(
-                settings.storage_bucket,
-                request_path,
-                io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})),
-                length=-1,
-                part_size=10 * 1024 * 1024,
-            )
+            async with settings.s3_client() as s3:
+                await s3.upload_fileobj(
+                    io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})),
+                    settings.storage_bucket,
+                    request_path,
+                )
         except Exception as exc:
             logger.error(f"failed to sample request: {exc}")
             request_path = None
@@ -297,13 +296,12 @@ async def invoke(
                 if request_path:
                     response_path = request_path.replace("request.json", "response.json")
                     try:
-                        await settings.storage_client.put_object(
-                            settings.storage_bucket,
-                            response_path,
-                            io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})),
-                            length=-1,
-                            part_size=10 * 1024 * 1024,
-                        )
+                        async with settings.s3_client() as s3:
+                            await s3.upload_fileobj(
+                                io.BytesIO(json.dumps(response_data)),
+                                settings.storage_bucket,
+                                response_path,
+                            )
                     except Exception as exc:
                         logger.error(f"failed to sample request: {exc}")
                         response_path = None

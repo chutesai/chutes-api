@@ -4,7 +4,6 @@ Routes for logos.
 
 import io
 import uuid
-import aiohttp
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, status, Response
 from sqlalchemy import select
@@ -41,17 +40,14 @@ async def create_logo(
     logo_id = str(uuid.uuid4())
     destination = f"logos/{current_user.user_id}/{logo_id}.png"
     try:
-        result = await settings.storage_client.put_object(
-            settings.storage_bucket,
-            destination,
-            io.BytesIO(image_data),
-            length=len(image_data),
-            part_size=10 * 1024 * 1024,
-            content_type=content_type,
-        )
-        logger.success(
-            f"Uploaded {logo_id=} to {settings.storage_bucket}/{destination} etag={result.etag}"
-        )
+        async with settings.s3_client() as s3:
+            await s3.upload_fileobj(
+                io.BytesIO(image_data),
+                settings.storage_bucket,
+                destination,
+                ExtraArgs={"ContentType": content_type},
+            )
+        logger.success(f"Uploaded {logo_id=} to {settings.storage_bucket}/{destination}")
     except HTTPException:
         raise
     except Exception as exc:
@@ -85,11 +81,7 @@ async def render_logo(logo_id: str, db: AsyncSession = Depends(get_db_session)) 
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Logo not found: {logo_id}",
         )
-    async with aiohttp.ClientSession() as session:
-        logo_obj = await settings.storage_client.get_object(
-            settings.storage_bucket,
-            logo.path,
-            session=session,
-        )
-        content = await logo_obj.read()
-    return Response(content=content, media_type="image/png")
+    data = io.BytesIO()
+    async with settings.s3_client() as s3:
+        await s3.download_fileobj(settings.storage_bucket, logo.path, data)
+    return Response(content=data.getvalue(), media_type="image/png")

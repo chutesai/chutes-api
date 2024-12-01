@@ -21,7 +21,6 @@ PAYOUT_STRUCTURE = {
     "maintainer": {
         "take": settings.maintainer_take,
         "min_payout": 1.0,
-        "addresses": settings.maintainer_payout_addresses,
         "limit": None,
     },
     "contributor": {

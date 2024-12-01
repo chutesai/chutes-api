@@ -177,15 +177,11 @@ async def create_image(
             f"forge/{current_user.user_id}/{image_id}.pickle",
         ),
     ):
-        result = await settings.storage_client.put_object(
-            settings.storage_bucket,
-            destination,
-            obj,
-            length=-1,
-            part_size=10 * 1024 * 1024,
-        )
+        logger.info(f"Trying to upload: {destination}")
+        async with settings.s3_client() as s3:
+            await s3.upload_fileobj(obj, settings.storage_bucket, destination)
         logger.success(
-            f"Uploaded build context component {image_id=} to {settings.storage_bucket}/{destination} etag={result.etag}"
+            f"Uploaded build context component {image_id=} to {settings.storage_bucket}/{destination}"
         )
 
     # Create the image once we've persisted the context, which will trigger the build via events.

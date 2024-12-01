@@ -75,10 +75,6 @@ async def lifespan(_: FastAPI):
     else:
         logger.error(f"failed to run db migrations returncode={process.returncode}")
 
-    # Buckets.
-    if not await settings.storage_client.bucket_exists(settings.storage_bucket):
-        await settings.storage_client.make_bucket(settings.storage_bucket)
-
     yield
 
 

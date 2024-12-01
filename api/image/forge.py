@@ -220,13 +220,8 @@ async def build_and_push_image(image):
                 destination = (
                     f"fschallenge/{image.user_id}/{image.image_id}/{os.path.basename(path)}"
                 )
-                await settings.storage_client.put_object(
-                    settings.storage_bucket,
-                    destination,
-                    open(path, "rb"),
-                    length=-1,
-                    part_size=10 * 1024 * 1024,
-                )
+                async with settings.s3_client() as s3:
+                    await s3.upload_file(path, settings.storage_bucket, destination)
                 message = (
                     f"Successfully generated filesystem challenge data: {os.path.basename(path)}"
                 )
@@ -295,16 +290,17 @@ async def forge(image_id: str):
     error_message = None
     with tempfile.TemporaryDirectory() as build_dir:
         context_path = os.path.join(build_dir, "chute.zip")
-        await settings.storage_client.fget_object(
-            settings.storage_bucket,
-            f"forge/{image.user_id}/{image_id}.zip",
-            context_path,
-        )
-        await settings.storage_client.fget_object(
-            settings.storage_bucket,
-            f"forge/{image.user_id}/{image_id}.Dockerfile",
-            os.path.join(build_dir, "Dockerfile"),
-        )
+        dockerfile_path = os.path.join(build_dir, "Dockerfile")
+        async with settings.s3_client() as s3:
+            await s3.download_file(
+                settings.storage_bucket, f"forge/{image.user_id}/{image_id}.zip", context_path
+            )
+        async with settings.s3_client() as s3:
+            await s3.download_file(
+                settings.storage_bucket,
+                f"forge/{image.user_id}/{image_id}.Dockerfile",
+                dockerfile_path,
+            )
         try:
             starting_dir = os.getcwd()
             os.chdir(build_dir)
@@ -324,13 +320,8 @@ async def forge(image_id: str):
             log_paths.append(log_path)
         for path in log_paths:
             destination = f"forge/{image.user_id}/{image.image_id}.{os.path.basename(path)}"
-            await settings.storage_client.put_object(
-                settings.storage_bucket,
-                destination,
-                open(path, "rb"),
-                length=-1,
-                part_size=10 * 1024 * 1024,
-            )
+            async with settings.s3_client() as s3:
+                await s3.upload_file(path, settings.storage_bucket, destination)
 
     # Update status.
     async with get_session() as session:

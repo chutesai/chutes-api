@@ -4,23 +4,44 @@ Application-wide settings.
 
 import os
 import hvac
-from typing import Optional
+import aioboto3
 import redis.asyncio as redis
-from miniopy_async import Minio
+from boto3.session import Config
+from typing import Optional
 from substrateinterface import Keypair
 from pydantic_settings import BaseSettings
+from contextlib import asynccontextmanager
 
 
 class Settings(BaseSettings):
     sqlalchemy: str = os.getenv(
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
     )
-    storage_client: Minio = Minio(
-        os.getenv("MINIO_ENDPOINT", "127.0.0.1"),
-        access_key=os.getenv("MINIO_ACCESS_KEY", "REPLACEME"),
-        secret_key=os.getenv("MINIO_SECRET_KEY", "REPLACEME"),
-        secure=os.getenv("MINIO_SECURE", "false").lower() == "true",
-    )
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "REPLACEME")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "REPLACEME")
+    aws_endpoint_url: Optional[str] = os.getenv("AWS_ENDPOINT_URL", "http://minio:9000")
+    aws_region: str = os.getenv("AWS_REGION", "local")
+    storage_bucket: str = os.getenv("STORAGE_BUCKET", "chutes")
+
+    @property
+    def s3_session(self) -> aioboto3.Session:
+        session = aioboto3.Session(
+            aws_access_key_id=self.aws_access_key_id,
+            aws_secret_access_key=self.aws_secret_access_key,
+            region_name=self.aws_region,
+        )
+        return session
+
+    @asynccontextmanager
+    async def s3_client(self):
+        session = self.s3_session
+        async with session.client(
+            "s3",
+            endpoint_url=self.aws_endpoint_url,
+            config=Config(signature_version="s3v4"),
+        ) as client:
+            yield client
+
     vault_client: hvac.Client = hvac.Client(
         url=os.getenv("VAULT_URL", "http://vault:777"),
         token=os.getenv("VAULT_TOKEN", "supersecrettoken"),
@@ -62,11 +83,6 @@ class Settings(BaseSettings):
     contributor_take: float = float(os.getenv("CONTRIBUTOR_TAKE", "0.03"))
     image_creator_take: float = float(os.getenv("IMAGE_CREATOR_TAKE", "0.01"))
     chute_creator_take: float = float(os.getenv("CHUTE_CREATOR_TAKE", "0.01"))
-    maintainer_payout_addresses: list[str] = [
-        address
-        for address in os.getenv("MAINTAINER_PAYOUT_ADDRESSES", "").split(",")
-        if address.strip()
-    ]
 
 
 settings = Settings()
