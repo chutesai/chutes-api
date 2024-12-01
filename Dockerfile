@@ -56,8 +56,9 @@ ENV PATH=$PATH:/home/chutes/.local/bin
 ADD pyproject.toml /app/
 ADD poetry.lock /app/
 WORKDIR /app
-RUN poetry install
+RUN poetry install --no-root
 ADD --chown=chutes . /app
+ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # GraVal
