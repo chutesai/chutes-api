@@ -1,0 +1,30 @@
+- name: Get join command from primary node
+  hosts: primary
+  tasks:
+    - name: Get cluster join command
+      shell: microk8s add-node
+      register: join_command
+
+    - name: Extract join string
+      set_fact:
+        join_string: "{{ join_command.stdout | regex_search('microk8s join [^ ]+') }}"
+
+    - name: Share join command with other plays
+      set_fact:
+        join_command: "{{ join_string }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Join secondary CPU only nodes to cluster
+  hosts: secondary
+  tasks:
+    - name: Join cluster
+      shell: "{{ hostvars['localhost']['join_command'] }}"
+      ignore_errors: yes
+
+- name: Join worker nodes to cluster
+  hosts: workers
+  tasks:
+    - name: Join cluster
+      shell: "{{ hostvars['localhost']['join_command'] }} --worker"
+      ignore_errors: yes

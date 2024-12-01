@@ -1,0 +1,394 @@
+- name: Setup Kubernetes Node
+  hosts: all
+  become: yes
+  vars:
+    username: "{{ user }}"
+    ssh_public_key: "{{ ssh_key }}"
+    microk8s_channel: "1.31/stable"
+    enable_gpu: "{{ gpu_enabled | default(false) }}"
+    is_control_plane: "{{ control_plane | default(false) }}"
+
+  tasks:
+    - name: Set environment variables
+      shell: |
+        export DEBIAN_FRONTEND=noninteractive
+        export NEEDRESTART_SUSPEND=y
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Stop and disable unattended upgrades
+      systemd:
+        name: unattended-upgrades
+        state: stopped
+        enabled: no
+
+    - name: Create user
+      user:
+        name: "{{ username }}"
+        shell: /bin/bash
+        create_home: yes
+        state: present
+
+    - name: Create SSH directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0700'
+      with_items:
+        - "/home/{{ username }}/.ssh"
+        - "/root/.ssh"
+
+    - name: Add authorized SSH keys
+      copy:
+        content: "{{ ssh_public_key }}"
+        dest: "{{ item }}"
+        mode: '0700'
+      with_items:
+        - "/home/{{ username }}/.ssh/authorized_keys"
+        - "/root/.ssh/authorized_keys"
+
+    - name: Set correct ownership for user home
+      file:
+        path: "/home/{{ username }}"
+        owner: "{{ username }}"
+        group: "{{ username }}"
+        recurse: yes
+
+    - name: Add user to sudoers
+      lineinfile:
+        path: /etc/sudoers
+        line: '{{ username }} ALL=(ALL) NOPASSWD:ALL'
+        validate: 'visudo -cf %s'
+
+    - name: Remove old containerd if exists
+      apt:
+        name: containerd.io
+        state: absent
+
+    - name: Install basic system prerequisites
+      apt:
+        name:
+          - vim
+          - jq
+          - bc
+          - libclang-dev
+          - npm
+          - clang
+          - libssl-dev
+          - llvm
+          - libudev-dev
+          - protobuf-compiler
+          - python3
+          - python3-pip
+          - python3-venv
+          - docker.io
+          - docker-compose
+          - build-essential
+          - nginx
+          - redis
+          - net-tools
+          - ffmpeg
+          - rsyslog
+          - libpq-dev
+          - snapd
+        state: present
+
+    - name: Set vim as default editor
+      alternatives:
+        name: editor
+        path: /usr/bin/vim
+        priority: 1
+
+    - name: Check CUDA installation
+      apt:
+        name: cuda-toolkit-12-6
+        state: present
+      check_mode: yes
+      register: cuda_check
+      ignore_errors: yes
+      when: enable_gpu | bool
+
+    - name: Purge existing NVIDIA/CUDA packages
+      shell: |
+        PKGS=$(dpkg --list | egrep -i 'cuda|nvidia' | grep -v 'linux-nvidia' | awk '{print $2}')
+        if [ ! -z "$PKGS" ]; then
+          echo "$PKGS" | xargs apt -y remove --allow-change-held-packages
+          echo "$PKGS" | xargs dpkg --purge
+        fi
+      ignore_errors: yes
+      when: (gpu_enabled | bool) and (cuda_check.failed or cuda_check.changed)
+
+    - name: GPU Setup Tasks
+      when: enable_gpu | bool
+      block:
+        - name: Download and install CUDA keyring
+          block:
+            - get_url:
+                url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+                dest: /tmp/cuda-keyring.deb
+            - apt:
+                deb: /tmp/cuda-keyring.deb
+
+        - name: Update apt cache
+          apt:
+            update_cache: yes
+
+        - name: Install NVIDIA packages
+          apt:
+            name:
+              - cuda-toolkit-12-6
+              - nvidia-open-560
+              - nvidia-fabricmanager-560
+              - linux-nvidia-hwe-22.04
+            state: present
+
+        - name: Configure NVIDIA Fabric Manager
+          systemd:
+            name: nvidia-fabricmanager
+            enabled: yes
+            masked: no
+
+        - name: Set NVIDIA device permissions
+          file:
+            path: "{{ item }}"
+            mode: '0666'
+          with_fileglob:
+            - /dev/nvidia*
+            - /dev/nvidiactl
+            - /dev/nvidia-uvm
+            - /dev/nvidia-uvm-tools
+
+        - name: Create NVIDIA character device symlinks
+          shell: |
+            ls /dev/nvidia? | egrep 'nvidia[0-9]' | while read i
+            do
+              N=$(echo $i | sed 's/\/dev\/nvidia//');
+              MAJ=$(ls -l $i | awk '{print $5}' | cut -d, -f1)
+              MIN=$(ls -l $i | awk '{print $6}')
+              mkdir -p /dev/char/$MAJ:$MIN
+              ln -sf $i /dev/char/$MAJ:$MIN
+            done
+
+        - name: Install NVIDIA Container Toolkit
+          apt:
+            name: nvidia-container-toolkit
+            state: present
+
+        - name: Configure NVIDIA Container Toolkit
+          shell: |
+            nvidia-ctk runtime configure --runtime=docker --set-as-default
+            nvidia-ctk runtime configure --runtime=containerd --set-as-default
+            nvidia-ctk runtime configure --runtime=crio --set-as-default --config=/etc/crio/crio.conf.d/99-nvidia.conf
+
+    - name: Configure file limits
+      blockinfile:
+        path: /etc/security/limits.conf
+        block: |
+          * soft nofile 40000
+          * hard nofile 40001
+
+    - name: Configure PAM limits
+      lineinfile:
+        path: "{{ item }}"
+        line: "session required pam_limits.so"
+      with_items:
+        - /etc/pam.d/common-session
+        - /etc/pam.d/common-session-noninteractive
+
+    - name: Install Wireguard
+      apt:
+        name: wireguard
+        state: present
+
+    - name: Generate Wireguard private key
+      shell: wg genkey > /etc/wireguard/private.key
+      args:
+        creates: /etc/wireguard/private.key
+
+    - name: Set private key permissions
+      file:
+        path: /etc/wireguard/private.key
+        mode: '0600'
+
+    - name: Generate public key from private key
+      shell: cat /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
+      args:
+        creates: /etc/wireguard/public.key
+
+    - name: Get public keys
+      slurp:
+        src: /etc/wireguard/public.key
+      register: public_keys
+
+    - name: Get private keys
+      slurp:
+        src: /etc/wireguard/private.key
+      register: private_keys
+
+    - name: Set facts for keys
+      set_fact:
+        wg_public_key: "{{ public_keys['content'] | b64decode | trim }}"
+        wg_private_key: "{{ private_keys['content'] | b64decode | trim }}"
+
+    - name: Create Wireguard config for primary
+      when: is_primary | bool
+      template:
+        src: wg0-primary.conf.j2
+        dest: /etc/wireguard/wg0.conf
+        mode: '0600'
+
+    - name: Create Wireguard config for worker
+      when: not is_primary | bool
+      template:
+        src: wg0-worker.conf.j2
+        dest: /etc/wireguard/wg0.conf
+        mode: '0600'
+
+    - name: Enable and start Wireguard
+      systemd:
+        name: wg-quick@wg0
+        enabled: yes
+        state: started
+
+    - name: Install MicroK8s
+      community.general.snap:
+        name: microk8s
+        channel: "{{ microk8s_channel }}"
+        classic: yes
+
+    - name: Start MicroK8s
+      shell: microk8s start
+      ignore_errors: yes
+
+    - name: Enable MicroK8s plugins
+      shell: |
+        microk8s enable community
+        microk8s disable dns
+        microk8s enable dns
+        microk8s enable hostpath-storage
+        microk8s disable calico
+        microk8s enable cilium
+      ignore_errors: yes
+
+    - name: Configure CNI
+      template:
+        src: cilium.conf.j2
+        dest: /etc/cni/net.d/05-cilium.conf
+        mode: '0600'
+
+    - name: Install kubernetes python package
+      pip:
+        name: kubernetes
+        state: present
+      become: yes
+
+    - name: Setup Kubernetes access for user
+      block:
+        - name: Add user to microk8s group
+          user:
+            name: "{{ username }}"
+            groups: microk8s
+            append: yes
+
+        - name: Ensure .kube directory exists for user
+          file:
+            path: "/home/{{ username }}/.kube"
+            state: directory
+            mode: '0755'
+            owner: "{{ username }}"
+            group: "{{ username }}"
+
+        - name: Generate kubeconfig from microk8s
+          shell: microk8s config > /home/{{ username }}/.kube/config
+          args:
+            creates: "/home/{{ username }}/.kube/config"
+
+        - name: Set kubeconfig permissions
+          file:
+            path: "/home/{{ username }}/.kube/config"
+            mode: '0600'
+            owner: "{{ username }}"
+            group: "{{ username }}"
+
+    - name: Install Helm
+      block:
+        - name: Download Helm installation script
+          get_url:
+            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+            dest: /tmp/get_helm.sh
+            mode: '0700'
+
+        - name: Install Helm
+          shell: /tmp/get_helm.sh
+
+        - name: Add NVIDIA Helm repository
+          shell: |
+            helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+            helm repo update
+          when: enable_gpu | bool
+
+    - name: Reboot
+      reboot:
+        msg: "Rebooting..."
+        connect_timeout: 5
+        reboot_timeout: 600
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+
+    - name: Wait for system to be ready
+      wait_for_connection:
+        timeout: 600
+
+    - name: Wait for microk8s to be ready
+      shell: microk8s status | grep "microk8s is running"
+      register: result
+      until: result.rc == 0
+      retries: 30
+      delay: 10
+      ignore_errors: yes
+
+    - name: Enable NVidia GPU operator
+      shell: microk8s enable nvidia
+      when: gpu_enabled | bool
+
+    - name: Label kubernetes node
+      shell: |
+        microk8s kubectl label nodes {{ inventory_hostname }} chutes/external-ip={{ external_ip }} --overwrite
+
+    - name: Fix NVidia cluster policy
+      when: gpu_enabled | bool
+      shell: |
+        sleep 15
+        microk8s enable nvidia || true
+        while ! microk8s kubectl get namespace gpu-operator-resources > /dev/null 2>&1; do
+          echo "Waiting for gpu-operator namespace to be created..."
+          sleep 5
+        done
+        while ! microk8s kubectl get clusterpolicy cluster-policy > /dev/null 2>&1; do
+          echo "Waiting for cluster-policy to be created..."
+          sleep 5
+        done
+        microk8s kubectl patch clusterpolicy cluster-policy --type=merge -p '
+        {
+          "spec": {
+            "validator": {
+              "driver": {
+                "env": [
+                  {
+                    "name": "DISABLE_DEV_CHAR_SYMLINK_CREATION",
+                    "value": "true"
+                  }
+                ]
+              }
+            }
+          }
+        }'
+
+    - name: Configure seccomp for forge
+      template:
+        src: forge-seccomp.json.j2
+        dest: /etc/forge-seccomp.json
+        mode: '0600'

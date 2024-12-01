@@ -1,0 +1,11 @@
+[Interface]
+PrivateKey = {{ wg_private_key }}
+Address = 192.168.0.{{ groups['workers'].index(inventory_hostname) + 2 }}/20
+ListenPort = 51820
+MTU = 1420
+
+[Peer]
+PublicKey = {{ hostvars[groups['primary'][0]]['wg_public_key'] }}
+AllowedIPs = 192.168.0.0/20
+Endpoint = {{ hostvars[groups['primary'][0]]['external_ip'] }}:51820
+PersistentKeepalive = 25
