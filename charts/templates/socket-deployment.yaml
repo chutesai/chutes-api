@@ -30,7 +30,7 @@ spec:
         - name: socket
           image: "{{ .Values.socket.image }}"
           imagePullPolicy: {{ .Values.socket.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.socket:app", "--host", "0.0.0.0", "--port", "{{ .Values.socket.service.targetPort }}"]
+          command: ["poetry", "run", "uvicorn", "api.socket_server:app", "--host", "0.0.0.0", "--port", "{{ .Values.socket.service.targetPort }}"]
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}

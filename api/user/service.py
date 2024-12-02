@@ -14,7 +14,6 @@ from api.user.schemas import User
 from api.api_key.util import get_and_check_api_key
 from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
-from loguru import logger
 from api.constants import NONCE_HEADER
 from api.util import nonce_is_valid, get_signing_message
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -48,7 +47,6 @@ def get_current_user(
         use_hotkey_auth = hotkey and signature
         # If not using hotkey auth, then just use the API key
         if not use_hotkey_auth:
-            logger.debug("No hotkey or signature found in request headers")
             # API key validation.
             if authorization:
                 token = authorization.split(" ")[-1]
@@ -137,7 +135,6 @@ def get_current_user(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail=f"Could not find user with hotkey: {hotkey}",
                 )
-            logger.debug(f"Authenticated user: {user}")
             return user
 
     return _authenticate

@@ -59,7 +59,7 @@ services:
       target: graval
     volumes:
       - ./api:/app/api
-    entrypoint: ["poetry", "run", "python", "api/graval.py", "--port", "9191"]
+    entrypoint: ["poetry", "run", "python", "api/graval_server.py", "--port", "9191", "--validator-whitelist", "5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4"]
     ports:
       - "9191:9191"
     environment:

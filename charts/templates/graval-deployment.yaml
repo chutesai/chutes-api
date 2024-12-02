@@ -30,7 +30,7 @@ spec:
         - name: graval-proxy
           image: "{{ .Values.graval.image }}"
           imagePullPolicy: {{ .Values.graval.imagePullPolicy }}
-          command: ["poetry", "run", "python", "api/graval.py", "--port", "{{ .Values.graval.service.targetPort }}"]
+          command: ["poetry", "run", "python", "api/graval_server.py", "--port", "{{ .Values.graval.service.targetPort }}"]
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
           ports:

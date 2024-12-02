@@ -63,7 +63,6 @@ def sign_request(miner_ss58: str, payload: Dict[str, Any] | str | None = None, p
         )
     else:
         signature_string = get_signing_message(miner_ss58, nonce, payload_str=None, purpose=purpose)
-    logger.debug(f"Signing message for miner request: {signature_string}")
     headers[SIGNATURE_HEADER] = settings.validator_keypair.sign(signature_string.encode()).hex()
     return headers, payload_string
 
