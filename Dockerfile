@@ -59,6 +59,9 @@ WORKDIR /app
 RUN poetry install --no-root
 ADD --chown=chutes . /app
 ENV PYTHONPATH=/app
+USER root
+RUN dnf update && dnf -y install postgresql nc
+USER chutes
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
 # GraVal

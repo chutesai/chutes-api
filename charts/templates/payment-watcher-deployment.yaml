@@ -51,7 +51,7 @@ spec:
             failureThreshold: {{ .Values.paymentWatcher.livenessProbe.failureThreshold | default 3 }}
           readinessProbe:
             httpGet:
-              path: /ping
+              path: /status
               port: http
             initialDelaySeconds: {{ .Values.paymentWatcher.readinessProbe.initialDelaySeconds | default 10 }}
             periodSeconds: {{ .Values.paymentWatcher.readinessProbe.periodSeconds | default 10 }}
