@@ -17,6 +17,7 @@ from sqlalchemy import and_, or_, text, update, func, String
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
+from api.constants import ENCRYPTED_HEADER
 from api.database import get_session
 from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
@@ -162,29 +163,47 @@ async def _invoke_one(
         await session.commit()
 
     # Call the miner's endpoint.
-    session = aiohttp.ClientSession(raise_for_status=True)
     path = path.lstrip("/")
     response = None
-    if settings.graval_proxy_url:
-        response = await session.post(
-            settings.graval_proxy_url,
-            json={
-                "args": args,
-                "kwargs": kwargs,
-                "path": path,
-                "stream": stream,
-                "instance_id": target.instance_id,
-            },
-        )
-    else:
-        headers, payload_string = sign_request(
-            miner_ss58=target.miner_hotkey, payload={"args": args, "kwargs": kwargs}
-        )
-        response = await session.post(
-            f"http://{target.host}:{target.port}/{path}",
-            data=payload_string,
-            headers=headers,
-        )
+    payload = {"args": args, "kwargs": kwargs}
+    encrypted = False
+    if settings.graval_url:
+        device_dicts = [node.graval_dict() for node in target.nodes]
+        target_index = random.randint(0, len(device_dicts) - 1)
+        target_device = device_dicts[target_index]
+        seed = target.nodes[0].seed
+        async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
+            try:
+                async with graval_session.post(
+                    f"{settings.graval_url}/encrypt",
+                    json={
+                        "payload": {
+                            "args": args,
+                            "kwargs": kwargs,
+                        },
+                        "device_info": target_device,
+                        "device_id": target_index,
+                        "seed": seed,
+                    },
+                    timeout=30.0,
+                ) as resp:
+                    payload = await resp.json()
+                    encrypted = True
+            except Exception as exc:
+                logger.error(f"Error encrypting payload: {exc}, sending plain text")
+
+    session = aiohttp.ClientSession(raise_for_status=True)
+    headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
+    if encrypted:
+        headers.update({ENCRYPTED_HEADER: "true"})
+    logger.debug(
+        f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {encrypted=}"
+    )
+    response = await session.post(
+        f"http://{target.host}:{target.port}/{path}",
+        data=payload_string,
+        headers=headers,
+    )
     if stream:
         try:
             async for chunk in response.content:

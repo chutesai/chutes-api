@@ -17,20 +17,20 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
     ports:
       - "8101:8000"
     networks:
       - chutes
 
-  graval:
+  graval_worker:
     build:
       context: .
       target: graval
     volumes:
       - ./api:/app/api
-    entrypoint: ["poetry", "run", "taskiq", "worker", "api.node.graval:broker", "--workers", "1", "--max-async-tasks", "1"]
+    entrypoint: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - REDIS_URL=redis://:redispassword@redis:6379/0
@@ -42,23 +42,26 @@ services:
       - REGISTRY_INSECURE=true
       - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
       - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
+      - GRAVAL_URL=http://graval:9191
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
     networks:
       - chutes
 
-  graval_proxy:
+  graval:
     build:
       context: .
       target: graval
     volumes:
       - ./api:/app/api
-    entrypoint: ["poetry", "run", "python", "api/instance/graval_proxy.py", "--port", "9191"]
+    entrypoint: ["poetry", "run", "python", "api/graval.py", "--port", "9191"]
+    ports:
+      - "9191:9191"
     environment:
       - POSTGRESQL=postgresql+asyncpg://user:password@postgres:5432/chutes
       - POSTGRES_URL=postgresql://user:password@postgres:5432/chutes
@@ -77,7 +80,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              count: 1
               capabilities: [gpu]
     networks:
       - chutes

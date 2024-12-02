@@ -12,7 +12,7 @@ from api.database import get_db_session
 from api.config import settings
 from api.util import is_valid_host
 from api.node.schemas import Node, MultiNodeArgs
-from api.node.graval import validate_gpus, broker
+from api.graval_worker import validate_gpus, broker
 from api.challenge.schemas import Challenge
 from api.user.schemas import User
 from api.user.service import get_current_user
