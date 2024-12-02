@@ -1,0 +1,1203 @@
+---
+# Source: chutes-api/templates/redis-np.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-network-policy
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              redis-access: "true"
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# Source: chutes-api/templates/registry-proxy-cm.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: registry-proxy-config
+  labels:
+    app.kubernetes.io/name: registry-proxy
+data:
+  nginx.conf: |
+    user www-data;
+    worker_processes 64;
+    pid /run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+    events {
+        worker_connections 4096;
+    }
+    http {
+        server_tokens off;
+        ignore_invalid_headers off;
+        client_max_body_size 0;
+        log_format proxylog '$remote_addr\t$http_x_chutes_hotkey\t[$time_local] ($request_time) '
+                    '"$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $content_length';
+        server {
+            access_log /var/log/nginx/access.log proxylog;
+            sendfile on;
+            tcp_nopush on;
+            listen 5000;
+        
+            location /v2/ {
+                limit_except GET {
+                    deny all;
+                }
+                proxy_pass http://registry:5000;
+                auth_request /auth;
+                proxy_set_header Authorization $auth_resp_authorization;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            }
+        
+            location = /auth {
+                internal;
+                proxy_pass http://api:8000/registry/auth;
+                auth_request_set $auth_resp_authorization $upstream_http_authorization;
+                proxy_pass_request_body off; 
+                proxy_set_header Content-Length "";
+                error_page 401 403 500 502 503 504 = @block;
+            }
+        
+            location @block {
+                return 401;
+            }
+        }
+    }
+---
+# Source: chutes-api/templates/api-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+    redis-access: "true"
+spec:
+  type: NodePort
+  ports:
+    - nodePort: 32000
+      port: 8000
+      targetPort: 8000
+      name: validator-api
+  selector:
+    app.kubernetes.io/name: api
+    redis-access: "true"
+---
+# Source: chutes-api/templates/graval-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: graval-proxy
+  labels:
+    app.kubernetes.io/name: graval
+    redis-access: "true"
+spec:
+  type: NodePort
+  ports:
+    - nodePort: 
+      port: 8000
+      targetPort: 8000
+      name: validator-graval
+  selector:
+    app.kubernetes.io/name: graval
+    redis-access: "true"
+---
+# Source: chutes-api/templates/payment-watcher-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-watcher
+  labels:
+    app.kubernetes.io/name: payment-watcher
+    redis-access: "true"
+spec:
+  type: NodePort
+  ports:
+    - nodePort: 32002
+      port: 8000
+      targetPort: 8000
+      name: validator-api
+  selector:
+    app.kubernetes.io/name: payment-watcher
+    redis-access: "true"
+---
+# Source: chutes-api/templates/redis-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  type: ClusterIP
+  ports:
+    - port: 6379
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    app.kubernetes.io/name: redis
+---
+# Source: chutes-api/templates/registry-proxy-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry-proxy
+  labels:
+    app.kubernetes.io/name: registry-proxy
+spec:
+  type: NodePort
+  ports:
+    - nodePort: 32003
+      port: 5000
+      targetPort: 5000
+      name: registry-proxy
+  selector:
+    app.kubernetes.io/name: registry-proxy
+---
+# Source: chutes-api/templates/registry-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: registry
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5000
+      targetPort: registry
+      protocol: TCP
+      name: registry
+  selector:
+    app.kubernetes.io/name: registry
+---
+# Source: chutes-api/templates/socket-svc.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: socket
+  labels:
+    app.kubernetes.io/name: socket
+    redis-access: "true"
+spec:
+  type: NodePort
+  ports:
+    - nodePort: 32001
+      port: 8000
+      targetPort: 8000
+      name: validator-socket
+  selector:
+    app.kubernetes.io/name: socket
+    redis-access: "true"
+---
+# Source: chutes-api/templates/api-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+    redis-access: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        redis-access: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: api
+          image: "parachutes/validator:latest"
+          imagePullPolicy: Always
+          command: ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: VALIDATOR_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: seed
+            - name: WALLET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: wallet-key
+            - name: PG_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: pg-key
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+            - name: GRAVAL_URL
+              value: http://graval:8000
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "1"
+              memory: 4Gi
+            requests:
+              cpu: "1"
+              memory: 4Gi
+---
+# Source: chutes-api/templates/forge-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: forge
+  labels:
+    app.kubernetes.io/name: forge
+    redis-access: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: forge
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: forge
+        redis-access: "true"
+    spec:
+      containers:
+        - name: forge
+          image: "parachutes/forge:latest"
+          imagePullPolicy: Always
+          env:
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+            - name: STORAGE_DRIVER
+              value: "vfs"
+            - name: BUILDAH_FORMAT
+              value: "docker"
+            - name: BUILDAH_ISOLATION
+              value: "chroot"
+            - name: PYTHONPATH
+              value: "/forge"
+          securityContext:
+            privileged: true
+            capabilities:
+              add:
+                - SETUID
+                - SETGID
+                - SYS_ADMIN
+            allowPrivilegeEscalation: true
+          resources:
+            limits:
+              cpu: "1"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 8Gi
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+---
+# Source: chutes-api/templates/graval-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graval
+  labels:
+    app.kubernetes.io/name: graval
+    redis-access: "true"
+spec:
+  replicas: 7
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graval
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: graval
+        redis-access: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: In
+                values:
+                - "true"
+      runtimeClassName: nvidia-container-runtime
+      containers:
+        - name: graval
+          image: "parachutes/graval:latest"
+          imagePullPolicy: Always
+          command: ["poetry", "run", "python", "api/graval_server.py", "--port", "8000", "--validator-whitelist", "5HNCJfK3PzFcNHmkdaWnHyw7hEvtNoM4SZpoqB6QchzpFxT5,5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY,5E1nK3myeWNWrmffVaH76f2mCFCbe9VcHGwgkfdcD7k3E8D1,5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2,5FFApaS75bv5pJHfAp2FVLBj9ZaXuFDjEypsaBNc1wCfe52v,5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp,5F2CsUDVbRbVMXTh9fAzF9GacjVX7UapvRxidrxe7z8BYckQ,5HYk8DMKWK8TJyPzZJ9vmZk7B5NPCgjnZoyZ1ZsB54RXdN47,5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe,5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT,5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY"]
+          env:
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "1"
+              memory: 4Gi
+              nvidia.com/gpu: "1"
+            requests:
+              cpu: "1"
+              memory: 4Gi
+              nvidia.com/gpu: "1"
+---
+# Source: chutes-api/templates/graval-worker-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: graval-worker
+  labels:
+    app.kubernetes.io/name: graval-worker
+    redis-access: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: graval-worker
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: graval-worker
+        redis-access: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: In
+                values:
+                - "true"
+      runtimeClassName: nvidia-container-runtime
+      containers:
+        - name: graval-worker
+          image: "parachutes/graval:latest"
+          imagePullPolicy: Always
+          command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]
+          env:
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+          resources:
+            limits:
+              cpu: "1"
+              memory: 1Gi
+              nvidia.com/gpu: "1"
+            requests:
+              cpu: "1"
+              memory: 1Gi
+              nvidia.com/gpu: "1"
+---
+# Source: chutes-api/templates/metasync-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metasync
+  labels:
+    app.kubernetes.io/name: metasync
+    redis-access: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: metasync
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: metasync
+        redis-access: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: metasync
+          image: "parachutes/metasync:latest"
+          imagePullPolicy: Always
+          command: ["python", "metasync/sync_metagraph.py"]
+          env:
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+            requests:
+              cpu: "1"
+              memory: 512Mi
+---
+# Source: chutes-api/templates/payment-watcher-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-watcher
+  labels:
+    app.kubernetes.io/name: payment-watcher
+    redis-access: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payment-watcher
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: payment-watcher
+        redis-access: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: payment-watcher
+          image: "parachutes/validator:latest"
+          imagePullPolicy: Always
+          command: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: VALIDATOR_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: seed
+            - name: WALLET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: wallet-key
+            - name: PG_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: pg-key
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "1"
+              memory: 8Gi
+            requests:
+              cpu: "1"
+              memory: 8Gi
+---
+# Source: chutes-api/templates/redis-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    app.kubernetes.io/name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redis
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: redis
+          image: "redis:7"
+          imagePullPolicy: IfNotPresent
+          args:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 1
+              memory: 1Gi
+            requests:
+              cpu: 1
+              memory: 1Gi
+---
+# Source: chutes-api/templates/registry-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  labels:
+    app.kubernetes.io/name: registry
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: registry
+          image: "registry:2"
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REGISTRY_STORAGE
+              value: s3
+            - name: REGISTRY_STORAGE_S3_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: REGISTRY_STORAGE_S3_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_STORAGE_S3_ACCESSKEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: REGISTRY_STORAGE_S3_SECRETKEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: REGISTRY_STORAGE_S3_REGIONENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: REGISTRY_HTTP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_STORAGE_REDIRECT_DISABLE
+              value: "true"
+          ports:
+            - name: registry
+              containerPort: 5000
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+---
+# Source: chutes-api/templates/registry-proxy-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry-proxy
+  labels:
+    app.kubernetes.io/name: registry-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: registry-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: registry-proxy
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: proxy
+          image: "nginx:1.25"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 5000
+              protocol: TCP
+          resources:
+            limits:
+              cpu: 500m
+              memory: 512Mi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: registry-proxy-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+      volumes:
+        - name: registry-proxy-config
+          configMap:
+            name: registry-proxy-config
+---
+# Source: chutes-api/templates/socket-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socket
+  labels:
+    app.kubernetes.io/name: socket
+    redis-access: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: socket
+      redis-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: socket
+        redis-access: "true"
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.present
+                operator: NotIn
+                values:
+                - "true"
+      containers:
+        - name: socket
+          image: "parachutes/validator:latest"
+          imagePullPolicy: Always
+          command: ["poetry", "run", "uvicorn", "api.socket_server:app", "--host", "0.0.0.0", "--port", "8000"]
+          env:
+            - name: VALIDATOR_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: seed
+            - name: WALLET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: wallet-key
+            - name: PG_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: pg-key
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
+          resources:
+            limits:
+              cpu: "1"
+              memory: 4Gi
+            requests:
+              cpu: "1"
+              memory: 4Gi

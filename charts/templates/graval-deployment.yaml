@@ -1,11 +1,13 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: graval-proxy
+  name: graval
   labels:
     {{- include "graval.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.graval.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "graval.labels" . | nindent 6 }}
@@ -26,15 +28,16 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      runtimeClassName: nvidia-container-runtime
       containers:
-        - name: graval-proxy
+        - name: graval
           image: "{{ .Values.graval.image }}"
           imagePullPolicy: {{ .Values.graval.imagePullPolicy }}
-          command: ["poetry", "run", "python", "api/graval_server.py", "--port", "{{ .Values.graval.service.targetPort }}"]
+          command: ["poetry", "run", "python", "api/graval_server.py", "--port", "{{ .Values.graval.service.targetPort }}", "--validator-whitelist", "{{ join "," .Values.graval.validatorWhitelist }}"]
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
           ports:
-            - name: graval-proxy
+            - name: http
               containerPort: {{ .Values.graval.service.targetPort }}
               protocol: TCP
           livenessProbe:

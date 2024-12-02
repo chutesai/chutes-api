@@ -6,6 +6,8 @@ metadata:
     {{- include "paymentWatcher.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "paymentWatcher.labels" . | nindent 6 }}
@@ -27,7 +29,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: paymentWatcher
+        - name: payment-watcher
           image: "{{ .Values.paymentWatcher.image }}"
           imagePullPolicy: {{ .Values.paymentWatcher.imagePullPolicy }}
           command: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "{{ .Values.paymentWatcher.service.targetPort }}"]

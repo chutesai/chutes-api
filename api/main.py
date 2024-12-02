@@ -6,6 +6,7 @@ import re
 import asyncio
 import fickling
 import hashlib
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 from loguru import logger
 from fastapi import FastAPI, Request, APIRouter
@@ -44,10 +45,13 @@ async def lifespan(_: FastAPI):
 
     # NOTE: Could we use dbmate container in docker compose to do this instead?
     # Manual DB migrations.
+    db_url = quote(settings.sqlalchemy.replace("+asyncpg", ""), safe=':/@')
+    if "127.0.0.1" in db_url or "@postgres:" in db_url:
+        db_url += "?sslmode=disable"
     process = await asyncio.create_subprocess_exec(
         "dbmate",
         "--url",
-        settings.sqlalchemy.replace("+asyncpg", "") + "?sslmode=disable",
+        db_url,
         "--migrations-dir",
         "api/migrations",
         "migrate",

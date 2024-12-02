@@ -131,7 +131,7 @@ def main():
                 )
         return encrypted_payload
 
-    @app.get("ping")
+    @app.get("/ping")
     async def ping():
         return "pong"
 

@@ -1,5 +1,6 @@
 api:
-  image: parachutes/validator-api:latest
+  replicaCount: 1
+  image: parachutes/validator:latest
   imagePullPolicy: Always
   livenessProbe:
     initialDelaySeconds: 30
@@ -37,8 +38,9 @@ api:
   tolerations: []
 
 socket:
-  image: parachutes/validator-api:latest
+  image: parachutes/validator:latest
   imagePullPolicy: Always
+  replicaCount: 1
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -96,16 +98,18 @@ forge:
   tolerations: []
 
 gravalWorker:
-  replicas: 1
+  replicaCount: 1
   image: parachutes/graval:latest
   imagePullPolicy: Always
   resources:
     requests:
       cpu: "1"
       memory: "1Gi"
+      nvidia.com/gpu: "1"
     limits:
       cpu: "1"
       memory: "1Gi"
+      nvidia.com/gpu: "1"
   nodeSelector: {}
   affinity:
     nodeAffinity:
@@ -113,12 +117,12 @@ gravalWorker:
           nodeSelectorTerms:
           - matchExpressions:
             - key: nvidia.com/gpu.present
-              operator: NotIn
+              operator: In
               values: ["true"]
   tolerations: []
 
 paymentWatcher:
-  image: parachutes/validator-api:latest
+  image: parachutes/validator:latest
   imagePullPolicy: Always
   livenessProbe:
     initialDelaySeconds: 30
@@ -156,18 +160,16 @@ paymentWatcher:
   tolerations: []
 
 metasync:
-  replicas: 1
+  replicaCount: 1
   image: parachutes/metasync:latest
   imagePullPolicy: Always
   resources:
     requests:
       cpu: "1"
-      memory: "4Gi"
-      nvidia.com/gpu: "1"
+      memory: "512Mi"
     limits:
       cpu: "1"
-      memory: "4Gi"
-      nvidia.com/gpu: "1"
+      memory: "512Mi"
   nodeSelector: {}
   affinity:
     nodeAffinity:
@@ -180,9 +182,21 @@ metasync:
   tolerations: []
 
 graval:
-  replicas: 1
+  replicaCount: 7
   image: parachutes/graval:latest
   imagePullPolicy: Always
+  validatorWhitelist:
+    - 5HNCJfK3PzFcNHmkdaWnHyw7hEvtNoM4SZpoqB6QchzpFxT5
+    - 5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY
+    - 5E1nK3myeWNWrmffVaH76f2mCFCbe9VcHGwgkfdcD7k3E8D1
+    - 5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2
+    - 5FFApaS75bv5pJHfAp2FVLBj9ZaXuFDjEypsaBNc1wCfe52v
+    - 5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp
+    - 5F2CsUDVbRbVMXTh9fAzF9GacjVX7UapvRxidrxe7z8BYckQ
+    - 5HYk8DMKWK8TJyPzZJ9vmZk7B5NPCgjnZoyZ1ZsB54RXdN47
+    - 5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe
+    - 5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT
+    - 5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10

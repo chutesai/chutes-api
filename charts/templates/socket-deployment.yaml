@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "socket.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.socket.replicaCount }}
   selector:
     matchLabels:
       {{- include "socket.labels" . | nindent 6 }}

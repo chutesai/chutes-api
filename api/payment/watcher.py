@@ -22,8 +22,8 @@ from api.fmv.fetcher import get_fetcher
 import api.database.orms  # noqa: F401
 from api.user.schemas import User
 from api.payment.schemas import Payment, PaymentMonitorState
-from api.database import get_session, Base, engine
 from api.config import settings
+from api.database import get_session, engine, Base
 
 
 class PaymentMonitor:
@@ -41,6 +41,7 @@ class PaymentMonitor:
         """
         Load state from the database and lock the process.
         """
+        logger.info("Inside initialize...")
         async with get_session() as session:
             result = await session.execute(select(PaymentMonitorState))
             if not result.scalar_one_or_none():
@@ -275,6 +276,7 @@ class PaymentMonitor:
         """
         Main monitoring loop.
         """
+        logger.info("Starting monitor_transfers loop...")
         self.is_running = True
         try:
             while self.is_running:
@@ -362,8 +364,10 @@ monitor = PaymentMonitor()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    logger.info("Inside the lifespan...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    logger.info("Initialized the database...")
     await monitor.initialize()
     monitor_task = asyncio.create_task(monitor.monitor_transfers())
     yield
