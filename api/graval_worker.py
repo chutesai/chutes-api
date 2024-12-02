@@ -69,11 +69,12 @@ async def generate_cipher(node):
                     "plaintext": plaintext,
                 },
                 "device_info": node.graval_dict(),
+                "device_id": node.device_index,
                 "seed": node.seed,
             },
         ) as resp:
-            data = await resp.json()
-            logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=}")
+            data = (await resp.json())["plaintext"]
+            logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {data=}")
             return plaintext, CipherChallenge(
                 ciphertext=data["ciphertext"],
                 iv=data["iv"],
@@ -97,8 +98,12 @@ async def check_encryption_challenge(
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
-            assert (await response.json())["plaintext"] == plaintext
+            response_text = (await response.json())["plaintext"]
+            assert (
+                response_text == plaintext
+            ), f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
     except Exception as exc:
+        logger.error(traceback.format_exc())
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"
     if error_message:
         logger.error(error_message)
