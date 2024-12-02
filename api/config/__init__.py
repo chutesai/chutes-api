@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "32"))
     device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "200"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
-    graval_proxy_url: str = os.getenv("GRAVAL_PROXY_URL", "")
+    graval_url: str = os.getenv("GRAVAL_URL", "")
 
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "256"))
     db_overflow: int = int(os.getenv("DB_OVERFLOW", "32"))

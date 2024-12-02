@@ -89,4 +89,4 @@ ADD poetry.lock /app/
 WORKDIR /app
 RUN poetry install
 ADD --chown=chutes . /app
-ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.node.graval:broker", "--workers", "1", "--max-async-tasks", "1"]
+ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]

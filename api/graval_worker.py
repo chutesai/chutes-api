@@ -3,8 +3,10 @@ GraVal node validation worker.
 """
 
 import asyncio
+import aiohttp
 import uuid
 import traceback
+import backoff
 from functools import lru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -47,20 +49,39 @@ async def initialize_graval(*_, **__):
     validator().initialize()
 
 
-def generate_cipher(node):
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=10,
+    max_tries=7,
+)
+async def generate_cipher(node):
     """
     Encrypt some data on the validator side and see if the miner can decrypt it.
     """
     plaintext = f"decrypt me please: {uuid.uuid4()}"
-    ciphertext, iv, length = validator().encrypt(node.graval_dict(), plaintext, node.seed)
-    logger.info(f"Generated {length} byte ciphertext from: {plaintext}")
-    return plaintext, CipherChallenge(
-        ciphertext=ciphertext.hex(),
-        iv=iv.hex(),
-        length=length,
-        device_id=node.device_index,
-        seed=node.seed,
-    )
+    async with aiohttp.ClientSession(raise_for_status=True) as session:
+        async with session.post(
+            f"{settings.graval_url}/encrypt",
+            json={
+                "payload": {
+                    "plaintext": plaintext,
+                },
+                "device_info": node.graval_dict(),
+                "device_id": node.device_index,
+                "seed": node.seed,
+            },
+        ) as resp:
+            data = (await resp.json())["plaintext"]
+            logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {data=}")
+            return plaintext, CipherChallenge(
+                ciphertext=data["ciphertext"],
+                iv=data["iv"],
+                length=data["length"],
+                device_id=node.device_index,
+                seed=node.seed,
+            )
 
 
 async def check_encryption_challenge(
@@ -77,8 +98,12 @@ async def check_encryption_challenge(
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
-            assert (await response.json())["plaintext"] == plaintext
+            response_text = (await response.json())["plaintext"]
+            assert (
+                response_text == plaintext
+            ), f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
     except Exception as exc:
+        logger.error(traceback.format_exc())
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"
     if error_message:
         logger.error(error_message)
@@ -147,7 +172,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             return False, "nodes not found"
 
     # Generate ciphertexts for each GPU.
-    challenges = [generate_cipher(node) for node in nodes]
+    challenges = await asyncio.gather(*[generate_cipher(node) for node in nodes])
 
     # See if they decrypt properly.
     successes = await asyncio.gather(

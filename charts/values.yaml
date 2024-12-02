@@ -95,19 +95,17 @@ forge:
               values: ["true"]
   tolerations: []
 
-graval:
+gravalWorker:
   replicas: 1
   image: parachutes/graval:latest
   imagePullPolicy: Always
   resources:
     requests:
       cpu: "1"
-      memory: "4Gi"
-      nvidia.com/gpu: "1"
+      memory: "1Gi"
     limits:
       cpu: "1"
-      memory: "4Gi"
-      nvidia.com/gpu: "1"
+      memory: "1Gi"
   nodeSelector: {}
   affinity:
     nodeAffinity:
@@ -115,7 +113,7 @@ graval:
           nodeSelectorTerms:
           - matchExpressions:
             - key: nvidia.com/gpu.present
-              operator: In
+              operator: NotIn
               values: ["true"]
   tolerations: []
 
@@ -181,7 +179,7 @@ metasync:
               values: ["true"]
   tolerations: []
 
-gravalProxy:
+graval:
   replicas: 1
   image: parachutes/graval:latest
   imagePullPolicy: Always

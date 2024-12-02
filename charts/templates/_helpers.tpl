@@ -18,8 +18,8 @@ app.kubernetes.io/name: graval
 redis-access: "true"
 {{- end }}
 
-{{- define "gravalProxy.labels" -}}
-app.kubernetes.io/name: graval-proxy
+{{- define "gravalWorker.labels" -}}
+app.kubernetes.io/name: graval-worker
 redis-access: "true"
 {{- end }}
 

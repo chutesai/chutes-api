@@ -1,7 +1,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: graval
+  name: graval-proxy
   labels:
     {{- include "graval.labels" . | nindent 4 }}
 spec:
@@ -27,11 +27,33 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
-        - name: graval
+        - name: graval-proxy
           image: "{{ .Values.graval.image }}"
           imagePullPolicy: {{ .Values.graval.imagePullPolicy }}
-          command: ["poetry", "run", "taskiq", "worker", "api.node.graval:broker", "--workers", "1", "--max-async-tasks", "1"]
+          command: ["poetry", "run", "python", "api/graval_server.py", "--port", "{{ .Values.graval.service.targetPort }}"]
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+          ports:
+            - name: graval-proxy
+              containerPort: {{ .Values.graval.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.graval.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.graval.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.graval.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.graval.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.graval.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.graval.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.graval.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.graval.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.graval.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.graval.readinessProbe.failureThreshold | default 3 }}
           resources:
             {{- toYaml .Values.graval.resources | nindent 12 }}

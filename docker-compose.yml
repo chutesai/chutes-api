@@ -89,8 +89,8 @@ services:
       - REGISTRY_INSECURE=true
       - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
       - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
-      # XXX uncomment to test the graval encryption proxy, requires GPU
-      # - GRAVAL_PROXY_URL=http://graval_proxy:9191/proxy
+      # XXX uncomment to test the graval encryption, requires GPU and to be started from docker-compose-gpu.yaml
+      - GRAVAL_URL=http://graval:9191
     restart: always
     ports:
       - "8000:8000"
@@ -106,7 +106,7 @@ services:
     build:
       context: .
       target: api
-    entrypoint: ["poetry", "run", "uvicorn", "api.socket:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
+    entrypoint: ["poetry", "run", "uvicorn", "api.socket_server:app", "--host", "0.0.0.0", "--port", "8080", "--reload"]
     volumes:
       - ./metasync:/app/metasync
       - ./api:/app/api
