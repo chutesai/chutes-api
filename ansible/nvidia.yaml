@@ -1,0 +1,14 @@
+- name: Install NVidia GPU Operator
+  hosts: primary
+  tasks:
+    - name: Install GPU Operator
+      shell: |
+        helm install gpu-operator nvidia/gpu-operator \
+          --namespace gpu-operator \
+          --create-namespace \
+          --set nodeSelector.kubernetes.io/gpu="true" \
+          --set driver.enabled=true \
+          --set toolkit.enabled=true \
+          --set devicePlugin.enabled=true \
+          --set operator.runtimeClass="nvidia-container-runtime" \
+          --set operator.defaultRuntime=containerd

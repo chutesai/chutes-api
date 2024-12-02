@@ -278,6 +278,31 @@
         dest: /etc/cni/net.d/05-cilium.conf
         mode: '0600'
 
+    - name: Configure wireguard IP for k8s comms
+      block:
+        - name: Get current kubelet args
+          slurp:
+            src: /var/snap/microk8s/current/args/kubelet
+          register: kubelet_args
+
+        - name: Check if node-ip is already configured
+          set_fact:
+            has_node_ip: "{{ (kubelet_args.content | b64decode) is regex('--node-ip=') }}"
+
+        - name: Add node-ip to kubelet args
+          lineinfile:
+            path: /var/snap/microk8s/current/args/kubelet
+            line: "--node-ip={{ wireguard_ip }}"
+            create: yes
+          when: not has_node_ip
+          register: kubelet_modified
+
+        - name: Restart kubelet if config changed
+          systemd:
+            name: snap.microk8s.daemon-kubelite
+            state: restarted
+          when: kubelet_modified.changed
+
     - name: Install kubernetes python package
       pip:
         name: kubernetes
@@ -350,42 +375,9 @@
       delay: 10
       ignore_errors: yes
 
-    - name: Enable NVidia GPU operator
-      shell: microk8s enable nvidia
-      when: gpu_enabled | bool
-
     - name: Label kubernetes node
       shell: |
         microk8s kubectl label nodes {{ inventory_hostname }} chutes/external-ip={{ external_ip }} --overwrite
-
-    - name: Fix NVidia cluster policy
-      when: gpu_enabled | bool
-      shell: |
-        sleep 15
-        microk8s enable nvidia || true
-        while ! microk8s kubectl get namespace gpu-operator-resources > /dev/null 2>&1; do
-          echo "Waiting for gpu-operator namespace to be created..."
-          sleep 5
-        done
-        while ! microk8s kubectl get clusterpolicy cluster-policy > /dev/null 2>&1; do
-          echo "Waiting for cluster-policy to be created..."
-          sleep 5
-        done
-        microk8s kubectl patch clusterpolicy cluster-policy --type=merge -p '
-        {
-          "spec": {
-            "validator": {
-              "driver": {
-                "env": [
-                  {
-                    "name": "DISABLE_DEV_CHAR_SYMLINK_CREATION",
-                    "value": "true"
-                  }
-                ]
-              }
-            }
-          }
-        }'
 
     - name: Configure seccomp for forge
       template:
