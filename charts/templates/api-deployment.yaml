@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "api.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.api.replicaCount }}
   selector:
     matchLabels:
       {{- include "api.labels" . | nindent 6 }}

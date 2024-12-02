@@ -468,12 +468,14 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: graval-proxy
+  name: graval
   labels:
     app.kubernetes.io/name: graval
     redis-access: "true"
 spec:
-  replicas: 1
+  replicas: 7
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: graval
@@ -493,8 +495,9 @@ spec:
                 operator: In
                 values:
                 - "true"
+      runtimeClassName: nvidia-container-runtime
       containers:
-        - name: graval-proxy
+        - name: graval
           image: "parachutes/graval:latest"
           imagePullPolicy: Always
           command: ["poetry", "run", "python", "api/graval_server.py", "--port", "8000", "--validator-whitelist", "5HNCJfK3PzFcNHmkdaWnHyw7hEvtNoM4SZpoqB6QchzpFxT5,5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY,5E1nK3myeWNWrmffVaH76f2mCFCbe9VcHGwgkfdcD7k3E8D1,5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2,5FFApaS75bv5pJHfAp2FVLBj9ZaXuFDjEypsaBNc1wCfe52v,5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp,5F2CsUDVbRbVMXTh9fAzF9GacjVX7UapvRxidrxe7z8BYckQ,5HYk8DMKWK8TJyPzZJ9vmZk7B5NPCgjnZoyZ1ZsB54RXdN47,5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe,5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT,5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY"]
@@ -557,7 +560,7 @@ spec:
             - name: REGISTRY_INSECURE
               value: "true"
           ports:
-            - name: graval-proxy
+            - name: http
               containerPort: 8000
               protocol: TCP
           livenessProbe:
@@ -592,7 +595,7 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: graval
+  name: graval-worker
   labels:
     app.kubernetes.io/name: graval-worker
     redis-access: "true"
@@ -617,8 +620,9 @@ spec:
                 operator: In
                 values:
                 - "true"
+      runtimeClassName: nvidia-container-runtime
       containers:
-        - name: graval
+        - name: graval-worker
           image: "parachutes/graval:latest"
           imagePullPolicy: Always
           command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]
@@ -700,6 +704,8 @@ metadata:
     redis-access: "true"
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: metasync
@@ -753,6 +759,8 @@ metadata:
     redis-access: "true"
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: payment-watcher

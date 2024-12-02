@@ -1,11 +1,11 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: graval
+  name: graval-worker
   labels:
     {{- include "gravalWorker.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.gravalWorker.replicaCount }}
   selector:
     matchLabels:
       {{- include "gravalWorker.labels" . | nindent 6 }}
@@ -26,8 +26,9 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      runtimeClassName: nvidia-container-runtime
       containers:
-        - name: graval
+        - name: graval-worker
           image: "{{ .Values.gravalWorker.image }}"
           imagePullPolicy: {{ .Values.gravalWorker.imagePullPolicy }}
           command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]

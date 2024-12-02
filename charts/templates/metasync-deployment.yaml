@@ -6,6 +6,8 @@ metadata:
     {{- include "metasync.labels" . | nindent 4 }}
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "metasync.labels" . | nindent 6 }}
