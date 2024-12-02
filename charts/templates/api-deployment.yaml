@@ -34,8 +34,8 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: GRAVAL_PROXY_URL
-              value: http://graval-proxy:{{ .Values.gravalProxy.service.port }}
+            - name: GRAVAL_URL
+              value: http://graval:{{ .Values.graval.service.port }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

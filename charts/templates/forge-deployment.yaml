@@ -14,9 +14,6 @@ spec:
       labels:
         {{- include "forge.labels" . | nindent 8 }}
     spec:
-      securityContext:
-        # Required for buildah operations
-        privileged: true
       containers:
         - name: forge
           image: "{{ .Values.forge.image }}"
@@ -32,6 +29,7 @@ spec:
             - name: PYTHONPATH
               value: "/forge"
           securityContext:
+            privileged: true
             capabilities:
               add:
                 - SETUID

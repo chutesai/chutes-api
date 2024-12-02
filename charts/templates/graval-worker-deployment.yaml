@@ -30,7 +30,7 @@ spec:
         - name: graval
           image: "{{ .Values.gravalWorker.image }}"
           imagePullPolicy: {{ .Values.gravalWorker.imagePullPolicy }}
-          command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]
+          command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
           resources:

@@ -42,7 +42,7 @@ app.kubernetes.io/name: registry
 {{- end }}
 
 {{- define "registryProxy.labels" -}}
-app.kubernetes.io/name: proxy
+app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
