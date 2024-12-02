@@ -29,7 +29,6 @@ from api.logo.router import router as logo_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
-from api.payment.util import ensure_wallet_key_exists
 
 
 @asynccontextmanager
@@ -75,9 +74,6 @@ async def lifespan(_: FastAPI):
         logger.success("successfull applied all DB migrations")
     else:
         logger.error(f"failed to run db migrations returncode={process.returncode}")
-
-    # Make sure we have an encryption key for payment wallet seeds.
-    ensure_wallet_key_exists()
 
     yield
 

@@ -1675,23 +1675,6 @@ files = [
 ]
 
 [[package]]
-name = "hvac"
-version = "2.3.0"
-description = "HashiCorp Vault API client"
-optional = false
-python-versions = "<4.0,>=3.8"
-files = [
-    {file = "hvac-2.3.0-py3-none-any.whl", hash = "sha256:a3afc5710760b6ee9b3571769df87a0333da45da05a5f9f963e1d3925a84be7d"},
-    {file = "hvac-2.3.0.tar.gz", hash = "sha256:1b85e3320e8642dd82f234db63253cda169a817589e823713dc5fca83119b1e2"},
-]
-
-[package.dependencies]
-requests = ">=2.27.1,<3.0.0"
-
-[package.extras]
-parser = ["pyhcl (>=0.4.4,<0.5.0)"]
-
-[[package]]
 name = "idna"
 version = "3.10"
 description = "Internationalized Domain Names in Applications (IDNA)"
@@ -4666,4 +4649,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "66a1561952780282098b4f0c5918548ce0a522162ff5135eb0cfa0bc5bef6180"
+content-hash = "8bf903d1fe69db08455014aad15a6f5c7051a6b7c5c7cfa4511de36c06b29031"

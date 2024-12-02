@@ -28,7 +28,6 @@ fickling = "^0.1.3"
 setuptools = "^75.3.0"
 substrate-interface = "^1.7.10"
 py-bip39-bindings = "^0.1.11"
-hvac = "^2.3.0"
 argon2-cffi = "^23.1.0"
 python-slugify = {extras = ["unidecode"], version = "^8.0.4"}
 async-lru = "^2.0.4"

@@ -9,7 +9,7 @@ from api.user.response import RegistrationResponse
 from api.user.service import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
-from api.user.util import validate_the_username
+from api.user.util import validate_the_username, generate_payment_address
 from sqlalchemy import select
 
 router = APIRouter()
@@ -57,6 +57,7 @@ async def register(
         coldkey=user_args.coldkey,
         hotkey=hotkey,
     )
+    user.payment_address, user.wallet_secret = await generate_payment_address()
     db.add(user)
     await db.commit()
     await db.refresh(user)

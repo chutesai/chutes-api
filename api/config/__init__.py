@@ -3,7 +3,6 @@ Application-wide settings.
 """
 
 import os
-import hvac
 import aioboto3
 import redis.asyncio as redis
 from boto3.session import Config
@@ -42,11 +41,11 @@ class Settings(BaseSettings):
         ) as client:
             yield client
 
-    wallet_iv: str = os.getenv("WALLET_IV")
-    vault_client: hvac.Client = hvac.Client(
-        url=os.getenv("VAULT_URL", "http://vault:777"),
-        token=os.getenv("VAULT_TOKEN", "supersecrettoken"),
+    wallet_key: Optional[str] = os.getenv(
+        "WALLET_KEY", "967fcf63799171672b6b66dfe30d8cd678c8bc6fb44806f0cdba3d873b3dd60b"
     )
+    pg_encryption_key: Optional[str] = os.getenv("PG_ENCRYPTION_KEY", "secret")
+
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     validator_keypair: Optional[Keypair] = (
         Keypair.create_from_seed(os.environ["VALIDATOR_SEED"])

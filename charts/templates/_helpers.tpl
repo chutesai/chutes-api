@@ -51,21 +51,16 @@ app.kubernetes.io/name: proxy
     secretKeyRef:
       name: validator-credentials
       key: seed
-- name: WALLET_IV
+- name: WALLET_KEY
   valueFrom:
     secretKeyRef:
-      name: vault-secret
-      key: iv
-- name: VAULT_URL
+      name: wallet-secret
+      key: wallet-key
+- name: PG_ENCRYPTION_KEY
   valueFrom:
     secretKeyRef:
-      name: vault-secret
-      key: url
-- name: VAULT_TOKEN
-  valueFrom:
-    secretKeyRef:
-      name: vault-secret
-      key: token
+      name: wallet-secret
+      key: pg-key
 {{- end }}
 
 {{- define "chutes.commonEnv" -}}

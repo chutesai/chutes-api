@@ -89,7 +89,6 @@ services:
       - REGISTRY_INSECURE=true
       - VALIDATOR_SS58=5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4
       - VALIDATOR_SEED=971c2a6674d0861ade72297d11110ce21c93734210527c8f4c9190c00139ce20
-      - WALLET_IV=9e4b84233f791765f982780f519d4862
       # XXX uncomment to test the graval encryption proxy, requires GPU
       # - GRAVAL_PROXY_URL=http://graval_proxy:9191/proxy
     restart: always
@@ -100,7 +99,6 @@ services:
       - redis
       - minio
       - registry
-      - vault
     networks:
       - chutes
 
@@ -134,7 +132,6 @@ services:
       - redis
       - minio
       - registry
-      - vault
     networks:
       - chutes
 
@@ -155,7 +152,6 @@ services:
       - STORAGE_BUCKET=chutes
       - REGISTRY_PASSWORD=registry
       - REGISTRY_INSECURE=true
-      - WALLET_IV=9e4b84233f791765f982780f519d4862
     entrypoint: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "8222", "--reload"]
     ports:
       - "8222:8222"
@@ -221,32 +217,10 @@ services:
     networks:
       - chutes
 
-  vault:
-    image: vault:1.13.3
-    ports:
-      - "777:777"
-    environment:
-      - VAULT_DEV_ROOT_TOKEN_ID=supersecrettoken
-      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:777
-    cap_add:
-      - IPC_LOCK
-    volumes:
-      - vault_data:/vault/data
-    restart: always
-    command: vault server -dev
-    healthcheck:
-      test: ["CMD", "vault", "status"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    networks:
-      - chutes
-
 volumes:
   postgres_data:
   minio_data:
   kube_config:
-  vault_data:
 
 networks:
   chutes:

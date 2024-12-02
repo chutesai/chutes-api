@@ -8,6 +8,7 @@ import uvicorn
 import asyncio
 import random
 import pybase64 as base64
+from typing import Optional
 from loguru import logger
 from sqlalchemy import select
 from pydantic import BaseModel
@@ -32,9 +33,9 @@ class Cipher(BaseModel):
 class Invocation(BaseModel):
     args: str
     kwargs: str
-    path: str
-    stream: bool
     instance_id: str
+    path: Optional[str] = None
+    stream: Optional[bool] = False
 
 
 def main():
@@ -55,18 +56,12 @@ def main():
         version="0.0.1",
     )
 
-    @app.post("/proxy")
-    async def proxy_request(invocation: Invocation):
-        """
-        Proxy a single request upstream to an instance, adding encryption.
-        """
-        logger.debug(f"Received invocation request: {invocation}")
-        # Load the instance (for host, port, and device info).
+    async def _get_instance(instance_id: str) -> Optional[Instance]:
         async with get_session() as session:
             instance = (
                 (
                     await session.execute(
-                        select(Instance).filter(Instance.instance_id == invocation.instance_id)
+                        select(Instance).filter(Instance.instance_id == instance_id)
                     )
                 )
                 .unique()
@@ -75,11 +70,11 @@ def main():
             if not instance:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"{invocation.instance_id=} not found",
+                    detail=f"{instance_id=} not found",
                 )
-            device_dicts = [node.graval_dict() for node in instance.nodes]
 
-        # Encrypt.
+    async def _encrypt(instance, invocation):
+        device_dicts = [node.graval_dict() for node in instance.nodes]
         async with gpu_lock:
             target_index = random.randint(0, len(device_dicts) - 1)
             target_device = device_dicts[target_index]
@@ -94,6 +89,25 @@ def main():
                     device_id=target_index,
                     seed=seed,
                 ).dict()
+        return encrypted
+
+    @app.post("/encrypt")
+    async def encrypt(invocation: Invocation):
+        """
+        Encrypt a request, without proxying.
+        """
+        logger.debug(f"Received invocation request: {invocation}")
+        async with _get_instance(invocation.instance_id) as instance:
+            return await _encrypt(instance, invocation)
+
+    @app.post("/proxy")
+    async def proxy_request(invocation: Invocation):
+        """
+        Proxy a single request upstream to an instance, adding encryption.
+        """
+        logger.debug(f"Received invocation request: {invocation}")
+        async with _get_instance(invocation.instance_id) as instance:
+            encrypted = await _encrypt(instance, invocation)
 
         # Decrypt response.
         async def _response_iterator():
