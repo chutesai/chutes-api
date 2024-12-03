@@ -226,20 +226,35 @@
         name: wireguard
         state: present
 
+    - name: Check if Wireguard private key exists
+      stat:
+        path: /etc/wireguard/private.key
+      register: wg_private_exists
+
     - name: Generate Wireguard private key
       shell: wg genkey > /etc/wireguard/private.key
       args:
         creates: /etc/wireguard/private.key
+      when: not wg_private_exists.stat.exists
+      register: wg_key_created
 
     - name: Set private key permissions
       file:
         path: /etc/wireguard/private.key
         mode: '0600'
+      when: wg_key_created.changed
 
     - name: Generate public key from private key
       shell: cat /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
       args:
         creates: /etc/wireguard/public.key
+      when: wg_key_created.changed
+
+    - name: Set public key permissions
+      file:
+        path: /etc/wireguard/public.key
+        mode: '0600'
+      when: wg_key_created.changed
 
     - name: Get public keys
       slurp:
@@ -262,6 +277,7 @@
         src: wg0-primary.conf.j2
         dest: /etc/wireguard/wg0.conf
         mode: '0600'
+      register: wireguard_primary
 
     - name: Create Wireguard config for worker
       when: not is_primary | bool
@@ -269,6 +285,7 @@
         src: wg0-worker.conf.j2
         dest: /etc/wireguard/wg0.conf
         mode: '0600'
+      register: wireguard_secondary
 
     - name: Enable and start Wireguard
       systemd:
@@ -283,7 +300,13 @@
         classic: yes
 
     - name: Start MicroK8s
-      shell: microk8s start
+      shell: microk8s status | grep "microk8s is running" || microk8s start
+      changed_when: false
+
+    - name: Check if plugins are enabled
+      shell: microk8s status | grep -E "dns|hostpath-storage|cilium|acting as a node in a cluster"
+      register: plugins_check
+      changed_when: false
       ignore_errors: yes
 
     - name: Enable MicroK8s plugins
@@ -295,12 +318,15 @@
         microk8s disable calico
         microk8s enable cilium
       ignore_errors: yes
+      when: plugins_check.failed
+      register: plugins_enabled
 
     - name: Configure CNI
       template:
         src: cilium.conf.j2
         dest: /etc/cni/net.d/05-cilium.conf
         mode: '0600'
+      register: cni_updated
 
     - name: Configure wireguard IP for k8s comms
       block:
@@ -341,12 +367,6 @@
             groups: microk8s
             append: yes
 
-        - name: Add user to microk8s group
-          user:
-            name: "{{ ansible_username }}"
-            groups: microk8s
-            append: yes
-
         - name: Ensure .kube directory exists for user
           file:
             path: "/home/{{ username }}/.kube"
@@ -367,22 +387,36 @@
             owner: "{{ username }}"
             group: "{{ username }}"
 
-    - name: Install Helm
+    - name: Check if helm is installed
+      command: which helm
+      register: helm_check
+      ignore_errors: yes
+      changed_when: false
+
+    - name: Install Helm if needed
       block:
-        - name: Download Helm installation script
-          get_url:
+        - get_url:
             url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
             dest: /tmp/get_helm.sh
             mode: '0700'
+        - shell: /tmp/get_helm.sh
+      when: helm_check.rc != 0
 
-        - name: Install Helm
-          shell: /tmp/get_helm.sh
+    - name: Check if NVIDIA repo exists
+      shell: helm repo list | grep nvidia
+      register: nvidia_repo_check
+      ignore_errors: yes
+      changed_when: false
 
-        - name: Add NVIDIA Helm repository
-          shell: |
-            helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
-            helm repo update
-          when: enable_gpu | bool
+    - name: Add NVIDIA Helm repository
+      shell: |
+        helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+        helm repo update
+      when: enable_gpu | bool and nvidia_repo_check.rc != 0
+
+    - name: Restart Wireguard if config changed
+      shell: wg-quick down wg0; wg-quick up wg0
+      when: wireguard_primary.changed or wireguard_secondary.changed
 
     - name: Reboot
       reboot:
@@ -393,18 +427,26 @@
         pre_reboot_delay: 0
         post_reboot_delay: 30
         test_command: uptime
+        when: gpu_setup.changed or plugins_enabled.changed or cni_updated.changed
+        register: rebooted
 
     - name: Wait for system to be ready
       wait_for_connection:
         timeout: 600
+      when: rebooted.changed
+
+    - name: Set hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
 
     - name: Wait for microk8s to be ready
-      shell: microk8s status | grep "microk8s is running"
+      shell: microk8s status | grep -E "microk8s is running|acting as a node in a cluster"
       register: result
       until: result.rc == 0
       retries: 30
       delay: 10
       ignore_errors: yes
+      when: reboot.changed
 
     - name: Label kubernetes node
       shell: |
