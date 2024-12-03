@@ -1,6 +1,13 @@
 - name: Get join command from primary node
   hosts: all
   tasks:
+    - name: Check if node is already part of cluster
+      shell: microk8s status | grep "acting as a node in a cluster"
+      register: cluster_check
+      failed_when: false
+      changed_when: false
+      when: not is_primary | bool
+
     - name: Get cluster join command
       shell: microk8s add-node
       register: join_command
@@ -23,15 +30,17 @@
   tasks:
     - name: Join cluster as secondary node
       shell: "{{ hostvars['localhost']['join_command'] }}"
-      when: 
+      when:
         - not is_primary | bool
         - not gpu_enabled | bool
+        - cluster_check.rc != 0
 
 - name: Join worker nodes to cluster
   hosts: all
   tasks:
     - name: Join cluster as worker node
       shell: "{{ hostvars['localhost']['join_command'] | replace('\n', '') }} --worker --skip-verify"
-      when: 
+      when:
         - not is_primary | bool
         - gpu_enabled | bool
+        - cluster_check.rc != 0

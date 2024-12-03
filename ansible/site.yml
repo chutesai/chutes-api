@@ -427,8 +427,8 @@
         pre_reboot_delay: 0
         post_reboot_delay: 30
         test_command: uptime
-        when: gpu_setup.changed or plugins_enabled.changed or cni_updated.changed
-        register: rebooted
+      when: gpu_setup.changed or plugins_enabled.changed or cni_updated.changed
+      register: rebooted
 
     - name: Wait for system to be ready
       wait_for_connection:
