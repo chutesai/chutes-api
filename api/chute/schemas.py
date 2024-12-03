@@ -34,7 +34,6 @@ class NodeSelector(BaseModel):
     min_vram_gb_per_gpu: Optional[int] = Field(16, ge=16, le=80)
     exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
-    require_sxm: Optional[bool] = False
 
     @validator("include")
     def include_supported_gpus(cls, gpus):
@@ -122,8 +121,6 @@ class NodeSelector(BaseModel):
                     if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
                 ]
             )
-        if self.require_sxm:
-            allowed_gpus = set([gpu for gpu in allowed_gpus if SUPPORTED_GPUS[gpu]["sxm"]])
         return list(allowed_gpus)
 
 

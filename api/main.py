@@ -45,7 +45,7 @@ async def lifespan(_: FastAPI):
 
     # NOTE: Could we use dbmate container in docker compose to do this instead?
     # Manual DB migrations.
-    db_url = quote(settings.sqlalchemy.replace("+asyncpg", ""), safe=':/@')
+    db_url = quote(settings.sqlalchemy.replace("+asyncpg", ""), safe=":/@")
     if "127.0.0.1" in db_url or "@postgres:" in db_url:
         db_url += "?sslmode=disable"
     process = await asyncio.create_subprocess_exec(

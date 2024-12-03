@@ -6,7 +6,6 @@
     ssh_public_key: "{{ ssh_key }}"
     microk8s_channel: "1.31/stable"
     enable_gpu: "{{ gpu_enabled | default(false) }}"
-    is_control_plane: "{{ control_plane | default(false) }}"
 
   tasks:
     - name: Set environment variables
@@ -142,6 +141,7 @@
           echo "$PKGS" | xargs dpkg --purge
         fi
       ignore_errors: yes
+      register: gpu_setup
       when: (gpu_enabled | bool) and (cuda_check.failed or cuda_check.changed)
 
     - name: GPU Setup Tasks
@@ -363,9 +363,12 @@
       block:
         - name: Add user to microk8s group
           user:
-            name: "{{ username }}"
+            name: "{{ item }}"
             groups: microk8s
             append: yes
+          with_items:
+            - "{{ username }}"
+            - "{{ ansible_user }}"
 
         - name: Ensure .kube directory exists for user
           file:
@@ -446,7 +449,7 @@
       retries: 30
       delay: 10
       ignore_errors: yes
-      when: reboot.changed
+      when: rebooted.changed
 
     - name: Label kubernetes node
       shell: |

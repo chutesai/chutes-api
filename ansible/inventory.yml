@@ -1,31 +1,20 @@
 all:
   hosts:
-    cpu-node-0:
-      ansible_host: 0.1.2.3
-      external_ip: 0.1.2.3
+    chutes-prod-0:
+      ansible_host: 1.2.3.4
+      external_ip: 1.2.3.4
+      wireguard_ip: 192.168.0.1
       ansible_user: ubuntu
-      user: billybob
-      gpu_enabled: true
-      ssh_key: "ssh-rsa AAAA... billybob@machine"
-      validator: "5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4"
-    gpu-node-0:
+      user: jdurbin
+      gpu_enabled: false
+      is_primary: true
+      ssh_key: "ssh-rsa A... foo@bar"
+    chutes-prod-gpu-0:
       ansible_host: 4.5.6.7
       external_ip: 4.5.6.7
+      wireguard_ip: 192.168.0.2
       ansible_user: ubuntu
-      user: billybob
+      user: jdurbin
       gpu_enabled: true
-      ssh_key: "ssh-rsa AAAA... billybob@machine"
-      validator: "5DCJTfVx3ReNyxW3SgQEKFgvXFuqnK3BNW1vMhTQK4jdZbV4"
-
-  children:
-    k8s_cluster:
-      children:
-        primary:
-          hosts:
-            cpu-node-0:
-              ansible_host: 0.1.2.3
-        secondary: {}
-        workers:
-          hosts:
-            gpu-node-0:
-              ansible_host: 1.2.3.4
+      is_primary: false
+      ssh_key: "ssh-rsa A.. foo@bar"
