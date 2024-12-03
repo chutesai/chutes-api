@@ -1,5 +1,5 @@
 - name: Install NVidia GPU Operator
-  hosts: primary
+  hosts: all
   tasks:
     - name: Install GPU Operator
       shell: |
@@ -11,13 +11,17 @@
           --set toolkit.enabled=true \
           --set devicePlugin.enabled=true \
           --set operator.runtimeClass="nvidia-container-runtime" \
-          --set operator.defaultRuntime=containerd
+          --set operator.defaultRuntime=containerd \
+          --insecure-skip-tls-verify \
+          --kube-insecure-skip-tls-verify
+      when: is_primary | bool
 
 - name: Install Prometheus
-  hosts: primary
+  hosts: all
   tasks:
     - name: Install Prometheus
       shell: |
         microk8s helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
         microk8s helm repo update
-        microk8s helm install prometheus prometheus-community/prometheus --namespace chutes --create-namespace
+        microk8s helm install prometheus prometheus-community/prometheus --namespace chutes --create-namespace --insecure-skip-tls-verify --kube-insecure-skip-tls-verify
+      when: is_primary | bool

@@ -101,6 +101,30 @@
         path: /usr/bin/vim
         priority: 1
 
+    - name: Get list of installed lambda packages
+      shell: dpkg --list | grep lambda | awk '{print $2}'
+      register: lambda_packages
+      changed_when: false
+
+    - name: Check if lambda version file exists
+      stat:
+        path: /etc/lambda-version
+      register: lambda_version_file
+
+    - name: Check if another lambda package file exists, backup
+      stat:
+        path: /etc/systemd/system/lambda-jupyter.service
+      register: lambda_file_backup
+
+    - name: Remove lambda packages
+      apt:
+        name: "{{ lambda_packages.stdout_lines }}"
+        state: absent
+        purge: yes
+      when:
+        - lambda_version_file.stat.exists or lambda_file_backup.stat.exists
+        - lambda_packages.stdout_lines | length > 0
+
     - name: Check CUDA installation
       apt:
         name: cuda-toolkit-12-6
@@ -317,6 +341,12 @@
             groups: microk8s
             append: yes
 
+        - name: Add user to microk8s group
+          user:
+            name: "{{ ansible_username }}"
+            groups: microk8s
+            append: yes
+
         - name: Ensure .kube directory exists for user
           file:
             path: "/home/{{ username }}/.kube"
@@ -357,6 +387,7 @@
     - name: Reboot
       reboot:
         msg: "Rebooting..."
+        reboot_command: "reboot"
         connect_timeout: 5
         reboot_timeout: 600
         pre_reboot_delay: 0

@@ -1,30 +1,37 @@
 - name: Get join command from primary node
-  hosts: primary
+  hosts: all
   tasks:
     - name: Get cluster join command
       shell: microk8s add-node
       register: join_command
+      when: is_primary | bool
 
     - name: Extract join string
       set_fact:
         join_string: "{{ join_command.stdout | regex_search('microk8s join 192.168[^ ]+') }}"
+      when: is_primary | bool
 
     - name: Share join command with other plays
       set_fact:
         join_command: "{{ join_string }}"
       delegate_to: localhost
       delegate_facts: true
+      when: is_primary | bool
 
 - name: Join secondary CPU only nodes to cluster
-  hosts: secondary
+  hosts: all
   tasks:
-    - name: Join cluster
+    - name: Join cluster as secondary node
       shell: "{{ hostvars['localhost']['join_command'] }}"
-      ignore_errors: yes
+      when: 
+        - not is_primary | bool
+        - not gpu_enabled | bool
 
 - name: Join worker nodes to cluster
-  hosts: workers
+  hosts: all
   tasks:
-    - name: Join cluster
+    - name: Join cluster as worker node
       shell: "{{ hostvars['localhost']['join_command'] | replace('\n', '') }} --worker --skip-verify"
-      ignore_errors: yes
+      when: 
+        - not is_primary | bool
+        - gpu_enabled | bool

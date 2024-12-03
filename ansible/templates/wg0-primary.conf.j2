@@ -3,16 +3,20 @@ PrivateKey = {{ wg_private_key }}
 Address = 192.168.0.1/20
 ListenPort = 51820
 
-{% for host in groups['secondary'] %}
+{% for host in hostvars %}
+{% if not hostvars[host]['is_primary']|bool and not hostvars[host]['gpu_enabled']|bool %}
 [Peer]
 PublicKey = {{ hostvars[host]['wg_public_key'] }}
 AllowedIPs = {{ hostvars[host]['wireguard_ip'] }}/32, 10.1.0.0/16
 Endpoint = {{ hostvars[host]['external_ip'] }}:51820
+{% endif %}
 {% endfor %}
 
-{% for host in groups['workers'] %}
+{% for host in hostvars %}
+{% if not hostvars[host]['is_primary']|bool and hostvars[host]['gpu_enabled']|bool %}
 [Peer]
 PublicKey = {{ hostvars[host]['wg_public_key'] }}
 AllowedIPs = {{ hostvars[host]['wireguard_ip'] }}/32, 10.1.0.0/16
 Endpoint = {{ hostvars[host]['external_ip'] }}:51820
+{% endif %}
 {% endfor %}

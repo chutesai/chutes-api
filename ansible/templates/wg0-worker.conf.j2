@@ -4,8 +4,12 @@ Address = {{ wireguard_ip }}/20
 ListenPort = 51820
 MTU = 1420
 
+{% for host in hostvars %}
+{% if hostvars[host]['is_primary']|bool %}
 [Peer]
-PublicKey = {{ hostvars[groups['primary'][0]]['wg_public_key'] }}
+PublicKey = {{ hostvars[host]['wg_public_key'] }}
 AllowedIPs = 192.168.0.0/20, 10.1.0.0/16
-Endpoint = {{ hostvars[groups['primary'][0]]['external_ip'] }}:51820
+Endpoint = {{ hostvars[host]['external_ip'] }}:51820
 PersistentKeepalive = 25
+{% endif %}
+{% endfor %}
