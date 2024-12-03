@@ -81,11 +81,11 @@ forge:
   imagePullPolicy: Always
   resources:
     requests:
-      cpu: "1"
-      memory: "8Gi"
+      cpu: "4"
+      memory: "32Gi"
     limits:
-      cpu: "1"
-      memory: "8Gi"
+      cpu: "4"
+      memory: "32Gi"
   nodeSelector: {}
   affinity:
     nodeAffinity:
@@ -95,6 +95,18 @@ forge:
             - key: nvidia.com/gpu.present
               operator: NotIn
               values: ["true"]
+  volumes:
+    - name: images0
+      emptyDir:
+        sizeLimit: 500Gi
+    - name: images1
+      emptyDir:
+        sizeLimit: 500Gi
+  volumeMounts:
+    - mountPath: /usr/lib/containers/storage
+      name: images0
+    - mountPath: /var/lib/shared
+      name: images1
   tolerations: []
 
 gravalWorker:

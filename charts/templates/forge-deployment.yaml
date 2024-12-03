@@ -28,6 +28,20 @@ spec:
               value: "chroot"
             - name: PYTHONPATH
               value: "/forge"
+            - name: BUILDAH_PARALLEL_PULL
+              value: "1"
+            - name: BUILDAH_LAYERS_PARALLEL_PULL
+              value: "1"
+            - name: BUILDAH_PULL_JOBS
+              value: "16"
+            - name: BUILDAH_PROGRESS
+              value: plain
+            - name: BUILDAH_PARALLEL_PUSH
+              value: "1"
+            - name: BUILDAH_LAYERS_PARALLEL_PUSH
+              value: "1"
+            - name: BUILDAH_PUSH_JOBS
+              value: "16"
           securityContext:
             privileged: true
             capabilities:
