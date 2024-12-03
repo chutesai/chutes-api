@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "paymentWatcher.labels" . | nindent 4 }}
 spec:
-  type: NodePort
+  type: {{ .Values.paymentWatcher.service.type }}
   ports:
     - nodePort: {{ .Values.paymentWatcher.service.nodePort }}
       port: {{ .Values.paymentWatcher.service.port }}

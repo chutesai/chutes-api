@@ -144,8 +144,7 @@ paymentWatcher:
       cpu: "1"
       memory: "8Gi"
   service:
-    type: NodePort
-    nodePort: 32002
+    type: ClusterIP
     port: 8000
     targetPort: 8000
   nodeSelector: {}
@@ -222,6 +221,7 @@ graval:
     type: ClusterIP
     port: 8000
     targetPort: 8000
+    nodePort: 32002
   nodeSelector: {}
   affinity:
     nodeAffinity:
