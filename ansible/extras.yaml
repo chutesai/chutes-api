@@ -12,3 +12,12 @@
           --set devicePlugin.enabled=true \
           --set operator.runtimeClass="nvidia-container-runtime" \
           --set operator.defaultRuntime=containerd
+
+- name: Install Prometheus
+  hosts: primary
+  tasks:
+    - name: Install Prometheus
+      shell: |
+        microk8s helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        microk8s helm repo update
+        microk8s helm install prometheus prometheus-community/prometheus --namespace chutes --create-namespace
