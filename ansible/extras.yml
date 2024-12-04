@@ -38,5 +38,13 @@
       shell: |
         microk8s helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
         microk8s helm repo update
-        microk8s helm install prometheus prometheus-community/prometheus --namespace chutes --create-namespace --insecure-skip-tls-verify --kube-insecure-skip-tls-verify
+        microk8s helm install prometheus prometheus-community/prometheus \
+          --namespace chutes \
+          --create-namespace \
+          --set server.persistentVolume.enabled=false \
+          --set alertmanager.persistentVolume.enabled=false \
+          --set prometheus-pushgateway.persistentVolume.enabled=false \
+          --set prometheus-server.persistentVolume.enabled=false \
+          --set alertmanager.persistence.enabled=false \
+          --insecure-skip-tls-verify --kube-insecure-skip-tls-verify
       when: is_primary | bool
