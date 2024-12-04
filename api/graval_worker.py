@@ -7,7 +7,6 @@ import aiohttp
 import uuid
 import traceback
 import backoff
-from functools import lru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
@@ -16,7 +15,6 @@ from api.database import get_session
 from api.node.schemas import Node
 from sqlalchemy import update, func
 from sqlalchemy.future import select
-from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 import api.database.orms  # noqa
 import api.miner_client as miner_client
@@ -24,13 +22,6 @@ import api.miner_client as miner_client
 broker = ListQueueBroker(url=settings.redis_url, queue_name="graval").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
 )
-
-
-@lru_cache(maxsize=1)
-def validator():
-    from graval.validator import Validator
-
-    return Validator()
 
 
 class CipherChallenge(BaseModel):
@@ -41,12 +32,46 @@ class CipherChallenge(BaseModel):
     seed: int
 
 
-@broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def initialize_graval(*_, **__):
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=10,
+    max_tries=7,
+)
+async def generate_device_info_challenge(device_count: int):
     """
-    Initialize the GraVal validator instance.
+    Generate a device info challenge.
     """
-    validator().initialize()
+    async with aiohttp.ClientSession(raise_for_status=True) as session:
+        async with session.get(
+            f"{settings.graval_url}/device_challenge",
+            params={"device_count": str(device_count)},
+        ) as resp:
+            return (await resp.json())["challenge"]
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=10,
+    max_tries=7,
+)
+async def verify_device_info_challenge(devices, challenge, response):
+    """
+    Verify a device info challenge.
+    """
+    async with aiohttp.ClientSession(raise_for_status=True) as session:
+        async with session.post(
+            f"{settings.graval_url}/verify_device_challenge",
+            json={
+                "devices": devices,
+                "challenge": challenge,
+                "response": response,
+            },
+        ) as resp:
+            return (await resp.json())["result"]
 
 
 @backoff.on_exception(
@@ -125,7 +150,7 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
     url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
     error_message = None
     try:
-        challenge = validator().generate_device_info_challenge(len(nodes))
+        challenge = await generate_device_info_challenge(len(nodes))
         async with miner_client.get(
             nodes[0].miner_hotkey,
             url,
@@ -137,8 +162,10 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
                 error_message = f"Failed to perform device info challenge: {response.status=} {await response.text()}"
             else:
                 response = await response.text()
-                assert validator().verify_device_info_challenge(
-                    challenge, response, [node.graval_dict() for node in nodes]
+                assert verify_device_info_challenge(
+                    [node.graval_dict() for node in nodes],
+                    challenge,
+                    response,
                 )
     except Exception as exc:
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc} {traceback.format_exc()}"

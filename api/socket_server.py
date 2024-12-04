@@ -168,7 +168,9 @@ async def authenticate(session_id: str, headers: Dict[str, str]) -> bool:
     """
     try:
         request = SyntheticRequest(headers)
-        _ = await get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="sockets")(
+        _ = await get_current_user(
+            raise_not_found=False, registered_to=settings.netuid, purpose="sockets"
+        )(
             request=request,
             hotkey=headers.get(cst.HOTKEY_HEADER),
             signature=headers.get(cst.SIGNATURE_HEADER),

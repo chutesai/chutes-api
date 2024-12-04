@@ -131,6 +131,36 @@ def main():
                 )
         return encrypted_payload
 
+    @app.get("/device_challenge")
+    async def generate_device_info_challenge(request: Request, device_count: int = 1):
+        x_forwarded_for = request.headers.get("X-Forwarded-For")
+        actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+        ip = ip_address(actual_ip)
+        is_private = ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        if not is_private:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="go away")
+        return {
+            "challenge": validator.generate_device_info_challenge(device_count),
+        }
+
+    @app.post("/verify_device_challenge")
+    async def verify_device_info_challenge(request: Request):
+        """
+        Verify a device info challenge.
+        """
+        data = await request.json()
+        x_forwarded_for = request.headers.get("X-Forwarded-For")
+        actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+        ip = ip_address(actual_ip)
+        is_private = ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        if not is_private:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="go away")
+        devices = data["devices"]
+        challenge = data["challenge"]
+        response = data["response"]
+        async with gpu_lock:
+            return {"result": validator.verify_device_info_challenge(challenge, response, devices)}
+
     @app.get("/ping")
     async def ping():
         return "pong"
