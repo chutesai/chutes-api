@@ -163,14 +163,8 @@ async def build_and_push_image(image):
     logger.info("Scanning image with trivy...")
     try:
         process = await asyncio.create_subprocess_exec(
-            "trivy",
-            "image",
-            "--scanners",
-            "vuln,malware",
-            "--severity",
-            "HIGH,CRITICAL",
-            "--exit-code",
-            "1",
+            "bash",
+            "/usr/local/bin/triby_scan.sh",
             short_tag,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

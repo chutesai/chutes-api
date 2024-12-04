@@ -26,6 +26,7 @@ ENV PATH=$PATH:/root/.local/bin
 RUN poetry install
 ADD data/buildah_cleanup.sh /usr/local/bin/buildah_cleanup.sh
 ADD data/generate_fs_challenge.sh /usr/local/bin/generate_fs_challenge.sh
+ADD data/trivy_scan.sh /usr/local/bin/trivy_scan.sh
 ADD . /forge
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
 

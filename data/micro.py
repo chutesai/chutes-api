@@ -6,14 +6,8 @@ from chutes.image import Image
 from chutes.chute import Chute, NodeSelector
 
 image = (
-     Image(username="test", name="base-python", tag="3.12.7", readme="## Base image with cuda and python 3.12.7")
-    .with_python("3.12.7")
-    .apt_install(["google-perftools", "git"])
-    .run_command("useradd chutes -s /sbin/nologin")
-    .run_command("mkdir -p /app /home/chutes && chown chutes:chutes /app /home/chutes")
-    .set_user("chutes")
-    .set_workdir("/app")
-    .with_env("PATH", "/opt/python/bin:/home/chutes/.local/bin:$PATH")
+    Image(username="chutes", name="micro", tag="test0", readme="## Base image with cuda and python 3.12.7")
+    .from_base("parachutes/base-python:3.12.7")
     .add("parachute.png", "/app/parachute.png")
 )
 
