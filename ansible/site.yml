@@ -197,17 +197,6 @@
               ln -sf $i /dev/char/$MAJ:$MIN
             done
 
-        - name: Install NVIDIA Container Toolkit
-          apt:
-            name: nvidia-container-toolkit
-            state: present
-
-        - name: Configure NVIDIA Container Toolkit
-          shell: |
-            nvidia-ctk runtime configure --runtime=docker --set-as-default
-            nvidia-ctk runtime configure --runtime=containerd --set-as-default
-            nvidia-ctk runtime configure --runtime=crio --set-as-default --config=/etc/crio/crio.conf.d/99-nvidia.conf
-
     - name: Configure file limits
       blockinfile:
         path: /etc/security/limits.conf
@@ -301,6 +290,10 @@
         channel: "{{ microk8s_channel }}"
         classic: yes
 
+    - name: Start MicroK8s
+      shell: microk8s status | grep "microk8s is running" || microk8s start
+      changed_when: false
+
     - name: Configure CNI
       template:
         src: cilium.conf.j2
@@ -308,9 +301,11 @@
         mode: '0600'
       register: cni_updated
 
-    - name: Start MicroK8s
-      shell: microk8s status | grep "microk8s is running" || microk8s start
-      changed_when: false
+    - name: Enable cilium
+      shell: |
+        microk8s enable community || (sleep 10 && microk8s enable community) || true
+        microk8s enable cilium || (sleep 10 && microk8s enable cilium) || true
+      when: cni_updated.changed
 
     - name: Configure wireguard IP for k8s comms
       block:
@@ -336,12 +331,6 @@
             name: snap.microk8s.daemon-kubelite
             state: restarted
           when: kubelet_modified.changed
-
-    - name: Enable cilium
-      shell: |
-        microk8s enable community || (sleep 10 && microk8s enable community) || true
-        microk8s enable cilium || (sleep 10 && microk8s enable cilium) || true
-      when: cni_updated.changed
 
     - name: Install kubernetes python package
       pip:
@@ -413,3 +402,33 @@
       delay: 10
       ignore_errors: yes
       when: rebooted.changed
+
+    - name: Install NVIDIA Container Toolkit
+      apt:
+        name: nvidia-container-toolkit
+        state: present
+
+    - name: Configure NVIDIA Container Toolkit
+      shell: |
+        nvidia-ctk runtime configure --runtime=docker --set-as-default
+        nvidia-ctk runtime configure --runtime=containerd --set-as-default
+        nvidia-ctk runtime configure --runtime=crio --set-as-default --config=/etc/crio/crio.conf.d/99-nvidia.conf
+      register: container_runtime
+      when: gpu_enabled | bool
+
+    - name: Find all microk8s services
+      shell: systemctl list-units --full --all "snap.microk8s.*" --plain --no-legend | awk '{print $1}'
+      register: microk8s_services
+
+    - name: Restart all microk8s services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+      loop: "{{ microk8s_services.stdout_lines }}"
+      when: container_runtime.changed
+
+    - name: Restart Docker service
+      systemd:
+        name: docker
+        state: restarted
+      when: container_runtime.changed
