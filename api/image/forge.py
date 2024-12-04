@@ -130,6 +130,65 @@ async def build_and_push_image(image):
         await process.communicate()
         raise BuildTimeout(message)
 
+    # Scan with trivy.
+    await settings.redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {
+            "data": json.dumps(
+                {"log_type": "stdout", "log": "scanning image with trivy..."}
+            ).decode()
+        },
+    )
+    logger.info("Scanning image with trivy...")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "trivy",
+            "image",
+            "--scanners",
+            "vuln,malware",
+            "--severity",
+            "HIGH,CRITICAL",
+            "--exit-code",
+            "1",
+            short_tag,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=300,
+        )
+        if process.returncode == 0:
+            message = f"No HIGH|CRITICAL vulnerabilities detected in {short_tag}"
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+            )
+            logger.success(message)
+        else:
+            message = f"Issues scanning {short_tag} with trivy!"
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            logger.error(message)
+            raise BuildFailure(f"Failed trivy image scan: {short_tag}")
+    except asyncio.TimeoutError:
+        message = f"Trivy scan of {short_tag} timed out after."
+        logger.error(message)
+        await settings.redis_client.xadd(
+            f"forge:{image.image_id}:stream",
+            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+        )
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        process.kill()
+        await process.communicate()
+        raise BuildTimeout(message)
+
     # Push.
     await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
