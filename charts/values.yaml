@@ -263,11 +263,6 @@ redis:
     port: 6379
   config:
     customArgs: []
-  persistence:
-    enabled: false
-    accessMode: ReadWriteOnce
-    size: 10Gi
-    storageClass: ""
 
 registry:
   image: registry:2

@@ -49,14 +49,3 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.redis.resources | nindent 12 }}
-          {{- if .Values.redis.persistence.enabled }}
-          volumeMounts:
-            - name: redis-data
-              mountPath: /data
-          {{- end }}
-      {{- if .Values.redis.persistence.enabled }}
-      volumes:
-        - name: redis-data
-          persistentVolumeClaim:
-            claimName: redis-data
-      {{- end }}
