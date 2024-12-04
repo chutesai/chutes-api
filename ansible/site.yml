@@ -168,6 +168,7 @@
               - nvidia-fabricmanager-560
               - linux-nvidia-hwe-22.04
             state: present
+            register: gpu_setup
 
         - name: Configure NVIDIA Fabric Manager
           systemd:

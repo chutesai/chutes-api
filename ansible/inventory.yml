@@ -10,7 +10,8 @@ all:
     is_primary: false
     # We assume GPU is enabled on all nodes, but of course you need to disable this for the CPU nodes below.
     gpu_enabled: true
-
+    # SSH sometimes just hangs without this...
+    ansible_ssh_common_args: '-o ControlPath=none'
 
   hosts:
     chutes-prod-0:
