@@ -33,11 +33,23 @@ broker = ListQueueBroker(url=settings.redis_url, queue_name="forge").with_result
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def initialize_mappings(*_, **__):
+async def initialize(*_, **__):
     """
-    Ensure ORM modules are all loaded.
+    Ensure ORM modules are all loaded, and login to docker hub to avoid rate-limiting.
     """
     import api.database.orms  # noqa: F401
+
+    username = os.getenv("DOCKER_PULL_USERNAME")
+    password = os.getenv("DOCKER_PULL_PASSWORD")
+    if username and password:
+        process = await asyncio.create_subprocess_exec(
+            "buildah", "login", "-u", username, "-p", password, "docker.io"
+        )
+        await process.wait()
+        if process.returncode == 0:
+            logger.success(f"Authenticated to docker hub with {username=}")
+        else:
+            logger.warning(f"Failed authentication: {username=}")
 
 
 def safe_extract(zip_path):
