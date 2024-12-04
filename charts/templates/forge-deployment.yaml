@@ -36,12 +36,26 @@ spec:
               value: "1"
             - name: BUILDAH_PULL_JOBS
               value: "16"
+          {{- with .Values.forge.volumeMounts }}
+          volumeMounts:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
       containers:
         - name: forge
           image: "{{ .Values.forge.image }}"
           imagePullPolicy: {{ .Values.forge.imagePullPolicy | default "IfNotPresent" }}
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: DOCKER_PULL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: docker-pull
+                  key: username
+            - name: DOCKER_PULL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: docker-pull
+                  key: password
             - name: STORAGE_DRIVER
               value: "vfs"
             - name: BUILDAH_FORMAT
