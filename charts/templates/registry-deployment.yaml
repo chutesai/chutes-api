@@ -32,7 +32,7 @@ spec:
           imagePullPolicy: {{ .Values.registry.imagePullPolicy }}
           env:
             - name: REGISTRY_STORAGE
-              value: {{ .Values.registry.config.storage }}
+              value: s3
             - name: REGISTRY_STORAGE_S3_REGION
               valueFrom:
                 secretKeyRef:
