@@ -51,6 +51,15 @@ async def initialize(*_, **__):
         else:
             logger.warning(f"Failed authentication: {username=}")
 
+    process = await asyncio.create_subprocess_exec(
+        "buildah", "pull", "parachutes/base-python:3.12.7"
+    )
+    await process.wait()
+    if process.returncode == 0:
+        logger.success("Succesfully warmed base image cache.")
+    else:
+        logger.warning("Failed to warm up base image.")
+
 
 def safe_extract(zip_path):
     """

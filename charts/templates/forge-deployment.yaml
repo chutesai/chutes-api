@@ -14,32 +14,6 @@ spec:
       labels:
         {{- include "forge.labels" . | nindent 8 }}
     spec:
-      initContainers:
-        - name: cache-warmup
-          image: "{{ .Values.forge.image }}"
-          command: ['sh', '-c']
-          args:
-            - |
-              {{- range .Values.forge.cacheImages }}
-              buildah pull {{ . }}
-              {{- end }}
-          securityContext:
-            privileged: true
-          env:
-            - name: STORAGE_DRIVER
-              value: "vfs"
-            - name: BUILDAH_FORMAT
-              value: "docker"
-            - name: BUILDAH_PARALLEL_PULL
-              value: "1"
-            - name: BUILDAH_LAYERS_PARALLEL_PULL
-              value: "1"
-            - name: BUILDAH_PULL_JOBS
-              value: "16"
-          {{- with .Values.forge.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
       containers:
         - name: forge
           image: "{{ .Values.forge.image }}"
