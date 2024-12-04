@@ -6,6 +6,7 @@
     ssh_public_key: "{{ ssh_key }}"
     microk8s_channel: "1.31/stable"
     enable_gpu: "{{ gpu_enabled | default(false) }}"
+    is_porter: "{{ porter | default(false) }}"
 
   tasks:
     - name: Set environment variables
@@ -303,24 +304,6 @@
       shell: microk8s status | grep "microk8s is running" || microk8s start
       changed_when: false
 
-    - name: Check if plugins are enabled
-      shell: microk8s status | grep -E "dns|hostpath-storage|cilium|acting as a node in a cluster"
-      register: plugins_check
-      changed_when: false
-      ignore_errors: yes
-
-    - name: Enable MicroK8s plugins
-      shell: |
-        microk8s enable community
-        microk8s disable dns
-        microk8s enable dns
-        microk8s enable hostpath-storage
-        microk8s disable calico
-        microk8s enable cilium
-      ignore_errors: yes
-      when: plugins_check.failed
-      register: plugins_enabled
-
     - name: Configure CNI
       template:
         src: cilium.conf.j2
@@ -390,57 +373,30 @@
             owner: "{{ username }}"
             group: "{{ username }}"
 
-    - name: Check if helm is installed
-      command: which helm
-      register: helm_check
-      ignore_errors: yes
-      changed_when: false
-
-    - name: Install Helm if needed
-      block:
-        - get_url:
-            url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
-            dest: /tmp/get_helm.sh
-            mode: '0700'
-        - shell: /tmp/get_helm.sh
-      when: helm_check.rc != 0
-
-    - name: Check if NVIDIA repo exists
-      shell: helm repo list | grep nvidia
-      register: nvidia_repo_check
-      ignore_errors: yes
-      changed_when: false
-
-    - name: Add NVIDIA Helm repository
-      shell: |
-        helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
-        helm repo update
-      when: enable_gpu | bool and nvidia_repo_check.rc != 0
-
     - name: Restart Wireguard if config changed
       shell: wg-quick down wg0; wg-quick up wg0
       when: wireguard_primary.changed or wireguard_secondary.changed
+
+    - name: Set hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
 
     - name: Reboot
       reboot:
         msg: "Rebooting..."
         reboot_command: "reboot"
         connect_timeout: 5
-        reboot_timeout: 600
+        reboot_timeout: 900
         pre_reboot_delay: 0
         post_reboot_delay: 30
         test_command: uptime
-      when: gpu_setup.changed or plugins_enabled.changed or cni_updated.changed
+      when: gpu_setup.changed or cni_updated.changed
       register: rebooted
 
     - name: Wait for system to be ready
       wait_for_connection:
         timeout: 600
       when: rebooted.changed
-
-    - name: Set hostname
-      hostname:
-        name: "{{ inventory_hostname }}"
 
     - name: Wait for microk8s to be ready
       shell: microk8s status | grep -E "microk8s is running|acting as a node in a cluster"
@@ -450,13 +406,3 @@
       delay: 10
       ignore_errors: yes
       when: rebooted.changed
-
-    - name: Label kubernetes node
-      shell: |
-        microk8s kubectl label nodes {{ inventory_hostname }} chutes/external-ip={{ external_ip }} --overwrite
-
-    - name: Configure seccomp for forge
-      template:
-        src: forge-seccomp.json.j2
-        dest: /etc/forge-seccomp.json
-        mode: '0600'

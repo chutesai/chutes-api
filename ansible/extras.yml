@@ -1,9 +1,24 @@
+- name: Enable plugins
+  hosts: all
+  become: yes
+  tasks:
+    - name: Enable MicroK8s plugins
+      shell: |
+        microk8s enable community || (sleep 10 && microk8s enable community) || true
+        microk8s enable cilium || (sleep 10 && microk8s enable cilium) || true
+        microk8s enable hostpath-storage ||  (sleep 10 && microk8s enable hostpath-storage) || true
+      ignore_errors: yes
+      when: is_primary | bool
+
 - name: Install NVidia GPU Operator
   hosts: all
+  become: yes
   tasks:
     - name: Install GPU Operator
       shell: |
-        helm install gpu-operator nvidia/gpu-operator \
+        microk8s helm repo add nvidia https://helm.ngc.nvidia.com/nvidia || true
+        microk8s helm repo update
+        microk8s helm install gpu-operator nvidia/gpu-operator \
           --namespace gpu-operator \
           --create-namespace \
           --set nodeSelector.kubernetes.io/gpu="true" \
@@ -18,10 +33,11 @@
 
 - name: Install Prometheus
   hosts: all
+  become: yes
   tasks:
     - name: Install Prometheus
       shell: |
-        microk8s helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+        microk8s helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
         microk8s helm repo update
         microk8s helm install prometheus prometheus-community/prometheus --namespace chutes --create-namespace --insecure-skip-tls-verify --kube-insecure-skip-tls-verify
       when: is_primary | bool
