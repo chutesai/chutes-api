@@ -17,8 +17,7 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 
 # Layer for the buildah daemon.
 FROM base AS forge
-RUN dnf install -y jq dnf-plugins-core
-RUN dnf copr enable aquasecurity/trivy && dnf install -y trivy
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.18.3
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ADD pyproject.toml /forge/
 ADD poetry.lock /forge/

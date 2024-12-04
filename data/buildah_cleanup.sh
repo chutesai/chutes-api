@@ -8,7 +8,7 @@ do
   buildah rm $container_id
 done
 
-buildah images --quiet | while read image_id
+buildah images --quiet --filter "reference!=docker.io/parachutes/*" | while read image_id
 do
   buildah rmi --force $image_id
 done
