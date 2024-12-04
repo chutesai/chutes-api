@@ -164,7 +164,7 @@ async def build_and_push_image(image):
     try:
         process = await asyncio.create_subprocess_exec(
             "bash",
-            "/usr/local/bin/triby_scan.sh",
+            "/usr/local/bin/trivy_scan.sh",
             short_tag,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
