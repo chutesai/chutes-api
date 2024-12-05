@@ -124,7 +124,9 @@ async def get_real_axon(miner_ss58: str):
             ) as resp:
                 result = await resp.json()
                 logger.debug(f"Received response from {miner_ss58=} porter: {result}")
-                if result["host"] and (miner.real_host != result["host"] or miner.real_port != result["port"]):
+                if result["host"] and (
+                    miner.real_host != result["host"] or miner.real_port != result["port"]
+                ):
                     miner.real_host = result["host"]
                     miner.real_port = result["port"]
                     await session.commit()

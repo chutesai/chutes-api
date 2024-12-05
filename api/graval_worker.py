@@ -244,7 +244,9 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
                 resp.raise_for_status()
         except Exception as exc:
             # Allow exceptions here since the miner can also check.
-            logger.warning(f"Error notifying miner that GPU is verified: {exc}\n{traceback.format_exc()}")
+            logger.warning(
+                f"Error notifying miner that GPU is verified: {exc}\n{traceback.format_exc()}"
+            )
 
     await asyncio.gather(*[_verify_one(gpu_id) for gpu_id in uuids])
 
