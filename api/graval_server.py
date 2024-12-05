@@ -90,7 +90,10 @@ def main():
         seed = device_info.pop("seed", random.randint(1, 2**63 - 1))
         async with gpu_lock:
             plaintext = str(uuid.uuid4())
-            ciphertext, iv, length = validator.encrypt(device_info, plaintext, seed)
+            loop = asyncio.get_event_loop()
+            ciphertext, iv, length = await loop.run_in_executor(
+                None, validator.encrypt, device_info, plaintext, seed
+            )
             logger.info(f"Generated {length} byte ciphertext from: {plaintext}")
             return Challenge(
                 ciphertext=ciphertext.hex(),
@@ -120,7 +123,10 @@ def main():
         async with gpu_lock:
             for key, value in payload.items():
                 plaintext = value if isinstance(value, str) else json.dumps(value).decode()
-                ciphertext, iv, length = validator.encrypt(device_info, plaintext, seed)
+                loop = asyncio.get_event_loop()
+                ciphertext, iv, length = await loop.run_in_executor(
+                    None, validator.encrypt, device_info, plaintext, seed
+                )
                 logger.info(f"Generated {length} byte ciphertext for {device_info['uuid']}")
                 encrypted_payload[key] = dict(
                     ciphertext=base64.b64encode(ciphertext).decode(),

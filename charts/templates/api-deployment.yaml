@@ -34,8 +34,6 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: GRAVAL_URL
-              value: http://graval:{{ .Values.graval.service.port }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

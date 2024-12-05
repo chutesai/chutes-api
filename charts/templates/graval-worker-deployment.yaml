@@ -32,6 +32,7 @@ spec:
           imagePullPolicy: {{ .Values.gravalWorker.imagePullPolicy }}
           command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]
           env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
           resources:
             {{- toYaml .Values.gravalWorker.resources | nindent 12 }}

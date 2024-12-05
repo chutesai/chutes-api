@@ -1,41 +1,52 @@
 {{- define "api.labels" -}}
 app.kubernetes.io/name: api
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "socket.labels" -}}
 app.kubernetes.io/name: socket
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "paymentWatcher.labels" -}}
 app.kubernetes.io/name: payment-watcher
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "gravalWorker.labels" -}}
 app.kubernetes.io/name: graval-worker
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "forge.labels" -}}
 app.kubernetes.io/name: forge
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "metasync.labels" -}}
 app.kubernetes.io/name: metasync
 redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "redis.labels" -}}
 app.kubernetes.io/name: redis
 {{- end }}
+
+{{- define "pgproxy.labels" -}}
+app.kubernetes.io/name: pgproxy
+{{- end }} 
 
 {{- define "registry.labels" -}}
 app.kubernetes.io/name: registry
@@ -64,6 +75,8 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.commonEnv" -}}
+- name: GRAVAL_URL
+  value: http://graval:{{ .Values.graval.service.port }}
 - name: VALIDATOR_SS58
   valueFrom:
     secretKeyRef:

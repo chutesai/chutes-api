@@ -1,0 +1,25 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pgproxy-config
+data:
+  haproxy.cfg: |
+    global
+      maxconn 4096
+      log stdout format raw local0 info
+
+    defaults
+      log global
+      mode tcp
+      retries 2
+      timeout client 30m
+      timeout connect 4s
+      timeout server 30m
+      timeout check 5s
+
+    frontend postgres
+      bind *:5432
+      default_backend postgres_backend
+
+    backend postgres_backend
+      server postgres {{ .Values.pgproxy.real_host }}:{{ .Values.pgproxy.real_port }} check

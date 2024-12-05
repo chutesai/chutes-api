@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgproxy
+  labels:
+    {{- include "pgproxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.pgproxy.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "pgproxy.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pgproxy.labels" . | nindent 8 }}
+    spec:
+      hostNetwork: true
+      {{- with .Values.pgproxy.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.pgproxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.pgproxy.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: pgproxy
+          image: "{{ .Values.pgproxy.image }}"
+          imagePullPolicy: {{ .Values.pgproxy.imagePullPolicy }}
+          ports:
+            - name: pgproxy
+              containerPort: {{ .Values.pgproxy.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.pgproxy.resources | nindent 12 }}
+          volumeMounts:
+          - name: pgproxy-config
+            mountPath: /usr/local/etc/haproxy/haproxy.cfg
+            subPath: haproxy.cfg
+      volumes:
+        - name: pgproxy-config
+          configMap:
+            name: pgproxy-config

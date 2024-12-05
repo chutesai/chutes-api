@@ -77,7 +77,7 @@ socket:
   tolerations: []
 
 forge:
-  replicaCount: 4
+  replicaCount: 1
   image: parachutes/forge:latest
   imagePullPolicy: Always
   resources:
@@ -221,7 +221,6 @@ graval:
     targetPort: 8000
     nodePort: 32002
   nodeSelector:
-    nodeSelector:
     kubernetes.io/hostname: chutes-prod-gpu-0
   affinity:
     nodeAffinity:
@@ -260,6 +259,27 @@ redis:
   config:
     customArgs: []
 
+pgproxy:
+  image: haproxy:3.1
+  imagePullPolicy: IfNotPresent
+  replicaCount: 1
+  nodeSelector:
+    kubernetes.io/hostname: chutes-prod-0
+  real_host: 10.245.112.2
+  real_port: 5432
+  affinity: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 0.5
+      memory: 512Mi
+    limits:
+      cpu: 0.5
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    port: 5432
+
 registry:
   image: registry:2
   imagePullPolicy: IfNotPresent
@@ -293,7 +313,7 @@ registry:
     redirectDisable: true
 
 registryProxy:
-  image: nginx:1.25
+  image: nginx:1.27
   imagePullPolicy: IfNotPresent
   config:
     workerProcesses: 64

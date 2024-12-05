@@ -118,15 +118,17 @@ async def check_encryption_challenge(
     url = f"http://{node.verification_host}:{node.verification_port}/challenge/decrypt"
     error_message = None
     try:
+        logger.info(f"POSTING: {challenge.dict()}")
         async with miner_client.post(
             node.miner_hotkey, url, payload=challenge.dict(), timeout=5.0
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
-            response_text = (await response.json())["plaintext"]
-            assert (
-                response_text == plaintext
-            ), f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
+            else:
+                response_text = (await response.json())["plaintext"]
+                assert (
+                    response_text == plaintext
+                ), f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
     except Exception as exc:
         logger.error(traceback.format_exc())
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"

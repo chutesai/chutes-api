@@ -28,11 +28,11 @@ def get_signing_message(
     if payload_str:
         if isinstance(payload_str, str):
             payload_str = payload_str.encode()
-        return f"{settings.validator_ss58}:{miner_ss58}:{nonce}:{hashlib.sha256(payload_str).hexdigest()}"
+        return f"{miner_ss58}:{settings.validator_ss58}:{nonce}:{hashlib.sha256(payload_str).hexdigest()}"
     elif purpose:
-        return f"{settings.validator_ss58}:{miner_ss58}:{nonce}:{purpose}"
+        return f"{miner_ss58}:{settings.validator_ss58}:{nonce}:{purpose}"
     elif payload_hash:
-        return f"{settings.validator_ss58}:{miner_ss58}:{nonce}:{payload_hash}"
+        return f"{miner_ss58}:{settings.validator_ss58}:{nonce}:{payload_hash}"
     else:
         raise ValueError("Either payload_str or purpose must be provided")
 
@@ -123,6 +123,7 @@ async def get_real_axon(miner_ss58: str):
                 timeout=5.0,
             ) as resp:
                 result = await resp.json()
+                logger.debug(f"Received response from {miner_ss58=} porter: {result}")
                 if result["host"] and miner.real_host != result["host"]:
                     miner.real_host = result["host"]
                     miner.real_port = result["port"]
