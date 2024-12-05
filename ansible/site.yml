@@ -276,7 +276,7 @@
         src: wg0-worker.conf.j2
         dest: /etc/wireguard/wg0.conf
         mode: '0600'
-      register: wireguard_secondary
+      register: wireguard_worker
 
     - name: Enable and start Wireguard
       systemd:
@@ -371,7 +371,7 @@
 
     - name: Restart Wireguard if config changed
       shell: wg-quick down wg0; wg-quick up wg0
-      when: wireguard_primary.changed or wireguard_secondary.changed
+      when: wireguard_primary.changed or wireguard_worker.changed
 
     - name: Set hostname
       hostname:

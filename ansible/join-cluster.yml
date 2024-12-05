@@ -25,17 +25,6 @@
       delegate_facts: true
       when: is_primary | bool
 
-- name: Join secondary CPU only nodes to cluster
-  hosts: all
-  tasks:
-    - name: Join cluster as secondary node
-      shell: "{{ hostvars['localhost']['join_command'] }}"
-      when:
-        - not is_primary | bool
-        - not gpu_enabled | bool
-        - not porter | bool
-        - cluster_check.rc != 0
-
 - name: Join worker nodes to cluster
   hosts: all
   tasks:
@@ -43,7 +32,6 @@
       shell: "{{ hostvars['localhost']['join_command'] | replace('\n', '') }} --worker --skip-verify"
       when:
         - not is_primary | bool
-        - gpu_enabled | bool
         - cluster_check.rc != 0
 
 - name: Label nodes with external IP
