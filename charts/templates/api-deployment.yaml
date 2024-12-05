@@ -30,7 +30,7 @@ spec:
         - name: api
           image: "{{ .Values.api.image }}"
           imagePullPolicy: {{ .Values.api.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "{{ .Values.api.service.targetPort }}"]
+          command: ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "{{ .Values.api.service.targetPort }}", "--workers", "{{ .Values.api.resources.limits.cpu }}", "--limit-concurrency", "2048"]
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
