@@ -164,7 +164,7 @@ async def check_device_info_challenge(nodes: List[Node]) -> bool:
                 error_message = f"Failed to perform device info challenge: {response.status=} {await response.text()}"
             else:
                 response = await response.text()
-                assert verify_device_info_challenge(
+                assert await verify_device_info_challenge(
                     [node.graval_dict() for node in nodes],
                     challenge,
                     response,
@@ -244,7 +244,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
                 resp.raise_for_status()
         except Exception as exc:
             # Allow exceptions here since the miner can also check.
-            logger.warning(f"Error notifying miner that GPU is verified: {exc}")
+            logger.warning(f"Error notifying miner that GPU is verified: {exc}\n{traceback.format_exc()}")
 
     await asyncio.gather(*[_verify_one(gpu_id) for gpu_id in uuids])
 

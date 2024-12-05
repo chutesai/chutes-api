@@ -111,7 +111,7 @@ async def get_real_axon(miner_ss58: str):
     Attempt refreshing the axon's real host/port via porter.
     """
     if (cached := await settings.redis_client.get(f"real_axon:{miner_ss58}")) is not None:
-        return cached.split(":__:")
+        return cached.decode()
     async with get_session() as session:
         if (miner := await get_miner_by_hotkey(miner_ss58, session)) is None:
             return None
@@ -124,14 +124,14 @@ async def get_real_axon(miner_ss58: str):
             ) as resp:
                 result = await resp.json()
                 logger.debug(f"Received response from {miner_ss58=} porter: {result}")
-                if result["host"] and miner.real_host != result["host"]:
+                if result["host"] and (miner.real_host != result["host"] or miner.real_port != result["port"]):
                     miner.real_host = result["host"]
                     miner.real_port = result["port"]
                     await session.commit()
                     await session.refresh(miner)
                 await settings.redis_client.set(
                     f"real_axon:{miner_ss58}",
-                    f"{miner.real_host}:__:{miner.real_port}",
+                    f"http://{miner.real_host}:{miner.real_port}",
                     ex=300,
                 )
         except Exception as exc:
