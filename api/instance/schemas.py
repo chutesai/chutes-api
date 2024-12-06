@@ -34,6 +34,10 @@ class InstanceArgs(BaseModel):
     port: int
 
 
+class ActivateArgs(BaseModel):
+    active: bool
+
+
 class Instance(Base):
     __tablename__ = "instances"
     instance_id = Column(String, primary_key=True, default=generate_uuid)

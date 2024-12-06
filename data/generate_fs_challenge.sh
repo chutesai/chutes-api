@@ -71,7 +71,7 @@ do
         tail_data=$(cat /tmp/tail.data | base64 --wrap=0)
       fi
       sha256_=$(sha256sum -- "$file_path" | awk '{print $1}')
-      printf '%s:__checksum__:%s:__head__:%s:__tail__:%s\n' "$file_path" "$sha256_" "$head_data" "$tail_data" >> $data_path
+      printf '%s:__size__:%s:__checksum__:%s:__head__:%s:__tail__:%s\n' "$file_path" "$file_size" "$sha256_" "$head_data" "$tail_data" >> $data_path
       printf 'Generated challenge data: %s\n' "$trailing_file_path"
     fi
   done < "$input_path"

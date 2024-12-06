@@ -2,19 +2,28 @@
 GraVal node validation worker.
 """
 
+import re
+import hashlib
 import asyncio
 import aiohttp
 import uuid
+import random
 import traceback
 import backoff
+import pybase64 as base64
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
 from api.database import get_session
 from api.node.schemas import Node
+from api.image.schemas import Image
+from api.instance.schemas import Instance
+from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import update, func
+from sqlalchemy.orm import joinedload
 from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 import api.database.orms  # noqa
 import api.miner_client as miner_client
@@ -251,3 +260,259 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     await asyncio.gather(*[_verify_one(gpu_id) for gpu_id in uuids])
 
     return True, None
+
+
+@broker.task
+async def generate_fs_challenges(image_id: str):
+    """
+    Generate filesystem challenges after an image is created.
+    """
+    async with get_session() as session:
+        image = (
+            (
+                await session.execute(
+                    select(Image)
+                    .options(joinedload(Image.fs_challenges))
+                    .where(Image.image_id == image_id)
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not image:
+            logger.warning(f"Unable to locate {image_id=}")
+            return
+        if image.fs_challenges:
+            logger.warning(f"Already have filesystem challenges for {image_id=}")
+
+    challenges = []
+    async with settings.s3_client() as s3:
+        for suffix in ["newsample", "workdir", "corelibs"]:
+            key = f"fschallenge/{image.user_id}/{image.image_id}/fschallenge_{suffix}.data"
+            entries = []
+            try:
+                response = await s3.get_object(Bucket=settings.storage_bucket, Key=key)
+                data = (await response["Body"].read()).decode("utf-8")
+                entries = [line for line in data.splitlines() if line.strip()]
+            except Exception as exc:
+                logger.error(f"Error loading challenge data @ {key}: {exc}")
+                continue
+            for line in entries:
+                file_data_match = re.match(
+                    r"^(.*)?:__size__:(.*):__checksum__:.*?:__head__:(.*)?:__tail__:(.*)", line
+                )
+                if not file_data_match:
+                    logger.warning(f"Bad challenge data found in {key}: {line}")
+                    continue
+                filename, size, head, tail = file_data_match.groups()
+                head = None if head == "NONE" else base64.b64decode(head.encode())
+                tail = None if tail == "NONE" else base64.b64decode(tail.encode())
+                size = int(size)
+                if not size or not head:
+                    continue
+                current_count = len(challenges)
+                target_count = {"newsample": 20, "workdir": 100, "corelibs": 50}[suffix]
+                logger.info(f"Generating {target_count} challenges for {image_id=} {filename=}")
+                while len(challenges) <= current_count + target_count:
+                    length = random.randint(10, len(head))
+                    offset = random.randint(0, len(head) - length - 1)
+                    challenges.append(
+                        {
+                            "filename": filename,
+                            "length": length,
+                            "offset": offset,
+                            "expected": hashlib.sha256(head[offset : offset + length]).hexdigest(),
+                        }
+                    )
+                    if tail:
+                        length = random.randint(10, len(tail))
+                        offset = random.randint(size - len(tail), len(tail) - length - 1)
+                        challenges.append(
+                            {
+                                "filename": filename,
+                                "length": length,
+                                "offset": offset,
+                                "expected": hashlib.sha256(
+                                    tail[offset - size : offset - size + length]
+                                ).hexdigest(),
+                            }
+                        )
+
+    # Persist all of the challenges to DB.
+    logger.info(f"About to save {len(challenges)} challenges for {image_id=}")
+    async with get_session() as session:
+        for challenge in challenges:
+            session.add(
+                FSChallenge(
+                    challenge_id=str(uuid.uuid4()),
+                    image_id=image_id,
+                    filename=challenge["filename"],
+                    offset=challenge["offset"],
+                    length=challenge["length"],
+                    expected=challenge["expected"],
+                )
+            )
+        await session.commit()
+    logger.success(
+        f"Successfully persisted {len(challenges)} filesystem challenges for {image_id=}"
+    )
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=5,
+    max_tries=3,
+)
+async def _verify_instance_graval(instance: Instance) -> bool:
+    """
+    Check decryption ability of an instance via the _ping endpoint.
+    """
+    if not settings.graval_url:
+        logger.info("GraVal disabled, skipping _verify_instance_graval...")
+        return True
+    device_dicts = [node.graval_dict() for node in instance.nodes]
+    target_index = random.randint(0, len(device_dicts) - 1)
+    target_device = device_dicts[target_index]
+    seed = instance.nodes[0].seed
+    expected = str(uuid.uuid4())
+    payload = None
+    async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
+        async with graval_session.post(
+            f"{settings.graval_url}/encrypt",
+            json={
+                "payload": {
+                    "hello": expected,
+                },
+                "device_info": target_device,
+                "device_id": target_index,
+                "seed": seed,
+            },
+            timeout=30.0,
+        ) as resp:
+            payload = await resp.json()
+
+    logger.info(f"Sending encrypted payload to _ping endpoint for graval verification: {payload}")
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/_ping",
+        payload,
+        headers={"X-Chutes-Encrypted": "true"},
+        timeout=5.0,
+    ) as resp:
+        resp.raise_for_status()
+        assert (await resp.json())["hello"] == expected
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=5,
+    max_tries=3,
+)
+async def _verify_filesystem_challenge(instance: Instance, challenge: FSChallenge) -> bool:
+    """
+    Check a single filesystem challenge on the remote instance.
+    """
+    logger.info(
+        f"Sending filesystem challenge {challenge.filename=} {challenge.length=} {challenge.offset=} to {instance.instance_id=}"
+    )
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/_fs_challenge",
+        payload=dict(
+            filename=challenge.filename,
+            offset=challenge.offset,
+            length=challenge.length,
+        ),
+        timeout=3.0,
+    ) as resp:
+        resp.raise_for_status()
+        assert (await resp.text()) == challenge.expected
+
+
+async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
+    """
+    Perform a variety of filesystem challenges.
+    """
+
+    async def _safe_verify_one(challenge):
+        try:
+            return await _verify_filesystem_challenge(instance, challenge)
+        except Exception as exc:
+            logger.error(f"Failed _verify_filesystem_challenge 3 times: {exc}")
+            return False
+
+    subquery = (
+        select(FSChallenge)
+        .add_columns(
+            func.row_number()
+            .over(partition_by=FSChallenge.challenge_type, order_by=func.random())
+            .label("rn")
+        )
+        .subquery()
+    )
+
+    result = await session.execute(select(subquery.c).where(subquery.c.rn <= 10))
+    challenges = result.scalars().all()
+
+    results = await asyncio.gather(*[_safe_verify_one(challenge) for challenge in challenges])
+    passed = sum(1 for r in results if r)
+
+    logger.info(f"{instance.instance_id=} passed {passed} of {len(challenges)}")
+    return passed == len(challenges)
+
+
+@broker.task
+async def verify_instance(instance_id: str):
+    """
+    Verify a single instance.
+    """
+    async with get_session() as session:
+        instance = (
+            (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not instance:
+            logger.warning("Found no matching nodes, did they disappear?")
+            return
+
+        # Ping test (decryption, ensures graval initialization happened).
+        try:
+            if not await _verify_instance_graval(instance_id):
+                logger.warning(f"{instance_id=} failed GraVal verification!")
+        except Exception:
+            logger.error(f"Failed to perform GraVal validation for {instance_id=}")
+
+        # Filesystem test.
+        try:
+            if not await _verify_filesystem(session, instance):
+                logger.warning(f"{instance_id=} failed filesystem verification!")
+        except Exception:
+            logger.error(f"Failed to perform filesystem validation for {instance_id=}")
+
+        # Looks good!
+        instance.verified = True
+        await session.commit()
+        await session.refresh(instance)
+
+        # Broadcast the event.
+        try:
+            await settings.redis_client.publish(
+                "user_broadcast",
+                json.dumps(
+                    {
+                        "reason": "instance_hot",
+                        "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} '{instance.chute.name}' has been verified, now 'hot'!",
+                        "data": {
+                            "chute_id": instance.chute_id,
+                            "miner_hotkey": instance.miner_hotkey,
+                        },
+                    }
+                ).decode(),
+            )
+        except Exception as exc:
+            logger.warning(f"Error broadcasting instance event: {exc}")
