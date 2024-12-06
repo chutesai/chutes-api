@@ -99,7 +99,7 @@ async def list_chutes(
     }
 
 
-@router.get("{chute_id_or_name:path}", response_model=ChuteResponse)
+@router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
     chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
