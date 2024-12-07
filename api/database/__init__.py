@@ -11,6 +11,8 @@ engine = create_async_engine(
     echo=settings.debug,
     pool_size=settings.db_pool_size,
     max_overflow=settings.db_overflow,
+    pool_pre_ping=True,
+    pool_reset_on_return="rollback",
 )
 
 SessionLocal = sessionmaker(

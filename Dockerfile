@@ -1,7 +1,7 @@
 FROM quay.io/buildah/stable:v1.37.3 AS base
 
 # Setup the various configurations/requirements for buildah.
-RUN dnf install -y iputils procps vim
+RUN dnf install -y iputils procps vim jq
 RUN touch /etc/subgid /etc/subuid \
   && chmod g=u /etc/subgid /etc/subuid /etc/passwd \
   && echo build:10000:65536 > /etc/subuid \

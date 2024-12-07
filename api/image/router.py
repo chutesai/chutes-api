@@ -6,6 +6,7 @@ import io
 import uuid
 import time
 import asyncio
+import orjson as json
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
 from starlette.responses import StreamingResponse
@@ -119,6 +120,19 @@ async def delete_image(
     image_id = image.image_id
     await db.delete(image)
     await db.commit()
+
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "image_deleted",
+                "data": {
+                    "image_id": image_id,
+                },
+            }
+        ).decode(),
+    )
+
     return {"image_id": image_id, "deleted": True}
 
 

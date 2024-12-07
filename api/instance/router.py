@@ -2,6 +2,8 @@
 Routes for instances.
 """
 
+import orjson as json
+from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -11,12 +13,13 @@ from api.config import settings
 from api.constants import HOTKEY_HEADER
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute
-from api.instance.schemas import InstanceArgs, Instance, instance_nodes
+from api.instance.schemas import InstanceArgs, Instance, instance_nodes, ActivateArgs
 from api.instance.util import get_instance_by_chute_and_id
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import is_valid_host
+from api.graval_worker import verify_instance
 
 router = APIRouter()
 
@@ -61,8 +64,8 @@ async def create_instance(
         miner_hotkey=hotkey,
         miner_coldkey=miner.coldkey,
         region="n/a",
-        active=True,
-        verified=True,  # XXX - task for graval taskiq worker to perform filesystem challenges and such.
+        active=False,
+        verified=False,
     )
     db.add(instance)
 
@@ -73,8 +76,10 @@ async def create_instance(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
         )
+    gpu_type = None
     for node_id in instance_args.node_ids:
         node = await get_node_by_id(node_id, db, hotkey)
+        gpu_type = node.name
         if not node:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -104,6 +109,73 @@ async def create_instance(
             detail="Unknown database integrity error",
         )
     await db.refresh(instance)
+
+    # Broadcast the event.
+    try:
+        await settings.redis_client.publish(
+            "events",
+            json.dumps(
+                {
+                    "reason": "instance_created",
+                    "message": f"Miner {instance.miner_hotkey} has provisioned an instance of chute {chute.chute_id} on {gpu_count}x{gpu_type}",
+                    "data": {
+                        "chute_id": instance.chute_id,
+                        "gpu_count": gpu_count,
+                        "gpu_model_name": gpu_type,
+                        "miner_hotkey": instance.miner_hotkey,
+                    },
+                }
+            ).decode(),
+        )
+    except Exception as exc:
+        logger.warning(f"Error broadcasting instance event: {exc}")
+
+    return instance
+
+
+@router.patch("/{chute_id}/{instance_id}")
+async def activate_instance(
+    chute_id: str,
+    instance_id: str,
+    args: ActivateArgs,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+):
+    if not args.active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Patch endpoint only supports {"active": true} as request body.',
+        )
+    instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)
+    if instance.active:
+        return instance
+
+    instance.active = True
+    await db.commit()
+    await db.refresh(instance)
+
+    # Broadcast the event.
+    try:
+        await settings.redis_client.publish(
+            "events",
+            json.dumps(
+                {
+                    "reason": "instance_activated",
+                    "message": f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}, waiting for verification...",
+                    "data": {
+                        "chute_id": instance.chute_id,
+                        "miner_hotkey": instance.miner_hotkey,
+                    },
+                }
+            ).decode(),
+        )
+    except Exception as exc:
+        logger.warning(f"Error broadcasting instance event: {exc}")
+
+    # Kick off validation.
+    await verify_instance.kiq(instance_id)
+
     return instance
 
 
@@ -123,4 +195,19 @@ async def delete_instance(
         )
     await db.delete(instance)
     await db.commit()
+
+    await settings.redis_client.publish(
+        "events",
+        json.dumps(
+            {
+                "reason": "instance_deleted",
+                "message": f"Miner {instance.miner_hotkey} has deleted instance an instance of chute {chute_id}.",
+                "data": {
+                    "chute_id": chute_id,
+                    "miner_hotkey": hotkey,
+                },
+            }
+        ).decode(),
+    )
+
     return {"instance_id": instance_id, "deleted": True}

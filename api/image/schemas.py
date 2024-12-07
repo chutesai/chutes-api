@@ -34,6 +34,9 @@ class Image(Base):
     chutes = relationship("Chute", back_populates="image")
     logo = relationship("Logo", back_populates="images", lazy="joined")
     user = relationship("User", back_populates="images", lazy="joined")
+    fs_challenges = relationship(
+        "FSChallenge", back_populates="image", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         Index("idx_image_name_tag", "name", "tag"),

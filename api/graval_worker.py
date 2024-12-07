@@ -5,16 +5,21 @@ GraVal node validation worker.
 import asyncio
 import aiohttp
 import uuid
+import random
 import traceback
 import backoff
+import orjson as json
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
 from api.database import get_session
 from api.node.schemas import Node
+from api.instance.schemas import Instance
+from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import update, func
 from sqlalchemy.future import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 import api.database.orms  # noqa
 import api.miner_client as miner_client
@@ -145,18 +150,21 @@ async def check_encryption_challenge(
     return True
 
 
-async def check_device_info_challenge(nodes: List[Node]) -> bool:
+async def check_device_info_challenge(
+    nodes: List[Node], url: str = None, purpose: str = "graval"
+) -> bool:
     """
     Send a single device info challenge.
     """
-    url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
+    if not url:
+        url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
     error_message = None
     try:
         challenge = await generate_device_info_challenge(len(nodes))
         async with miner_client.get(
             nodes[0].miner_hotkey,
             url,
-            "graval",
+            purpose,
             params={"challenge": challenge},
             timeout=5.0,
         ) as response:
@@ -251,3 +259,211 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     await asyncio.gather(*[_verify_one(gpu_id) for gpu_id in uuids])
 
     return True, None
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=5,
+    max_tries=3,
+)
+async def _verify_instance_graval(instance: Instance) -> bool:
+    """
+    Check decryption ability of an instance via the _ping endpoint.
+    """
+    if not settings.graval_url:
+        logger.info("GraVal disabled, skipping _verify_instance_graval...")
+        return True
+    device_dicts = [node.graval_dict() for node in instance.nodes]
+    target_index = random.randint(0, len(device_dicts) - 1)
+    target_device = device_dicts[target_index]
+    seed = instance.nodes[0].seed
+    expected = str(uuid.uuid4())
+    payload = None
+    logger.info(f"Trying to encrypt: {expected} via {settings.graval_url}/encrypt")
+    async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
+        async with graval_session.post(
+            f"{settings.graval_url}/encrypt",
+            json={
+                "payload": {
+                    "hello": expected,
+                },
+                "device_info": target_device,
+                "device_id": target_index,
+                "seed": seed,
+            },
+            timeout=30.0,
+        ) as resp:
+            payload = await resp.json()
+
+    logger.info(f"Sending encrypted payload to _ping endpoint for graval verification: {payload}")
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/_ping",
+        payload,
+        headers={"X-Chutes-Encrypted": "true"},
+        timeout=5.0,
+    ) as resp:
+        resp.raise_for_status()
+        if (await resp.json())["hello"] == expected:
+            return True
+        logger.warning(f"Expected {expected}, result: {await resp.json()}")
+        return False
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=5,
+    max_tries=3,
+)
+async def _verify_filesystem_challenge(instance: Instance, challenge: FSChallenge) -> bool:
+    """
+    Check a single filesystem challenge on the remote instance.
+    """
+    logger.info(
+        f"Sending filesystem challenge {challenge.filename=} {challenge.length=} {challenge.offset=} to {instance.instance_id=}"
+    )
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/_fs_challenge",
+        payload=dict(
+            filename=challenge.filename,
+            offset=challenge.offset,
+            length=challenge.length,
+        ),
+        timeout=3.0,
+    ) as resp:
+        resp.raise_for_status()
+        result = await resp.text()
+        if result != challenge.expected:
+            logger.warning(f"Expected {challenge.expected}, got {result}: {challenge}")
+            return False
+        logger.success(f"Successfully processed filesystem challenge: {challenge}")
+        return True
+
+
+async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
+    """
+    Perform a variety of filesystem challenges.
+    """
+
+    async def _safe_verify_one(challenge):
+        try:
+            return await _verify_filesystem_challenge(instance, challenge)
+        except Exception as exc:
+            logger.error(f"Failed _verify_filesystem_challenge 3 times: {exc}")
+            return False
+
+    subquery = (
+        select(
+            FSChallenge.challenge_id,
+            FSChallenge.challenge_type,
+            FSChallenge.image_id,
+            func.row_number()
+            .over(partition_by=FSChallenge.challenge_type, order_by=func.random())
+            .label("rn"),
+        )
+        .filter(FSChallenge.image_id == instance.chute.image_id)
+        .subquery()
+    )
+    result = await session.execute(
+        select(FSChallenge)
+        .join(subquery, FSChallenge.challenge_id == subquery.c.challenge_id)
+        .where(subquery.c.rn <= 10)
+    )
+    challenges = result.scalars().all()
+
+    if not challenges:
+        logger.warning(f"Image {instance.chute.image_id=} has no filesystem challenges to check!")
+        return True
+
+    results = await asyncio.gather(*[_safe_verify_one(challenge) for challenge in challenges])
+    passed = sum(1 for r in results if r)
+
+    logger.info(f"{instance.instance_id=} passed {passed} of {len(challenges)}")
+    return passed == len(challenges)
+
+
+@broker.task
+async def verify_instance(instance_id: str):
+    """
+    Verify a single instance.
+    """
+    async with get_session() as session:
+        instance = (
+            (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not instance:
+            logger.warning("Found no matching nodes, did they disappear?")
+            return
+
+        # Ping test (decryption, ensures graval initialization happened).
+        try:
+            if not await _verify_instance_graval(instance):
+                logger.warning(f"{instance_id=} failed GraVal verification!")
+                return
+        except Exception as exc:
+            logger.error(
+                f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+            )
+
+        # Filesystem test.
+        try:
+            if not await _verify_filesystem(session, instance):
+                logger.warning(f"{instance_id=} failed filesystem verification!")
+        except Exception as exc:
+            logger.error(
+                f"Failed to perform filesystem validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+            )
+
+        # Device info challenges.
+        url = f"http://{instance.host}:{instance.port}/_device_challenge"
+        futures = []
+        for _ in range(settings.device_info_challenge_count):
+            futures.append(check_device_info_challenge(instance.nodes, url=url, purpose="chutes"))
+            if len(futures) == 10:
+                if not all(await asyncio.gather(*futures)):
+                    logger.warning(f"{instance_id=} failed one or more device info challenges")
+                    return
+                futures = []
+
+        # Looks good!
+        logger.success(f"Instance {instance_id=} has passed verification!")
+        instance.verified = True
+        await session.commit()
+        await session.refresh(instance)
+
+        # Notify the miner.
+        try:
+            async with miner_client.axon_patch(
+                instance.miner_hotkey, f"/deployments/{instance_id}", payload={"verified": True}
+            ) as resp:
+                resp.raise_for_status()
+        except Exception as exc:
+            # Allow exceptions here since the miner can also check.
+            logger.warning(
+                f"Error notifying miner that instance/deployment is verified: {exc}\n{traceback.format_exc()}"
+            )
+
+        # Broadcast the event.
+        try:
+            await settings.redis_client.publish(
+                "events",
+                json.dumps(
+                    {
+                        "reason": "instance_hot",
+                        "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} chute {instance.chute_id} has been verified, now 'hot'!",
+                        "data": {
+                            "chute_id": instance.chute_id,
+                            "miner_hotkey": instance.miner_hotkey,
+                        },
+                    }
+                ).decode(),
+            )
+        except Exception as exc:
+            logger.warning(f"Error broadcasting instance event: {exc}")

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: event-socket
+  labels:
+    {{- include "eventSocket.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.eventSocket.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "eventSocket.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "eventSocket.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.eventSocket.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.eventSocket.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.eventSocket.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: event-socket
+          image: "{{ .Values.eventSocket.image }}"
+          imagePullPolicy: {{ .Values.eventSocket.imagePullPolicy }}
+          command: ["poetry", "run", "uvicorn", "api.event_socket_server:app", "--host", "0.0.0.0", "--port", "{{ .Values.eventSocket.service.targetPort }}"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.eventSocket.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.eventSocket.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.eventSocket.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.eventSocket.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.eventSocket.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.eventSocket.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: {{ .Values.eventSocket.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.eventSocket.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.eventSocket.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.eventSocket.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.eventSocket.readinessProbe.failureThreshold | default 3 }}
+          resources:
+            {{- toYaml .Values.eventSocket.resources | nindent 12 }}
