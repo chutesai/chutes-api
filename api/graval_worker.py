@@ -10,6 +10,7 @@ import uuid
 import random
 import traceback
 import backoff
+import orjson as json
 import pybase64 as base64
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -452,11 +453,15 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
             .over(partition_by=FSChallenge.challenge_type, order_by=func.random())
             .label("rn")
         )
+        .filter(FSChallenge.image_id == instance.chute.image_id)
         .subquery()
     )
 
     result = await session.execute(select(subquery.c).where(subquery.c.rn <= 10))
     challenges = result.scalars().all()
+    if not challenges:
+        logger.warning(f"Image {instance.chute.image_id=} has no filesystem challenges to check!")
+        return True
 
     results = await asyncio.gather(*[_safe_verify_one(challenge) for challenge in challenges])
     passed = sum(1 for r in results if r)
