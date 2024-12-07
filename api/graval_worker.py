@@ -155,18 +155,21 @@ async def check_encryption_challenge(
     return True
 
 
-async def check_device_info_challenge(nodes: List[Node]) -> bool:
+async def check_device_info_challenge(
+    nodes: List[Node], url: str = None, purpose: str = "graval"
+) -> bool:
     """
     Send a single device info challenge.
     """
-    url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
+    if not url:
+        url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
     error_message = None
     try:
         challenge = await generate_device_info_challenge(len(nodes))
         async with miner_client.get(
             nodes[0].miner_hotkey,
             url,
-            "graval",
+            purpose,
             params={"challenge": challenge},
             timeout=5.0,
         ) as response:
@@ -309,30 +312,36 @@ async def generate_fs_challenges(image_id: str):
                 head = None if head == "NONE" else base64.b64decode(head.encode())
                 tail = None if tail == "NONE" else base64.b64decode(tail.encode())
                 size = int(size)
-                if not size or not head:
+                if not size or not head or len(head) <= 12:
                     continue
                 current_count = len(challenges)
                 target_count = {"newsample": 20, "workdir": 100, "corelibs": 50}[suffix]
                 logger.info(f"Generating {target_count} challenges for {image_id=} {filename=}")
                 while len(challenges) <= current_count + target_count:
                     length = random.randint(10, len(head))
-                    offset = random.randint(0, len(head) - length - 1)
+                    offset = 0 if length == len(head) else random.randint(0, len(head) - length - 1)
                     challenges.append(
                         {
                             "filename": filename,
                             "length": length,
                             "offset": offset,
+                            "type": suffix,
                             "expected": hashlib.sha256(head[offset : offset + length]).hexdigest(),
                         }
                     )
                     if tail:
                         length = random.randint(10, len(tail))
-                        offset = random.randint(size - len(tail), len(tail) - length - 1)
+                        offset = (
+                            0
+                            if length == len(tail)
+                            else random.randint(size - len(tail) - length - 1, size - len(tail))
+                        )
                         challenges.append(
                             {
                                 "filename": filename,
                                 "length": length,
                                 "offset": offset,
+                                "type": suffix,
                                 "expected": hashlib.sha256(
                                     tail[offset - size : offset - size + length]
                                 ).hexdigest(),
@@ -351,6 +360,7 @@ async def generate_fs_challenges(image_id: str):
                     offset=challenge["offset"],
                     length=challenge["length"],
                     expected=challenge["expected"],
+                    challenge_type=challenge["type"],
                 )
             )
         await session.commit()
@@ -379,6 +389,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     seed = instance.nodes[0].seed
     expected = str(uuid.uuid4())
     payload = None
+    logger.info(f"Trying to encrypt: {expected} via {settings.graval_url}/encrypt")
     async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
         async with graval_session.post(
             f"{settings.graval_url}/encrypt",
@@ -403,7 +414,10 @@ async def _verify_instance_graval(instance: Instance) -> bool:
         timeout=5.0,
     ) as resp:
         resp.raise_for_status()
-        assert (await resp.json())["hello"] == expected
+        if (await resp.json())["hello"] == expected:
+            return True
+        logger.warning(f"Expected {expected}, result: {await resp.json()}")
+        return False
 
 
 @backoff.on_exception(
@@ -487,10 +501,13 @@ async def verify_instance(instance_id: str):
 
         # Ping test (decryption, ensures graval initialization happened).
         try:
-            if not await _verify_instance_graval(instance_id):
+            if not await _verify_instance_graval(instance):
                 logger.warning(f"{instance_id=} failed GraVal verification!")
-        except Exception:
-            logger.error(f"Failed to perform GraVal validation for {instance_id=}")
+                return
+        except Exception as exc:
+            logger.error(
+                f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+            )
 
         # Filesystem test.
         try:
@@ -500,16 +517,18 @@ async def verify_instance(instance_id: str):
             logger.error(f"Failed to perform filesystem validation for {instance_id=}")
 
         # Device info challenges.
+        url = f"http://{instance.host}:{instance.port}/_device_challenge"
         futures = []
         for _ in range(settings.device_info_challenge_count):
-            futures.append(check_device_info_challenge(instance.nodes))
+            futures.append(check_device_info_challenge(instance.nodes, url=url, purpose="chutes"))
             if len(futures) == 10:
                 if not all(await asyncio.gather(*futures)):
                     logger.warning(f"{instance_id=} failed one or more device info challenges")
-                    return False
+                    return
                 futures = []
 
         # Looks good!
+        logger.success(f"Instance {instance_id=} has passed verification!")
         instance.verified = True
         await session.commit()
         await session.refresh(instance)

@@ -193,4 +193,19 @@ async def delete_instance(
         )
     await db.delete(instance)
     await db.commit()
+
+    await settings.redis_client.publish(
+        "events",
+        json.dumps(
+            {
+                "reason": "instance_deleted",
+                "message": f"Miner {instance.miner_hotkey} has deleted instance an instance of chute {chute_id}.",
+                "data": {
+                    "chute_id": chute_id,
+                    "miner_hotkey": hotkey,
+                },
+            }
+        ).decode(),
+    )
+
     return {"instance_id": instance_id, "deleted": True}

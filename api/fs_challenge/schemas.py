@@ -24,6 +24,6 @@ class FSChallenge(Base):
     length = Column(Integer, nullable=False)
     expected = Column(String, nullable=False)
 
-    node = relationship("Image", back_populates="fs_challenges")
+    image = relationship("Image", back_populates="fs_challenges")
 
     _table_args__ = (Index("idx_image_id_type", "image_id", "challenge_type"),)
