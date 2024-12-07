@@ -30,7 +30,7 @@ spec:
         - name: event-socket
           image: "{{ .Values.eventSocket.image }}"
           imagePullPolicy: {{ .Values.eventSocket.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.eventSocket_server:app", "--host", "0.0.0.0", "--port", "{{ .Values.eventSocket.service.targetPort }}"]
+          command: ["poetry", "run", "uvicorn", "api.event_socket_server:app", "--host", "0.0.0.0", "--port", "{{ .Values.eventSocket.service.targetPort }}"]
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
