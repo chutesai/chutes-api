@@ -4,11 +4,16 @@ Image forge -- build images and push to local registry with buildah.
 
 import asyncio
 import zipfile
+import uuid
+import hashlib
 import os
+import re
 import glob
 import tempfile
 import traceback
 import time
+import random
+import pybase64 as base64
 import orjson as json
 from loguru import logger
 from api.config import settings
@@ -21,8 +26,10 @@ from api.exceptions import (
     PushTimeout,
 )
 from api.image.schemas import Image
+from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import func
 from sqlalchemy.future import select
+from sqlalchemy.orm import joinedload
 from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from api.database import orms  # noqa
@@ -339,6 +346,108 @@ async def build_and_push_image(image):
     return short_tag
 
 
+async def generate_fs_challenges(image_id: str):
+    """
+    Generate filesystem challenges after an image is created.
+    """
+    async with get_session() as session:
+        image = (
+            (
+                await session.execute(
+                    select(Image)
+                    .options(joinedload(Image.fs_challenges))
+                    .where(Image.image_id == image_id)
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not image:
+            logger.warning(f"Unable to locate {image_id=}")
+            return
+        if image.fs_challenges:
+            logger.warning(f"Already have filesystem challenges for {image_id=}")
+
+    challenges = []
+    async with settings.s3_client() as s3:
+        for suffix in ["newsample", "workdir", "corelibs"]:
+            key = f"fschallenge/{image.user_id}/{image.image_id}/fschallenge_{suffix}.data"
+            entries = []
+            try:
+                response = await s3.get_object(Bucket=settings.storage_bucket, Key=key)
+                data = (await response["Body"].read()).decode("utf-8")
+                entries = [line for line in data.splitlines() if line.strip()]
+            except Exception as exc:
+                logger.error(f"Error loading challenge data @ {key}: {exc}")
+                continue
+            for line in entries:
+                file_data_match = re.match(
+                    r"^(.*)?:__size__:(.*):__checksum__:.*?:__head__:(.*)?:__tail__:(.*)", line
+                )
+                if not file_data_match:
+                    logger.warning(f"Bad challenge data found in {key}: {line}")
+                    continue
+                filename, size, head, tail = file_data_match.groups()
+                head = None if head == "NONE" else base64.b64decode(head.encode())
+                tail = None if tail == "NONE" else base64.b64decode(tail.encode())
+                size = int(size)
+                if not size or not head or len(head) <= 12:
+                    continue
+                current_count = len(challenges)
+                target_count = {"newsample": 20, "workdir": 100, "corelibs": 50}[suffix]
+                logger.info(f"Generating {target_count} challenges for {image_id=} {filename=}")
+                while len(challenges) <= current_count + target_count:
+                    length = random.randint(10, len(head))
+                    offset = 0 if length == len(head) else random.randint(0, len(head) - length - 1)
+                    challenges.append(
+                        {
+                            "filename": filename,
+                            "length": length,
+                            "offset": offset,
+                            "type": suffix,
+                            "expected": hashlib.sha256(head[offset : offset + length]).hexdigest(),
+                        }
+                    )
+                    if tail:
+                        length = random.randint(10, len(tail))
+                        offset = (
+                            0
+                            if length == len(tail)
+                            else random.randint(size - len(tail) - length - 1, size - len(tail))
+                        )
+                        challenges.append(
+                            {
+                                "filename": filename,
+                                "length": length,
+                                "offset": offset,
+                                "type": suffix,
+                                "expected": hashlib.sha256(
+                                    tail[offset - size : offset - size + length]
+                                ).hexdigest(),
+                            }
+                        )
+
+    # Persist all of the challenges to DB.
+    logger.info(f"About to save {len(challenges)} challenges for {image_id=}")
+    async with get_session() as session:
+        for challenge in challenges:
+            session.add(
+                FSChallenge(
+                    challenge_id=str(uuid.uuid4()),
+                    image_id=image_id,
+                    filename=challenge["filename"],
+                    offset=challenge["offset"],
+                    length=challenge["length"],
+                    expected=challenge["expected"],
+                    challenge_type=challenge["type"],
+                )
+            )
+        await session.commit()
+    logger.success(
+        f"Successfully persisted {len(challenges)} filesystem challenges for {image_id=}"
+    )
+
+
 @broker.task
 async def forge(image_id: str):
     """
@@ -396,6 +505,9 @@ async def forge(image_id: str):
             destination = f"forge/{image.user_id}/{image.image_id}.{os.path.basename(path)}"
             async with settings.s3_client() as s3:
                 await s3.upload_file(path, settings.storage_bucket, destination)
+
+    # Cache a sampling of filesystem challenges.
+    await generate_fs_challenges(image_id)
 
     # Update status.
     async with get_session() as session:

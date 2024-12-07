@@ -6,6 +6,7 @@ import io
 import uuid
 import time
 import asyncio
+import orjson as json
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
 from starlette.responses import StreamingResponse

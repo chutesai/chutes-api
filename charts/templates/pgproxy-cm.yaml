@@ -12,10 +12,13 @@ data:
       log global
       mode tcp
       retries 2
-      timeout client 30m
+      timeout client 24h
       timeout connect 4s
-      timeout server 30m
+      timeout server 24m
       timeout check 5s
+      option tcp-check
+      option clitcpka
+      option srvtcpka
 
     frontend postgres
       bind *:5432

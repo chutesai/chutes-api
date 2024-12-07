@@ -2,8 +2,6 @@
 GraVal node validation worker.
 """
 
-import re
-import hashlib
 import asyncio
 import aiohttp
 import uuid
@@ -11,18 +9,15 @@ import random
 import traceback
 import backoff
 import orjson as json
-import pybase64 as base64
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
 from api.database import get_session
 from api.node.schemas import Node
-from api.image.schemas import Image
 from api.instance.schemas import Instance
 from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import update, func
-from sqlalchemy.orm import joinedload
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
@@ -266,109 +261,6 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     return True, None
 
 
-@broker.task
-async def generate_fs_challenges(image_id: str):
-    """
-    Generate filesystem challenges after an image is created.
-    """
-    async with get_session() as session:
-        image = (
-            (
-                await session.execute(
-                    select(Image)
-                    .options(joinedload(Image.fs_challenges))
-                    .where(Image.image_id == image_id)
-                )
-            )
-            .unique()
-            .scalar_one_or_none()
-        )
-        if not image:
-            logger.warning(f"Unable to locate {image_id=}")
-            return
-        if image.fs_challenges:
-            logger.warning(f"Already have filesystem challenges for {image_id=}")
-
-    challenges = []
-    async with settings.s3_client() as s3:
-        for suffix in ["newsample", "workdir", "corelibs"]:
-            key = f"fschallenge/{image.user_id}/{image.image_id}/fschallenge_{suffix}.data"
-            entries = []
-            try:
-                response = await s3.get_object(Bucket=settings.storage_bucket, Key=key)
-                data = (await response["Body"].read()).decode("utf-8")
-                entries = [line for line in data.splitlines() if line.strip()]
-            except Exception as exc:
-                logger.error(f"Error loading challenge data @ {key}: {exc}")
-                continue
-            for line in entries:
-                file_data_match = re.match(
-                    r"^(.*)?:__size__:(.*):__checksum__:.*?:__head__:(.*)?:__tail__:(.*)", line
-                )
-                if not file_data_match:
-                    logger.warning(f"Bad challenge data found in {key}: {line}")
-                    continue
-                filename, size, head, tail = file_data_match.groups()
-                head = None if head == "NONE" else base64.b64decode(head.encode())
-                tail = None if tail == "NONE" else base64.b64decode(tail.encode())
-                size = int(size)
-                if not size or not head or len(head) <= 12:
-                    continue
-                current_count = len(challenges)
-                target_count = {"newsample": 20, "workdir": 100, "corelibs": 50}[suffix]
-                logger.info(f"Generating {target_count} challenges for {image_id=} {filename=}")
-                while len(challenges) <= current_count + target_count:
-                    length = random.randint(10, len(head))
-                    offset = 0 if length == len(head) else random.randint(0, len(head) - length - 1)
-                    challenges.append(
-                        {
-                            "filename": filename,
-                            "length": length,
-                            "offset": offset,
-                            "type": suffix,
-                            "expected": hashlib.sha256(head[offset : offset + length]).hexdigest(),
-                        }
-                    )
-                    if tail:
-                        length = random.randint(10, len(tail))
-                        offset = (
-                            0
-                            if length == len(tail)
-                            else random.randint(size - len(tail) - length - 1, size - len(tail))
-                        )
-                        challenges.append(
-                            {
-                                "filename": filename,
-                                "length": length,
-                                "offset": offset,
-                                "type": suffix,
-                                "expected": hashlib.sha256(
-                                    tail[offset - size : offset - size + length]
-                                ).hexdigest(),
-                            }
-                        )
-
-    # Persist all of the challenges to DB.
-    logger.info(f"About to save {len(challenges)} challenges for {image_id=}")
-    async with get_session() as session:
-        for challenge in challenges:
-            session.add(
-                FSChallenge(
-                    challenge_id=str(uuid.uuid4()),
-                    image_id=image_id,
-                    filename=challenge["filename"],
-                    offset=challenge["offset"],
-                    length=challenge["length"],
-                    expected=challenge["expected"],
-                    challenge_type=challenge["type"],
-                )
-            )
-        await session.commit()
-    logger.success(
-        f"Successfully persisted {len(challenges)} filesystem challenges for {image_id=}"
-    )
-
-
 @backoff.on_exception(
     backoff.constant,
     Exception,
@@ -461,18 +353,24 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
             return False
 
     subquery = (
-        select(FSChallenge)
-        .add_columns(
+        select(
+            FSChallenge.challenge_id,
+            FSChallenge.challenge_type,
+            FSChallenge.image_id,
             func.row_number()
             .over(partition_by=FSChallenge.challenge_type, order_by=func.random())
-            .label("rn")
+            .label("rn"),
         )
         .filter(FSChallenge.image_id == instance.chute.image_id)
         .subquery()
     )
-
-    result = await session.execute(select(subquery.c).where(subquery.c.rn <= 10))
+    result = await session.execute(
+        select(FSChallenge)
+        .join(subquery, FSChallenge.challenge_id == subquery.c.challenge_id)
+        .where(subquery.c.rn <= 10)
+    )
     challenges = result.scalars().all()
+
     if not challenges:
         logger.warning(f"Image {instance.chute.image_id=} has no filesystem challenges to check!")
         return True
@@ -513,8 +411,10 @@ async def verify_instance(instance_id: str):
         try:
             if not await _verify_filesystem(session, instance):
                 logger.warning(f"{instance_id=} failed filesystem verification!")
-        except Exception:
-            logger.error(f"Failed to perform filesystem validation for {instance_id=}")
+        except Exception as exc:
+            logger.error(
+                f"Failed to perform filesystem validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+            )
 
         # Device info challenges.
         url = f"http://{instance.host}:{instance.port}/_device_challenge"
