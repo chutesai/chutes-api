@@ -119,6 +119,19 @@ async def delete_image(
     image_id = image.image_id
     await db.delete(image)
     await db.commit()
+
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "image_deleted",
+                "data": {
+                    "image_id": image_id,
+                },
+            }
+        ).decode(),
+    )
+
     return {"image_id": image_id, "deleted": True}
 
 

@@ -414,5 +414,17 @@ async def forge(image_id: str):
         await session.commit()
         await session.refresh(image)
 
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "image_created",
+                "data": {
+                    "image_id": image_id,
+                },
+            }
+        ).decode(),
+    )
+
     # Cleanup.
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
