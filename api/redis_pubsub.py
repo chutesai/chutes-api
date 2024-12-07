@@ -68,7 +68,7 @@ class RedisListener:
             if message["type"] == "message":
                 try:
                     data = json.loads(message["data"].decode())
-                    logger.debug(f"Broadcasting to miners: {data}")
+                    logger.debug(f"Broadcasting: {data}")
                     await self.sio.emit(self.channel, data)
                 except Exception as exc:
                     logger.error(f"Error processing message: {exc}")
