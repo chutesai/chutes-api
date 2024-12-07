@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: event-socket
+  labels:
+    {{- include "eventSocket.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  ports:
+    - nodePort: {{ .Values.eventSocket.service.nodePort }}
+      port: {{ .Values.eventSocket.service.port }}
+      targetPort: {{ .Values.eventSocket.service.targetPort }}
+      name: event-socket
+  selector:
+    {{- include "eventSocket.labels" . | nindent 4 }}

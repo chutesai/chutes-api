@@ -4,117 +4,15 @@ Socket.IO poowered websocket server for continuous bi-directional vali/miner com
 
 import asyncio
 import socketio
-import redis.asyncio as redis
 import api.constants as cst
-import orjson as json
-from typing import Optional
-from datetime import datetime
-from fastapi import Request, FastAPI, HTTPException
+from typing import Dict
+from loguru import logger
+from fastapi import FastAPI, HTTPException
 import api.database.orms  # noqa
 from api.config import settings
 from api.user.router import get_current_user
-from typing import Dict
-from loguru import logger
-
-
-class SyntheticRequest(Request):
-    """
-    Synthetic requests to allow re-using our existing
-    authentication logic within socket.io.
-    """
-
-    def __init__(self, headers: Dict[str, str]):
-        scope = {
-            "type": "http",
-            "method": "GET",
-            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
-            "query_string": b"",
-        }
-        super().__init__(scope)
-
-
-class RedisListener:
-    """
-    Redis pubsub subscriber.
-    """
-
-    def __init__(self, socket_server, channel: str = "miner_broadcast"):
-        self.sio = socket_server
-        self.channel = channel
-        self.pubsub: Optional[redis.client.PubSub] = None
-        self.is_running = False
-        self.last_reconnect = datetime.now()
-        self.reconnect_attempts = 0
-        self.max_reconnect_attempts = 10
-        self.base_delay = 1
-        self.max_delay = 30
-
-    async def start(self):
-        """
-        Start the listener, handling connection/timeout errors.
-        """
-        self.is_running = True
-        while self.is_running:
-            try:
-                if not self.pubsub:
-                    self.pubsub = settings.redis_client.pubsub()
-                    await self.pubsub.subscribe(self.channel)
-                    logger.info(f"Subscribed to channel: {self.channel}")
-                    self.reconnect_attempts = 0
-                await self._listen()
-            except (redis.ConnectionError, redis.TimeoutError) as e:
-                await self._handle_connection_error(e)
-            except Exception as e:
-                logger.error(f"Unexpected error in redis listener: {e}")
-                await self._handle_connection_error(e)
-
-    async def stop(self):
-        """
-        Gracefully stop the listener.
-        """
-        self.is_running = False
-        if self.pubsub:
-            await self.pubsub.unsubscribe(self.channel)
-            await self.pubsub.close()
-            self.pubsub = None
-        logger.info("Redis listener stopped")
-
-    async def _listen(self):
-        """
-        Main listening loop.
-        """
-        async for message in self.pubsub.listen():
-            if not self.is_running:
-                break
-            if message["type"] == "message":
-                try:
-                    data = json.loads(message["data"].decode())
-                    logger.debug(f"Broadcasting to miners: {data}")
-                    await self.sio.emit("miner_broadcast", data)
-                except Exception as exc:
-                    logger.error(f"Error processing message: {exc}")
-
-    async def _handle_connection_error(self, error):
-        """
-        Handle connection errors with exponential backoff.
-        """
-        self.reconnect_attempts += 1
-        if self.reconnect_attempts > self.max_reconnect_attempts:
-            logger.error("Max reconnection attempts reached. Stopping listener.")
-            await self.stop()
-            return
-        delay = min(self.base_delay * (2 ** (self.reconnect_attempts - 1)), self.max_delay)
-        logger.warning(
-            f"Redis connection error: {error}, attempt {self.reconnect_attempts}/{self.max_reconnect_attempts}, retrying in {delay} seconds..."
-        )
-        if self.pubsub:
-            try:
-                await self.pubsub.close()
-            except Exception as exc:
-                logger.warning(f"Redis pubsub close error: {exc}")
-                pass
-            self.pubsub = None
-        await asyncio.sleep(delay)
+from api.socket_shared import SyntheticRequest
+from api.redis_pubsub import RedisListener
 
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -128,7 +26,7 @@ async def initialize_socket_app():
     """
     Start our redis subscriber when the server starts.
     """
-    fastapi_app.state.redis_listener = RedisListener(sio)
+    fastapi_app.state.redis_listener = RedisListener(sio, channel="miner_broadcast")
     asyncio.create_task(fastapi_app.state.redis_listener.start())
 
 

@@ -76,6 +76,45 @@ socket:
               values: ["true"]
   tolerations: []
 
+eventSocket:
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  replicaCount: 1
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  service:
+    type: NodePort
+    nodePort: 32004
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+          - matchExpressions:
+            - key: nvidia.com/gpu.present
+              operator: NotIn
+              values: ["true"]
+  tolerations: []
+
 forge:
   replicaCount: 4
   image: parachutes/forge:latest

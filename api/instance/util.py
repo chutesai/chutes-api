@@ -77,6 +77,19 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
                             }
                         ).decode(),
                     )
+                    await settings.redis_client.publish(
+                        "events",
+                        json.dumps(
+                            {
+                                "reason": "bounty_change",
+                                "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
+                                "data": {
+                                    "chute_id": chute_id,
+                                    "bounty": bounty,
+                                },
+                            }
+                        ).decode(),
+                    )
                 await asyncio.sleep(1)
                 result = await session.execute(query)
                 instances = result.scalars().unique().all()

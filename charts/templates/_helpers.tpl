@@ -10,6 +10,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "eventSocket.labels" -}}
+app.kubernetes.io/name: socket
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "paymentWatcher.labels" -}}
 app.kubernetes.io/name: payment-watcher
 redis-access: "true"

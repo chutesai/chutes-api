@@ -517,11 +517,11 @@ async def verify_instance(instance_id: str):
         # Broadcast the event.
         try:
             await settings.redis_client.publish(
-                "user_broadcast",
+                "events",
                 json.dumps(
                     {
                         "reason": "instance_hot",
-                        "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} '{instance.chute.name}' has been verified, now 'hot'!",
+                        "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} chute {instance.chute_id} has been verified, now 'hot'!",
                         "data": {
                             "chute_id": instance.chute_id,
                             "miner_hotkey": instance.miner_hotkey,

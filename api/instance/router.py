@@ -113,11 +113,11 @@ async def create_instance(
     # Broadcast the event.
     try:
         await settings.redis_client.publish(
-            "user_broadcast",
+            "events",
             json.dumps(
                 {
                     "reason": "instance_created",
-                    "message": f"Miner {instance.miner_hotkey} has provisioned an instance of '{chute.name}' on {gpu_count}x{gpu_type}",
+                    "message": f"Miner {instance.miner_hotkey} has provisioned an instance of chute {chute.chute_id} on {gpu_count}x{gpu_type}",
                     "data": {
                         "chute_id": instance.chute_id,
                         "gpu_count": gpu_count,
@@ -156,11 +156,11 @@ async def activate_instance(
     # Broadcast the event.
     try:
         await settings.redis_client.publish(
-            "user_broadcast",
+            "events",
             json.dumps(
                 {
                     "reason": "instance_activated",
-                    "message": f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} '{instance.chute.name}', waiting for verification...",
+                    "message": f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}, waiting for verification...",
                     "data": {
                         "chute_id": instance.chute_id,
                         "miner_hotkey": instance.miner_hotkey,
