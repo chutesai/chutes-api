@@ -499,6 +499,16 @@ async def verify_instance(instance_id: str):
         except Exception:
             logger.error(f"Failed to perform filesystem validation for {instance_id=}")
 
+        # Device info challenges.
+        futures = []
+        for _ in range(settings.device_info_challenge_count):
+            futures.append(check_device_info_challenge(instance.nodes))
+            if len(futures) == 10:
+                if not all(await asyncio.gather(*futures)):
+                    logger.warning(f"{instance_id=} failed one or more device info challenges")
+                    return False
+                futures = []
+
         # Looks good!
         instance.verified = True
         await session.commit()
