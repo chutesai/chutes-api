@@ -408,24 +408,24 @@ async def generate_fs_challenges(image_id: str):
                             "expected": hashlib.sha256(head[offset : offset + length]).hexdigest(),
                         }
                     )
-                    if tail:
-                        length = random.randint(10, len(tail))
-                        offset = (
-                            0
-                            if length == len(tail)
-                            else random.randint(size - len(tail) - length - 1, size - len(tail))
-                        )
-                        challenges.append(
-                            {
-                                "filename": filename,
-                                "length": length,
-                                "offset": offset,
-                                "type": suffix,
-                                "expected": hashlib.sha256(
-                                    tail[offset - size : offset - size + length]
-                                ).hexdigest(),
-                            }
-                        )
+                    # if tail:
+                    #    length = random.randint(10, len(tail))
+                    #    offset = (
+                    #        0
+                    #        if length == len(tail)
+                    #        else random.randint(size - len(tail) - length - 1, size - len(tail))
+                    #    )
+                    #    challenges.append(
+                    #        {
+                    #            "filename": filename,
+                    #            "length": length,
+                    #            "offset": offset,
+                    #            "type": suffix,
+                    #            "expected": hashlib.sha256(
+                    #                tail[offset - size : offset - size + length]
+                    #            ).hexdigest(),
+                    #        }
+                    #    )
 
     # Persist all of the challenges to DB.
     logger.info(f"About to save {len(challenges)} challenges for {image_id=}")

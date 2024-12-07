@@ -337,7 +337,12 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
         timeout=3.0,
     ) as resp:
         resp.raise_for_status()
-        assert (await resp.text()) == challenge.expected
+        result = await resp.text()
+        if result != challenge.expected:
+            logger.warning(f"Expected {challenge.expected}, got {result}: {challenge}")
+            return False
+        logger.success(f"Successfully processed filesystem challenge: {challenge}")
+        return True
 
 
 async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
@@ -436,7 +441,7 @@ async def verify_instance(instance_id: str):
         # Notify the miner.
         try:
             async with miner_client.axon_patch(
-                nodes[0].miner_hotkey, f"/deployments/{instance_id}", payload={"verified": True}
+                instance.miner_hotkey, f"/deployments/{instance_id}", payload={"verified": True}
             ) as resp:
                 resp.raise_for_status()
         except Exception as exc:
