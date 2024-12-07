@@ -433,6 +433,18 @@ async def verify_instance(instance_id: str):
         await session.commit()
         await session.refresh(instance)
 
+        # Notify the miner.
+        try:
+            async with miner_client.axon_patch(
+                nodes[0].miner_hotkey, f"/deployments/{instance_id}", payload={"verified": True}
+            ) as resp:
+                resp.raise_for_status()
+        except Exception as exc:
+            # Allow exceptions here since the miner can also check.
+            logger.warning(
+                f"Error notifying miner that instance/deployment is verified: {exc}\n{traceback.format_exc()}"
+            )
+
         # Broadcast the event.
         try:
             await settings.redis_client.publish(

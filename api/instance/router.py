@@ -148,8 +148,10 @@ async def activate_instance(
             detail='Patch endpoint only supports {"active": true} as request body.',
         )
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)
-    if not instance.active:
-        instance.active = True
+    if instance.active:
+        return instance
+
+    instance.active = True
     await db.commit()
     await db.refresh(instance)
 
