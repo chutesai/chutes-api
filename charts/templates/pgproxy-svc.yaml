@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "pgproxy.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.pgproxy.service.type }}
+  clusterIP: None
   ports:
     - port: {{ .Values.pgproxy.service.port }}
       targetPort: pgproxy

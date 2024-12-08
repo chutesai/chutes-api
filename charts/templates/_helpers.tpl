@@ -50,12 +50,12 @@ db-access: "true"
 app.kubernetes.io/name: redis
 {{- end }}
 
-{{- define "pgproxy.labels" -}}
-app.kubernetes.io/name: pgproxy
-{{- end }} 
-
 {{- define "registry.labels" -}}
 app.kubernetes.io/name: registry
+{{- end }}
+
+{{- define "pgproxy.labels" -}}
+app.kubernetes.io/name: pgproxy
 {{- end }}
 
 {{- define "registryProxy.labels" -}}

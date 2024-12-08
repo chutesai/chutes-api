@@ -5,9 +5,6 @@ metadata:
   labels:
     {{- include "pgproxy.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.pgproxy.replicaCount }}
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       {{- include "pgproxy.labels" . | nindent 6 }}

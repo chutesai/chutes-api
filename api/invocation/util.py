@@ -35,6 +35,8 @@ GROUP BY i.chute_id"""
             item["per_second_price_usd"] = (
                 float(item.pop("compute_multiplier")) * COMPUTE_UNIT_PRICE_BASIS / 3600
             )
-            item["total_compute_time"] = float(item["total_compute_time"])
+            item["total_compute_time"] = (
+                float(item["total_compute_time"]) if item.get("total_compute_time") else 0
+            )
             item["total_usage_usd"] = item["per_second_price_usd"] * item["total_compute_time"]
             yield item
