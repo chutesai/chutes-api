@@ -11,7 +11,7 @@ db-access: "true"
 {{- end }}
 
 {{- define "eventSocket.labels" -}}
-app.kubernetes.io/name: socket
+app.kubernetes.io/name: event-socket
 redis-access: "true"
 db-access: "true"
 {{- end }}

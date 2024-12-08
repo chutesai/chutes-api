@@ -26,7 +26,7 @@ async def initialize_socket_app():
     """
     Start our redis subscriber when the server starts.
     """
-    fastapi_app.state.redis_listener = RedisListener(sio, channel="miner_broadcast")
+    fastapi_app.state.redis_listener = RedisListener(sio, "miner_broadcast")
     asyncio.create_task(fastapi_app.state.redis_listener.start())
 
 
