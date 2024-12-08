@@ -160,6 +160,7 @@ async def set_weights_periodically() -> None:
     )
 
     consecutive_failures = 0
+    set_weights_interval_blocks = 150
     while True:
         substrate, current_block = query_substrate(
             substrate, "System", "Number", [], return_value=True
@@ -173,11 +174,12 @@ async def set_weights_periodically() -> None:
         )
         updated: float = current_block - last_updated_value[uid].value
         logger.info(f"Last updated: {updated} for my uid: {uid}")
-        if updated < 150:
+        if updated < set_weights_interval_blocks:
+            blocks_to_sleep = set_weights_interval_blocks - updated + 1
             logger.info(
-                f"Last updated: {updated} - sleeping for a bit as we set recently..."
+                f"Last updated: {updated} - sleeping for {blocks_to_sleep} blocks as we set recently..."
             )
-            await asyncio.sleep(12 * 25)  # sleep for 25 blocks
+            await asyncio.sleep(12 * blocks_to_sleep)  # sleep until we can set weights
             continue
 
         if os.getenv("ENV", "prod").lower() == "dev":
