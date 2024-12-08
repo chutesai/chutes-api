@@ -1,5 +1,5 @@
 api:
-  replicaCount: 3
+  replicaCount: 4
   image: parachutes/validator:latest
   imagePullPolicy: Always
   livenessProbe:
@@ -29,18 +29,29 @@ api:
   nodeSelector: {}
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - api
+          topologyKey: kubernetes.io/hostname
   tolerations: []
 
 socket:
   image: parachutes/validator:latest
   imagePullPolicy: Always
-  replicaCount: 1
+  replicaCount: 2
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -68,12 +79,23 @@ socket:
   nodeSelector: {}
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - socket
+          topologyKey: kubernetes.io/hostname
   tolerations: []
 
 eventSocket:
@@ -107,16 +129,27 @@ eventSocket:
   nodeSelector: {}
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - event-socket
+          topologyKey: kubernetes.io/hostname
   tolerations: []
 
 forge:
-  replicaCount: 4
+  replicaCount: 8
   image: parachutes/forge:latest
   imagePullPolicy: Always
   resources:
@@ -129,12 +162,23 @@ forge:
   nodeSelector: {}
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - forge
+          topologyKey: kubernetes.io/hostname
   tolerations: []
 
 gravalWorker:
@@ -150,12 +194,23 @@ gravalWorker:
       memory: "1Gi"
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - graval-worker
+          topologyKey: kubernetes.io/hostname
   tolerations: []
 
 paymentWatcher:
@@ -187,12 +242,12 @@ paymentWatcher:
   nodeSelector: {}
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
   tolerations: []
 
 metasync:
@@ -209,12 +264,12 @@ metasync:
   nodeSelector: {}
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
-              operator: NotIn
-              values: ["true"]
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
   tolerations: []
 
 graval:
@@ -263,12 +318,23 @@ graval:
     kubernetes.io/hostname: chutes-prod-gpu-0
   affinity:
     nodeAffinity:
-        requiredDuringSchedulingIgnoredDuringExecution:
-          nodeSelectorTerms:
-          - matchExpressions:
-            - key: nvidia.com/gpu.present
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: In
+            values: ["true"]
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
               operator: In
-              values: ["true"]
+              values:
+              - graval
+          topologyKey: kubernetes.io/hostname
   tolerations: []
 
 redis:
@@ -301,12 +367,19 @@ redis:
 pgproxy:
   image: haproxy:3.1
   imagePullPolicy: IfNotPresent
-  replicaCount: 1
-  nodeSelector:
-    kubernetes.io/hostname: chutes-prod-0
   real_host: 10.245.112.2
   real_port: 5432
-  affinity: {}
+  wireguard_ips:
+    - 192.168.0.1
+    - 192.168.0.2
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
   tolerations: []
   resources:
     requests:

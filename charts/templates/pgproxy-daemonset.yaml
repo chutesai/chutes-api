@@ -1,13 +1,10 @@
 apiVersion: apps/v1
-kind: Deployment
+kind: DaemonSet
 metadata:
   name: pgproxy
   labels:
     {{- include "pgproxy.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.pgproxy.replicaCount }}
-  strategy:
-    type: Recreate
   selector:
     matchLabels:
       {{- include "pgproxy.labels" . | nindent 6 }}
