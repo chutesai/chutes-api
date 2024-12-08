@@ -2,7 +2,6 @@
 Calculates and schedules weights every SCORING_PERIOD
 """
 
-import os
 from api.database import get_session
 from sqlalchemy import text
 
