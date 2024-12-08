@@ -18,8 +18,6 @@ from metasync.config import settings
 from fiber.chain.chain_utils import query_substrate
 
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
-
-
 logger = get_logger(__name__)
 
 
