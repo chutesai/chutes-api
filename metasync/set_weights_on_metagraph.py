@@ -181,15 +181,13 @@ async def set_weights_periodically() -> None:
             )
             await asyncio.sleep(12 * blocks_to_sleep)  # sleep until we can set weights
             continue
+            
 
-        if os.getenv("ENV", "prod").lower() == "dev":
+        try:
             success = await _get_and_set_weights()
-        else:
-            try:
-                success = await _get_and_set_weights()
-            except Exception as e:
-                logger.error(f"Failed to set weights with error: {e}")
-                success = False
+        except Exception as e:
+            logger.error(f"Failed to set weights with error: {e}")
+            success = False
 
         if success:
             consecutive_failures = 0
