@@ -68,13 +68,15 @@ async def _get_weights_to_set(
             item = dict(row)
             miner_compute_units[item["miner_uid"]] = item["compute_units"]
 
-    node_hotkeys, node_weights = zip(*miner_compute_units.items())
-    node_ids = [
-        hotkeys_to_node_ids[hotkey]
-        for hotkey in node_hotkeys
-        if hotkey in hotkeys_to_node_ids
-    ]
-    # If hotkey is not in hotkeys_to_node_ids, it means the node is not on the metagraph, so ignore
+    node_ids = []
+    node_weights = []
+    for hotkey, compute_units in miner_compute_units.items():
+        if hotkey not in hotkeys_to_node_ids:
+            logger.debug(f"Miner {hotkey} not found on metagraph. Ignoring.")
+            continue
+
+        node_weights.append(compute_units)
+        node_ids.append(hotkeys_to_node_ids[hotkey])
 
     return node_ids, node_weights
 
