@@ -2,13 +2,12 @@
 Redis pubsub classes and methods.
 """
 
+import os
 import asyncio
-import redis.asyncio as redis
 import orjson as json
-from typing import Optional
+import redis.asyncio as redis
 from datetime import datetime
 import api.database.orms  # noqa
-from api.config import settings
 from loguru import logger
 
 
@@ -17,16 +16,17 @@ class RedisListener:
     Redis pubsub subscriber.
     """
 
-    def __init__(self, socket_server, channel: str = "miner_broadcast"):
+    def __init__(self, socket_server, channel: str):
         self.sio = socket_server
         self.channel = channel
-        self.pubsub: Optional[redis.client.PubSub] = None
         self.is_running = False
+        self.pubsub = None
         self.last_reconnect = datetime.now()
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 10
         self.base_delay = 1
         self.max_delay = 30
+        self.redis = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0"))
 
     async def start(self):
         """
@@ -36,7 +36,7 @@ class RedisListener:
         while self.is_running:
             try:
                 if not self.pubsub:
-                    self.pubsub = settings.redis_client.pubsub()
+                    self.pubsub = self.redis.pubsub()
                     await self.pubsub.subscribe(self.channel)
                     logger.info(f"Subscribed to channel: {self.channel}")
                     self.reconnect_attempts = 0
