@@ -66,7 +66,7 @@ async def _get_weights_to_set(
         result = await session.stream(query)
         async for row in result:
             item = dict(row)
-            miner_compute_units[item["miner_uid"]] = item["compute_units"]
+            miner_compute_units[item["miner_hotkey"]] = item["compute_units"]
 
     node_ids = []
     node_weights = []
