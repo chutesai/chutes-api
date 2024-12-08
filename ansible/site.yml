@@ -70,6 +70,7 @@
     - name: Install basic system prerequisites
       apt:
         name:
+          - socat
           - vim
           - jq
           - bc
@@ -168,7 +169,6 @@
               - nvidia-fabricmanager-560
               - linux-nvidia-hwe-22.04
             state: present
-          register: gpu_setup
 
         - name: Configure NVIDIA Fabric Manager
           systemd:
@@ -407,6 +407,7 @@
       apt:
         name: nvidia-container-toolkit
         state: present
+      when: gpu_enabled | bool
 
     - name: Configure NVIDIA Container Toolkit
       shell: |
@@ -432,3 +433,4 @@
         name: docker
         state: restarted
       when: container_runtime.changed
+      ignore_errors: yes
