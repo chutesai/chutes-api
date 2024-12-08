@@ -300,7 +300,7 @@ async def invoke_(
     if not targets:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No instances available (yet) for {chute_id=}",
+            detail=f"No instances available (yet) for {chute_id=}",
         )
 
     # Identify the upstream path to call.

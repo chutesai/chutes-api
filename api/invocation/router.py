@@ -101,9 +101,10 @@ async def hostname_invocation(
     kwargs = base64.b64encode(gzip.compress(pickle.dumps(request_body))).decode()
     targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
     if not targets:
+        chute_id = request.state.chute_id
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="No instances available (yet) for {chute_id=}",
+            detail=f"No instances available (yet) for {chute_id=}",
         )
 
     # To stream, or not to stream.

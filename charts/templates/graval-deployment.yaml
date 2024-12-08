@@ -36,6 +36,11 @@ spec:
           command: ["poetry", "run", "python", "api/graval_server.py", "--port", "{{ .Values.graval.service.targetPort }}", "--validator-whitelist", "{{ join "," .Values.graval.validatorWhitelist }}"]
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: POSTGRES_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: plain-url
           ports:
             - name: http
               containerPort: {{ .Values.graval.service.targetPort }}

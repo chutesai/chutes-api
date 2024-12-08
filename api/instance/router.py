@@ -148,30 +148,30 @@ async def activate_instance(
             detail='Patch endpoint only supports {"active": true} as request body.',
         )
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)
-    if instance.active:
+    if instance.active and instance.verified:
         return instance
+    elif not instance.active:
+        instance.active = True
+        await db.commit()
+        await db.refresh(instance)
 
-    instance.active = True
-    await db.commit()
-    await db.refresh(instance)
-
-    # Broadcast the event.
-    try:
-        await settings.redis_client.publish(
-            "events",
-            json.dumps(
-                {
-                    "reason": "instance_activated",
-                    "message": f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}, waiting for verification...",
-                    "data": {
-                        "chute_id": instance.chute_id,
-                        "miner_hotkey": instance.miner_hotkey,
-                    },
-                }
-            ).decode(),
-        )
-    except Exception as exc:
-        logger.warning(f"Error broadcasting instance event: {exc}")
+        # Broadcast the event.
+        try:
+            await settings.redis_client.publish(
+                "events",
+                json.dumps(
+                    {
+                        "reason": "instance_activated",
+                        "message": f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}, waiting for verification...",
+                        "data": {
+                            "chute_id": instance.chute_id,
+                            "miner_hotkey": instance.miner_hotkey,
+                        },
+                    }
+                ).decode(),
+            )
+        except Exception as exc:
+            logger.warning(f"Error broadcasting instance event: {exc}")
 
     # Kick off validation.
     await verify_instance.kiq(instance_id)

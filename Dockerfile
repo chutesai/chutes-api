@@ -65,7 +65,7 @@ ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--
 # GraVal
 FROM nvidia/cuda:12.2.2-devel-ubuntu22.04 AS graval
 RUN apt-get update
-RUN apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev libexpat1-dev lzma liblzma-dev libpq-dev
+RUN apt-get -y install build-essential zlib1g-dev libncurses5-dev libgdbm-dev libnss3-dev libssl-dev libreadline-dev libffi-dev libsqlite3-dev wget libbz2-dev libexpat1-dev lzma liblzma-dev libpq-dev postgresql-client
 WORKDIR /usr/src
 RUN wget https://www.python.org/ftp/python/3.12.7/Python-3.12.7.tgz
 RUN tar -xzf Python-3.12.7.tgz
