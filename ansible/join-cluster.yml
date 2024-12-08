@@ -50,11 +50,3 @@
       shell: "microk8s kubectl label nodes {{ item }} chutes/external-ip={{ hostvars[item].external_ip }} --overwrite"
       when: is_primary | bool
       loop: "{{ groups['all'] }}"
-
-
-    - name: Label porter nodes
-      shell: "microk8s kubectl label nodes {{ item }} chutes-porter=true --overwrite"
-      when:
-        - is_primary | bool
-        - hostvars[item].porter | bool
-      loop: "{{ groups['all'] }}"

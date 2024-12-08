@@ -6,7 +6,6 @@
     ssh_public_key: "{{ ssh_key }}"
     microk8s_channel: "1.31/stable"
     enable_gpu: "{{ gpu_enabled | default(false) }}"
-    is_porter: "{{ porter | default(false) }}"
 
   tasks:
     - name: Set environment variables
@@ -283,6 +282,18 @@
         name: wg-quick@wg0
         enabled: yes
         state: started
+
+    - name: Configure custom routes
+      template:
+        src: 99-custom-routes.yaml.j2
+        dest: /etc/netplan/99-custom-routes.yaml
+        mode: '0400'
+      when: overlapping_cidr is defined and overlapping_cidr | length > 0
+
+    - name: Apply custom routes
+      shell: netplan apply
+      become: true
+      when: overlapping_cidr is defined and overlapping_cidr | length > 0
 
     - name: Install MicroK8s
       community.general.snap:
