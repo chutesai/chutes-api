@@ -6,8 +6,6 @@ metadata:
     {{- include "graval.labels" . | nindent 4 }}
 spec:
   type: NodePort
-  internalTrafficPolicy: Local
-  externalTrafficPolicy: Local
   ports:
     - nodePort: {{ .Values.graval.service.nodePort }}
       port: {{ .Values.graval.service.port }}
