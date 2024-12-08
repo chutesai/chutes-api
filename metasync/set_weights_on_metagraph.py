@@ -181,7 +181,6 @@ async def set_weights_periodically() -> None:
             )
             await asyncio.sleep(12 * blocks_to_sleep)  # sleep until we can set weights
             continue
-            
 
         try:
             success = await _get_and_set_weights()
@@ -191,19 +190,16 @@ async def set_weights_periodically() -> None:
 
         if success:
             consecutive_failures = 0
-            logger.info(
-                "Successfully set weights! Sleeping for 25 blocks before next check..."
-            )
-
-            await asyncio.sleep(12 * 25)  # Sleep for 25 blocks
+            logger.info("Successfully set weights!")
             continue
 
         consecutive_failures += 1
 
         logger.info(
-            f"Failed to set weights {consecutive_failures} times in a row - sleeping for 25 blocks..."
+            f"Failed to set weights {consecutive_failures} times in a row"
+            " - sleeping for 10 blocks before trying again..."
         )
-        await asyncio.sleep(12 * 25)  # Try again in 25 blocks
+        await asyncio.sleep(12 * 10)  # Try again in 10 blocks
 
 
 async def main():
