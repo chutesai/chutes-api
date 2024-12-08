@@ -369,17 +369,8 @@ pgproxy:
   imagePullPolicy: IfNotPresent
   real_host: 10.245.112.2
   real_port: 5432
-  wireguard_ips:
-    - 192.168.0.1
-    - 192.168.0.2
-  affinity:
-    nodeAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        nodeSelectorTerms:
-        - matchExpressions:
-          - key: nvidia.com/gpu.present
-            operator: NotIn
-            values: ["true"]
+  nodeSelector:
+    kubernetes.io/hostname: chutes-prod-0
   tolerations: []
   resources:
     requests:
@@ -389,7 +380,6 @@ pgproxy:
       cpu: 0.5
       memory: 512Mi
   service:
-    type: ClusterIP
     port: 5432
 
 registry:

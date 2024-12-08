@@ -40,7 +40,7 @@ spec:
               valueFrom:
                 secretKeyRef:
                   name: postgres-secret
-                  key: plain-url
+                  key: graval-url
           ports:
             - name: http
               containerPort: {{ .Values.graval.service.targetPort }}
