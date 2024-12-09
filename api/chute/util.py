@@ -19,6 +19,7 @@ from sqlalchemy.orm import selectinload
 from api.config import settings
 from api.constants import ENCRYPTED_HEADER
 from api.database import get_session
+from api.exceptions import InstanceRateLimit
 from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
@@ -185,14 +186,14 @@ async def _invoke_one(
                         "device_id": target_index,
                         "seed": seed,
                     },
-                    timeout=30.0,
+                    timeout=3.0,
                 ) as resp:
                     payload = await resp.json()
                     encrypted = True
             except Exception as exc:
                 logger.error(f"Error encrypting payload: {exc}, sending plain text")
 
-    session = aiohttp.ClientSession(raise_for_status=True)
+    session = aiohttp.ClientSession()
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
     if encrypted:
         headers.update({ENCRYPTED_HEADER: "true"})
@@ -204,27 +205,30 @@ async def _invoke_one(
         data=payload_string,
         headers=headers,
     )
-    if stream:
-        try:
+    try:
+        if response.status == 429:
+            raise InstanceRateLimit(
+                "Instance {target.instance_id=} has returned a rate limit error!"
+            )
+        response.raise_for_status()
+        if stream:
             async for chunk in response.content:
                 yield chunk.decode()
-        finally:
-            await response.release()
-            await session.close()
-    else:
-        content_type = response.headers.get("content-type")
-        if content_type in (None, "application/json"):
-            json_data = await response.json()
-            data = {"content_type": content_type, "json": json_data}
-        elif content_type.startswith("text/"):
-            text_data = await response.text()
-            data = {"content_type": content_type, "text": text_data}
         else:
-            raw_data = await response.read()
-            data = {"content_type": content_type, "bytes": base64.b64encode(raw_data).decode()}
+            content_type = response.headers.get("content-type")
+            if content_type in (None, "application/json"):
+                json_data = await response.json()
+                data = {"content_type": content_type, "json": json_data}
+            elif content_type.startswith("text/"):
+                text_data = await response.text()
+                data = {"content_type": content_type, "text": text_data}
+            else:
+                raw_data = await response.read()
+                data = {"content_type": content_type, "bytes": base64.b64encode(raw_data).decode()}
+            yield data
+    finally:
         await response.release()
         await session.close()
-        yield data
 
 
 async def invoke(
@@ -368,6 +372,9 @@ async def invoke(
             )
             return
         except Exception as exc:
+            error_message = f"{exc}\n{traceback.format_exc()}"
+            if isinstance(exc, InstanceRateLimit):
+                error_message = "RATE_LIMIT"
             async with get_session() as session:
                 await session.execute(
                     text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
@@ -375,7 +382,7 @@ async def invoke(
                         "chute_id": chute_id,
                         "invocation_id": invocation_id,
                         "miner_uid": target.miner_uid,
-                        "error_message": f"{exc}\n{traceback.format_exc()}",
+                        "error_message": error_message,
                         "response_path": None,
                     },
                 )
