@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: graval
+  name: graval-external
   labels:
     {{- include "graval.labels" . | nindent 4 }}
 spec:
@@ -9,6 +9,22 @@ spec:
   ports:
     - nodePort: {{ .Values.graval.service.nodePort }}
       port: {{ .Values.graval.service.port }}
+      targetPort: {{ .Values.graval.service.targetPort }}
+      name: validator-graval
+  selector:
+    {{- include "graval.labels" . | nindent 4 }}
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: graval
+  labels:
+    {{- include "graval.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.graval.service.port }}
       targetPort: {{ .Values.graval.service.targetPort }}
       name: validator-graval
   selector:

@@ -261,6 +261,7 @@ metasync:
     limits:
       cpu: "1"
       memory: "512Mi"
+  subtensor: wss://entrypoint-finney.opentensor.ai
   nodeSelector: {}
   affinity:
     nodeAffinity:

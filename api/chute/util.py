@@ -191,7 +191,9 @@ async def _invoke_one(
                     payload = await resp.json()
                     encrypted = True
             except Exception as exc:
-                logger.error(f"Error encrypting payload: {exc}, sending plain text")
+                logger.error(
+                    f"Error encrypting payload: {str(exc)}, sending plain text\n{traceback.format_exc()}"
+                )
 
     session = aiohttp.ClientSession()
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)

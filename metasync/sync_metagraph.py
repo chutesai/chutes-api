@@ -24,7 +24,7 @@ async def sync_and_save_metagraph(redis_client):
     """
     Load the metagraph for our subnet and persist it to the database.
     """
-    substrate = get_substrate()
+    substrate = get_substrate(subtensor_address=settings.subtensor)
     nodes = get_nodes_for_netuid(substrate, settings.netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")

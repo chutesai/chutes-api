@@ -34,6 +34,8 @@ spec:
           imagePullPolicy: {{ .Values.metasync.imagePullPolicy }}
           command: ["python", "metasync/sync_metagraph.py"]
           env:
+            - name: SUBTENSOR_ADDRESS
+              value: {{ .Values.metasync.subtensor }}
             - name: POSTGRESQL
               valueFrom:
                 secretKeyRef:
