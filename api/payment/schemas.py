@@ -25,6 +25,7 @@ class Payment(Base):
     fmv = Column(Double, nullable=False)
     usd_amount = Column(Double, nullable=False)
     transaction_hash = Column(String, nullable=False)
+    purpose = Column(String, default="credits")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

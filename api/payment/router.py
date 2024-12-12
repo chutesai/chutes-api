@@ -2,14 +2,27 @@
 Payments router.
 """
 
-from fastapi import APIRouter, status, HTTPException
+from pydantic import BaseModel
+from datetime import datetime, timedelta, timezone
+from fastapi import APIRouter, status, HTTPException, Depends
 from fastapi_cache.decorator import cache
+from sqlalchemy.ext.asyncio import AsyncSession
 from api.gpu import COMPUTE_MULTIPLIER, COMPUTE_MIN
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS, PAYOUT_STRUCTURE
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
+from api.database import get_db_session
+from api.user.util import refund_deposit
+from api.user.schemas import User
+from api.user.service import get_current_user
+from api.payment.schemas import Payment
+from sqlalchemy import select, desc
 
 router = APIRouter()
+
+
+class ReturnDepositArgs(BaseModel):
+    address: str
 
 
 @cache(expire=60)
@@ -84,4 +97,52 @@ async def get_payout_structure():
             key: {k: v for k, v in value.items() if not k.startswith("address")}
             for key, value in PAYOUT_STRUCTURE.items()
         },
+    }
+
+
+@router.get("/developer_deposit")
+async def get_developer_deposit():
+    """
+    Get the USD/tao amount required to enable developer mode.
+    """
+    current_tao_price = await get_fetcher().get_price("tao")
+    return {
+        "usd": settings.developer_deposit,
+        "tao_estimate": settings.developer_deposit / current_tao_price,
+        "message": "Price fluctuations dictate you should probably send a bit more than the estimate.",
+    }
+
+
+@router.post("/return_developer_deposit")
+async def return_developer_deposit(
+    args: ReturnDepositArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    query = (
+        select(Payment)
+        .where(Payment.user_id == current_user.user_id)
+        .order_by(desc(Payment.created_at))
+        .limit(1)
+    )
+    recent_payment = (await db.execute(query)).scalar_one_or_none()
+    if not recent_payment:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You have not made any payments to the developer deposit address: {current_user.developer_deposit_address}",
+        )
+    if datetime.now(timezone.utc) - recent_payment.created_at <= timedelta(days=7):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You must wait at least 7 days between payment and cancellation, most recent payment: {recent_payment.created_at}",
+        )
+    result, message = await refund_deposit(current_user.user_id, args.address)
+    if not result:
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        )
+    return {
+        "status": "transferred",
+        "message": message,
     }

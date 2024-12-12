@@ -5,7 +5,7 @@ User routes.
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from api.database import get_db_session
 from api.user.schemas import UserRequest, User
-from api.user.response import RegistrationResponse
+from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
@@ -13,6 +13,14 @@ from api.user.util import validate_the_username, generate_payment_address
 from sqlalchemy import select
 
 router = APIRouter()
+
+
+@router.get("/me", response_model=SelfResponse)
+async def me(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    return current_user
 
 
 # NOTE: Allow registertation without a hotkey and coldkey, for normal plebs?

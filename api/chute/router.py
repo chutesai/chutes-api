@@ -26,6 +26,7 @@ from api.instance.util import discover_chute_targets
 from api.database import get_db_session
 from api.pagination import PaginatedResponse
 from api.config import settings
+from api.util import ensure_is_developer
 
 router = APIRouter()
 
@@ -161,6 +162,8 @@ async def deploy_chute(
     """
     Deploy a chute!
     """
+    await ensure_is_developer(current_user)
+
     image = await get_image_by_id_or_name(chute_args.image, db, current_user)
     if not image:
         raise HTTPException(
