@@ -12,7 +12,7 @@ from api.user.service import get_current_user
 from sqlalchemy import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
-from api.user.util import validate_the_username, generate_payment_address
+from api.user.util import validate_the_username, generate_payment_address, refund_deposit
 from api.payment.schemas import Payment
 from sqlalchemy import select
 
@@ -113,7 +113,7 @@ async def return_developer_deposit(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"You must wait at least 7 days between payment and cancellation, most recent payment: {recent_payment.created_at}",
         )
-    result, message = await return_developer_deposit(current_user, db, args.destination)
+    result, message = await refund_deposit(current_user.user_id, args.address)
     if not result:
         return HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
