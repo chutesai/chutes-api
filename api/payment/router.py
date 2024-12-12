@@ -7,6 +7,7 @@ from fastapi_cache.decorator import cache
 from api.gpu import COMPUTE_MULTIPLIER, COMPUTE_MIN
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS, PAYOUT_STRUCTURE
 from api.fmv.fetcher import get_fetcher
+from api.config import settings
 
 router = APIRouter()
 
@@ -59,6 +60,10 @@ async def get_pricing():
     tao_compute_price = usd_compute_price / current_tao_price
     return {
         "tao_usd": current_tao_price,
+        "first_payment_bonus": {
+            "minimum_payment_usd": settings.first_payment_bonus_threshold,
+            "bonus_amount_usd": settings.first_payment_bonus,
+        },
         "compute_unit_estimate": {
             "usd": usd_compute_price,
             "tao": tao_compute_price,

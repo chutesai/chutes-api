@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: gravaldb
+  labels:
+    {{- include "gravaldb.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  internalTrafficPolicy: Local
+  ports:
+    - port: {{ .Values.gravaldb.service.port }}
+      targetPort: {{ .Values.gravaldb.service.targetPort }}
+      name: gravaldb
+  selector:
+    {{- include "gravaldb.labels" . | nindent 4 }}

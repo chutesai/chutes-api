@@ -58,6 +58,7 @@ async def register(
         hotkey=hotkey,
     )
     user.payment_address, user.wallet_secret = await generate_payment_address()
+    user.developer_payment_address, user.developer_wallet_secret = await generate_payment_address()
     db.add(user)
     await db.commit()
     await db.refresh(user)
@@ -68,5 +69,6 @@ async def register(
         hotkey=user.hotkey,
         coldkey=user.coldkey,
         payment_address=user.payment_address,
+        developer_payment_address=user.developer_payment_address,
         fingerprint=fingerprint,
     )

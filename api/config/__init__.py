@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
     first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "100.0"))
     first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 25.0))
+    developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "2500.0"))
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "32"))
     device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "200"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"

@@ -4,7 +4,7 @@ ORM definitions for users.
 
 from typing import Self
 from pydantic import BaseModel
-from sqlalchemy import func, Column, String, DateTime, Double, Boolean
+from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInt
 from sqlalchemy.orm import relationship, validates
 from api.database import Base
 import hashlib
@@ -40,6 +40,10 @@ class User(Base):
     # Secret (encrypted)
     wallet_secret = Column(String)
 
+    # Developer program/anti-turdnugget deposit address.
+    developer_payment_address = Column(String)
+    developer_wallet_secret = Column(String)
+
     # Balance in USD.
     balance = Column(Double, default=0.0)
 
@@ -51,6 +55,9 @@ class User(Base):
 
     # Gets populated in user/events.py to be a 16 digit alphanumeric which acts as an account id
     fingerprint_hash = Column(String, nullable=False, unique=True)
+
+    # Extra permissions/roles bitmask.
+    permissions_bitmask = Column(BigInt, default=0)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())

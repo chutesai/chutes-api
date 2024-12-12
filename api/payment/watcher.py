@@ -191,6 +191,12 @@ class PaymentMonitor:
                 logger.warning(f"Failed to find user with payment address {to_address}")
                 return
 
+            # Sum payments prior to this one.
+            total_query = select(func.sum(Payment.usd_amount)).where(
+                Payment.user_id == user.user_id
+            )
+            total_payments = (await session.execute(total_query)).scalar() or 0
+
             # Store the payment record.
             payment_id = str(
                 uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{to_address}:{from_address}:{amount}")
@@ -211,11 +217,15 @@ class PaymentMonitor:
             user.balance += delta
 
             # Add in the first payment bonus, if applicable.
+            new_total = total_payments + delta
             if (
                 not user.bonus_used
                 and settings.first_payment_bonus > 0
-                and delta >= settings.first_payment_bonus_threshold
+                and new_total >= settings.first_payment_bonus_threshold
             ):
+                logger.success(
+                    f"User {user.user_id} total payments has reached ${new_total}, applying first payment bonus!"
+                )
                 user.balance += settings.first_payment_bonus
                 user.bonus_used = True
 

@@ -1,3 +1,7 @@
+{{- define "gravaldb.url" -}}
+postgresql://graval:$(POSTGRES_PASSWORD)@gravaldb:{{ .Values.gravaldb.service.port }}/graval
+{{- end }}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -29,18 +33,46 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       runtimeClassName: nvidia-container-runtime
+      initContainers:
+        - name: init-tables
+          image: {{ .Values.gravaldb.image }}
+          command: ['sh', '-c']
+          args:
+            - |
+              cat <<EOF > /tmp/init.sql
+              DO \$\$
+              BEGIN
+                  CREATE TABLE IF NOT EXISTS miner_challenges (
+                      uuid character varying NOT NULL,
+                      seed bigint NOT NULL,
+                      challenge character varying NOT NULL,
+                      challenge_type character varying NOT NULL,
+                      created_at timestamp without time zone DEFAULT now(),
+                      CONSTRAINT miner_challenges_pkey PRIMARY KEY (uuid, seed, challenge_type)
+                  );
+              END;
+              \$\$;
+              EOF
+              PGPASSWORD=$POSTGRES_PASSWORD psql -h gravaldb -U graval -d graval -f /tmp/init.sql
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: gravaldb-secret
+                  key: password
       containers:
         - name: graval
           image: "{{ .Values.graval.image }}"
           imagePullPolicy: {{ .Values.graval.imagePullPolicy }}
           command: ["poetry", "run", "python", "api/graval_server.py", "--port", "{{ .Values.graval.service.targetPort }}", "--validator-whitelist", "{{ join "," .Values.graval.validatorWhitelist }}"]
           env:
-            {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: POSTGRES_URL
+            - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: postgres-secret
-                  key: graval-url
+                  name: gravaldb-secret
+                  key: password
+            - name: POSTGRES_URL
+              value: {{ include "gravaldb.url" . }}
           ports:
             - name: http
               containerPort: {{ .Values.graval.service.targetPort }}

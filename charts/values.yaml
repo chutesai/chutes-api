@@ -338,6 +338,32 @@ graval:
           topologyKey: kubernetes.io/hostname
   tolerations: []
 
+gravaldb:
+  image: postgres:16
+  imagePullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  service:
+    port: 5432
+    targetPort: 5432
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: In
+            values: ["true"]
+  tolerations: []
+
 redis:
   image: redis:7
   imagePullPolicy: IfNotPresent
