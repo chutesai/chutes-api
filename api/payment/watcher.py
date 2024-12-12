@@ -172,7 +172,7 @@ class PaymentMonitor:
             for payment_address, developer_payment_address, updated_at in result:
                 self._payment_addresses.add(payment_address)
                 if developer_payment_address:
-                    self._developer_payment_address.add(developer_payment_address)
+                    self._developer_payment_addresses.add(developer_payment_address)
                 self._user_refresh_timestamp = updated_at
 
     async def _handle_payment(
@@ -296,11 +296,11 @@ class PaymentMonitor:
             session.add(payment)
 
             new_total = total_payments + delta
-            if new_total >= settings.developer_deposit_amount:
+            if new_total >= settings.developer_deposit:
                 logger.success(
                     f"User {user.user_id} total developer deposits has reached ${new_total}, enabling development!"
                 )
-                Permissioning.enable(Permissioning.developer)
+                Permissioning.enable(user, Permissioning.developer)
 
             try:
                 await session.commit()
