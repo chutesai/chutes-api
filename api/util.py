@@ -153,6 +153,6 @@ async def ensure_is_developer(session, user):
         detail=(
             "You do not have developer permissions, to enable developer permissions, "
             f"deposit ${settings.developer_deposit} USD worth of tao (currently ~{required_tao} tao) "
-            "to your developer deposit address: {user.developer_payment_address}"
+            f"to your developer deposit address: {user.developer_payment_address}"
         ),
     )
