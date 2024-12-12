@@ -85,3 +85,16 @@ async def get_payout_structure():
             for key, value in PAYOUT_STRUCTURE.items()
         },
     }
+
+
+@router.get("/developer_deposit")
+async def get_developer_deposit():
+    """
+    Get the USD/tao amount required to enable developer mode.
+    """
+    current_tao_price = await get_fetcher().get_price("tao")
+    return {
+        "usd": settings.developer_deposit,
+        "tao_estimate": settings.developer_deposit / current_tao_price,
+        "message": "Price fluctuations dictate you should probably send a bit more than the estimate.",
+    }

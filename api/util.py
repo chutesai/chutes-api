@@ -16,11 +16,9 @@ from ipaddress import ip_address, IPv4Address, IPv6Address
 from fastapi import status, HTTPException
 from sqlalchemy import func
 from sqlalchemy.future import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
-from api.fmv.fetcher import get_fetcher
-from api.user.schemas import User
 from api.payment.schemas import Payment
+from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
@@ -137,7 +135,7 @@ async def is_valid_host(host: str) -> bool:
     return False
 
 
-async def ensure_is_developer(session: AsyncSession, user: User):
+async def ensure_is_developer(session, user):
     """
     Ensure a user is a developer, otherwise raise exception with helpful info.
     """
