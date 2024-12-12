@@ -4,12 +4,13 @@ ORM definitions for users.
 
 from typing import Self
 from pydantic import BaseModel
-from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInt
+from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInteger
 from sqlalchemy.orm import relationship, validates
 from api.database import Base
 import hashlib
 from api.util import gen_random_token
 from api.user.util import validate_the_username
+from api.permissions import Permissioning, Role
 
 
 # Other fields are populated by listeners
@@ -57,7 +58,7 @@ class User(Base):
     fingerprint_hash = Column(String, nullable=False, unique=True)
 
     # Extra permissions/roles bitmask.
-    permissions_bitmask = Column(BigInt, default=0)
+    permissions_bitmask = Column(BigInteger, default=0)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -95,3 +96,9 @@ class User(Base):
         String representation.
         """
         return f"<User(user_id={self.user_id}, username={self.username})>"
+
+    def has_role(self, role: Role):
+        """
+        Check if a user has a role/permission.
+        """
+        return Permissioning.enabled(self, role)
