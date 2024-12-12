@@ -2,17 +2,25 @@
 User routes.
 """
 
+from pydantic import BaseModel
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Header, status
 from api.database import get_db_session
 from api.user.schemas import UserRequest, User
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
+from sqlalchemy import desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
 from api.user.util import validate_the_username, generate_payment_address
+from api.payment.schemas import Payment
 from sqlalchemy import select
 
 router = APIRouter()
+
+
+class ReturnDepositArgs(BaseModel):
+    address: str
 
 
 @router.get("/me", response_model=SelfResponse)
@@ -80,3 +88,38 @@ async def register(
         developer_payment_address=user.developer_payment_address,
         fingerprint=fingerprint,
     )
+
+
+@router.post("/return_developer_deposit")
+async def return_developer_deposit(
+    args: ReturnDepositArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    query = (
+        select(Payment)
+        .where(Payment.user_id == current_user.user_id)
+        .order_by(desc(Payment.created_at))
+        .limit(1)
+    )
+    recent_payment = (await db.execute(query)).scalar_one_or_none()
+    if not recent_payment:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You have not made any payments to the developer deposit address: {current_user.developer_deposit_address}",
+        )
+    if datetime.now(timezone.utc) - recent_payment.created_at <= timedelta(days=7):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"You must wait at least 7 days between payment and cancellation, most recent payment: {recent_payment.created_at}",
+        )
+    result, message = await return_developer_deposit(current_user, db, args.destination)
+    if not result:
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=message,
+        )
+    return {
+        "status": "transferred",
+        "message": message,
+    }
