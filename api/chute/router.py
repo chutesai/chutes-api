@@ -27,6 +27,7 @@ from api.database import get_db_session
 from api.pagination import PaginatedResponse
 from api.config import settings
 from api.util import ensure_is_developer
+from api.permissions import Permissioning
 
 router = APIRouter()
 
@@ -282,6 +283,12 @@ async def invoke_(
     """
     Invoke a "chute" aka function.
     """
+    if current_user.balance <= 0 and not current_user.has_role(Permissioning.free_account):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
+        )
+
     args = invocation.args
     kwargs = invocation.kwargs
     query = (

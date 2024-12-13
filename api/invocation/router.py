@@ -17,6 +17,7 @@ from api.user.service import get_current_user
 from api.database import get_db_session
 from api.invocation.schemas import Report
 from api.instance.util import discover_chute_targets
+from api.permissions import Permissioning
 
 router = APIRouter()
 host_invocation_router = APIRouter()
@@ -76,6 +77,13 @@ async def hostname_invocation(
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
+        )
+
+    # Check account balance.
+    if current_user.balance <= 0 and not current_user.has_role(Permissioning.free_account):
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
         )
 
     # Identify the cord that we'll trying to access by the public API path and method.

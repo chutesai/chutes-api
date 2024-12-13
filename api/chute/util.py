@@ -26,6 +26,7 @@ from api.user.schemas import User
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
 from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
+from api.permissions import Permissioning
 
 REQUEST_SAMPLE_RATIO = 0.05
 TRACK_INVOCATION = text(
@@ -350,15 +351,18 @@ async def invoke(
                     result = await session.execute(
                         update(User)
                         .where(User.user_id == user_id)
+                        .where(
+                            User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
+                            == 0
+                        )
                         .values(balance=User.balance - balance_used)
                         .returning(User.balance)
                     )
                     new_balance = result.scalar_one_or_none()
                     if new_balance is not None:
-                        logger.debug(
+                        logger.info(
                             f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
                         )
-
                 await session.commit()
 
             yield sse(

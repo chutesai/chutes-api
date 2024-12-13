@@ -9,7 +9,10 @@ from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
+from api.permissions import Permissioning
+from api.config import settings
 from api.user.util import validate_the_username, generate_payment_address
+from substrateinterface import Keypair, KeypairType
 from sqlalchemy import select
 
 router = APIRouter()
@@ -20,7 +23,54 @@ async def me(
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
+    """
+    Get a detailed response for the current user.
+    """
     return current_user
+
+
+@router.get("/link_validator", response_model=SelfResponse)
+async def link_validator(
+    hotkey: str,
+    signature: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Link a validator hotkey to this account, allowing free usage.
+    """
+    signature_string = f"{hotkey}:{current_user.username}"
+    if hotkey in settings.validators:
+        if Keypair(ss58_address=hotkey, crypto_type=KeypairType.SR25519).verify(
+            signature_string, bytes.fromhex(signature)
+        ):
+            # Any other accounts already associated with this validator?
+            existing_validator = (
+                await db.execute(
+                    select(User)
+                    .where(User.validator_hotkey == hotkey)
+                    .where(User.user_id != current_user.user_id)
+                )
+            ).scalar_one_or_none()
+            if existing_validator:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Hotkey already associated with user {existing_validator.username}",
+                )
+
+            # Reload the user since current_user isn't bound to a session, then update.
+            user = (
+                await db.execute(select(User).where(User.user_id == current_user.user_id))
+            ).scalar_one_or_none()
+            user.validator_hotkey = hotkey
+            Permissioning.enable(user, Permissioning.free_account)
+            await db.commit()
+            await db.refresh(user)
+            return user
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid hotkey or signature.",
+    )
 
 
 # NOTE: Allow registertation without a hotkey and coldkey, for normal plebs?
