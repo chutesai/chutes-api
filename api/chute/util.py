@@ -353,18 +353,16 @@ async def invoke(
                         .where(User.user_id == user_id)
                         .where(
                             User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
-                            != 0
+                            == 0
                         )
                         .values(balance=User.balance - balance_used)
-                        .returning(User.balance, User.permissions_bitmask)
+                        .returning(User.balance)
                     )
-                    row = result.first_one_or_none()
-                    if row is not None:
-                        new_balance, permissions_bitmask = row
-                        if permissions_bitmask & Permissioning.free_account.bitmask == 0:
-                            logger.debug(
-                                f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
-                            )
+                    new_balance = result.scalar_one_or_none()
+                    if new_balance is not None:
+                        logger.info(
+                            f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                        )
                 await session.commit()
 
             yield sse(
