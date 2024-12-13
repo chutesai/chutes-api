@@ -27,6 +27,10 @@ class Permissioning:
         bitmask=1 << 3,
         description="Delete users -- administrator role allowing deletion of users.",
     )
+    free_account = Role(
+        bitmask=1 << 4,
+        description="Free invocation -- run anything, for free.",
+    )
 
     @classmethod
     def enabled(cls, user, role):

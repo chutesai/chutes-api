@@ -60,6 +60,9 @@ class User(Base):
     # Extra permissions/roles bitmask.
     permissions_bitmask = Column(BigInteger, default=0)
 
+    # Validator association (for free accounts).
+    validator_hotkey = Column(String, nullable=True)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 

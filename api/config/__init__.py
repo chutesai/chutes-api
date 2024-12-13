@@ -65,10 +65,10 @@ class Settings(BaseSettings):
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
     netuid: int = int(os.getenv("NETUID", "19"))
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
-    first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "100.0"))
-    first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 25.0))
-    developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "100.0"))
-    payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "32"))
+    first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "25.0"))
+    first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 100.0))
+    developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "250.0"))
+    payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "128"))
     device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "200"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     graval_url: str = os.getenv("GRAVAL_URL", "")
@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "256"))
     db_overflow: int = int(os.getenv("DB_OVERFLOW", "32"))
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
+
+    validators: list[str] = os.getenv("VALIDATOR_HOTKEYS", "").split(",")
 
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))

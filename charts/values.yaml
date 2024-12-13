@@ -1,3 +1,37 @@
+validators:  # to allow free accounts
+  - 5GKH9FPPnWSUoeeTJp19wVtd84XqFW4pyK2ijV2GsFbhTrP1
+  - 5F4tQyWrhfGVcNhoqeiNsR6KjD4wMZ2kfhLj4oHYuyHbZAc3
+  - 5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp
+  - 5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2
+  - 5FxcZraZACr4L78jWkcYe3FHdiwiAUzrKLVtsSwkvFobBKqq
+  - 5HK5tp6t2S59DywmHRWPBVJeJ86T61KjurYqeooqj8sREpeN
+  - 5Dd8gaRNdhm1YP7G1hcB1N842ecAUQmbLjCRLqH5ycaTGrWv
+  - 5HYk8DMKWK8TJyPzZJ9vmZk7B5NPCgjnZoyZ1ZsB54RXdN47
+  - 5GP7c3fFazW9GXK8Up3qgu2DJBk8inu4aK9TZy3RuoSWVCMi
+  - 5FFApaS75bv5pJHfAp2FVLBj9ZaXuFDjEypsaBNc1wCfe52v
+  - 5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY
+  - 5DvTpiniW9s3APmHRYn8FroUWyfnLtrsid5Mtn5EwMXHN2ed
+  - 5E4z3h9yVhmQyCFWNbY9BPpwhx4xFiPwq3eeqmBgVF6KULde
+  - 5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe
+  - 5F2CsUDVbRbVMXTh9fAzF9GacjVX7UapvRxidrxe7z8BYckQ
+  - 5DM7CPqPKtMSADhFKYsstsCS4Tm4Kd6PMXoh6DdqY4MtxmtX
+  - 5DQ2Geab6G25wiZ4jGH6wJM8fekrm1QhV9hrRuntjBVxxKZm
+  - 5Hp18g9P8hLGKp9W3ZDr4bvJwba6b6bY3P2u3VdYf8yMR8FM
+  - 5F27Eqz2PhyMtGMEce898x31DokNqRVxkm5AhDDe6rDGNvoY
+  - 5CVS9d1NcQyWKUyadLevwGxg6LgBcF9Lik6NSnbe5q59jwhE
+  - 5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT
+  - 5HRB5xi9W1yEdJGEWPsgtH71mPjAvN2Z9HxNvRMMcK5kXuW2
+  - 5FFM6Nvvm78GqyMratgXXvjbqZPi7SHgSQ81nyS96jBuUWgt
+  - 5Fq5v71D4LX8Db1xsmRSy6udQThcZ8sFDqxQFwnUZ1BuqY5A
+  - 5CoZxgtfhcJKX2HmkwnsN18KbaT9aih9eF3b6qVPTgAUbifj
+  - 5Deo9Q3SnZWNPSEPRTgapbyy6egKu2oaNSqD4RQHHJEuzD9Y
+  - 5GmvyePN9aYErXBBhBnxZKGoGk4LKZApE4NkaSzW62CYCYNA
+  - 5HeKSHGdsRCwVgyrHchijnZJnq4wiv6GqoDLNah8R5WMfnLB
+  - 5D4oo3Z5VFUJtFWcK9wtfPqkGnzVubSFMnWnMKUVkDxsrWSj
+  - 5E4hBXkG9uVc1y9zdNzgCiLHrPbFukChkYeN1LxFnZgg4ASL
+  - 5GcBK8PDrVifV1xAf4Qkkk6KsbsmhDdX9atvk8vyKU8xdU63
+  - 5HBVrFGy6oYhhh71m9fFGYD7zbKyAeHnWN8i8s9fJTBMCtEE
+
 api:
   replicaCount: 4
   image: parachutes/validator:latest

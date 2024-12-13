@@ -34,6 +34,8 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: VALIDATOR_HOTKEYS
+              value: {{ join "," .Values.validators | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}
