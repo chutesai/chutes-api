@@ -66,4 +66,5 @@ class Instance(Base):
             "verified",
             "last_queried_at",
         ),
+        UniqueConstraint("host", "port", name="unique_host_port"),
     )
