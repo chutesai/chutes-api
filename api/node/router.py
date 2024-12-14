@@ -4,9 +4,12 @@ Routes for nodes.
 
 import asyncio
 import random
+from typing import Optional
+from collections import defaultdict
 from taskiq_redis.exceptions import ResultIsMissingError
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlalchemy import select, func, delete
+from fastapi_cache.decorator import cache
+from sqlalchemy import select, func, delete, case
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.database import get_db_session
 from api.config import settings
@@ -21,6 +24,89 @@ from api.constants import HOTKEY_HEADER
 router = APIRouter()
 
 
+async def _list_nodes_compact(db: AsyncSession = Depends(get_db_session)):
+    """
+    List nodes in a compact fashion, aggregating by model and verification status.
+    """
+    verification_status = case((Node.verified_at.is_not(None), True), else_=False).label(
+        "is_verified"
+    )
+    query = select(Node.gpu_identifier, verification_status, func.count().label("count")).group_by(
+        Node.gpu_identifier, verification_status
+    )
+    result = await db.execute(query)
+    stats = result.all()
+    results = {}
+    for row in stats:
+        gpu_id = row.gpu_identifier
+        if gpu_id not in results:
+            results[gpu_id] = {"verified": 0, "unverified": 0}
+        if row.is_verified:
+            results[gpu_id]["verified"] = row.count
+        else:
+            results[gpu_id]["unverified"] = row.count
+    return results
+
+
+@cache(expire=60)
+@router.get("")
+async def list_nodes(
+    model: Optional[str] = None,
+    detailed: Optional[bool] = False,
+    hotkey: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    List full inventory, optionally in detailed view (which lists chutes).
+    """
+    query = select(Node)
+    if not detailed:
+        return await _list_nodes_compact(db)
+
+    # Detailed view, ordered by number of GPUs per miner.
+    query = select(Node)
+    if hotkey:
+        query = query.where(Node.miner_hotkey == hotkey)
+    query = query.order_by(Node.miner_hotkey)
+    result = await db.execute(query)
+    nodes_by_hotkey = defaultdict(list)
+    idle_by_hotkey = defaultdict(dict)
+    total_count = defaultdict(int)
+    for node in result.unique().scalars().all():
+        total_count[node.miner_hotkey] += 1
+        if node.instance:
+            nodes_by_hotkey[node.miner_hotkey].append(
+                {
+                    "gpu": node.gpu_identifier,
+                    "chute": (
+                        {
+                            "username": node.instance.chute.user.username,
+                            "name": node.instance.chute.name,
+                        }
+                        if node.instance.chute.public
+                        else {
+                            "username": None,
+                            "name": "[private chute]",
+                        }
+                    ),
+                }
+            )
+        else:
+            if node.gpu_identifier not in idle_by_hotkey[node.miner_hotkey]:
+                idle_by_hotkey[node.miner_hotkey][node.gpu_identifier] = 0
+            idle_by_hotkey[node.miner_hotkey][node.gpu_identifier] += 1
+
+    sorted_hotkeys = sorted(total_count.keys(), key=lambda k: total_count[k], reverse=True)
+    ordered_nodes = {
+        k: {
+            "provisioned": nodes_by_hotkey[k],
+            "idle": idle_by_hotkey[k],
+        }
+        for k in sorted_hotkeys
+    }
+    return ordered_nodes
+
+
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)
 async def create_nodes(
     args: MultiNodeArgs,
@@ -28,6 +114,9 @@ async def create_nodes(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
+    """
+    Add nodes/GPUs to inventory.
+    """
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
     nodes_args = args.nodes
 
@@ -73,6 +162,9 @@ async def check_verification_status(
         get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="graval")
     ),
 ):
+    """
+    Check taskiq task status, to see if the validator has finished GPU verification.
+    """
     task_parts = task_id.split("::")
     if len(task_parts) != 2 or task_parts[0] != hotkey:
         raise HTTPException(
@@ -105,6 +197,9 @@ async def delete_node(
         get_current_user(purpose="nodes", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
+    """
+    Remove a node from inventory.
+    """
     query = select(Node).where(Node.miner_hotkey == hotkey, Node.uuid == node_id)
     result = await db.execute(query)
     node = result.unique().scalar_one_or_none()

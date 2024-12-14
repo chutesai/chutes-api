@@ -17,7 +17,7 @@ from api.pagination import PaginatedResponse
 router = APIRouter()
 
 
-@router.get("/", response_model=PaginatedResponse)
+@router.get("", response_model=PaginatedResponse)
 async def list_keys(
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
@@ -88,7 +88,7 @@ async def delete_api_key(
     return {"api_key_id": api_key_id, "deleted": True}
 
 
-@router.post("/", response_model=APIKeyCreationResponse)
+@router.post("", response_model=APIKeyCreationResponse)
 async def create_api_key(
     key_args: APIKeyArgs,
     db: AsyncSession = Depends(get_db_session),

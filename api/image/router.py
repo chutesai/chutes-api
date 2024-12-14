@@ -28,7 +28,7 @@ from api.util import ensure_is_developer
 router = APIRouter()
 
 
-@router.get("/", response_model=PaginatedResponse)
+@router.get("", response_model=PaginatedResponse)
 async def list_images(
     include_public: Optional[bool] = False,
     name: Optional[str] = None,
@@ -137,7 +137,7 @@ async def delete_image(
     return {"image_id": image_id, "deleted": True}
 
 
-@router.post("/", status_code=status.HTTP_202_ACCEPTED)
+@router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create_image(
     wait: bool = Form(...),
     build_context: UploadFile = File(...),
