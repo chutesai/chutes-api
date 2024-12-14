@@ -87,7 +87,7 @@ async def list_chutes(
 
     # Pagination.
     query = (
-        query.order_by(Chute.created_at.desc)
+        query.order_by(Chute.created_at.desc())
         .offset((page or 0) * (limit or 25))
         .limit((limit or 25))
     )

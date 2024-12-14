@@ -58,6 +58,11 @@ spec:
                 secretKeyRef:
                   name: s3-credentials
                   key: endpoint-url
+            - name: REGISTRY_STORAGE_S3_ENDPOINT
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint
             - name: REGISTRY_HTTP_SECRET
               valueFrom:
                 secretKeyRef:
@@ -65,6 +70,10 @@ spec:
                   key: password
             - name: REGISTRY_STORAGE_REDIRECT_DISABLE
               value: "{{ .Values.registry.config.redirectDisable }}"
+            - name: REGISTRY_STORAGE_S3_FORCEPATHSTYLE
+              value: "true"
+            - name: REGISTRY_STORAGE_S3_V4AUTH
+              value: "true"
           ports:
             - name: registry
               containerPort: {{ .Values.registry.service.port }}

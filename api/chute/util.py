@@ -84,14 +84,11 @@ WITH removed_bounty AS (
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
     response_path = CAST(:response_path AS TEXT),
-    bounty = CASE
-        WHEN :error_message IS NULL THEN COALESCE((SELECT bounty FROM removed_bounty), bounty)
-        ELSE bounty
-    END
+    bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty)
 WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
 RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
 """
-UPDATE_ERROR_INVOCATION = """
+UPDATE_INVOCATION_ERROR = """
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
     error_message = CAST(:error AS TEXT)
@@ -345,7 +342,6 @@ async def invoke(
                         "chute_id": chute_id,
                         "invocation_id": invocation_id,
                         "miner_uid": target.miner_uid,
-                        "error_message": None,
                         "response_path": response_path,
                     },
                 )
@@ -395,7 +391,7 @@ async def invoke(
                 error_message = "RATE_LIMIT"
             async with get_session() as session:
                 await session.execute(
-                    text(UPDATE_ERROR_INVOCATION.format(suffix=partition_suffix)),
+                    text(UPDATE_INVOCATION_ERROR.format(suffix=partition_suffix)),
                     {
                         "invocation_id": invocation_id,
                         "miner_uid": target.miner_uid,

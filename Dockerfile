@@ -9,6 +9,7 @@ RUN touch /etc/subgid /etc/subuid \
 RUN mkdir -p /root/.config/containers \
   && (echo '[storage]';echo 'driver = "vfs"') > /root/.config/containers/storage.conf
 ADD data/registries.conf /etc/containers/registries.conf
+ADD data/containers.conf /etc/containers/containers.conf
 RUN mkdir -p /root/build /forge
 
 # Kubectl.

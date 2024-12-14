@@ -259,15 +259,15 @@ eventSocket:
   tolerations: []
 
 forge:
-  replicaCount: 8
+  replicaCount: 4
   image: parachutes/forge:latest
   imagePullPolicy: Always
   resources:
     requests:
-      cpu: "4"
+      cpu: "8"
       memory: "32Gi"
     limits:
-      cpu: "4"
+      cpu: "8"
       memory: "32Gi"
   nodeSelector: {}
   affinity:
@@ -544,12 +544,7 @@ registry:
     type: ClusterIP
     port: 5000
   config:
-    storage: s3
-    s3:
-      region: us-east-1
-      bucket: chutes
-      endpoint: https://replaceme
-    redirectDisable: true
+    redirectDisable: false
 
 registryProxy:
   image: nginx:1.27
