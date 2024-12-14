@@ -79,7 +79,7 @@ class Settings(BaseSettings):
 
     validators: list[str] = os.getenv("VALIDATOR_HOTKEYS", "").split(",")
 
-    all_accounts_free: bool = os.getenv("ALL_ACCOUNTS_FREE", "false") == "true"
+    all_accounts_free: bool = os.getenv("ALL_ACCOUNTS_FREE", "false").lower() == "true"
 
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))

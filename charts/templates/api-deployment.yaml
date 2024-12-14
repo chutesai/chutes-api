@@ -36,6 +36,14 @@ spec:
             {{- include "chutes.commonEnv" . | nindent 12 }}
             - name: VALIDATOR_HOTKEYS
               value: {{ join "," .Values.validators | quote }}
+            - name: FIRST_PAYMENT_BONUS
+              value: "{{ .Values.account_settings.first_payment_bonus }}"
+            - name: FIRST_PAYMENT_BONUS_THRESHOLD
+              value: "{{ .Values.account_settings.first_payment_bonus_threshold }}"
+            - name: ALL_ACCOUNTS_FREE
+              value: "{{ .Values.account_settings.all_accounts_free }}"
+            - name: DEVELOPER_DEPOSIT
+              value: "{{ .Values.account_settings.developer_deposit }}"
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

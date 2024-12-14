@@ -2,6 +2,7 @@
 Main API entrypoint.
 """
 
+import os
 import re
 import asyncio
 import fickling
@@ -48,6 +49,28 @@ async def lifespan(_: FastAPI):
     db_url = quote(settings.sqlalchemy.replace("+asyncpg", ""), safe=":/@")
     if "127.0.0.1" in db_url or "@postgres:" in db_url:
         db_url += "?sslmode=disable"
+
+    # dbmate migrations, make sure we only run them in a single process since we use workers > 1
+    worker_pid_file = "/tmp/api.pid"
+    is_migration_process = False
+    try:
+        if not os.path.exists(worker_pid_file):
+            with open(worker_pid_file, "x") as outfile:
+                outfile.write(str(os.getpid()))
+            is_migration_process = True
+        else:
+            with open(worker_pid_file, "r") as infile:
+                designated_pid = int(infile.read().strip())
+            is_migration_process = os.getpid() == designated_pid
+    except FileExistsError:
+        with open(worker_pid_file, "r") as infile:
+            designated_pid = int(infile.read().strip())
+        is_migration_process = os.getpid() == designated_pid
+    if not is_migration_process:
+        yield
+        return
+
+    # Run the migrations.
     process = await asyncio.create_subprocess_exec(
         "dbmate",
         "--url",
