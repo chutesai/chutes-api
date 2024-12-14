@@ -17,7 +17,7 @@ from api.pagination import PaginatedResponse
 router = APIRouter()
 
 
-@router.get("", response_model=PaginatedResponse)
+@router.get("/", response_model=PaginatedResponse)
 async def list_keys(
     page: Optional[int] = 0,
     limit: Optional[int] = 25,

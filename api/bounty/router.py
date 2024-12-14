@@ -22,7 +22,7 @@ class Bounty(BaseModel):
     chute: ChuteResponse
 
 
-@router.get("")
+@router.get("/")
 async def list_bounties(
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):

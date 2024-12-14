@@ -28,7 +28,7 @@ from api.util import ensure_is_developer
 router = APIRouter()
 
 
-@router.get("", response_model=PaginatedResponse)
+@router.get("/", response_model=PaginatedResponse)
 async def list_images(
     include_public: Optional[bool] = False,
     name: Optional[str] = None,

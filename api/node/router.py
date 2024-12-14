@@ -50,7 +50,7 @@ async def _list_nodes_compact(db: AsyncSession = Depends(get_db_session)):
 
 
 @cache(expire=60)
-@router.get("")
+@router.get("/")
 async def list_nodes(
     model: Optional[str] = None,
     detailed: Optional[bool] = False,

@@ -43,7 +43,7 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
         response.current_estimated_price = {"error": "pricing unavailable"}
 
 
-@router.get("", response_model=PaginatedResponse)
+@router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
     name: Optional[str] = None,
