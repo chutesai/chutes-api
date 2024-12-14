@@ -6,11 +6,13 @@ import pybase64 as base64
 import pickle
 import gzip
 import orjson as json
+from datetime import date, datetime
 from io import BytesIO
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import text, String
 from sqlalchemy.ext.asyncio import AsyncSession
+from api.config import settings
 from api.chute.util import get_chute_by_id_or_name, invoke
 from api.user.schemas import User
 from api.user.service import get_current_user
@@ -26,6 +28,61 @@ CHECK_EXISTS = text(
     "SELECT user_id, report_reason, to_char(date_trunc('week', started_at), 'IYYY_IW') AS table_suffix FROM invocations WHERE invocation_id = :invocation_id AND error_message IS NULL"
 ).columns(user_id=String, table_suffix=String, report_reason=String)
 SAVE_REPORT = "UPDATE partitioned_invocations_{table_suffix} SET report_reason = :report_reason, reported_at = CURRENT_TIMESTAMP WHERE invocation_id = :invocation_id AND error_message IS NULL RETURNING reported_at"
+
+
+@router.get("/exports/{year}/{month}/{day}/{hour}.csv")
+async def get_export(
+    year: int,
+    month: int,
+    day: int,
+    hour: int,
+) -> Response:
+    """
+    Get invocation exports for a particular hour.
+    """
+    # Sanity check the dates.
+    valid = True
+    if (
+        (not 2024 <= year <= date.today().year)
+        or not (1 <= month <= 12)
+        or not (1 <= day <= 31)
+        or not (0 <= hour <= 23)
+    ):
+        valid = False
+    target_date = datetime(year, month, day, hour)
+    today = date.today()
+    current_hour = datetime.utcnow()
+    if (
+        target_date > datetime.utcnow()
+        or target_date < datetime(2024, 12, 14, 0)
+        or (target_date.date == today and hour == current_hour)
+    ):
+        valid = False
+    if not valid:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invocations export not found {year=} {month=} {day=} {hour=}",
+        )
+
+    exists = False
+    key = f"/invocations/{year}/{month}/{day}/{hour}.csv"
+    async with settings.s3_client() as s3:
+        try:
+            await s3.head_object(Bucket=settings.storage_bucket, Key=key)
+            exists = True
+        except Exception as exc:
+            if exc.response["Error"]["Code"] != "404":
+                raise
+    if not exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invocations export not found {year=} {month=} {day=} {hour=}",
+        )
+
+    data = BytesIO()
+    async with settings.s3_client() as s3:
+        await s3.download_fileobj(settings.storage_bucket, key, data)
+    return Response(content=data.getvalue(), media_type="text/csv")
 
 
 @router.post("/{invocation_id}/report")

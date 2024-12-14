@@ -505,3 +505,8 @@ registryProxy:
     port: 5000
     nodePort: 32003
     targetPort: 5000
+
+invocationExporter:
+  image: amazon/aws-cli:2.22.17
+  nodeSelector:
+    kubernetes.io/hostname: chutes-prod-0

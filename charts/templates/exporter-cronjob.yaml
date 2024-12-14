@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: invocation-exporter
 spec:
-  schedule: "1 * * * *"
+  schedule: "12 * * * *"
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -21,7 +21,7 @@ spec:
             command: ["/bin/sh", "-c"]
             args:
               - |
-                yum install -y postgresql15 && /scripts/export.sh
+                yum update && yum -y install postgresql && bash /scripts/export.sh
             env:
             - name: AWS_ACCESS_KEY_ID
               valueFrom:
@@ -63,6 +63,11 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: database
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
             volumeMounts:
             - name: export-script
               mountPath: /scripts
