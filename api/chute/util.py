@@ -3,6 +3,7 @@ Application logic and utilities for chutes.
 """
 
 import aiohttp
+import asyncio
 import re
 import uuid
 import random
@@ -82,7 +83,6 @@ WITH removed_bounty AS (
 )
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
-    error_message = CAST(:error_message AS TEXT),
     response_path = CAST(:response_path AS TEXT),
     bounty = CASE
         WHEN :error_message IS NULL THEN COALESCE((SELECT bounty FROM removed_bounty), bounty)
@@ -90,6 +90,12 @@ UPDATE partitioned_invocations_{suffix} SET
     END
 WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
 RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
+"""
+UPDATE_ERROR_INVOCATION = """
+UPDATE partitioned_invocations_{suffix} SET
+    completed_at = CURRENT_TIMESTAMP,
+    error_message = CAST(:error AS TEXT)
+WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
 """
 
 
@@ -343,6 +349,12 @@ async def invoke(
                         "response_path": response_path,
                     },
                 )
+                await session.execute(
+                    text(
+                        "UPDATE instances SET consecutive_failures = 0 WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": target.instance_id},
+                )
 
                 # Calculate the credits used and deduct from user's balance.
                 compute_units = result.scalar_one_or_none()
@@ -383,16 +395,46 @@ async def invoke(
                 error_message = "RATE_LIMIT"
             async with get_session() as session:
                 await session.execute(
-                    text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
+                    text(UPDATE_ERROR_INVOCATION.format(suffix=partition_suffix)),
                     {
-                        "chute_id": chute_id,
                         "invocation_id": invocation_id,
                         "miner_uid": target.miner_uid,
                         "error_message": error_message,
-                        "response_path": None,
                     },
                 )
-                await session.commit()
+
+                # Handle consecutive failures (auto-delete instances).
+                if error_message != "RATE_LIMIT":
+                    consecutive_failures = (
+                        await session.execute(
+                            text(
+                                "UPDATE instances SET consecutive_failures = consecutive_failures + 1 WHERE instance_id = :instance_id RETURNING consecutive_failures"
+                            ),
+                            {"instance_id": target.instance_id},
+                        )
+                    ).scalar_one()
+                    await session.commit()
+                    if consecutive_failures >= settings.consecutive_failure_limit:
+                        await session.execute(
+                            text("DELETE FROM instances WHERE instance_id = :instance_id"),
+                            {"instance_id": target.instance_id},
+                        )
+                        await session.commit()
+                        asyncio.create_task(
+                            settings.redis_client.publish(
+                                "events",
+                                json.dumps(
+                                    {
+                                        "reason": "instance_deleted",
+                                        "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
+                                        "data": {
+                                            "chute_id": target.chute_id,
+                                            "miner_hotkey": target.miner_hotkey,
+                                        },
+                                    }
+                                ).decode(),
+                            )
+                        )
 
             yield sse(
                 {

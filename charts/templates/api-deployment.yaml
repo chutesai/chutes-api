@@ -46,6 +46,8 @@ spec:
               value: "{{ .Values.account_settings.all_accounts_free }}"
             - name: DEVELOPER_DEPOSIT
               value: "{{ .Values.account_settings.developer_deposit }}"
+            - name: CONSECUTIVE_FAILURE_LIMIT
+              value: "{{ .Values.consecutive_failure_limit }}"
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

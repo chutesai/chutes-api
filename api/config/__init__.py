@@ -73,14 +73,22 @@ class Settings(BaseSettings):
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     graval_url: str = os.getenv("GRAVAL_URL", "")
 
+    # Database settings.
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "256"))
     db_overflow: int = int(os.getenv("DB_OVERFLOW", "32"))
+
+    # Debug logging.
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
+    # Validator and subnet owner keys allowed to link/get free+dev access.
     validators: list[str] = os.getenv("VALIDATOR_HOTKEYS", "").split(",")
     subnet_owners: list[str] = os.getenv("SUBNET_OWNER_HOTKEYS", "").split(",")
 
+    # Flag indicating that all accounts created are free.
     all_accounts_free: bool = os.getenv("ALL_ACCOUNTS_FREE", "false").lower() == "true"
+
+    # Consecutive failure count that triggers instance deletion.
+    consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "3"))
 
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))

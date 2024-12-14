@@ -5,6 +5,8 @@ account_settings:
   all_accounts_free: true
   developer_deposit: 250.00
 
+consecutive_failure_limit: 3
+
 # Taken from https://taostats.io/validators - allows linking accounts (where validators get free access)
 validators:
   - 5GKH9FPPnWSUoeeTJp19wVtd84XqFW4pyK2ijV2GsFbhTrP1
