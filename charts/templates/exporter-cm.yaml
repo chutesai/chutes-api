@@ -36,4 +36,4 @@ data:
       AND started_at <= '${END_TIME}'
       ORDER BY started_at
     ) TO '/tmp/invocations.csv' WITH (FORMAT CSV, HEADER)"
-    aws s3 cp "/tmp/invocations.csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}.csv"
+    aws s3 cp "/tmp/invocations.csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}.csv" --endpoint-url="${AWS_ENDPOINT_URL}"
