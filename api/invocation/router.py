@@ -6,8 +6,11 @@ import pybase64 as base64
 import pickle
 import gzip
 import orjson as json
+import csv
 from datetime import date, datetime
-from io import BytesIO
+from io import BytesIO, StringIO
+from typing import Optional
+from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import text, String
@@ -61,11 +64,11 @@ async def get_export(
     if not valid:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invocations export not found {year=} {month=} {day=} {hour=}",
+            detail=f"Invocations export not found {year=} {month=} {day=} {hour=}",
         )
 
     exists = False
-    key = f"/invocations/{year}/{month}/{day}/{hour}.csv"
+    key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}.csv"
     async with settings.s3_client() as s3:
         try:
             await s3.head_object(Bucket=settings.storage_bucket, Key=key)
@@ -76,13 +79,65 @@ async def get_export(
     if not exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invocations export not found {year=} {month=} {day=} {hour=}",
+            detail=f"Invocations export not found {year=} {month=} {day=} {hour=}",
         )
 
     data = BytesIO()
     async with settings.s3_client() as s3:
         await s3.download_fileobj(settings.storage_bucket, key, data)
-    return Response(content=data.getvalue(), media_type="text/csv")
+    filename = key.replace("invocations/", "").replace("/", "-")
+    return Response(
+        content=data.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@cache(expire=60)
+@router.get("/exports/recent")
+async def get_recent_export(
+    hotkey: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get an export for the current hour, which won't be in S3 yet.
+    """
+    now = datetime.now()
+    start_time = now.replace(minute=0, second=0, microsecond=0)
+    query = text(
+        """
+        SELECT
+            invocation_id,
+            chute_id,
+            chute_user_id,
+            function_name,
+            image_id,
+            image_user_id,
+            instance_id,
+            miner_uid,
+            miner_hotkey,
+            started_at,
+            completed_at,
+            error_message,
+            reported_at,
+            report_reason,
+            compute_multiplier,
+            bounty
+        FROM partitioned_invocations
+        WHERE started_at >= :start_time
+        ORDER BY started_at DESC
+    """
+    )
+    output = StringIO()
+    writer = csv.writer(output)
+    result = await db.execute(query, {"start_time": start_time})
+    writer.writerow([col for col in result.keys()])
+    writer.writerows(result)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="recent.csv"'},
+    )
 
 
 @router.post("/{invocation_id}/report")
