@@ -78,6 +78,7 @@ class Settings(BaseSettings):
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
     validators: list[str] = os.getenv("VALIDATOR_HOTKEYS", "").split(",")
+    subnet_owners: list[str] = os.getenv("SUBNET_OWNER_HOTKEYS", "").split(",")
 
     all_accounts_free: bool = os.getenv("ALL_ACCOUNTS_FREE", "false").lower() == "true"
 
