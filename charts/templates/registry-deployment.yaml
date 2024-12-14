@@ -32,7 +32,8 @@ spec:
           imagePullPolicy: {{ .Values.registry.imagePullPolicy }}
           env:
             - name: REGISTRY_STORAGE
-              value: s3
+              value: {{ .Values.registry.config.type }}
+            {{- if eq .Values.registry.config.type "s3" }}
             - name: REGISTRY_STORAGE_S3_REGION
               valueFrom:
                 secretKeyRef:
@@ -63,6 +64,19 @@ spec:
                 secretKeyRef:
                   name: s3-credentials
                   key: endpoint
+            - name: REGISTRY_STORAGE_S3_FORCEPATHSTYLE
+              value: "true"
+            - name: REGISTRY_STORAGE_S3_V4AUTH
+              value: "true"
+            {{- else if eq .Values.registry.config.type "gcs" }}
+            - name: REGISTRY_STORAGE_GCS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: gcs-credentials
+                  key: bucket
+            - name: REGISTRY_STORAGE_GCS_KEYFILE
+              value: "/etc/gcs/credentials.json"
+            {{- end }}
             - name: REGISTRY_HTTP_SECRET
               valueFrom:
                 secretKeyRef:
@@ -70,13 +84,24 @@ spec:
                   key: password
             - name: REGISTRY_STORAGE_REDIRECT_DISABLE
               value: "{{ .Values.registry.config.redirectDisable }}"
-            - name: REGISTRY_STORAGE_S3_FORCEPATHSTYLE
-              value: "true"
-            - name: REGISTRY_STORAGE_S3_V4AUTH
-              value: "true"
+          {{- if eq .Values.registry.config.type "gcs" }}
+          volumeMounts:
+            - name: gcs-credentials
+              mountPath: "/etc/gcs"
+              readOnly: true
+          {{- end }}
           ports:
             - name: registry
               containerPort: {{ .Values.registry.service.port }}
               protocol: TCP
           resources:
             {{- toYaml .Values.registry.resources | nindent 12 }}
+      {{- if eq .Values.registry.config.type "gcs" }}
+      volumes:
+        - name: gcs-credentials
+          secret:
+            secretName: gcs-credentials
+            items:
+              - key: credentials.json
+                path: credentials.json
+      {{- end }}

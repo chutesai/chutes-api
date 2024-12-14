@@ -545,6 +545,7 @@ registry:
     port: 5000
   config:
     redirectDisable: false
+    type: "gcs"
 
 registryProxy:
   image: nginx:1.27
