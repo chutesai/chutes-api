@@ -86,7 +86,11 @@ async def list_chutes(
     total = total_result.scalar() or 0
 
     # Pagination.
-    query = query.offset((page or 0) * (limit or 25)).limit((limit or 25))
+    query = (
+        query.order_by(Chute.created_at.desc)
+        .offset((page or 0) * (limit or 25))
+        .limit((limit or 25))
+    )
 
     result = await db.execute(query)
     responses = []
