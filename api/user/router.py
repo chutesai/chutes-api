@@ -117,6 +117,8 @@ async def register(
     )
     user.payment_address, user.wallet_secret = await generate_payment_address()
     user.developer_payment_address, user.developer_wallet_secret = await generate_payment_address()
+    if settings.all_accounts_free:
+        Permissioning.enable(user, Permissioning.free_account)
     db.add(user)
     await db.commit()
     await db.refresh(user)

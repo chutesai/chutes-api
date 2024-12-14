@@ -97,15 +97,13 @@ async def get_export(
 @router.get("/exports/recent")
 async def get_recent_export(
     hotkey: Optional[str] = None,
+    limit: Optional[int] = 100,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Get an export for the current hour, which won't be in S3 yet.
+    Get an export for recent data, which may not yet be in S3.
     """
-    now = datetime.now()
-    start_time = now.replace(minute=0, second=0, microsecond=0)
-    query = text(
-        """
+    query = """
         SELECT
             invocation_id,
             chute_id,
@@ -124,13 +122,19 @@ async def get_recent_export(
             compute_multiplier,
             bounty
         FROM partitioned_invocations
-        WHERE started_at >= :start_time
-        ORDER BY started_at DESC
+        WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
     """
-    )
+    if not limit or limit <= 0:
+        limit = 100
+    limit = min(limit, 10000)
+    params = {"limit": limit}
+    if hotkey:
+        query += " AND miner_hotkey = :hotkey"
+        params["hotkey"] = hotkey
+    query += " ORDER BY started_at DESC LIMIT :limit"
     output = StringIO()
     writer = csv.writer(output)
-    result = await db.execute(query, {"start_time": start_time})
+    result = await db.execute(text(query), params)
     writer.writerow([col for col in result.keys()])
     writer.writerows(result)
     return Response(
