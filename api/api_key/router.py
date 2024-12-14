@@ -88,7 +88,7 @@ async def delete_api_key(
     return {"api_key_id": api_key_id, "deleted": True}
 
 
-@router.post("", response_model=APIKeyCreationResponse)
+@router.post("/", response_model=APIKeyCreationResponse)
 async def create_api_key(
     key_args: APIKeyArgs,
     db: AsyncSession = Depends(get_db_session),

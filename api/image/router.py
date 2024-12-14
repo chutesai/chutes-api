@@ -137,7 +137,7 @@ async def delete_image(
     return {"image_id": image_id, "deleted": True}
 
 
-@router.post("", status_code=status.HTTP_202_ACCEPTED)
+@router.post("/", status_code=status.HTTP_202_ACCEPTED)
 async def create_image(
     wait: bool = Form(...),
     build_context: UploadFile = File(...),

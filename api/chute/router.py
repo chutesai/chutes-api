@@ -154,7 +154,7 @@ async def delete_chute(
     return {"chute_id": chute_id, "deleted": True}
 
 
-@router.post("", response_model=ChuteResponse)
+@router.post("/", response_model=ChuteResponse)
 async def deploy_chute(
     chute_args: ChuteArgs,
     db: AsyncSession = Depends(get_db_session),
