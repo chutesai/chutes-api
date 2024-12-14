@@ -80,7 +80,7 @@ async def link_validator(
     hotkey: str,
     signature: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
+    current_user: User = Depends(get_current_user(purpose="link_account")),
 ):
     """
     Link a validator hotkey to this account, allowing free usage.
@@ -95,7 +95,7 @@ async def link_subnet_owner(
     hotkey: str,
     signature: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
+    current_user: User = Depends(get_current_user(purpose="link_account")),
 ):
     """
     Link a subnet owner hotkey to this account, allowing free usage.
