@@ -18,6 +18,7 @@ class ChuteResponse(BaseModel):
     public: bool
     version: str
     slug: Optional[str]
+    standard_template: Optional[str]
     cords: List[Cord]
     created_at: datetime
     updated_at: datetime

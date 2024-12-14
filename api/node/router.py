@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.database import get_db_session
 from api.config import settings
 from api.util import is_valid_host
+from api.gpu import SUPPORTED_GPUS
 from api.node.schemas import Node, MultiNodeArgs
 from api.graval_worker import validate_gpus, broker
 from api.challenge.schemas import Challenge
@@ -28,8 +29,8 @@ async def _list_nodes_compact(db: AsyncSession = Depends(get_db_session)):
     """
     List nodes in a compact fashion, aggregating by model and verification status.
     """
-    verification_status = case((Node.verified_at.is_not(None), True), else_=False).label(
-        "is_verified"
+    verification_status = case((Node.instance != None, True), else_=False).label(  # noqa
+        "is_provisioned"
     )
     query = select(Node.gpu_identifier, verification_status, func.count().label("count")).group_by(
         Node.gpu_identifier, verification_status
@@ -40,11 +41,11 @@ async def _list_nodes_compact(db: AsyncSession = Depends(get_db_session)):
     for row in stats:
         gpu_id = row.gpu_identifier
         if gpu_id not in results:
-            results[gpu_id] = {"verified": 0, "unverified": 0}
-        if row.is_verified:
-            results[gpu_id]["verified"] = row.count
+            results[gpu_id] = {"provisioned": 0, "idle": 0}
+        if row.is_provisioned:
+            results[gpu_id]["provisioned"] = row.count
         else:
-            results[gpu_id]["unverified"] = row.count
+            results[gpu_id]["idle"] = row.count
     return results
 
 
@@ -105,6 +106,14 @@ async def list_nodes(
         for k in sorted_hotkeys
     }
     return ordered_nodes
+
+
+@router.get("/supported")
+async def list_supported_gpus():
+    """
+    Show all currently supported GPUs.
+    """
+    return SUPPORTED_GPUS
 
 
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)

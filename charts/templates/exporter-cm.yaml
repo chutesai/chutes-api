@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: invocation-export-code
+data:
+  export.sh: |
+    #!/bin/bash    
+    set -eux
+    YEAR=$(date -d "1 hour ago" +"%Y")
+    MONTH=$(date -d "1 hour ago" +"%m")
+    DAY=$(date -d "1 hour ago" +"%d")
+    HOUR=$(date -d "1 hour ago" +"%H")
+    START_TIME=$(date -d "1 hour ago" +"%Y-%m-%d %H:00:00")
+    END_TIME=$(date -d "1 hour ago" +"%Y-%m-%d %H:59:59")
+    echo "Exporting data for $START_TIME to $END_TIME"
+    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -c "\copy (
+      SELECT
+        invocation_id,
+        chute_id,
+        chute_user_id,
+        function_name,
+        image_id,
+        image_user_id,
+        instance_id,
+        miner_uid,
+        miner_hotkey,
+        started_at,
+        completed_at,
+        error_message,
+        reported_at,
+        report_reason,
+        compute_multiplier,
+        bounty
+      FROM partitioned_invocations
+      WHERE started_at >= '${START_TIME}'
+      AND started_at <= '${END_TIME}'
+      ORDER BY started_at
+    ) TO '/exports/invocations.csv' WITH (FORMAT CSV, HEADER)"
+    aws s3 cp "/exports/invocations,csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}.csv"
