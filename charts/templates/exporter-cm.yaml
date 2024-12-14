@@ -35,5 +35,5 @@ data:
       WHERE started_at >= '${START_TIME}'
       AND started_at <= '${END_TIME}'
       ORDER BY started_at
-    ) TO '/exports/invocations.csv' WITH (FORMAT CSV, HEADER)"
-    aws s3 cp "/exports/invocations,csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}.csv"
+    ) TO '/tmp/invocations.csv' WITH (FORMAT CSV, HEADER)"
+    aws s3 cp "/tmp/invocations.csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}.csv"

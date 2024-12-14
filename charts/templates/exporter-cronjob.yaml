@@ -3,7 +3,9 @@ kind: CronJob
 metadata:
   name: invocation-exporter
 spec:
-  schedule: "12 * * * *"
+  schedule: "1 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
@@ -18,10 +20,8 @@ spec:
           containers:
           - name: csv-export
             image: {{ .Values.invocationExporter.image }}
-            command: ["/bin/sh", "-c"]
-            args:
-              - |
-                yum update && yum -y install postgresql && bash /scripts/export.sh
+            imagePullPolicy: Always
+            command: ["/bin/sh", "/scripts/export.sh"]
             env:
             - name: AWS_ACCESS_KEY_ID
               valueFrom:

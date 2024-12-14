@@ -93,5 +93,5 @@ ADD --chown=chutes . /app
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]
 
 # Invocation exporter.
-FROM postgres:16-alpine AS exporter
-RUN apk add --no-cache aws-cli
+FROM postgres:16 AS exporter
+RUN apt update && apt -y install awscli
