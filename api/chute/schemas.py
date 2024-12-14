@@ -21,6 +21,7 @@ class Cord(BaseModel):
     path: str
     function: str
     stream: bool
+    passthrough: Optional[bool] = False
     public_api_path: Optional[str] = None
     public_api_method: Optional[str] = None
     input_schema: Optional[Dict[str, Any]] = {}

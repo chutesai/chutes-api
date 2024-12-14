@@ -219,10 +219,14 @@ async def hostname_invocation(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching cord found!")
 
     # Wrap up the args/kwargs in the way the miner execution service expects them.
-    args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
-    if chute.standard_template == "vllm":
+    args, kwargs = None, None
+    if chute.standard_template == "vllm" or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
-    kwargs = base64.b64encode(gzip.compress(pickle.dumps(request_body))).decode()
+        args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
+        kwargs = base64.b64encode(gzip.compress(pickle.dumps(request_body))).decode()
+    else:
+        args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
+        kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
     targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
     if not targets:
         chute_id = request.state.chute_id
