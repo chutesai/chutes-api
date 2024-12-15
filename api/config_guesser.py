@@ -3,7 +3,7 @@ import math
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional
 from pydantic import BaseModel
-from api.gpus import SUPPORTED_GPUS
+from api.gpu import SUPPORTED_GPUS
 
 router = APIRouter()
 
