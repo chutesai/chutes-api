@@ -7,6 +7,7 @@ import random
 import string
 import uuid
 import orjson as json
+import aiohttp
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
@@ -16,6 +17,12 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import Optional
 from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector
+from api.chute.templates import (
+    VLLMChuteArgs,
+    DiffusionChuteArgs,
+    build_vllm_code,
+    build_diffusion_code,
+)
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, invoke
 from api.user.schemas import User
@@ -28,6 +35,7 @@ from api.pagination import PaginatedResponse
 from api.config import settings
 from api.util import ensure_is_developer
 from api.permissions import Permissioning
+from api.guesser import guesser
 
 router = APIRouter()
 
@@ -158,17 +166,14 @@ async def delete_chute(
     return {"chute_id": chute_id, "deleted": True}
 
 
-@router.post("/", response_model=ChuteResponse)
-async def deploy_chute(
+async def _deploy_chute(
     chute_args: ChuteArgs,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
+    db: AsyncSession,
+    current_user: User,
 ):
     """
     Deploy a chute!
     """
-    await ensure_is_developer(db, current_user)
-
     image = await get_image_by_id_or_name(chute_args.image, db, current_user)
     if not image:
         raise HTTPException(
@@ -273,6 +278,127 @@ async def deploy_chute(
             ).decode(),
         )
     return await get_chute_by_id_or_name(chute.chute_id, db, current_user, load_instances=True)
+
+
+@router.post("/", response_model=ChuteResponse)
+async def deploy_chute(
+    chute_args: ChuteArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Standard deploy from the CDK.
+    """
+    await ensure_is_developer(db, current_user)
+    return await _deploy_chute(chute_args, db, current_user)
+
+
+async def _find_latest_image(db: AsyncSession, name: str) -> Image:
+    """
+    Find the latest vllm/diffusion image.
+    """
+    chute_user = (
+        await db.execute(select(User).where(User.username == "chutes"))
+    ).scalar_one_or_none()
+    query = (
+        select(Image)
+        .where(Image.name == name)
+        .where(Image.user_id == chute_user.user_id)
+        .order_by(func.version_numbers(Image.tag).desc())
+    )
+    return (await db.execute(query)).scalar_one_or_none()
+
+
+def chute_to_cords(chute: Chute):
+    """
+    Get all cords for a chute.
+    """
+    return [
+        {
+            "method": cord._method,
+            "path": cord.path,
+            "public_api_path": cord.public_api_path,
+            "public_api_method": cord._public_api_method,
+            "stream": cord._stream,
+            "function": cord._func.__name__,
+            "input_schema": cord.input_schema,
+            "output_schema": cord.output_schema,
+            "output_content_type": cord.output_content_type,
+            "minimal_input_schema": cord.minimal_input_schema,
+        }
+        for cord in chute._cords
+    ]
+
+
+@router.post("/vllm", response_model=ChuteResponse)
+async def easy_deploy_vllm_chute(
+    args: VLLMChuteArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Easy/templated vLLM deployment.
+    """
+    await ensure_is_developer(db, current_user)
+    image = await _find_latest_image(db, "vllm")
+    image = f"chutes/{image.name}:{image.tag}"
+    code, chute = build_vllm_code(args, current_user.username, image)
+    if (node_selector := args.node_selector) is None:
+        async with aiohttp.ClientSession() as session:
+            try:
+                requirements = await guesser.analyze_model(args.model, session)
+                node_selector = NodeSelector(
+                    gpu_count=requirements.required_gpus,
+                    min_vram_gb_per_gpu=requirements.min_vram_per_gpu,
+                )
+            except Exception:
+                node_selector = NodeSelector(gpu_count=1, min_vram_gb_per_gpu=80)
+    chute_args = ChuteArgs(
+        name=args.model,
+        readme=args.readme,
+        logo_id=args.logo_id,
+        public=args.public,
+        code=code,
+        filename="chute.py",
+        ref_str="chute:chute",
+        standard_template="vllm",
+        node_selector=node_selector,
+        cords=chute_to_cords(chute),
+    )
+    return await _deploy_chute(chute_args, db, current_user)
+
+
+@router.post("/diffusion", response_model=ChuteResponse)
+async def easy_deploy_diffusion_chute(
+    args: DiffusionChuteArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Easy/templated diffusion deployment.
+    """
+    await ensure_is_developer(db, current_user)
+    image = await _find_latest_image(db, "diffusion")
+    image = f"chutes/{image.name}:{image.tag}"
+    code, chute = build_diffusion_code(args, current_user.username, image)
+    if (node_selector := args.node_selector) is None:
+        node_selector = NodeSelector(
+            gpu_count=1,
+            min_vram_gb_per_gpu=24,
+        )
+    chute_args = ChuteArgs(
+        name=args.model,
+        readme=args.readme,
+        logo_id=args.logo_id,
+        public=args.public,
+        code=code,
+        filename="chute.py",
+        ref_str="chute:chute",
+        standard_template="diffusion",
+        node_selector=node_selector,
+        cords=chute_to_cords(chute),
+    )
+    return await _deploy_chute(chute_args, db, current_user)
 
 
 @router.post("/{chute_id}/{path:path}")

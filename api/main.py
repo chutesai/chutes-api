@@ -28,7 +28,7 @@ from api.instance.router import router as instance_router
 from api.payment.router import router as payment_router
 from api.miner.router import router as miner_router
 from api.logo.router import router as logo_router
-from api.config_guesser import router as cg_router
+from api.guesser import router as guess_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine
 from api.config import settings
@@ -121,7 +121,7 @@ default_router.include_router(registry_router, prefix="/registry", tags=["Authen
 default_router.include_router(api_key_router, prefix="/api_keys", tags=["Authentication"])
 default_router.include_router(miner_router, prefix="/miner", tags=["Miner"])
 default_router.include_router(logo_router, prefix="/logos", tags=["Logo"])
-default_router.include_router(cg_router, prefix="/guess", tags=["ConfigGuesser"])
+default_router.include_router(guess_router, prefix="/guess", tags=["ConfigGuesser"])
 
 # Do not use app for this, else middleware picks it up
 default_router.get("/ping")(lambda: {"message": "pong"})

@@ -1,5 +1,6 @@
 import aiohttp
 import math
+import json
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Optional
 from pydantic import BaseModel
@@ -103,7 +104,10 @@ class ConfigGuesser:
                 raise HTTPException(
                     status_code=404, detail=f"Could not fetch config.json for {repo_id}"
                 )
-            config = await response.json()
+            try:
+                config = await response.json()
+            except Exception:
+                config = json.loads(await response.text())
 
         safetensors_map_url = (
             f"https://huggingface.co/{repo_id}/raw/main/model.safetensors.index.json"
@@ -111,7 +115,10 @@ class ConfigGuesser:
         try:
             async with session.get(safetensors_map_url) as response:
                 if response.status == 200:
-                    safetensors_map = await response.json()
+                    try:
+                        safetensors_map = await response.json()
+                    except Exception:
+                        safetensors_map = json.loads(await response.text())
                     total_size = safetensors_map.get("metadata", {}).get("total_size", 0)
                     if not total_size:
                         total_size = 0
@@ -130,11 +137,11 @@ class ConfigGuesser:
                         num_params = (hidden_size * hidden_size * 4 * num_layers) + (
                             vocab_size * hidden_size
                         )
-                    total_size = num_params * 2  # Approximate size in bytes for FP16
+                    total_size = num_params * 2
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Error estimating model size: {str(e)}")
 
-        total_size = math.ceil(total_size / (1024**3))  # Convert to GB
+        total_size = math.ceil(total_size / (1024**3))
         model_type = self._detect_model_type(config)
         quantization = self._detect_quantization(config)
 
@@ -158,17 +165,17 @@ class ConfigGuesser:
         )
 
 
-analyzer = ConfigGuesser()
+guesser = ConfigGuesser()
 
 
 @router.get("/vllm_config", response_model=GPURequirements)
-async def analyze_model(model_name: str):
+async def analyze_model(model: str):
     """
     Attempt to guess required GPU count and VRAM for a model on huggingface, assuming safetensors format.
     """
     async with aiohttp.ClientSession() as session:
         try:
-            return await analyzer.analyze_model(model_name, session)
+            return await guesser.analyze_model(model, session)
         except HTTPException as e:
             raise e
         except Exception as e:
