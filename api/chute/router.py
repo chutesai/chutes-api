@@ -355,6 +355,7 @@ async def easy_deploy_vllm_chute(
                 node_selector = NodeSelector(gpu_count=1, min_vram_gb_per_gpu=80)
     chute_args = ChuteArgs(
         name=args.model,
+        image=image,
         readme=args.readme,
         logo_id=args.logo_id,
         public=args.public,
@@ -363,7 +364,7 @@ async def easy_deploy_vllm_chute(
         ref_str="chute:chute",
         standard_template="vllm",
         node_selector=node_selector,
-        cords=chute_to_cords(chute),
+        cords=chute_to_cords(chute.chute),
     )
     return await _deploy_chute(chute_args, db, current_user)
 
@@ -387,7 +388,8 @@ async def easy_deploy_diffusion_chute(
             min_vram_gb_per_gpu=24,
         )
     chute_args = ChuteArgs(
-        name=args.model,
+        name=args.name,
+        image=image,
         readme=args.readme,
         logo_id=args.logo_id,
         public=args.public,
@@ -396,7 +398,7 @@ async def easy_deploy_diffusion_chute(
         ref_str="chute:chute",
         standard_template="diffusion",
         node_selector=node_selector,
-        cords=chute_to_cords(chute),
+        cords=chute_to_cords(chute.chute),
     )
     return await _deploy_chute(chute_args, db, current_user)
 
