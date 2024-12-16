@@ -5,38 +5,43 @@ Args for templated chutes.
 import re
 from pydantic import BaseModel, validator
 from typing import Optional
-from jinja2 import Environment, PackageLoader, select_autoescape
-from api.chutes.schemas import NodeSelector
+from jinja2 import Environment, select_autoescape
+from api.chute.schemas import NodeSelector
 from chutes.chute.template.vllm import build_vllm_chute
 from chutes.chute.template.diffusion import build_diffusion_chute
 
 
-env = Environment(
-    loader=PackageLoader("chutes", "templates"), autoescape=select_autoescape(["html", "xml"])
-)
+env = Environment(autoescape=select_autoescape(["html", "xml"]))
 
 
 class VLLMEngineArgs(BaseModel):
-    max_model_len: Optional[int]
-    enforce_eager: Optional[bool]
-    num_scheduler_steps: Optional[int]
+    tokenizer: Optional[str] = None
+    max_model_len: Optional[int] = None
+    enforce_eager: Optional[bool] = False
+    num_scheduler_steps: Optional[int] = 16
+
+    @validator("tokenizer")
+    def validate_hf_format(cls, v):
+        if v is None:
+            return v
+        if re.match(r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$", v):
+            return v
+        raise ValueError('Model must be a valid Hugging Face repo (e.g., "org/model")')
 
 
 class VLLMChuteArgs(BaseModel):
     model: str
-    tokenizer: Optional[str]
-    logo_id: Optional[str]
-    readme: Optional[str]
+    logo_id: Optional[str] = None
+    readme: Optional[str] = ""
     public: Optional[bool] = True
-    node_selector: Optional[NodeSelector]
-    engine_args: Optional[VLLMEngineArgs]
+    node_selector: Optional[NodeSelector] = None
+    engine_args: Optional[VLLMEngineArgs] = None
 
     @validator("model")
-    def validate_model(cls, v):
-        hf_pattern = r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$"
-        if re.match(hf_pattern, v):
+    def validate_hf_format(cls, v):
+        if re.match(r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$", v):
             return v
-        raise ValueError('Model must be either a valid Hugging Face model name (e.g., "org/model")')
+        raise ValueError('Model must be a valid Hugging Face repo (e.g., "org/model")')
 
 
 class DiffusionPipelineArgs(BaseModel):
@@ -48,10 +53,10 @@ class DiffusionPipelineArgs(BaseModel):
 class DiffusionChuteArgs(BaseModel):
     model: str
     name: str
-    logo_id: Optional[str]
-    readme: Optional[str]
+    logo_id: Optional[str] = None
+    readme: Optional[str] = ""
     public: Optional[bool] = True
-    node_selector: Optional[NodeSelector]
+    node_selector: Optional[NodeSelector] = None
 
     @validator("model")
     def validate_model(cls, v):
@@ -66,7 +71,7 @@ class DiffusionChuteArgs(BaseModel):
 
     @validator("name")
     def validate_name(cls, v):
-        if re.match(r"^[a-zA-Z0-9_\. -/]+%", v):
+        if re.match(r"^[a-zA-Z0-9_\. -/]+$", v):
             return v
         raise ValueError(
             'Chute name must only contain letters, numbers, ".", "-", "_", spaces or "/"'
@@ -80,11 +85,12 @@ chute = build_vllm_chute(
     username="{{ username }}",
     model_name="{{ args.model }}",
     image="{{ image }}",
-    {%- if args.node_selector %}
-    node_selector=NodeSelector({{ args.node_selector.model_dump() }}),
-    {%- endif %}
+    node_selector=NodeSelector(),
     {%- if args.engine_args %}
     engine_args=dict(
+        {%- if args.engine_args.tokenizer is not none %}
+        tokenizer="{{ args.engine_args.tokenizer }}",
+        {%- endif %}
         {%- if args.engine_args.max_model_len is not none %}
         max_model_len={{ args.engine_args.max_model_len }},
         {%- endif %}
@@ -106,9 +112,7 @@ chute = build_diffusion_chute(
     name="{{ args.name }}",
     model_name_or_url="{{ args.model }}",
     image="{{ image }}",
-    {%- if args.node_selector %}
-    node_selector=NodeSelector({{ args.node_selector.model_dump() }}),
-    {%- endif %}
+    node_selector=NodeSelector(),
     {%- if args.pipeline_args %}
     pipeline_args=dict(
         {%- if args.pipeline_args.use_safetensors is not none %}
@@ -135,6 +139,7 @@ def build_vllm_code(args: VLLMChuteArgs, username: str, image: str) -> str:
         username=username,
         model_name=args.model,
         image=image,
+        node_selector=NodeSelector(),
     )
     return code, chute
 
@@ -150,5 +155,6 @@ def build_diffusion_code(args: DiffusionChuteArgs, username: str, image: str) ->
         name=args.name,
         model_name_or_url=args.model,
         image=image,
+        node_selector=NodeSelector(),
     )
     return code, chute
