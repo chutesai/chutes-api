@@ -33,6 +33,7 @@ REQUEST_SAMPLE_RATIO = 0.05
 TRACK_INVOCATION = text(
     """
 INSERT INTO invocations (
+    parent_invocation_id,
     invocation_id,
     chute_id,
     chute_user_id,
@@ -53,6 +54,7 @@ INSERT INTO invocations (
     compute_multiplier,
     bounty
 ) VALUES (
+    :parent_invocation_id,
     :invocation_id,
     :chute_id,
     :chute_user_id,
@@ -237,6 +239,31 @@ async def _invoke_one(
         await session.close()
 
 
+async def _s3_upload(data: io.BytesIO, path: str):
+    """
+    S3 upload helper.
+    """
+    try:
+        async with settings.s3_client() as s3:
+            await s3.upload_fileobj(data, settings.storage_bucket, path)
+    except Exception as exc:
+        logger.error(f"failed to store: {path} -> {exc}")
+
+
+async def _sample_request(chute_id, parent_invocation_id, args, kwargs):
+    """
+    Randomly sample and store request data.
+    """
+    request_path = None
+    if random.random() <= REQUEST_SAMPLE_RATIO:
+        today = datetime.date.today()
+        request_path = f"invocations/{today.year}/{today.month}/{today.day}/{chute_id}/request-{parent_invocation_id}.json"
+        asyncio.create_task(
+            _s3_upload(io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})), request_path)
+        )
+    return request_path
+
+
 async def invoke(
     chute: Chute,
     user_id: str,
@@ -251,6 +278,7 @@ async def invoke(
     Helper to actual perform function invocations, retrying when a target fails.
     """
     invocation_id = str(uuid.uuid4())
+    parent_invocation_id = invocation_id
     chute_id = chute.chute_id
     yield sse(
         {
@@ -264,26 +292,17 @@ async def invoke(
         }
     )
     logger.info(f"trying function invocation with up to {len(targets)} targets")
-    request_path = None
-    today = str(datetime.date.today())
-    if random.random() <= REQUEST_SAMPLE_RATIO:
-        request_path = f"invocations/{today}/{chute_id}/request.json"
-        try:
-            async with settings.s3_client() as s3:
-                await s3.upload_fileobj(
-                    io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})),
-                    settings.storage_bucket,
-                    request_path,
-                )
-        except Exception as exc:
-            logger.error(f"failed to sample request: {exc}")
-            request_path = None
+
+    # Randomly sample for validation purposes.
+    request_path = await _sample_request(chute_id, parent_invocation_id, args, kwargs)
+
     partition_suffix = None
     for target in targets:
         async with get_session() as session:
             result = await session.execute(
                 TRACK_INVOCATION,
                 {
+                    "parent_invocation_id": parent_invocation_id,
                     "invocation_id": invocation_id,
                     "function_name": function,
                     "chute_id": chute.chute_id,
@@ -323,17 +342,10 @@ async def invoke(
                 # Save the response if we're randomly sampling this one.
                 response_path = None
                 if request_path:
-                    response_path = request_path.replace("request.json", "response.json")
-                    try:
-                        async with settings.s3_client() as s3:
-                            await s3.upload_fileobj(
-                                io.BytesIO(json.dumps(response_data)),
-                                settings.storage_bucket,
-                                response_path,
-                            )
-                    except Exception as exc:
-                        logger.error(f"failed to sample request: {exc}")
-                        response_path = None
+                    response_path = request_path.replace("/request", "/response")
+                    asyncio.create_task(
+                        _s3_upload(io.BytesIO(json.dumps(response_data)), response_path)
+                    )
 
                 # Mark the invocation as complete.
                 result = await session.execute(
