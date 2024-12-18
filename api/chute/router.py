@@ -185,7 +185,7 @@ async def _deploy_chute(
             status_code=status.HTTP_409_CONFLICT,
             detail="Chute cannot be public when image is not public!",
         )
-    version = str(uuid.uuid5(uuid.NAMESPACE_OID, chute_args.code.encode()))
+    version = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{image.image_id}:{chute_args.code}"))
     chute = (
         await db.execute(
             select(Chute)
@@ -201,6 +201,7 @@ async def _deploy_chute(
     old_version = None
     if chute:
         old_version = chute.version
+        chute.image_id = image.image_id
         chute.readme = chute_args.readme
         chute.code = chute_args.code
         chute.filename = chute_args.filename

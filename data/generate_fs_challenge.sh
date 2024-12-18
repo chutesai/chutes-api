@@ -23,14 +23,14 @@ base_mountpoint=$(buildah mount $base_container)
 mountpoint=$(buildah mount $target_container)
 
 # Get a complete file list for each.
-find $base_mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.py[oc]' > /tmp/base_filelist
-find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.py[co]' > /tmp/target_filelist
+find $base_mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.pyc|\.pyo' > /tmp/base_filelist
+find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.pyc|\.pyo' > /tmp/target_filelist
 comm -13 /tmp/base_filelist /tmp/target_filelist > /tmp/allnew
 if [ -z "$working_dir" ]
 then
   working_dir="/app"
 fi
-find $mountpoint$working_dir \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "$working_dir/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.py[oc]' > /tmp/workdir_filelist
+find $mountpoint$working_dir \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "$working_dir/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.pyo|\.pyc' > /tmp/workdir_filelist
 file_size=$(stat -c%s -- "/tmp/workdir_filelist")
 if [ "$file_size" -gt 0 ]
 then
@@ -40,7 +40,7 @@ fi
 cat /tmp/allnew | shuf | head -n 1000 > /tmp/newsample
 
 # Core libs (graval/chutes)
-find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E 'packages/(chutes|graval)/' > /tmp/corelibs
+find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E 'packages/(chutes|graval)/' | grep -Ev '\.pyc|\.pyo' > /tmp/corelibs
 
 # Grab some data from each file.
 for input_path in /tmp/newsample /tmp/workdir /tmp/corelibs
