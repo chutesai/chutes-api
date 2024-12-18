@@ -235,7 +235,7 @@ async def _deploy_chute(
         chute.slug = re.sub(
             r"[^a-z0-9-]+$",
             "-",
-            slugify(f"{current_user.username}-{chute.name}").lower(),
+            slugify(f"{current_user.username}-{chute.name}", max_length=58).lower(),
         )
         base_slug = chute.slug
         already_exists = (
@@ -243,7 +243,7 @@ async def _deploy_chute(
         ).scalar()
         while already_exists:
             suffix = "".join(
-                random.choice(string.ascii_lowercase + string.digits) for _ in range(6)
+                random.choice(string.ascii_lowercase + string.digits) for _ in range(5)
             )
             chute.slug = f"{base_slug}-{suffix}"
             already_exists = (
