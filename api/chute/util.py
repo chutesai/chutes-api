@@ -174,7 +174,7 @@ async def _invoke_one(
     response = None
     payload = {"args": args, "kwargs": kwargs}
     encrypted = False
-    if settings.graval_url:
+    if settings.graval_url and random.random() <= 0.1:
         device_dicts = [node.graval_dict() for node in target.nodes]
         target_index = random.randint(0, len(device_dicts) - 1)
         target_device = device_dicts[target_index]

@@ -425,7 +425,7 @@ async def easy_deploy_tei_chute(
             min_vram_gb_per_gpu=16,
         )
     chute_args = ChuteArgs(
-        name=args.name,
+        name=args.model,
         image=image,
         readme=args.readme,
         logo_id=args.logo_id,

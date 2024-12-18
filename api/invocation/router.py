@@ -220,7 +220,7 @@ async def hostname_invocation(
 
     # Wrap up the args/kwargs in the way the miner execution service expects them.
     args, kwargs = None, None
-    if chute.standard_template == "vllm" or selected_cord.get("passthrough", False):
+    if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps(request_body))).decode()
