@@ -20,8 +20,10 @@ from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector
 from api.chute.templates import (
     VLLMChuteArgs,
     DiffusionChuteArgs,
+    TEIChuteArgs,
     build_vllm_code,
     build_diffusion_code,
+    build_tei_code,
 )
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, invoke
@@ -398,6 +400,40 @@ async def easy_deploy_diffusion_chute(
         filename="chute.py",
         ref_str="chute:chute",
         standard_template="diffusion",
+        node_selector=node_selector,
+        cords=chute_to_cords(chute.chute),
+    )
+    return await _deploy_chute(chute_args, db, current_user)
+
+
+@router.post("/tei", response_model=ChuteResponse)
+async def easy_deploy_tei_chute(
+    args: TEIChuteArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Easy/templated text-embeddings-inference deployment.
+    """
+    await ensure_is_developer(db, current_user)
+    image = await _find_latest_image(db, "tei")
+    image = f"chutes/{image.name}:{image.tag}"
+    code, chute = build_tei_code(args, current_user.username, image)
+    if (node_selector := args.node_selector) is None:
+        node_selector = NodeSelector(
+            gpu_count=1,
+            min_vram_gb_per_gpu=16,
+        )
+    chute_args = ChuteArgs(
+        name=args.name,
+        image=image,
+        readme=args.readme,
+        logo_id=args.logo_id,
+        public=args.public,
+        code=code,
+        filename="chute.py",
+        ref_str="chute:chute",
+        standard_template="tei",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
     )

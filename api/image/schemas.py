@@ -50,7 +50,7 @@ class Image(Base):
         """
         Basic validation on image name.
         """
-        if not isinstance(name, str) or not re.match(r"^[a-z0-9][a-z0-9_\.\/-]{3,64}$", name, re.I):
+        if not isinstance(name, str) or not re.match(r"^[a-z0-9][a-z0-9_\.\/-]{2,64}$", name, re.I):
             raise ValueError(f"Invalid image name: {name}")
         return name
 

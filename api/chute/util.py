@@ -93,7 +93,7 @@ RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multip
 UPDATE_INVOCATION_ERROR = """
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
-    error_message = CAST(:error AS TEXT)
+    error_message = CAST(:error_message AS TEXT)
 WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
 """
 

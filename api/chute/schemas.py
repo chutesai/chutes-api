@@ -189,7 +189,7 @@ class Chute(Base):
         """
         Basic validation on standard templates, which for now requires either None or vllm.
         """
-        if template not in (None, "vllm", "diffusion"):
+        if template not in (None, "vllm", "diffusion", "tei"):
             raise ValueError(f"Invalid standard template: {template}")
         return template
 

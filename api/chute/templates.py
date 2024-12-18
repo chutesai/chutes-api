@@ -9,6 +9,7 @@ from jinja2 import Environment, select_autoescape
 from api.chute.schemas import NodeSelector
 from chutes.chute.template.vllm import build_vllm_chute
 from chutes.chute.template.diffusion import build_diffusion_chute
+from chutes.chute.template.tei import build_tei_chute
 
 
 env = Environment(autoescape=select_autoescape(["html", "xml"]))
@@ -78,6 +79,22 @@ class DiffusionChuteArgs(BaseModel):
         )
 
 
+class TEIChuteArgs(BaseModel):
+    model: str
+    revision: Optional[str] = None
+    logo_id: Optional[str] = None
+    readme: Optional[str] = ""
+    public: Optional[bool] = True
+    node_selector: Optional[NodeSelector] = None
+
+    @validator("model")
+    def validate_model(cls, v):
+        hf_pattern = r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$"
+        if re.match(hf_pattern, v):
+            return v
+        raise ValueError('Model must be a valid Hugging Face model name (e.g., "org/model")')
+
+
 VLLM_TEMPLATE = """from chutes.chute import NodeSelector
 from chutes.chute.template.vllm import build_vllm_chute
 
@@ -128,6 +145,19 @@ chute = build_diffusion_chute(
     {%- endif %}
 )"""
 
+TEI_TEMPLATE = """from chutes.chute import NodeSelector
+from chutes.chute.template.tei import build_tei_chute
+
+chute = build_tei_chute(
+    username="{{ username }}",
+    model_name="{{ args.model }}",
+    image="{{ image }}",
+    node_selector=NodeSelector(),
+    {%- if args.revision %}
+    revision="{{ args.revision }}",
+    {%- endif %}
+)"""
+
 
 def build_vllm_code(args: VLLMChuteArgs, username: str, image: str) -> str:
     """
@@ -156,5 +186,21 @@ def build_diffusion_code(args: DiffusionChuteArgs, username: str, image: str) ->
         model_name_or_url=args.model,
         image=image,
         node_selector=NodeSelector(),
+    )
+    return code, chute
+
+
+def build_tei_code(args: TEIChuteArgs, username: str, image: str) -> str:
+    """
+    Builds a Python script for text-embeddings-inference chute creation using Jinja templating.
+    """
+    template = env.from_string(TEI_TEMPLATE)
+    code = template.render(args=args, username=username, image=image)
+    chute = build_tei_chute(
+        username=username,
+        model_name=args.model,
+        image=image,
+        node_selector=NodeSelector(),
+        revision=args.revision,
     )
     return code, chute
