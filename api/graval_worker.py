@@ -6,6 +6,7 @@ import asyncio
 import aiohttp
 import uuid
 import random
+import hashlib
 import traceback
 import backoff
 import orjson as json
@@ -17,7 +18,7 @@ from api.database import get_session
 from api.node.schemas import Node
 from api.instance.schemas import Instance
 from api.fs_challenge.schemas import FSChallenge
-from sqlalchemy import update, func
+from sqlalchemy import update, func, and_, not_
 from sqlalchemy.future import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
@@ -354,7 +355,9 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
         try:
             return await _verify_filesystem_challenge(instance, challenge)
         except Exception as exc:
-            logger.error(f"Failed _verify_filesystem_challenge 3 times: {exc}")
+            logger.error(
+                f"Failed _verify_filesystem_challenge 3 times: {exc}\n{traceback.format_exc()}"
+            )
             return False
 
     subquery = (
@@ -366,7 +369,14 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
             .over(partition_by=FSChallenge.challenge_type, order_by=func.random())
             .label("rn"),
         )
-        .filter(FSChallenge.image_id == instance.chute.image_id)
+        .filter(
+            and_(
+                FSChallenge.image_id == instance.chute.image_id,
+                not_(FSChallenge.filename.endswith(f"/{instance.chute.filename}")),
+                not_(FSChallenge.filename.endswith(".pyc")),
+                not_(FSChallenge.filename.endswith(".pyo")),
+            )
+        )
         .subquery()
     )
     result = await session.execute(
@@ -374,15 +384,34 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
         .join(subquery, FSChallenge.challenge_id == subquery.c.challenge_id)
         .where(subquery.c.rn <= 10)
     )
-    challenges = result.scalars().all()
+    challenges = list(result.scalars().all())
 
-    if not challenges:
-        logger.warning(f"Image {instance.chute.image_id=} has no filesystem challenges to check!")
-        return True
+    # Add in challenges for the chute code file.
+    for _ in range(10):
+        length = random.randint(10, len(instance.chute.code))
+        offset = (
+            0
+            if length >= len(instance.chute.code)
+            else random.randint(0, len(instance.chute.code) - length - 1)
+        )
+        challenges.append(
+            FSChallenge(
+                **{
+                    "challenge_id": "000",
+                    "image_id": instance.chute.image_id,
+                    "filename": f"/app/{instance.chute.filename}",
+                    "length": length,
+                    "offset": offset,
+                    "challenge_type": "chute_code",
+                    "expected": hashlib.sha256(
+                        instance.chute.code[offset : offset + length].encode()
+                    ).hexdigest(),
+                }
+            )
+        )
 
     results = await asyncio.gather(*[_safe_verify_one(challenge) for challenge in challenges])
     passed = sum(1 for r in results if r)
-
     logger.info(f"{instance.instance_id=} passed {passed} of {len(challenges)}")
     return passed == len(challenges)
 

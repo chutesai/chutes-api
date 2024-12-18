@@ -26,4 +26,4 @@ class FSChallenge(Base):
 
     image = relationship("Image", back_populates="fs_challenges")
 
-    _table_args__ = (Index("idx_image_id_type", "image_id", "challenge_type"),)
+    __table_args__ = (Index("idx_image_id_type", "image_id", "challenge_type"),)

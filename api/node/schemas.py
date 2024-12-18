@@ -150,7 +150,7 @@ class Node(Base):
             return memory
         memory_gb = int(memory / (1000 * 1000 * 1000))
         expected_memory = self._gpu_specs["memory"]
-        if not (expected_memory - 1 <= memory_gb <= expected_memory + 1):
+        if not (expected_memory - 1 <= memory_gb <= expected_memory * (1024 / 1000) ** 3 + 1):
             raise ValueError(
                 f"Memory {memory_gb}GB does not match expected {expected_memory}GB for {self._gpu_key}"
             )

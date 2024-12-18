@@ -23,14 +23,14 @@ base_mountpoint=$(buildah mount $base_container)
 mountpoint=$(buildah mount $target_container)
 
 # Get a complete file list for each.
-find $base_mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/base_filelist
-find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/target_filelist
+find $base_mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.py[oc]' > /tmp/base_filelist
+find $mountpoint \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf '/%P\n' | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.py[co]' > /tmp/target_filelist
 comm -13 /tmp/base_filelist /tmp/target_filelist > /tmp/allnew
 if [ -z "$working_dir" ]
 then
   working_dir="/app"
 fi
-find $mountpoint$working_dir \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "$working_dir/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache' > /tmp/workdir_filelist
+find $mountpoint$working_dir \( -path $mountpoint/dev -o -path $mountpoint/proc -o -path $mountpoint/tmp -o -path $mountpoint/boot -o -path $mountpoint/run \) -prune -o -type f -printf "$working_dir/%P\n" | sort | grep -E -v 'site-packages|dist-packages|\.cache|\.py[oc]' > /tmp/workdir_filelist
 file_size=$(stat -c%s -- "/tmp/workdir_filelist")
 if [ "$file_size" -gt 0 ]
 then
@@ -62,13 +62,11 @@ do
     file_size=$(stat -c%s -- "$file_path")
     if [ "$file_size" -gt 1 ]
     then
-      head -c 8192 -- "$file_path" > /tmp/head.data
-      head_data=$(cat /tmp/head.data | base64 --wrap=0)
+      head_data=$(head -c 8192 -- "$file_path" | base64 --wrap=0)
       tail_data="NONE"
       if [ "$file_size" -gt 8192 ]
       then
-        tail -c 8192 "$file_path" > /tmp/tail.data
-        tail_data=$(cat /tmp/tail.data | base64 --wrap=0)
+        tail_data=$(tail -c 8192 "$file_path" | base64 --wrap=0)
       fi
       sha256_=$(sha256sum -- "$file_path" | awk '{print $1}')
       printf '%s:__size__:%s:__checksum__:%s:__head__:%s:__tail__:%s\n' "$trailing_file_path" "$file_size" "$sha256_" "$head_data" "$tail_data" >> $data_path
