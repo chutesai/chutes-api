@@ -138,3 +138,15 @@ def get_current_user(
             return user
 
     return _authenticate
+
+
+async def chutes_user_id():
+    if (user_id := getattr(router, "_chutes_user_id", None)) is not None:
+        return user_id
+    async with get_session() as session:
+        router._chutes_user_id = (
+            (await session.execute(select(User.user_id).where(User.username == "chutes")))
+            .unique()
+            .scalar_one_or_none()
+        )
+    return router._chutes_user_id

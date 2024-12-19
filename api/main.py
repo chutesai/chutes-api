@@ -143,13 +143,25 @@ async def host_router_middleware(request: Request, call_next):
         return await call_next(request)
     request.state.chute_id = None
     host = request.headers.get("host", "")
-    host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host)
-    if host_parts and (chute_id := await chute_id_by_slug(host_parts.group(1).lower())):
+    host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host.lower())
+
+    # MEGALLM
+    if host_parts and host_parts.group(1) == "llm" and request.method.lower() == "post":
+        request.state.chute_id = "__megallm__"
+        request.state.auth_method = "invoke"
+        request.state.auth_object_type = "chutes"
+        request.state.auth_object_id = "__megallm__"
+        app.router = host_invocation_router
+
+    # Hostname based router.
+    elif host_parts and (chute_id := await chute_id_by_slug(host_parts.group(1).lower())):
         request.state.chute_id = chute_id
         request.state.auth_method = "invoke"
         request.state.auth_object_type = "chutes"
         request.state.auth_object_id = chute_id
         app.router = host_invocation_router
+
+    # Normal router.
     else:
         request.state.auth_method = "read"
         if request.method.lower() in ("post", "put", "patch"):

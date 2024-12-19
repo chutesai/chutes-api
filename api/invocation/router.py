@@ -13,12 +13,13 @@ from typing import Optional
 from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import text, String
+from sqlalchemy import text, String, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
+from api.chute.schemas import Chute
 from api.chute.util import get_chute_by_id_or_name, invoke
 from api.user.schemas import User
-from api.user.service import get_current_user
+from api.user.service import get_current_user, chutes_user_id
 from api.database import get_db_session
 from api.invocation.schemas import Report
 from api.instance.util import discover_chute_targets
@@ -180,13 +181,10 @@ async def report_invocation(
     }
 
 
-@host_invocation_router.api_route(
-    "{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
-)
-async def hostname_invocation(
+async def _invoke(
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
+    db: AsyncSession,
+    current_user: User,
 ):
     # This call will perform auth/access checks.
     chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
@@ -305,3 +303,41 @@ async def hostname_invocation(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         detail=error or "No result returned from upstream",
     )
+
+
+@host_invocation_router.api_route(
+    "{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
+)
+async def hostname_invocation(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    # MegaLLM handler.
+    if request.state.chute_id == "__megallm__":
+        payload = await request.json()
+        model = payload.get("model")
+        chute = None
+        if model:
+            chute = (
+                (
+                    await db.execute(
+                        select(Chute).where(
+                            Chute.user_id == await chutes_user_id(),
+                            Chute.name == model,
+                            Chute.public.is_(True),
+                            Chute.standard_template == "vllm",
+                        )
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+        if not chute:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"model not found: {model}",
+            )
+        request.state.chute_id = chute.chute_id
+        request.state.auth_object_id = chute.chute_id
+    return await _invoke(request, db, current_user)

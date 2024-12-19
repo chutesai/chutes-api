@@ -170,6 +170,13 @@ class APIKey(Base):
         for scope in self.scopes:
             if scope.object_type != object_type:
                 continue
+            # Special handler for llm.chutes.ai endpoint.
+            if (
+                object_type == "chutes"
+                and object_id == "__megallm__"
+                and (not scope.action or scope.action.value == action)
+            ):
+                return True
             if scope.object_id in (None, object_id) and (
                 not scope.action or scope.action.value == action
             ):
