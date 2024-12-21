@@ -499,8 +499,27 @@ async def invoke_(
             detail="Chute has no cord matching your request",
         )
 
+    # Initialize metrics.
+    metrics = None
+    if chute.standard_template == "vllm":
+        metrics = {
+            "ttft": None,
+            "tps": 0.0,
+            "tokens": 0,
+        }
+
     # Do the deed.
     await db.close()
     return StreamingResponse(
-        invoke(chute, current_user.user_id, path, function, stream, args, kwargs, targets)
+        invoke(
+            chute,
+            current_user.user_id,
+            path,
+            function,
+            stream,
+            args,
+            kwargs,
+            targets,
+            metrics=metrics,
+        )
     )

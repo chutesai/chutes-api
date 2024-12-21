@@ -233,6 +233,20 @@ async def _invoke(
             detail=f"No instances available (yet) for {chute_id=}",
         )
 
+    # Initialize metrics.
+    metrics = None
+    if chute.standard_template == "vllm":
+        metrics = {
+            "ttft": None,
+            "tps": 0.0,
+            "tokens": 0,
+        }
+    elif chute.standard_template == "diffusion":
+        metrics = {
+            "sps": 0,
+            "steps": request_body.get("num_inference_steps", 25.0),
+        }
+
     # To stream, or not to stream.
     if stream:
 
@@ -247,6 +261,7 @@ async def _invoke(
                 args,
                 kwargs,
                 targets,
+                metrics=metrics,
             ):
                 if skip:
                     continue
@@ -276,6 +291,7 @@ async def _invoke(
         args,
         kwargs,
         targets,
+        metrics=metrics,
     ):
         if response:
             continue
@@ -294,7 +310,7 @@ async def _invoke(
             elif "text" in result:
                 response = Response(content=result["text"], media_type=result["content_type"])
             else:
-                response = result
+                response = result.get("json", result)
         elif chunk.startswith('data: {"error"'):
             error = json.loads(chunk[6:])["error"]
     if response:

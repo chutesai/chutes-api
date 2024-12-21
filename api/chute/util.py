@@ -9,6 +9,7 @@ import uuid
 import random
 import datetime
 import io
+import time
 import traceback
 import orjson as json
 import pybase64 as base64
@@ -30,6 +31,7 @@ from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from api.permissions import Permissioning
 
 REQUEST_SAMPLE_RATIO = 0.05
+LLM_PATHS = {"chat_stream", "completion_stream", "chat", "completion"}
 TRACK_INVOCATION = text(
     """
 INSERT INTO invocations (
@@ -86,7 +88,8 @@ WITH removed_bounty AS (
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
     response_path = CAST(:response_path AS TEXT),
-    bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty)
+    bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty),
+    metrics = :metrics
 WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
 RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
 """
@@ -155,7 +158,13 @@ async def chute_id_by_slug(slug: str):
 
 
 async def _invoke_one(
-    chute: Chute, path: str, stream: bool, args: str, kwargs: str, target: Instance
+    chute: Chute,
+    path: str,
+    stream: bool,
+    args: str,
+    kwargs: str,
+    target: Instance,
+    metrics: dict = {},
 ):
     """
     Try invoking a chute/cord with a single instance.
@@ -208,6 +217,7 @@ async def _invoke_one(
     logger.debug(
         f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {encrypted=}"
     )
+    started_at = time.time()
     response = await session.post(
         f"http://{target.host}:{target.port}/{path}",
         data=payload_string,
@@ -221,12 +231,33 @@ async def _invoke_one(
         response.raise_for_status()
         if stream:
             async for chunk in response.content:
+                if (
+                    chute.standard_template == "vllm"
+                    and path in LLM_PATHS
+                    and chunk.startswith(b"data: {")
+                    and b'"content":""' not in chunk
+                ):
+                    if metrics["ttft"] is None:
+                        metrics["ttft"] = time.time() - started_at
+                    metrics["tokens"] += 1
                 yield chunk.decode()
+            if chute.standard_template == "vllm":
+                metrics["tps"] = metrics["tokens"] / (time.time() - started_at)
         else:
             content_type = response.headers.get("content-type")
             if content_type in (None, "application/json"):
                 json_data = await response.json()
                 data = {"content_type": content_type, "json": json_data}
+                if chute.standard_template == "vllm" and path in LLM_PATHS:
+                    if (usage := json_data.get("usage")) is not None:
+                        metrics["tokens"] = usage.get("completion_tokens", 0)
+                        metrics["tps"] = metrics["tokens"] / (time.time() - started_at)
+                elif (
+                    chute.standard_template == "diffusion"
+                    and path == "generate"
+                    and (metrics or {}).get("steps")
+                ):
+                    metrics["sps"] = metrics["steps"] / (time.time() - started_at)
             elif content_type.startswith("text/"):
                 text_data = await response.text()
                 data = {"content_type": content_type, "text": text_data}
@@ -273,6 +304,7 @@ async def invoke(
     args: str,
     kwargs: str,
     targets: List[Instance],
+    metrics: dict = {},
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
@@ -284,7 +316,7 @@ async def invoke(
         {
             "trace": {
                 "timestamp": now_str(),
-                "invocation_id": invocation_id,
+                "invocation_id": parent_invocation_id,
                 "chute_id": chute_id,
                 "function": function,
                 "message": f"identified {len(targets)} available targets",
@@ -325,7 +357,7 @@ async def invoke(
                 {
                     "trace": {
                         "timestamp": now_str(),
-                        "invocation_id": invocation_id,
+                        "invocation_id": parent_invocation_id,
                         "chute_id": chute_id,
                         "function": function,
                         "message": f"attempting to query target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
@@ -333,7 +365,7 @@ async def invoke(
                 }
             )
             response_data = []
-            async for data in _invoke_one(chute, path, stream, args, kwargs, target):
+            async for data in _invoke_one(chute, path, stream, args, kwargs, target, metrics):
                 yield sse({"result": data})
                 if request_path:
                     response_data.append(data)
@@ -355,6 +387,7 @@ async def invoke(
                         "invocation_id": invocation_id,
                         "miner_uid": target.miner_uid,
                         "response_path": response_path,
+                        "metrics": json.dumps(metrics).decode(),
                     },
                 )
                 await session.execute(
@@ -389,7 +422,7 @@ async def invoke(
                 {
                     "trace": {
                         "timestamp": now_str(),
-                        "invocation_id": invocation_id,
+                        "invocation_id": parent_invocation_id,
                         "chute_id": chute_id,
                         "function": function,
                         "message": f"successfully called {function=} on target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
@@ -448,7 +481,7 @@ async def invoke(
                 {
                     "trace": {
                         "timestamp": now_str(),
-                        "invocation_id": invocation_id,
+                        "invocation_id": parent_invocation_id,
                         "chute_id": chute_id,
                         "function": function,
                         "message": f"error encountered while querying target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}: {exc=}",

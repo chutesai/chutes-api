@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: weight-setter
+  labels:
+    {{- include "weightsetter.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "weightsetter.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "weightsetter.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.weightsetter.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.weightsetter.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.weightsetter.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: weightsetter
+          image: "{{ .Values.weightsetter.image }}"
+          imagePullPolicy: {{ .Values.weightsetter.imagePullPolicy }}
+          command: ["python", "metasync/set_weights_on_metagraph.py"]
+          env:
+            - name: SUBTENSOR_ADDRESS
+              value: {{ .Values.weightsetter.subtensor }}
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+          resources:
+            {{- toYaml .Values.weightsetter.resources | nindent 12 }}

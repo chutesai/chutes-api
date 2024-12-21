@@ -50,6 +50,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "weightsetter.labels" -}}
+app.kubernetes.io/name: weightsetter
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "redis.labels" -}}
 app.kubernetes.io/name: redis
 {{- end }}

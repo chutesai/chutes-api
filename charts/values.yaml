@@ -383,6 +383,29 @@ metasync:
             values: ["true"]
   tolerations: []
 
+weightsetter:
+  replicaCount: 1
+  image: parachutes/metasync:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "512Mi"
+    limits:
+      cpu: "1"
+      memory: "512Mi"
+  subtensor: wss://entrypoint-finney.opentensor.ai
+  nodeSelector: {}
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.present
+            operator: NotIn
+            values: ["true"]
+  tolerations: []
+
 graval:
   replicaCount: 8
   image: parachutes/graval:latest
