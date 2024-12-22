@@ -68,8 +68,17 @@ class RedisListener:
             if message["type"] == "message":
                 try:
                     data = json.loads(message["data"].decode())
-                    logger.debug(f"Broadcasting: {data}")
-                    await self.sio.emit(self.channel, data)
+                    if (
+                        hasattr(self.sio, "reverse_map")
+                        and (send_to := data.get("filter_recipients")) is not None
+                    ):
+                        for hotkey in send_to:
+                            if (room := self.sio.reverse_map.get(hotkey)) is not None:
+                                logger.debug(f"Notifying {hotkey=}: {data}")
+                                await self.sio.emit(self.channel, data, room=room)
+                    else:
+                        logger.debug(f"Broadcasting: {data}")
+                        await self.sio.emit(self.channel, data)
                 except Exception as exc:
                     logger.error(f"Error processing message: {exc}")
 

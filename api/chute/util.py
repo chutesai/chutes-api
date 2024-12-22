@@ -461,19 +461,24 @@ async def invoke(
                             {"instance_id": target.instance_id},
                         )
                         await session.commit()
+                        event_data = {
+                            "reason": "instance_deleted",
+                            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
+                            "data": {
+                                "chute_id": target.chute_id,
+                                "instance_id": target.instance_id,
+                                "miner_hotkey": target.miner_hotkey,
+                            },
+                        }
+                        asyncio.create_task(
+                            settings.redis_client.publish("events", json.dumps(event_data).decode())
+                        )
+
+                        # Miner notification.
+                        event_data["filter_recipients"] = [target.miner_hotkey]
                         asyncio.create_task(
                             settings.redis_client.publish(
-                                "events",
-                                json.dumps(
-                                    {
-                                        "reason": "instance_deleted",
-                                        "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
-                                        "data": {
-                                            "chute_id": target.chute_id,
-                                            "miner_hotkey": target.miner_hotkey,
-                                        },
-                                    }
-                                ).decode(),
+                                "miner_broadcast", json.dumps(event_data).decode()
                             )
                         )
 

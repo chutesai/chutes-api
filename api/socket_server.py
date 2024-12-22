@@ -18,7 +18,8 @@ from api.redis_pubsub import RedisListener
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
 fastapi_app = FastAPI()
 app = socketio.ASGIApp(sio, fastapi_app)
-authenticated_sockets = {}
+sio.session_map = {}
+sio.reverse_map = {}
 
 
 @fastapi_app.on_event("startup")
@@ -52,10 +53,9 @@ async def disconnect(session_id):
     """
     Client disconnect.
     """
-    if session_id in authenticated_sockets:
-        hotkey = authenticated_sockets[session_id]
+    if (hotkey := sio.session_map.pop(session_id, None)) is not None:
+        sio.reverse_map.pop(hotkey, None)
         logger.info(f"Disconnected authenticated miner: {hotkey}")
-        authenticated_sockets.pop(session_id)
 
 
 @sio.event
@@ -76,7 +76,8 @@ async def authenticate(session_id: str, headers: Dict[str, str]) -> bool:
         )
         hotkey = headers.get(cst.HOTKEY_HEADER)
         logger.info(f"Successfully authenticated miner {hotkey=}, {session_id=}")
-        authenticated_sockets[session_id] = hotkey
+        sio.session_map[session_id] = hotkey
+        sio.reverse_map[hotkey] = session_id
         await sio.emit("auth_success", {"message": "Authenticated"}, to=session_id)
         return True
     except HTTPException as e:
@@ -96,9 +97,8 @@ async def miner_message(session_id, data):
     """
     Placeholder for miner originated messages, not really used (yet).
     """
-    if session_id not in authenticated_sockets:
+    if (hotkey := sio.session_map.get(session_id)) is None:
         logger.warning(f"Unauthenticated message from {session_id}")
         await sio.disconnect(session_id)
         return
-    hotkey = authenticated_sockets[session_id]
     logger.debug(f"Received message from miner {hotkey=}: {data=}")
