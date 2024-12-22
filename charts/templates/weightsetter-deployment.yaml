@@ -34,6 +34,12 @@ spec:
           imagePullPolicy: {{ .Values.weightsetter.imagePullPolicy }}
           command: ["python", "metasync/set_weights_on_metagraph.py"]
           env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
             - name: SUBTENSOR_ADDRESS
               value: {{ .Values.weightsetter.subtensor }}
             - name: POSTGRESQL

@@ -49,21 +49,22 @@ async def _get_weights_to_set(
         f"""
         SELECT
             i.miner_hotkey,
-            sum(i.compute_multiplier * (i.completed_at - i.started_at)) AS compute_units
+            sum(i.bounty + i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
         FROM invocations i
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
-        AND i.error_message is null
+        AND i.error_message IS NULL
+        AND miner_uid > 0
         GROUP BY i.miner_hotkey
-        HAVING sum(i.compute_multiplier * (i.completed_at - i.started_at)) > 0
+        HAVING SUM(i.bounty + i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
         """
     )
 
     miner_compute_units = {}
     async with get_session() as session:
-        result = await session.stream(query)
-        async for row in result:
-            item = dict(row)
-            miner_compute_units[item["miner_hotkey"]] = item["compute_units"]
+        result = await session.execute(query)
+        for miner_hotkey, compute_units in result:
+            logger.info(f"Compute units for {miner_hotkey=} = {compute_units}")
+            miner_compute_units[miner_hotkey] = compute_units
 
     node_ids = []
     node_weights = []
@@ -180,7 +181,7 @@ async def set_weights_periodically() -> None:
             continue
 
         try:
-            success = await _get_and_set_weights()
+            success = await _get_and_set_weights(substrate)
         except Exception as e:
             logger.error(f"Failed to set weights with error: {e}")
             success = False
