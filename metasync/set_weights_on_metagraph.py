@@ -117,20 +117,17 @@ async def _get_and_set_weights(substrate: SubstrateInterface) -> None:
     )
 
     try:
-        success = await asyncio.wait_for(
-            weights.set_node_weights(
-                substrate=substrate,
-                keypair=settings.validator_keypair,
-                node_ids=all_node_ids,
-                node_weights=all_node_weights,
-                netuid=settings.netuid,
-                version_key=VERSION_KEY,
-                validator_node_id=int(validator_node_id),
-                wait_for_inclusion=False,
-                wait_for_finalization=False,
-                max_attempts=3,
-            ),
-            60 * 3,
+        success = weights.set_node_weights(
+            substrate=substrate,
+            keypair=settings.validator_keypair,
+            node_ids=all_node_ids,
+            node_weights=all_node_weights,
+            netuid=settings.netuid,
+            version_key=VERSION_KEY,
+            validator_node_id=int(validator_node_id),
+            wait_for_inclusion=False,
+            wait_for_finalization=False,
+            max_attempts=3,
         )
     except Exception as e:
         logger.error(f"Failed to set weights: {e}")
