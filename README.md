@@ -86,7 +86,7 @@ And finally, install/configure the extras, e.g. kubernetes nvidia GPU operator:
 ansible-playbook -i inventory.yml extras.yml
 ```
 
-### 🪣 S3-Compatible Object store
+### 🪣 S3-Compatible Object Store
 
 You'll need to configure an S3 compatible object store, which is used to store a variety of items such as image build contexts, image/chute logos, and docker registry data (lots and lots of data to store blobs).
 
@@ -100,6 +100,24 @@ microk8s kubectl create secret generic s3-credentials \
   --from-literal="bucket=[bucket name]" \
   --from-literal="endpoint-url=[endpoint URL, e.g. https://storage.googleapis.com for GCS]" \
   --from-literal="aws-region=[AWS region, or auto for GCS]" \
+  -n chutes
+```
+
+### 🐘 Postgres Database
+
+You can run a postgres instance within kubernetes, although we highly recommend using a hosted solution such as AWS Aurora or GCP AlloyDB, which enable automatic backups, high availability, security upgrades, etc.
+
+The postgres database is extraordinarily important, including storing (encrypted) bittensor wallet mnemonics.  If you lose the database, you will lose all access to tao payments, images, chutes, metrics, etc.
+
+Once you have a database endpoint configured, you need to manually configure the secret in kubernetes:
+```bash
+microk8s kubectl create secret generic postgres-secret \
+  --from-literal="username=[username, preferred chutes]" \
+  --from-literal="password=[password]" \
+  --from-literal="url=postgresql+asyncpg://[username]:[URL safe password]@[hostname/IP]:[port]/chutes" \
+  --from-literal="hostname=[hostname/IP]" \
+  --from-literal="port=5432" \
+  --from-literal="database=chutes" \
   -n chutes
 ```
 
