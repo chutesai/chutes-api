@@ -121,6 +121,102 @@ microk8s kubectl create secret generic postgres-secret \
   -n chutes
 ```
 
+### 🔑 Other secrets
+
+##### Validator ss58/seed
+
+This secret contains the validator hotkey ss58Address and secretSeed value (with "0x" prefix removed), which is used to sign requests to miners, set weights, etc.
+```bash
+microk8s kubectl create secret generic validator-credentials \
+  --from-literal="ss58=[nhotkey ss58Address]" \
+  --from-literal="seed=[hotkey secretSeed, strip 0x prefix]" \
+  -n chutes
+```
+
+##### Docker hub credentials
+
+You'll need credentials to docker.io to avoid being rate-limited when pulling and/or building images.  Once you have access credentials (e.g. from registering an account and creating credentials), create the secret in kubernetes:
+```bash
+microk8s kubectl create secret docker-registry regcred \
+  --docker-server=docker.io \
+  --docker-username=[username] \
+  --docker-password=[password] \
+  --docker-email=[email address] \
+  -n chutes
+```
+
+##### Docker registry secret
+
+This will be the *actual* password to the local docker registry running on the validator. Miners have a custom docker registry auth mechanism, using bittensor hotkey signatures, but this is necessary for the forge process/etc.
+
+Create a random secure string/password, then add it as a secret in kubernetes:
+```bash
+microk8s kubectl create secret generic registry-secret \
+  --from-literal="password=[password] \
+  -n chutes
+```
+
+Also create another secret in the chutes namespace for the forge process specifically:
+```bash
+microk8s kubectl create secret generic docker-pull \
+  --from-literal="username=[username]" \
+  --from-literal="password=[password]" \
+  -n chutes
+```
+
+##### Bittensor wallet secrets
+
+Every time someone registers a user, they get a unique bittensor coldkey address for payments and another for developer deposits (to enable building images/chutes).  The mnemonics for these wallets are stored doubly encrypted in the postgres database, so you need to create two secure strings to use for these encryption layers.
+
+One must be 64 hex chars, the other 128 hex chars.  For example, you can use python to generate these:
+```python
+>>> import secrets
+>>> secrets.token_bytes(64).hex()
+'8122a176b26d5e5b4bdd8a53a51137f2c3e988269a1f606e621f15eadeba049a8872ecabc4fa96502cc91a1350c247bc511ebd587db520aadfdfa85345f4867a'
+>>> secrets.token_bytes(32).hex()
+'81e161b658f53ee95dbb3457b1cc6205071ba4eadc1455d388a66b0a6b6d026d'
+```
+*Notice that token_bytes(32) produces 64 hex chars and 64 bytes produces 128*
+
+Then, create the secret in kubernetes:
+```bash
+microk8s kubectl create secret generic wallet-secret \
+  --from-literal="wallet-key=[hex string with 64 chars]" \
+  --from-literal="pg-key=[hex string with 128 chars]" \
+  -n chutes
+```
+
+##### Redis password
+
+Redis is used for pubsub and cache, and while it runs within kubernetes, you'll need to create the password before creating the component, e.g. a uuid4() works fine:
+```bash
+python3 -c 'import uuid; print(uuid.uuid4())'
+```
+
+Then create the secret:
+```bash
+microk8s kubectl create secret generic redis-secret \
+  --from-literal="password=[password]" \
+  --from-literal="url=redis://:[password]@redis.chutes.svc.cluster.local:6379/0" \
+  -n chutes
+```
+
+##### GraVal database
+
+Each GPU server/node will run it's own postgres instance storing GraVal challenges, via a kubernetes daemonset. You'll need to configure the postgres password for this database before launching the component:
+
+UUIDs work fine for passwords here, e.g.:
+```
+python3 -c 'import uuid; print(uuid.uuid4())'
+```
+
+Then create the secret:
+```bash
+microk8s kubectl create secret generic gravaldb-secret \
+  --from-literal="password=[password]" \
+  -n chutes
+```
+
 ## Development
 
 View the dev docs [here](dev/dev.md).  The entire chutes API can be run via docker-compose locally, although some components require GPUs (GraVal, vLLM example, etc.).
