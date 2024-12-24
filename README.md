@@ -4,6 +4,10 @@ This repository contains all code, dockerfiles, etc. used by the chutes.ai platf
 
 The miner code is available [here](https://github.com/rayonlabs/chutes-miner), and CLI/SDK code [here](https://github.com/rayonlabs/chutes).
 
+## 👨‍💻 Development
+
+View the dev docs [here](dev/dev.md).  The entire chutes API can be run via docker-compose locally, although some components require GPUs (GraVal, vLLM example, etc.).
+
 ## 🛡️ Validators
 
 While you *can* run a full validator on the chutes subnet, we strongly suggest making use of the child hotkey feature instead, with hotkey `5Dt7HZ7Zpw4DppPxFM7Ke3Cm7sDAWhsZXmM5ZAmE7dSVJbcQ`
@@ -18,9 +22,9 @@ The high costs of properly operating validators across all 64 (soon more?) subne
 We will be happy to walk through the entire API/infrastructure with any concerned validators, and will do our best to ensure all operations are fully transparent.
 You can verify the weights are being set appropriately by downloading invocation stats for the past 7 days via the `GET /invocations/exports/{year}/{month}/{day}/{hour}.csv` and `GET /invocations/exports/recent` endpoints.
 
-## 🛠️ Configuring a full environment
+## 🛠️ Running a full deployment
 
-Again, not recommended, but if you'd really like to run your own validator/API, you'll need to follow these steps.
+Again, not recommended at all, but if you'd really like to run your own validator/API, you'll need to follow these steps.
 
 ### 🤖 Provision and bootstrap nodes
 
@@ -272,6 +276,14 @@ This should point to port 32003 on each of your CPU nodes.
 
 This should point to port 32004 on each of your CPU nodes.
 
-## Development
+### ⛏️ Request miner allocation
 
-View the dev docs [here](dev/dev.md).  The entire chutes API can be run via docker-compose locally, although some components require GPUs (GraVal, vLLM example, etc.).
+For your validator to be useful, you'll need to ensure miners pick up your validator and allocate resources to it.
+
+You'll need to communicate to all miners (likely via the discord subnet channel), the following bits of information:
+- hotkey SS58 address of your validator
+- registry subdomain you've configured, e.g. in our case it's `registry.chutes.ai`
+- API subdomain, e.g. `api.chutes.ai`
+- socket subdomain, e.g. `ws.chutes.ai`
+
+The miners will then need to update their helm charts and redeploy, then allocate GPU nodes specific to your validator.
