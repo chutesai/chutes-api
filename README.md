@@ -276,6 +276,9 @@ This should point to port 32003 on each of your CPU nodes.
 
 This should point to port 32004 on each of your CPU nodes.
 
+
+*__NOTE: all ports must match the nodePort values in your chart!__*
+
 ### ⛏️ Request miner allocation
 
 For your validator to be useful, you'll need to ensure miners pick up your validator and allocate resources to it.
