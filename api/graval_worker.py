@@ -247,10 +247,15 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     # Notify the miner.
     async def _verify_one(gpu_id):
         try:
-            async with miner_client.axon_patch(
-                nodes[0].miner_hotkey, f"/gpus/{gpu_id}", payload={"verified": True}
-            ) as resp:
-                resp.raise_for_status()
+            event_data = {
+                "reason": "gpu_verified",
+                "data": {
+                    "gpu_id": gpu_id,
+                    "miner_hotkey": nodes[0].miner_hotkey,
+                },
+                "filter_recipients": [nodes[0].miner_hotkey],
+            }
+            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
         except Exception as exc:
             # Allow exceptions here since the miner can also check.
             logger.warning(
@@ -470,10 +475,15 @@ async def verify_instance(instance_id: str):
 
         # Notify the miner.
         try:
-            async with miner_client.axon_patch(
-                instance.miner_hotkey, f"/deployments/{instance_id}", payload={"verified": True}
-            ) as resp:
-                resp.raise_for_status()
+            event_data = {
+                "reason": "instance_verified",
+                "data": {
+                    "instance_id": instance_id,
+                    "miner_hotkey": instance.miner_hotkey,
+                },
+                "filter_recipients": [instance.miner_hotkey],
+            }
+            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
         except Exception as exc:
             # Allow exceptions here since the miner can also check.
             logger.warning(
