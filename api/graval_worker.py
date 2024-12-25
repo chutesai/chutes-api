@@ -445,6 +445,7 @@ async def verify_instance(instance_id: str):
         try:
             if not await _verify_filesystem(session, instance):
                 logger.warning(f"{instance_id=} failed filesystem verification!")
+                return
         except Exception as exc:
             logger.error(
                 f"Failed to perform filesystem validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
