@@ -10,17 +10,24 @@ View the dev docs [here](dev/dev.md).  The entire chutes API can be run via dock
 
 ## 🛡️ Validators
 
-While you *can* run a full validator on the chutes subnet, we strongly suggest making use of the child hotkey feature instead, with hotkey `5Dt7HZ7Zpw4DppPxFM7Ke3Cm7sDAWhsZXmM5ZAmE7dSVJbcQ`
+While you absolutely *can* run a full validator on the chutes subnet, we strongly suggest making use of the child hotkey feature instead, with hotkey `5Dt7HZ7Zpw4DppPxFM7Ke3Cm7sDAWhsZXmM5ZAmE7dSVJbcQ` at this stage in the subnet's lifecycle.
 
-Reasons for not running your own validator:
+Reasons *__to__* run your own validator:
+- Decentralization and robustness of the network.
+- Opportunity to launch your own instance of chutes with whatever domain/etc., you'd like, and change pricing/payout structure/etc.
+- It's a pretty epic project.
+
+Reasons to *__not__* run a validator:
 - The platform/API requires fairly extensive infrastructure, and along with it a fair amount of management/technical expertise (postgres, kubernetes, ansible, etc.), leading to high cost/touch.
-- Miners need to manually allocate servers/GPUs to specific validators, along with manually configuring docker registries, certs, etc., and are unlikely to add additional validators depending on stake, which will cause low vtrust.
-- Our validator hotkey take is set to 0%, so your earnings will likely be better using child hotkey vs. running a validator (or WC).
+- Miners need to allocate servers/GPUs to specific validators currently, along with configuring docker registries, certs, etc., and may not support all validators depending on stake, which could lead to low vtrust.
+- The CLI/SDK/etc., point to the `chutes.ai` subdomains by default, so any organic usage would need either a fork of the `chutes` package or override via environment variables.
+- The chutes validator hotkey take is set to 0%, so your earnings will likely be better using child hotkey vs. running a validator (or WC).
 
 The high costs of properly operating validators across all 64 (soon more?) subnets often exceed potential validator returns given the goal of maximizing APY/reducing take, making selective subnet participation via child hotkeys a more practical approach in our opinion.
 
 We will be happy to walk through the entire API/infrastructure with any concerned validators, and will do our best to ensure all operations are fully transparent.
-You can verify the weights are being set appropriately by downloading invocation stats for the past 7 days via the `GET /invocations/exports/{year}/{month}/{day}/{hour}.csv` and `GET /invocations/exports/recent` endpoints.
+
+You can also verify the weights are being set appropriately by downloading invocation stats for the past 7 days via the `GET /invocations/exports/{year}/{month}/{day}/{hour}.csv` and `GET /invocations/exports/recent` endpoints.
 
 ## 🛠️ Running a full deployment
 
