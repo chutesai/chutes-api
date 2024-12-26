@@ -7,10 +7,7 @@ import hashlib
 import time
 import orjson as json
 from contextlib import asynccontextmanager
-from loguru import logger
 from typing import Any, Dict
-from api.metasync import get_miner_by_hotkey
-from api.database import get_session
 from api.config import settings
 from api.constants import MINER_HEADER, VALIDATOR_HEADER, NONCE_HEADER, SIGNATURE_HEADER
 

@@ -308,6 +308,7 @@ async def _find_latest_image(db: AsyncSession, name: str) -> Image:
         .where(Image.name == name)
         .where(Image.user_id == chute_user.user_id)
         .order_by(func.version_numbers(Image.tag).desc())
+        .limit(1)
     )
     return (await db.execute(query)).scalar_one_or_none()
 
