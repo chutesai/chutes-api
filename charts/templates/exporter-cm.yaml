@@ -11,10 +11,11 @@ data:
     DAY=$(date -d "1 hour ago" +"%d")
     HOUR=$(date -d "1 hour ago" +"%H")
     START_TIME=$(date -d "1 hour ago" +"%Y-%m-%d %H:00:00")
-    END_TIME=$(date -d "1 hour ago" +"%Y-%m-%d %H:59:59")
+    END_TIME=$(date +"%Y-%m-%d %H:00:00")
     echo "Exporting data for $START_TIME to $END_TIME"
     psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -c "\copy (
       SELECT
+        parent_invocation_id,
         invocation_id,
         chute_id,
         chute_user_id,
@@ -27,13 +28,21 @@ data:
         started_at,
         completed_at,
         error_message,
-        reported_at,
-        report_reason,
         compute_multiplier,
         bounty
       FROM partitioned_invocations
       WHERE started_at >= '${START_TIME}'
-      AND started_at <= '${END_TIME}'
+      AND started_at < '${END_TIME}'
       ORDER BY started_at
     ) TO '/tmp/invocations.csv' WITH (FORMAT CSV, HEADER)"
+
+    psql -h "${DB_HOST}" -U "${DB_USER}" -d "${DB_NAME}" -c "\copy (
+      SELECT *
+      FROM reports
+      WHERE timestamp >= '${START_TIME}'
+      AND timestamp < '${END_TIME}'
+      ORDER BY timestamp ASC
+    ) TO '/tmp/reports.csv' WITH (FORMAT CSV, HEADER)"
+
     aws s3 cp "/tmp/invocations.csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}.csv" --endpoint-url="${AWS_ENDPOINT_URL}"
+    aws s3 cp "/tmp/reports.csv" "s3://${BUCKET}/invocations/${YEAR}/${MONTH}/${DAY}/${HOUR}-reports.csv" --endpoint-url="${AWS_ENDPOINT_URL}"

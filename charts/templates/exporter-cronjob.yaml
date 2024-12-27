@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: invocation-exporter
 spec:
-  schedule: "1 * * * *"
+  schedule: "3 * * * *"
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   concurrencyPolicy: Forbid
