@@ -7,31 +7,27 @@ import pickle
 import gzip
 import orjson as json
 import csv
+import uuid
 from datetime import date, datetime
 from io import BytesIO, StringIO
 from typing import Optional
 from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import text, String, select
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.chute.schemas import Chute
 from api.chute.util import get_chute_by_id_or_name, invoke
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
+from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session
-from api.invocation.schemas import Report
 from api.instance.util import discover_chute_targets
 from api.permissions import Permissioning
 
 router = APIRouter()
 host_invocation_router = APIRouter()
-
-CHECK_EXISTS = text(
-    "SELECT user_id, report_reason, to_char(date_trunc('week', started_at), 'IYYY_IW') AS table_suffix FROM invocations WHERE invocation_id = :invocation_id AND error_message IS NULL"
-).columns(user_id=String, table_suffix=String, report_reason=String)
-SAVE_REPORT = "UPDATE partitioned_invocations_{table_suffix} SET report_reason = :report_reason, reported_at = CURRENT_TIMESTAMP WHERE invocation_id = :invocation_id AND error_message IS NULL RETURNING reported_at"
 
 
 @router.get("/exports/{year}/{month}/{day}/{hour}.csv")
@@ -118,8 +114,6 @@ async def get_recent_export(
             started_at,
             completed_at,
             error_message,
-            reported_at,
-            report_reason,
             compute_multiplier,
             bounty
         FROM partitioned_invocations
@@ -148,36 +142,49 @@ async def get_recent_export(
 @router.post("/{invocation_id}/report")
 async def report_invocation(
     invocation_id: str,
-    report: Report,
+    report_args: ReportArgs,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
-    result = await db.execute(CHECK_EXISTS, {"invocation_id": invocation_id})
-    item = result.fetchone()
-    user_id, existing_reason, table_suffix = None, None, None
-    if item:
-        user_id, existing_reason, table_suffix = item
-    if not item or user_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invocation not found, or does not belong to you",
+    # Make sure the invocation exists and there isn't already a report.
+    report_exists = (
+        await db.execute(
+            select(
+                text(
+                    "EXISTS (SELECT 1 FROM reports WHERE invocation_id = :invocation_id)"
+                ).bindparams(invocation_id=invocation_id)
+            )
         )
-    if existing_reason is not None:
+    ).scalar()
+    if report_exists:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A report has already been filed for this invocation",
         )
-    result = await db.execute(
-        text(SAVE_REPORT.format(table_suffix=table_suffix)),
-        {
-            "report_reason": report.reason,
-            "invocation_id": invocation_id,
-        },
+    invocation_exists = (
+        await db.execute(
+            select(
+                text(
+                    "EXISTS (SELECT 1 FROM invocations WHERE parent_invocation_id = :invocation_id AND user_id = :user_id)"
+                ).bindparams(invocation_id=invocation_id, user_id=current_user.user_id)
+            )
+        )
+    ).scalar()
+    if not invocation_exists:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invocation not found, or does not belong to you",
+        )
+
+    report = Report(
+        invocation_id=invocation_id,
+        user_id=current_user.user_id,
+        reason=report_args.reason,
     )
+    db.add(report)
     await db.commit()
-    reported_at = result.scalar()
     return {
-        "status": f"report received for {invocation_id=} @ {reported_at}",
+        "status": f"report received for {invocation_id=}",
     }
 
 
@@ -248,6 +255,7 @@ async def _invoke(
         }
 
     # To stream, or not to stream.
+    parent_invocation_id = str(uuid.uuid4())
     if stream:
 
         async def _stream_response():
@@ -261,6 +269,7 @@ async def _invoke(
                 args,
                 kwargs,
                 targets,
+                parent_invocation_id,
                 metrics=metrics,
             ):
                 if skip:
@@ -277,7 +286,9 @@ async def _invoke(
                     )
                     skip = True
 
-        return StreamingResponse(_stream_response())
+        return StreamingResponse(
+            _stream_response(), headers={"X-Chutes-InvocationID": parent_invocation_id}
+        )
 
     # Non-streamed (which we actually do stream but we'll just return the first item)
     error = None
@@ -291,6 +302,7 @@ async def _invoke(
         args,
         kwargs,
         targets,
+        parent_invocation_id,
         metrics=metrics,
     ):
         if response:
@@ -306,11 +318,23 @@ async def _invoke(
                 response = StreamingResponse(
                     _streamfile(),
                     media_type=result["content_type"],
+                    headers={"X-Chutes-InvocationID": parent_invocation_id},
                 )
             elif "text" in result:
-                response = Response(content=result["text"], media_type=result["content_type"])
+                response = Response(
+                    content=result["text"],
+                    media_type=result["content_type"],
+                    headers={"X-Chutes-InvocationID": parent_invocation_id},
+                )
             else:
-                response = result.get("json", result)
+                response = Response(
+                    content=json.dumps(result.get("json", result)).decode(),
+                    media_type="application/json",
+                    headers={
+                        "Content-type": "application/json",
+                        "X-Chutes-InvocationID": parent_invocation_id,
+                    },
+                )
         elif chunk.startswith('data: {"error"'):
             error = json.loads(chunk[6:])["error"]
     if response:

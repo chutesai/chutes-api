@@ -512,6 +512,7 @@ async def invoke_(
 
     # Do the deed.
     await db.close()
+    parent_invocation_id = str(uuid.uuid4())
     return StreamingResponse(
         invoke(
             chute,
@@ -522,6 +523,8 @@ async def invoke_(
             args,
             kwargs,
             targets,
+            parent_invocation_id,
             metrics=metrics,
-        )
+        ),
+        headers={"X-Chutes-InvocationID": parent_invocation_id},
     )

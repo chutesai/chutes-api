@@ -51,8 +51,6 @@ INSERT INTO invocations (
     error_message,
     request_path,
     response_path,
-    reported_at,
-    report_reason,
     compute_multiplier,
     bounty
 ) VALUES (
@@ -71,8 +69,6 @@ INSERT INTO invocations (
     NULL,
     NULL,
     :request_path,
-    NULL,
-    NULL,
     NULL,
     :compute_multiplier,
     0
@@ -304,13 +300,13 @@ async def invoke(
     args: str,
     kwargs: str,
     targets: List[Instance],
+    parent_invocation_id: str,
     metrics: dict = {},
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
     """
     invocation_id = str(uuid.uuid4())
-    parent_invocation_id = invocation_id
     chute_id = chute.chute_id
     yield sse(
         {
