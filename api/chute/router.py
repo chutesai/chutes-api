@@ -425,7 +425,7 @@ async def easy_deploy_tei_chute(
             gpu_count=1,
             min_vram_gb_per_gpu=16,
         )
-    node_selector.exclude = list(set((node_selector.exclude or []) + ["h100", "h100_sxm"]))
+    node_selector.exclude = list(set((node_selector.exclude or []) + ["h100", "h100_sxm", "h200"]))
     chute_args = ChuteArgs(
         name=args.model,
         image=image,

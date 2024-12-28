@@ -7,8 +7,8 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, status, HTTPException, Depends
 from fastapi_cache.decorator import cache
 from sqlalchemy.ext.asyncio import AsyncSession
-from api.gpu import COMPUTE_MULTIPLIER, COMPUTE_MIN
-from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS, PAYOUT_STRUCTURE
+from api.gpu import SUPPORTED_GPUS, COMPUTE_UNIT_PRICE_BASIS, COMPUTE_MIN
+from api.payment.constants import PAYOUT_STRUCTURE
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
 from api.database import get_db_session
@@ -55,8 +55,8 @@ async def get_pricing():
 
     # Calculate prices for each GPU.
     gpu_price = {}
-    for model, scaler in COMPUTE_MULTIPLIER.items():
-        usd_price = COMPUTE_UNIT_PRICE_BASIS * scaler
+    for model, info in SUPPORTED_GPUS.items():
+        usd_price = info["hourly_rate"]
         tao_price = usd_price / current_tao_price
         gpu_price[model] = {
             "usd": {

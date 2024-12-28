@@ -9,9 +9,8 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE
+from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE, COMPUTE_UNIT_PRICE_BASIS
 from api.fmv.fetcher import get_fetcher
-from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional, Dict, Any
 

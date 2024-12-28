@@ -2,8 +2,6 @@
 GPU constants, expected values, etc.
 """
 
-import math
-
 # GPUs that are allowed to be passed in node_selector as "include" arg,
 # because they are likely to be specified and somewhat widely available.
 ALLOWED_INCLUDE = {
@@ -28,6 +26,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": False,
         "sxm": False,
+        "hourly_rate": 0.3225,
     },
     "4090": {
         "model_name_check": "RTX 4090",
@@ -41,6 +40,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": False,
         "sxm": False,
+        "hourly_rate": 0.5175,
     },
     "a5000": {
         "model_name_check": "RTX A5000",
@@ -54,6 +54,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.27,
     },
     "a6000": {
         "model_name_check": "RTX A6000(?! Ada)",
@@ -67,6 +68,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.57,
     },
     "a6000_ada": {
         "model_name_check": "RTX A6000 Ada",
@@ -80,6 +82,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.66,
     },
     "l4": {
         "model_name_check": "L4(?!0)",
@@ -93,6 +96,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.3225,
     },
     "t4": {
         "model_name_check": "T4",
@@ -106,9 +110,10 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.30,
     },
     "a10": {
-        "model_name_check": "A10",
+        "model_name_check": "A10(?!0)",
         "memory": 24,
         "major": 8,
         "minor": 6,
@@ -119,19 +124,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
-    },
-    "a30": {
-        "model_name_check": "A30",
-        "memory": 24,
-        "major": 8,
-        "minor": 0,
-        "tensor_cores": 224,
-        "processors": 56,
-        "clock_rate": {"base": 930, "boost": 1440},
-        "max_threads_per_processor": 1536,
-        "concurrent_kernels": True,
-        "ecc": True,
-        "sxm": False,
+        "hourly_rate": 0.5625,
     },
     "a40": {
         "model_name_check": "A40",
@@ -145,6 +138,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.2925,
     },
     "l40": {
         "model_name_check": "L40(?!S)",
@@ -158,6 +152,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.75,
     },
     "l40s": {
         "model_name_check": "L40S",
@@ -171,6 +166,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.69,
     },
     "a100_40gb": {
         "model_name_check": "A100.?PCIE.?40GB",
@@ -184,6 +180,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 0.9375,
     },
     "a100_40gb_sxm": {
         "model_name_check": "A100.?SXM.?40GB",
@@ -197,6 +194,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": True,
+        "hourly_rate": 0.9375,
     },
     "a100": {
         "model_name_check": "A100.?80GB.?PCIe",
@@ -210,6 +208,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 1.0125,
     },
     "a100_sxm": {
         "model_name_check": "A100.?SXM.?.?80GB",
@@ -223,6 +222,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": True,
+        "hourly_rate": 1.0125,
     },
     "h100": {
         "model_name_check": "H100.*PCIe",
@@ -236,6 +236,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
+        "hourly_rate": 1.425,
     },
     "h100_sxm": {
         "model_name_check": "H100.*HBM3",
@@ -249,6 +250,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": True,
+        "hourly_rate": 1.8300,
     },
     "h200": {
         "model_name_check": " H200",
@@ -262,76 +264,18 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": True,
+        "hourly_rate": 2.7375,
     },
 }
 
 
-def calculate_gpu_boost(gpu_info):
-    """
-    Generate a boost score for a particular GPU, somewhat attempting to
-    reflect both pricing and real-world performance.
-    """
-    arch_base_multiplier = 1.3 ** (gpu_info["major"] - 7)
-    arch_specific_multiplier = {
-        # Hopper
-        9: 1.4,
-        # Ampere
-        8: {
-            0: 1.3,
-            6: 1.0,
-            9: 1.1,
-        }.get(gpu_info["minor"], 1.0),
-        # Turing
-        7: 0.9,
-    }.get(gpu_info["major"], 1.0)
-
-    memory_multiplier = {
-        9: 1.4,
-        8: 1.3 if gpu_info["minor"] == 0 else 1.1,
-        7: 1.0,
-    }.get(gpu_info["major"], 1.0)
-
-    memory_score = math.log2(gpu_info["memory"]) * memory_multiplier
-
-    tensor_core_multiplier = {
-        7: 0.6,
-        8: {
-            0: 1.3,
-            6: 1.0,
-            9: 1.1,
-        }.get(gpu_info["minor"], 1.0),
-        9: 1.5,
-    }.get(gpu_info["major"], 1.0)
-
-    tensor_score = (gpu_info["tensor_cores"] / 100) * tensor_core_multiplier
-
-    clock_importance = 0.85 if gpu_info["major"] >= 8 and gpu_info["ecc"] else 1.0
-    clock_score = (gpu_info["clock_rate"]["boost"] / 1000) * clock_importance
-
-    ecc_multiplier = 1.15 if gpu_info["ecc"] else 1.0
-    sxm_multiplier = 1.2 if gpu_info["sxm"] else 1.0
-
-    datacenter_multiplier = 1.2 if (gpu_info["ecc"] and gpu_info["tensor_cores"] >= 300) else 1.0
-
-    score = (
-        arch_base_multiplier
-        * arch_specific_multiplier
-        * (memory_score + tensor_score + clock_score)
-        * ecc_multiplier
-        * sxm_multiplier
-        * datacenter_multiplier
-    )
-
-    return score
-
-
 def normalize_scores(gpu_dict):
     """
-    Calculate score for each supported GPU and provide a normalized range.
+    Calculate score for each supported GPU and provide a normalized range (based on price).
     """
     scores = {}
     for model, info in gpu_dict.items():
-        score = calculate_gpu_boost(info)
+        score = info["hourly_rate"]
         scores[model] = score
     sorted_scores = dict(sorted(scores.items(), key=lambda x: x[1], reverse=True))
     max_score = max(scores.values())
@@ -342,4 +286,5 @@ def normalize_scores(gpu_dict):
 
 
 COMPUTE_MULTIPLIER = normalize_scores(SUPPORTED_GPUS)
-COMPUTE_MIN = min(list(COMPUTE_MULTIPLIER.values()))
+COMPUTE_MIN = min([score for score in COMPUTE_MULTIPLIER.values()])
+COMPUTE_UNIT_PRICE_BASIS = max([info["hourly_rate"] for info in SUPPORTED_GPUS.values()])

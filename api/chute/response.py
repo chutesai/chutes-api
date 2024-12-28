@@ -25,6 +25,7 @@ class ChuteResponse(BaseModel):
     image: ImageResponse
     user: UserResponse
     supported_gpus: List[str]
+    node_selector: dict
     current_estimated_price: Optional[Dict[str, Any]] = None
     instances: Optional[List[MinimalInstanceResponse]] = []
     logo_id: Optional[str]

@@ -2,8 +2,8 @@
 Helpers for invocations.
 """
 
+from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.database import get_session
-from api.payment.constants import COMPUTE_UNIT_PRICE_BASIS
 from sqlalchemy import text
 
 
