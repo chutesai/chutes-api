@@ -21,6 +21,10 @@ class UserRequest(BaseModel):
     coldkey: str
 
 
+class AdminUserRequest(BaseModel):
+    username: str
+
+
 class User(Base):
     __tablename__ = "users"
 

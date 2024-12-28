@@ -2,8 +2,10 @@
 Safer response class for user.
 """
 
+from typing import Optional
 from pydantic import BaseModel, computed_field
 from datetime import datetime
+from api.api_key.response import APIKeyCreationResponse
 from api.permissions import Permissioning, Role
 
 
@@ -22,6 +24,7 @@ class RegistrationResponse(UserResponse):
     payment_address: str
     developer_payment_address: str
     fingerprint: str
+    api_key: Optional[APIKeyCreationResponse]
 
 
 class SelfResponse(UserResponse):
