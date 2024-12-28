@@ -8,6 +8,7 @@ from api.database import get_db_session
 from api.user.schemas import UserRequest, User, AdminUserRequest
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
+from api.user.events import generate_uid as generate_user_uid
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
 from api.permissions import Permissioning
@@ -212,6 +213,7 @@ async def admin_create_user(
         coldkey=secrets.token_hex(24),
         hotkey=secrets.token_hex(24),
     )
+    generate_user_uid(None, None, user)
     user.payment_address, user.wallet_secret = await generate_payment_address()
     user.coldkey = user.payment_address
     user.developer_payment_address, user.developer_wallet_secret = await generate_payment_address()
@@ -219,15 +221,12 @@ async def admin_create_user(
         user.permissions_bitmask = 0
         Permissioning.enable(user, Permissioning.free_account)
     db.add(user)
-    await db.commit()
-    await db.refresh(user)
 
     # Automatically create an API key for the user as well.
-    api_key, one_time_secret = APIKey.create(
-        current_user.user_id, APIKeyArgs(name="default", admin=True)
-    )
+    api_key, one_time_secret = APIKey.create(user.user_id, APIKeyArgs(name="default", admin=True))
     db.add(api_key)
     await db.commit()
+    await db.refresh(user)
     await db.refresh(api_key)
     key_response = APIKeyCreationResponse.model_validate(api_key)
     key_response.secret_key = one_time_secret

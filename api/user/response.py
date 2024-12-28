@@ -24,7 +24,7 @@ class RegistrationResponse(UserResponse):
     payment_address: str
     developer_payment_address: str
     fingerprint: str
-    api_key: Optional[APIKeyCreationResponse]
+    api_key: Optional[APIKeyCreationResponse] = None
 
 
 class SelfResponse(UserResponse):
