@@ -3,12 +3,14 @@ User routes.
 """
 
 import secrets
-from fastapi import APIRouter, Depends, HTTPException, Header, status
+import hashlib
+from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from api.database import get_db_session
 from api.user.schemas import UserRequest, User, AdminUserRequest
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
+from api.user.tokens import create_token
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
 from api.permissions import Permissioning
@@ -234,3 +236,28 @@ async def admin_create_user(
     response.api_key = key_response
 
     return response
+
+
+@router.post("/login")
+async def fingerprint_login(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Exchange the fingerprint for a JWT.
+    """
+    body = await request.json()
+    fingerprint = body.get("fingerprint")
+    if fingerprint and isinstance(fingerprint, str) and fingerprint.strip():
+        fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
+        user = (
+            await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
+        ).scalar_one_or_none()
+        if user:
+            return {
+                "token": create_token(user),
+            }
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing or invalid fingerprint provided.",
+    )
