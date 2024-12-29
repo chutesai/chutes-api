@@ -148,6 +148,11 @@ async def activate_instance(
             detail='Patch endpoint only supports {"active": true} as request body.',
         )
     instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Instance not found.",
+        )
     if instance.active and instance.verified:
         return instance
     elif not instance.active:

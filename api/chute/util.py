@@ -456,6 +456,12 @@ async def invoke(
                             text("DELETE FROM instances WHERE instance_id = :instance_id"),
                             {"instance_id": target.instance_id},
                         )
+                        await session.execute(
+                            text(
+                                f"UPDATE instance_audit SET deletion_reason = 'max consecutive failures {consecutive_failures} reached' WHERE instance_id = :instance_id"
+                            ),
+                            {"instance_id": target.instance_id},
+                        )
                         await session.commit()
                         event_data = {
                             "reason": "instance_deleted",
