@@ -28,7 +28,8 @@ RUN poetry install
 ADD data/buildah_cleanup.sh /usr/local/bin/buildah_cleanup.sh
 ADD data/generate_fs_challenge.sh /usr/local/bin/generate_fs_challenge.sh
 ADD data/trivy_scan.sh /usr/local/bin/trivy_scan.sh
-ADD . /forge
+ADD --chown=chutes api /forge/api
+ADD --chown=chutes metasync /forge/metasync
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
 
 # Layer for the metagraph syncer.
@@ -42,7 +43,8 @@ ADD pyproject.toml /tmp/
 RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg|aioboto3|cryptography) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/"//g' > /tmp/requirements.txt
 # TODO: Pin the below versions
 RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr && pip install -r /tmp/requirements.txt 
-ADD --chown=chutes . /app
+ADD --chown=chutes api /app/api
+ADD --chown=chutes metasync /app/metasync
 WORKDIR /app
 ENV PYTHONPATH=/app
 ENTRYPOINT ["python", "metasync/sync_metagraph.py"]
@@ -59,7 +61,9 @@ ADD pyproject.toml /app/
 ADD poetry.lock /app/
 WORKDIR /app
 RUN poetry install --no-root
-ADD --chown=chutes . /app
+ADD --chown=chutes api /app/api
+ADD --chown=chutes audit_exporter.py /app/audit_exporter.py
+ADD --chown=chutes metasync /app/metasync
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
@@ -90,9 +94,6 @@ ADD pyproject.toml /app/
 ADD poetry.lock /app/
 WORKDIR /app
 RUN poetry install
-ADD --chown=chutes . /app
+ADD --chown=chutes api /app/api
+ADD --chown=chutes metasync /app/metasync
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]
-
-# Invocation exporter.
-FROM postgres:16 AS exporter
-RUN apt update && apt -y install awscli

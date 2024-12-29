@@ -601,7 +601,7 @@ registryProxy:
     nodePort: 32003
     targetPort: 5000
 
-invocationExporter:
-  image: parachutes/invocations-exporter:latest
+auditExporter:
+  image: parachutes/validator:latest
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
