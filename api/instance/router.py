@@ -5,7 +5,7 @@ Routes for instances.
 import orjson as json
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from api.database import get_db_session, generate_uuid
@@ -199,6 +199,12 @@ async def delete_instance(
             detail=f"Instance with {chute_id=} {instance_id} associated with {hotkey=} not found",
         )
     await db.delete(instance)
+    await db.execute(
+        text(
+            "UPDATE instance_audit SET deletion_reason = 'miner initialized' WHERE instance_id = :instance_id"
+        ),
+        {"instance_id": instance_id},
+    )
     await db.commit()
 
     await settings.redis_client.publish(
