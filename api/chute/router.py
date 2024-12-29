@@ -56,6 +56,7 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
 @router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
+    template: Optional[str] = None,
     name: Optional[str] = None,
     image: Optional[str] = None,
     page: Optional[int] = 0,
@@ -89,6 +90,10 @@ async def list_chutes(
                 Image.tag.ilike("%{image}%"),
             )
         )
+
+    # Standard template filtering.
+    if template and template.strip():
+        query = query.where(Chute.standard_template == template)
 
     # Perform a count.
     total_query = select(func.count()).select_from(query.subquery())
