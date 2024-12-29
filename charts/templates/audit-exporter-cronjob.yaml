@@ -1,0 +1,38 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: audit-exporter
+spec:
+  schedule: "1 * * * *"
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            db-access: "true"
+            redis-access: "true"
+        spec:
+          {{- with .Values.auditExporter.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+          - name: audit-export
+            image: {{ .Values.auditExporter.image }}
+            imagePullPolicy: Always
+            command: ["poetry", "run", "python", "audit_exporter.py"]
+            env:
+              {{- include "chutes.sensitiveEnv" . | nindent 14 }}
+              {{- include "chutes.commonEnv" . | nindent 14 }}
+            volumeMounts:
+            - name: tmpdir
+              mountPath: /tmp
+          volumes:
+          - name: tmpdir
+            emptyDir: {}
+          restartPolicy: OnFailure
