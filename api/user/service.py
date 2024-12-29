@@ -12,6 +12,7 @@ from api.metasync import MetagraphNode
 from api.database import get_session
 from api.user.schemas import User
 from api.api_key.util import get_and_check_api_key
+from api.user.tokens import get_user_from_token
 from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
 from api.constants import NONCE_HEADER
@@ -50,10 +51,17 @@ def get_current_user(
             # API key validation.
             if authorization:
                 token = authorization.split(" ")[-1]
+
+                # JWT auth.
+                if token and authorization.lower().lstrip().startswith("bearer "):
+                    return await get_user_from_token(token)
+
+                # API key auth.
                 if token:
                     api_key = await get_and_check_api_key(token, request)
                     request.state.api_key = api_key
                     return api_key.user
+
             # NOTE: Need a nicer error message if the user is trying to register (and has no api key)
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
