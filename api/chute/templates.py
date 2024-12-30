@@ -18,7 +18,7 @@ env = Environment(autoescape=select_autoescape(["html", "xml"]))
 
 class VLLMEngineArgs(BaseModel):
     tokenizer: Optional[str] = None
-    max_model_len: Optional[int] = None
+    max_model_len: Optional[int] = 16384
     enforce_eager: Optional[bool] = False
     num_scheduler_steps: Optional[int] = 16
 
