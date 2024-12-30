@@ -3,7 +3,8 @@ Args for templated chutes.
 """
 
 import re
-from pydantic import BaseModel, validator
+from typing import List, Literal
+from pydantic import BaseModel, validator, Field
 from typing import Optional
 from jinja2 import Environment, select_autoescape
 from api.chute.schemas import NodeSelector
@@ -81,6 +82,10 @@ class DiffusionChuteArgs(BaseModel):
 
 class TEIChuteArgs(BaseModel):
     model: str
+    endpoints: List[Literal["embed", "predict", "rerank"]] = Field(
+        description="List of supported endpoints for this chute",
+        min_items=1,
+    )
     revision: Optional[str] = None
     logo_id: Optional[str] = None
     readme: Optional[str] = ""
@@ -151,6 +156,7 @@ from chutes.chute.template.tei import build_tei_chute
 chute = build_tei_chute(
     username="{{ username }}",
     model_name="{{ args.model }}",
+    endpoints={{ args.endpoints | tojson }},
     image="{{ image }}",
     node_selector=NodeSelector(),
     {%- if args.revision %}
@@ -199,6 +205,7 @@ def build_tei_code(args: TEIChuteArgs, username: str, image: str) -> str:
     chute = build_tei_chute(
         username=username,
         model_name=args.model,
+        endpoints=args.endpoints,
         image=image,
         node_selector=NodeSelector(),
         revision=args.revision,

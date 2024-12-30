@@ -126,7 +126,6 @@ class Node(Base):
         self.validate_clock_rate(None, self.clock_rate)
         self.validate_max_threads(None, self.max_threads_per_processor)
         self.validate_boolean_features("concurrent_kernels", self.concurrent_kernels)
-        self.validate_boolean_features("ecc", self.ecc)
 
     @validates("verification_port")
     def validate_port(self, _, port: int) -> int:
@@ -201,7 +200,7 @@ class Node(Base):
             )
         return max_threads
 
-    @validates("concurrent_kernels", "ecc")
+    @validates("concurrent_kernels")
     def validate_boolean_features(self, key: str, value: bool) -> bool:
         if not self._gpu_specs:
             return value

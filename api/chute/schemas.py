@@ -43,9 +43,9 @@ class NodeSelector(BaseModel):
         """
         if not gpus:
             return gpus
-        if set(map(lambda s: s.lower(), gpus)) - ALLOWED_INCLUDE:
+        if not set(map(lambda s: s.lower(), gpus)) & ALLOWED_INCLUDE:
             raise ValueError(
-                f"include must contain only the following GPUs: {list(ALLOWED_INCLUDE)}"
+                f"include must allow for at least one of the following GPUs: {list(ALLOWED_INCLUDE)}"
             )
         return gpus
 
