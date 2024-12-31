@@ -21,6 +21,7 @@ class VLLMEngineArgs(BaseModel):
     max_model_len: Optional[int] = 16384
     enforce_eager: Optional[bool] = False
     num_scheduler_steps: Optional[int] = 16
+    trust_remote_code: Optional[bool] = True
 
     @validator("tokenizer")
     def validate_hf_format(cls, v):
@@ -115,6 +116,9 @@ chute = build_vllm_chute(
         {%- endif %}
         {%- if args.engine_args.max_model_len is not none %}
         max_model_len={{ args.engine_args.max_model_len }},
+        {%- endif %}
+        {%- if args.engine_args.trust_remote_code is not none %}
+        trust_remote_coden={{ args.engine_args.trust_remote_code }},
         {%- endif %}
         {%- if args.engine_args.enforce_eager is not none %}
         enforce_eager={{ args.engine_args.enforce_eager }},

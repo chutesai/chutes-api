@@ -215,7 +215,9 @@ async def _deploy_chute(
         chute.ref_str = chute_args.ref_str
         chute.version = version
         chute.public = chute_args.public
-        chute.logo_id = chute_args.logo_id
+        chute.logo_id = (
+            chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
+        )
     else:
         chute = Chute(
             chute_id=str(
@@ -225,7 +227,7 @@ async def _deploy_chute(
             user_id=current_user.user_id,
             name=chute_args.name,
             readme=chute_args.readme,
-            logo_id=chute_args.logo_id,
+            logo_id=chute_args.logo_id if chute_args.logo_id else None,
             code=chute_args.code,
             filename=chute_args.filename,
             ref_str=chute_args.ref_str,
@@ -351,6 +353,8 @@ async def easy_deploy_vllm_chute(
     await ensure_is_developer(db, current_user)
     image = await _find_latest_image(db, "vllm")
     image = f"chutes/{image.name}:{image.tag}"
+    if args.engine_args.max_model_len <= 0:
+        args.engine_args.max_model_len = 16384
     code, chute = build_vllm_code(args, current_user.username, image)
     if (node_selector := args.node_selector) is None:
         async with aiohttp.ClientSession() as session:
@@ -366,7 +370,7 @@ async def easy_deploy_vllm_chute(
         name=args.model,
         image=image,
         readme=args.readme,
-        logo_id=args.logo_id,
+        logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
         code=code,
         filename="chute.py",
@@ -400,7 +404,7 @@ async def easy_deploy_diffusion_chute(
         name=args.name,
         image=image,
         readme=args.readme,
-        logo_id=args.logo_id,
+        logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
         code=code,
         filename="chute.py",
@@ -436,7 +440,7 @@ async def easy_deploy_tei_chute(
         name=args.model,
         image=image,
         readme=args.readme,
-        logo_id=args.logo_id,
+        logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
         code=code,
         filename="chute.py",
