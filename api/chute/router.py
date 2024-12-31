@@ -19,6 +19,7 @@ from typing import Optional
 from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector
 from api.chute.templates import (
     VLLMChuteArgs,
+    VLLMEngineArgs,
     DiffusionChuteArgs,
     TEIChuteArgs,
     build_vllm_code,
@@ -209,6 +210,7 @@ async def _deploy_chute(
     if chute:
         old_version = chute.version
         chute.image_id = image.image_id
+        chute.tagline = chute_args.tagline
         chute.readme = chute_args.readme
         chute.code = chute_args.code
         chute.filename = chute_args.filename
@@ -226,6 +228,7 @@ async def _deploy_chute(
             image_id=image.image_id,
             user_id=current_user.user_id,
             name=chute_args.name,
+            tagline=chute_args.tagline,
             readme=chute_args.readme,
             logo_id=chute_args.logo_id if chute_args.logo_id else None,
             code=chute_args.code,
@@ -353,6 +356,8 @@ async def easy_deploy_vllm_chute(
     await ensure_is_developer(db, current_user)
     image = await _find_latest_image(db, "vllm")
     image = f"chutes/{image.name}:{image.tag}"
+    if not args.engine_args:
+        args.engine_args = VLLMEngineArgs()
     if args.engine_args.max_model_len <= 0:
         args.engine_args.max_model_len = 16384
     code, chute = build_vllm_code(args, current_user.username, image)
@@ -369,6 +374,7 @@ async def easy_deploy_vllm_chute(
     chute_args = ChuteArgs(
         name=args.model,
         image=image,
+        tagline=args.tagline,
         readme=args.readme,
         logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
@@ -403,6 +409,7 @@ async def easy_deploy_diffusion_chute(
     chute_args = ChuteArgs(
         name=args.name,
         image=image,
+        tagline=args.tagline,
         readme=args.readme,
         logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
@@ -439,6 +446,7 @@ async def easy_deploy_tei_chute(
     chute_args = ChuteArgs(
         name=args.model,
         image=image,
+        tagline=args.tagline,
         readme=args.readme,
         logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,

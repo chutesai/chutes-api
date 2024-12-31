@@ -126,6 +126,7 @@ class NodeSelector(BaseModel):
 
 class ChuteArgs(BaseModel):
     name: str = Field(min_length=3, max_length=128)
+    tagline: Optional[str] = Field(default="", max_length=1024)
     readme: Optional[str] = Field(default="", max_length=16384)
     logo_id: Optional[str] = None
     image: str
@@ -148,6 +149,7 @@ class Chute(Base):
     chute_id = Column(String, primary_key=True, default="replaceme")
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
     name = Column(String)
+    tagline = Column(String, default="")
     readme = Column(String, default="")
     image_id = Column(String, ForeignKey("images.image_id"))
     logo_id = Column(String, ForeignKey("logos.logo_id", ondelete="SET NULL"), nullable=True)

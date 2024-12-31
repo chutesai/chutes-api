@@ -14,6 +14,7 @@ from api.chute.schemas import Cord
 class ChuteResponse(BaseModel):
     chute_id: str
     name: str
+    tagline: Optional[str]
     readme: str
     public: bool
     version: str

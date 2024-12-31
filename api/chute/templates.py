@@ -35,6 +35,7 @@ class VLLMEngineArgs(BaseModel):
 class VLLMChuteArgs(BaseModel):
     model: str
     logo_id: Optional[str] = None
+    tagline: Optional[str] = ""
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
@@ -57,6 +58,7 @@ class DiffusionChuteArgs(BaseModel):
     model: str
     name: str
     logo_id: Optional[str] = None
+    tagline: Optional[str] = ""
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
@@ -89,6 +91,7 @@ class TEIChuteArgs(BaseModel):
     )
     revision: Optional[str] = None
     logo_id: Optional[str] = None
+    tagline: Optional[str] = ""
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
@@ -118,7 +121,7 @@ chute = build_vllm_chute(
         max_model_len={{ args.engine_args.max_model_len }},
         {%- endif %}
         {%- if args.engine_args.trust_remote_code is not none %}
-        trust_remote_coden={{ args.engine_args.trust_remote_code }},
+        trust_remote_code={{ args.engine_args.trust_remote_code }},
         {%- endif %}
         {%- if args.engine_args.enforce_eager is not none %}
         enforce_eager={{ args.engine_args.enforce_eager }},
