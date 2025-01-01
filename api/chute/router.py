@@ -93,8 +93,10 @@ async def list_chutes(
         )
 
     # Standard template filtering.
-    if template and template.strip():
+    if template and template.strip() and template != "other":
         query = query.where(Chute.standard_template == template)
+    elif template == "other":
+        query = query.where(Chute.standard_template.is_(None))
 
     # Perform a count.
     total_query = select(func.count()).select_from(query.subquery())
