@@ -8,6 +8,7 @@ import string
 import uuid
 import orjson as json
 import aiohttp
+from loguru import logger
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from starlette.responses import StreamingResponse
@@ -356,10 +357,54 @@ async def easy_deploy_vllm_chute(
     Easy/templated vLLM deployment.
     """
     await ensure_is_developer(db, current_user)
-    image = await _find_latest_image(db, "vllm")
-    image = f"chutes/{image.name}:{image.tag}"
+
+    # Make sure we can download the model, set max model length.
     if not args.engine_args:
         args.engine_args = VLLMEngineArgs()
+    gated_model = False
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"https://huggingface.co/{args.model}/resolve/main/config.json"
+            ) as resp:
+                if resp.status == 401:
+                    gated_model = True
+                resp.raise_for_status()
+                try:
+                    config = await resp.json()
+                except Exception:
+                    config = json.loads(await resp.text())
+                length = config.get("max_position_embeddings", config.get("model_max_length"))
+                if isinstance(length, str) and length.isidigit():
+                    length = int(length)
+                if isinstance(length, int):
+                    if length <= 16384:
+                        if (
+                            not args.engine_args.max_model_len
+                            or args.engine_args.max_model_len > length
+                        ):
+                            logger.info(
+                                f"Setting max_model_len to {length} due to config.json, model={args.model}"
+                            )
+                            args.engine_args.max_model_len = length
+                    elif not args.engine_args.max_model_len:
+                        logger.info(
+                            f"Setting max_model_len to 16384 due to excessively large context length in config.json, model={args.model}"
+                        )
+                        args.engine_args.max_model_len = 16384
+
+    except Exception as exc:
+        logger.warning(f"Error checking model config.json: {exc}")
+
+    # Reject gaited models, e.g. meta-llama/*
+    if gated_model:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Model {args.model} appears to have gated access, config.json could not be downloaded",
+        )
+
+    image = await _find_latest_image(db, "vllm")
+    image = f"chutes/{image.name}:{image.tag}"
     if args.engine_args.max_model_len <= 0:
         args.engine_args.max_model_len = 16384
     code, chute = build_vllm_code(args, current_user.username, image)
