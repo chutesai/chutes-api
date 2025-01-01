@@ -206,7 +206,7 @@ async def _invoke_one(
                     f"Error encrypting payload: {str(exc)}, sending plain text\n{traceback.format_exc()}"
                 )
 
-    session = aiohttp.ClientSession()
+    session = aiohttp.ClientSession(read_bufsize=8 * 1024 * 1024)
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
     if encrypted:
         headers.update({ENCRYPTED_HEADER: "true"})

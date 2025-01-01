@@ -215,11 +215,12 @@ async def _invoke(
     for cord in chute.cords:
         public_path = cord.get("public_api_path", None)
         if public_path and public_path == request.url.path:
-            if cord.get("public_api_method", "POST") == request.method and stream == cord.get(
-                "stream"
-            ):
-                selected_cord = cord
-                break
+            if cord.get("public_api_method", "POST") == request.method:
+                if chute.standard_template != "vllm" or stream == cord.get("stream"):
+                    selected_cord = cord
+                    if cord.get("stream"):
+                        stream = True
+                    break
     if not selected_cord:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching cord found!")
 
