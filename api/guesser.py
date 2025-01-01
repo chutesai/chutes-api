@@ -28,14 +28,14 @@ class ConfigGuesser:
         )
 
         self.vram_overhead = {
-            "llama": 2,
-            "mistral": 2,
-            "phi": 1.5,
-            "falcon": 2,
-            "gpt_neox": 2,
-            "mpt": 2,
-            "qwen": 2,
-            "default": 2,
+            "llama": 1.4,
+            "mistral": 1.4,
+            "phi": 1.2,
+            "falcon": 1.2,
+            "gpt_neox": 1.2,
+            "mpt": 1.2,
+            "qwen": 1.4,
+            "default": 1.4,
         }
 
         self.quant_multipliers = {"4bit": 0.25, "8bit": 0.5, "none": 1.0}
@@ -147,7 +147,9 @@ class ConfigGuesser:
         model_type = self._detect_model_type(config)
         quantization = self._detect_quantization(config)
 
-        base_vram = total_size + self.vram_overhead.get(model_type, self.vram_overhead["default"])
+        base_vram = total_size + total_size * self.vram_overhead.get(
+            model_type, self.vram_overhead["default"]
+        )
         if quantization:
             base_vram *= self.quant_multipliers.get(quantization, 1.0)
         try:

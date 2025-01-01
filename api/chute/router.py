@@ -362,6 +362,7 @@ async def easy_deploy_vllm_chute(
     if not args.engine_args:
         args.engine_args = VLLMEngineArgs()
     gated_model = False
+    llama_model = False
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -375,6 +376,13 @@ async def easy_deploy_vllm_chute(
                 except Exception:
                     config = json.loads(await resp.text())
                 length = config.get("max_position_embeddings", config.get("model_max_length"))
+                if any(
+                    [
+                        arch.lower() == "llamaforcausallm"
+                        for arch in config.get("architectures") or []
+                    ]
+                ):
+                    llama_model = True
                 if isinstance(length, str) and length.isidigit():
                     length = int(length)
                 if isinstance(length, int):
@@ -393,8 +401,32 @@ async def easy_deploy_vllm_chute(
                         )
                         args.engine_args.max_model_len = 16384
 
+        # Also check the tokenizer.
+        if not args.engine_args.tokenizer:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://huggingface.co/{args.model}/resolve/main/tokenizer_config.json"
+                ) as resp:
+                    if resp.status == 404:
+                        args.engine_args.tokenizer = "unsloth/Llama-3.2-1B-Instruct"
+                    resp.raise_for_status()
+                    try:
+                        config = await resp.json()
+                    except Exception:
+                        config = json.loads(await resp.text())
+                    if not config.get("chat_template"):
+                        if config.get("tokenizer_class") == "tokenizer_class" and llama_model:
+                            args.engine_args.tokenizer = "unsloth/Llama-3.2-1B-Instruct"
+                            logger.warning(
+                                f"Chat template not specified in {args.model}, defaulting to llama3"
+                            )
+                        elif config.get("tokenizer_class") == "LlamaTokenizer":
+                            args.engine_args.tokenizer = "jondurbin/bagel-7b-v0.1"
+                            logger.warning(
+                                f"Chat template not specified in {args.model}, defaulting to llama2 (via bagel)"
+                            )
     except Exception as exc:
-        logger.warning(f"Error checking model config.json: {exc}")
+        logger.warning(f"Error checking model tokenizer_config.json: {exc}")
 
     # Reject gaited models, e.g. meta-llama/*
     if gated_model:
