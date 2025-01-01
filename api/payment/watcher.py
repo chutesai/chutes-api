@@ -165,14 +165,15 @@ class PaymentMonitor:
         """
         async with get_session() as session:
             query = select(User.payment_address, User.developer_payment_address, User.updated_at)
-            if self._user_refresh_timestamp:
-                query = query.where(User.updated_at > self._user_refresh_timestamp)
+            #if self._user_refresh_timestamp:
+            #    query = query.where(User.updated_at > self._user_refresh_timestamp)
             query = query.order_by(User.updated_at.asc())
             result = await session.execute(query)
             for payment_address, developer_payment_address, updated_at in result:
                 self._payment_addresses.add(payment_address)
                 if developer_payment_address:
                     self._developer_payment_addresses.add(developer_payment_address)
+                logger.info(f"Addresses: {payment_address=} {developer_payment_address=}")
                 self._user_refresh_timestamp = updated_at
 
     async def _handle_payment(
@@ -245,6 +246,8 @@ class PaymentMonitor:
             except IntegrityError as exc:
                 if "UniqueViolationError" in str(exc):
                     logger.warning(f"Skipping (apparent) duplicate transaction: {payment_id=}")
+                    await session.rollback()
+                    return
                 else:
                     raise
             logger.success(
@@ -292,6 +295,7 @@ class PaymentMonitor:
                 usd_amount=delta,
                 fmv=fmv,
                 transaction_hash=block_hash,
+                purpose="developer",
             )
             session.add(payment)
 
@@ -307,6 +311,8 @@ class PaymentMonitor:
             except IntegrityError as exc:
                 if "UniqueViolationError" in str(exc):
                     logger.warning(f"Skipping (apparent) duplicate transaction: {payment_id=}")
+                    await session.rollback()
+                    return
                 else:
                     raise
             logger.success(
