@@ -14,7 +14,7 @@ from typing import Optional
 from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import text, select
+from sqlalchemy import text, select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.chute.schemas import Chute
@@ -360,15 +360,21 @@ async def hostname_invocation(
         model = payload.get("model")
         chute = None
         if model:
+            chute_user = await chutes_user_id()
             chute = (
                 (
                     await db.execute(
-                        select(Chute).where(
-                            Chute.user_id == await chutes_user_id(),
+                        select(Chute)
+                        .where(
                             Chute.name == model,
-                            Chute.public.is_(True),
+                            or_(
+                                Chute.public.is_(True),
+                                Chute.user_id == current_user.user_id,
+                            ),
                             Chute.standard_template == "vllm",
                         )
+                        .order_by((Chute.user_id == chute_user).desc())
+                        .limit(1)
                     )
                 )
                 .unique()

@@ -165,7 +165,7 @@ class PaymentMonitor:
         """
         async with get_session() as session:
             query = select(User.payment_address, User.developer_payment_address, User.updated_at)
-            #if self._user_refresh_timestamp:
+            # if self._user_refresh_timestamp:
             #    query = query.where(User.updated_at > self._user_refresh_timestamp)
             query = query.order_by(User.updated_at.asc())
             result = await session.execute(query)
