@@ -426,6 +426,9 @@ async def verify_instance(instance_id: str):
     """
     Verify a single instance.
     """
+    attempts = await settings.redis_client.incr(f"verify_instance:backend:{instance_id}")
+    if attempts >= 8:
+        return
     async with get_session() as session:
         instance = (
             (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))

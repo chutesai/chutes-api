@@ -179,8 +179,15 @@ async def activate_instance(
             logger.warning(f"Error broadcasting instance event: {exc}")
 
     # Kick off validation.
+    if (attempts := await settings.redis_client.incr(f"verify_instance:{instance_id}")) >= 7:
+        logger.warning(
+            f"Refusing to attempt verification more than 7 times for {instance_id=} {attempts=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too may verification requests.",
+        )
     await verify_instance.kiq(instance_id)
-
     return instance
 
 
