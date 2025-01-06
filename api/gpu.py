@@ -166,7 +166,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
-        "hourly_rate": 0.75,
+        "hourly_rate": 0.6,
     },
     "l40s": {
         "model_name_check": "L40S",
@@ -180,7 +180,7 @@ SUPPORTED_GPUS = {
         "concurrent_kernels": True,
         "ecc": True,
         "sxm": False,
-        "hourly_rate": 0.69,
+        "hourly_rate": 0.71,
     },
     "a100_40gb": {
         "model_name_check": "A100.?PCIE.?40GB",
