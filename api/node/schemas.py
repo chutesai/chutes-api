@@ -126,6 +126,7 @@ class Node(Base):
         self.validate_clock_rate(None, self.clock_rate)
         self.validate_max_threads(None, self.max_threads_per_processor)
         self.validate_boolean_features("concurrent_kernels", self.concurrent_kernels)
+        self.validate_identifier(None, self.gpu_identifier)
 
     @validates("verification_port")
     def validate_port(self, _, port: int) -> int:
@@ -135,12 +136,29 @@ class Node(Base):
 
     @validates("name")
     def validate_gpu_model(self, _, name: str) -> str:
+        if self._gpu_key:
+            if not re.search(self._gpu_specs["model_name_check"], name):
+                raise ValueError(
+                    f"GPU model in name '{name}' does not match specified identifier: {self._gpu_key}"
+                )
+            return name
         for gpu_key, specs in SUPPORTED_GPUS.items():
             if re.search(specs["model_name_check"], name):
                 self._gpu_specs = specs
                 self._gpu_key = gpu_key
                 return name
         raise ValueError(f"GPU model in name '{name}' not found in supported GPUs")
+
+    @validates("identifier")
+    def validate_identifier(self, _, identifier: str) -> str:
+        if self._gpu_key and self._gpu_key != identifier:
+            raise ValueError(
+                f"GPU identifier {identifier} does not match model name identifier: {self._gpu_key}"
+            )
+        if not self._gpu_key:
+            self._gpu_key = identifier
+            self._gpu_specs = SUPPORTED_GPUS[identifier]
+        return identifier
 
     @validates("memory")
     def validate_memory(self, _, memory: int) -> int:
