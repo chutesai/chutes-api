@@ -337,13 +337,6 @@
         channel: "{{ microk8s_channel }}"
         classic: yes
 
-    - name: Configure CNI
-      template:
-        src: cilium.conf.j2
-        dest: /etc/cni/net.d/05-cilium.conf
-        mode: '0600'
-      register: cni_updated
-
     - name: Start MicroK8s
       shell: microk8s status | grep "microk8s is running" || microk8s start
       changed_when: false
@@ -452,11 +445,6 @@
       delay: 10
       ignore_errors: yes
       when: rebooted.changed
-
-    - name: Install cilium
-      shell:
-        microk8s enable community || (sleep 10 && microk8s enable community) || true
-        microk8s enable cilium || (sleep 10 && microk8s enable cilium) || true
 
     - name: Install NVIDIA Container Toolkit
       apt:
