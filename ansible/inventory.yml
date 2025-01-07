@@ -17,6 +17,8 @@ all:
     # Ubuntu version.
     ubuntu_major: "22"
     ubuntu_minor: "04"
+    cuda_version: "12-6"
+    nvidia_version: "560"
 
   hosts:
     chutes-prod-0:

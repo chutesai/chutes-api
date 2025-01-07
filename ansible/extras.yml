@@ -1,8 +1,8 @@
-- name: Enable plugins
+- name: Enable cilium
   hosts: all
   become: yes
   tasks:
-    - name: Enable MicroK8s plugins
+    - name: Enable cilium
       shell: |
         microk8s enable community || (sleep 10 && microk8s enable community) || true
         microk8s enable cilium || (sleep 10 && microk8s enable cilium) || true
@@ -21,7 +21,7 @@
           --namespace gpu-operator \
           --create-namespace \
           --set nodeSelector.kubernetes.io/gpu="true" \
-          --set driver.enabled=true \
+          --set driver.enabled=false \
           --set toolkit.enabled=true \
           --set devicePlugin.enabled=true \
           --set operator.runtimeClass="nvidia-container-runtime" \
@@ -46,5 +46,9 @@
           --set prometheus-pushgateway.persistentVolume.enabled=false \
           --set prometheus-server.persistentVolume.enabled=false \
           --set alertmanager.persistence.enabled=false \
+          --set server.nodeSelector."kubernetes\.io/hostname"={{ inventory_hostname }} \
+          --set alertmanager.nodeSelector."kubernetes\.io/hostname"={{ inventory_hostname }} \
+          --set pushgateway.nodeSelector."kubernetes\.io/hostname"={{ inventory_hostname }} \
+          --set kubeStateMetrics.nodeSelector."kubernetes\.io/hostname"={{ inventory_hostname }} \
           --insecure-skip-tls-verify --kube-insecure-skip-tls-verify
       when: is_primary | bool
