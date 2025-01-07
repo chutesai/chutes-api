@@ -1,9 +1,10 @@
 - name: Setup Kubernetes Node
   hosts: all
   become: yes
+  any_errors_fatal: true
   vars:
     username: "{{ user }}"
-    ssh_public_key: "{{ ssh_key }}"
+    ssh_public_keys: "{{ ssh_keys }}"
     microk8s_channel: "1.31/stable"
     enable_gpu: "{{ gpu_enabled | default(false) }}"
 
@@ -40,13 +41,12 @@
         - "/root/.ssh"
 
     - name: Add authorized SSH keys
-      copy:
-        content: "{{ ssh_public_key }}"
-        dest: "{{ item }}"
-        mode: '0700'
-      with_items:
-        - "/home/{{ username }}/.ssh/authorized_keys"
-        - "/root/.ssh/authorized_keys"
+      authorized_key:
+        user: "{{ user }}"
+        state: present
+        key: "{{ item }}"
+      with_items: "{{ ssh_public_keys }}"
+      become: yes
 
     - name: Set correct ownership for user home
       file:
@@ -78,7 +78,7 @@
           - clang
           - libssl-dev
           - llvm
-          - libudev-dev
+          - libudev1
           - protobuf-compiler
           - python3
           - python3-pip
@@ -125,6 +125,20 @@
         - lambda_version_file.stat.exists or lambda_file_backup.stat.exists
         - lambda_packages.stdout_lines | length > 0
 
+    - name: Install NVIDIA optimized kernel for 22.04
+      apt:
+        name:
+          - linux-nvidia-hwe-22.04
+        state: present
+      when: ubuntu_major == "22" and enable_gpu | bool
+
+    - name: Install NVIDIA optimized kernel for 24.04
+      apt:
+        name:
+          - linux-nvidia-hwe-24.04-edge
+        state: present
+      when: ubuntu_major == "24" and enable_gpu | bool
+
     - name: Check CUDA installation
       apt:
         name: cuda-toolkit-12-6
@@ -136,7 +150,9 @@
 
     - name: Purge existing NVIDIA/CUDA packages
       shell: |
-        PKGS=$(dpkg --list | egrep -i 'cuda|nvidia' | grep -v 'linux-nvidia' | awk '{print $2}')
+        export DEBIAN_FRONTEND=noninteractive
+        export NEEDRESTART_SUSPEND=y
+        PKGS=$(dpkg --list | egrep -i 'cuda|nvidia' | egrep -v 'nvidia-kernel|linux-(nvidia|modules|headers|image)' | awk '{print $2}' )
         if [ ! -z "$PKGS" ]; then
           echo "$PKGS" | xargs apt -y remove --allow-change-held-packages
           echo "$PKGS" | xargs dpkg --purge
@@ -151,7 +167,7 @@
         - name: Download and install CUDA keyring
           block:
             - get_url:
-                url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+                url: https://developer.download.nvidia.com/compute/cuda/repos/ubuntu{{ ubuntu_major }}{{ ubuntu_minor }}/x86_64/cuda-keyring_1.1-1_all.deb
                 dest: /tmp/cuda-keyring.deb
             - apt:
                 deb: /tmp/cuda-keyring.deb
@@ -166,8 +182,21 @@
               - cuda-toolkit-12-6
               - nvidia-open-560
               - nvidia-fabricmanager-560
+            state: present
+
+        - name: Verify HWE kernel is still installed
+          apt:
+            name:
               - linux-nvidia-hwe-22.04
             state: present
+          when: ubuntu_major == "22" and enable_gpu | bool
+
+        - name: Install NVIDIA optimized kernel for 24.04
+          apt:
+            name:
+              - linux-nvidia-hwe-24.04-edge
+            state: present
+          when: ubuntu_major == "24" and enable_gpu | bool
 
         - name: Configure NVIDIA Fabric Manager
           systemd:
@@ -221,30 +250,13 @@
         path: /etc/wireguard/private.key
       register: wg_private_exists
 
-    - name: Generate Wireguard private key
-      shell: wg genkey > /etc/wireguard/private.key
-      args:
-        creates: /etc/wireguard/private.key
+    - name: Generate Wireguard keys
+      shell: |
+        wg genkey > /etc/wireguard/private.key
+        cat /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
+        chmod 600 /etc/wireguard/private.key /etc/wireguard/public.key
       when: not wg_private_exists.stat.exists
       register: wg_key_created
-
-    - name: Set private key permissions
-      file:
-        path: /etc/wireguard/private.key
-        mode: '0600'
-      when: wg_key_created.changed
-
-    - name: Generate public key from private key
-      shell: cat /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
-      args:
-        creates: /etc/wireguard/public.key
-      when: wg_key_created.changed
-
-    - name: Set public key permissions
-      file:
-        path: /etc/wireguard/public.key
-        mode: '0600'
-      when: wg_key_created.changed
 
     - name: Get public keys
       slurp:
@@ -260,6 +272,12 @@
       set_fact:
         wg_public_key: "{{ public_keys['content'] | b64decode | trim }}"
         wg_private_key: "{{ private_keys['content'] | b64decode | trim }}"
+
+    - name: Debug hostvars for wg keys
+      debug:
+        msg: "Host {{ item }}: has wg_public_key = {{ hostvars[item]['wg_public_key'] is defined }}"
+      loop: "{{ groups['all'] }}"
+      when: is_primary | bool
 
     - name: Create Wireguard config for primary
       when: is_primary | bool
@@ -283,27 +301,66 @@
         enabled: yes
         state: started
 
-    - name: Configure custom routes
-      template:
-        src: 99-custom-routes.yaml.j2
-        dest: /etc/netplan/99-custom-routes.yaml
-        mode: '0400'
-      when: overlapping_cidr is defined and overlapping_cidr | length > 0
+    - name: Set hostname
+      hostname:
+        name: "{{ inventory_hostname }}"
+        use: systemd
 
-    - name: Apply custom routes
-      shell: netplan apply
-      become: true
-      when: overlapping_cidr is defined and overlapping_cidr | length > 0
+    - name: Update /etc/hostname
+      copy:
+        content: "{{ inventory_hostname }}"
+        dest: /etc/hostname
+
+    - name: Ensure preserve_hostname is set to true
+      lineinfile:
+        path: /etc/cloud/cloud.cfg
+        regexp: '^preserve_hostname:'
+        line: 'preserve_hostname: true'
+        create: true
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Create hostname script
+      copy:
+        dest: /usr/local/bin/set-hostname.sh
+        mode: '0755'
+        content: |
+          #!/bin/bash
+          hostname "{{ inventory_hostname }}"
+          echo -n "{{ inventory_hostname }}" > /etc/hostname
+
+    - name: Create systemd service
+      copy:
+        dest: /etc/systemd/system/set-hostname.service
+        content: |
+          [Unit]
+          Description=Set system hostname on boot
+          After=network.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/set-hostname.sh
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+
+    - name: Enable and start service
+      systemd:
+        name: set-hostname
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
+    - name: Set hostname one more time with hostnamectl
+      shell: hostnamectl set-hostname {{ inventory_hostname }}
 
     - name: Install MicroK8s
       community.general.snap:
         name: microk8s
         channel: "{{ microk8s_channel }}"
         classic: yes
-
-    - name: Start MicroK8s
-      shell: microk8s status | grep "microk8s is running" || microk8s start
-      changed_when: false
 
     - name: Configure CNI
       template:
@@ -312,11 +369,9 @@
         mode: '0600'
       register: cni_updated
 
-    - name: Enable cilium
-      shell: |
-        microk8s enable community || (sleep 10 && microk8s enable community) || true
-        microk8s enable cilium || (sleep 10 && microk8s enable cilium) || true
-      when: cni_updated.changed
+    - name: Start MicroK8s
+      shell: microk8s status | grep "microk8s is running" || microk8s start
+      changed_when: false
 
     - name: Configure wireguard IP for k8s comms
       block:
@@ -342,12 +397,6 @@
             name: snap.microk8s.daemon-kubelite
             state: restarted
           when: kubelet_modified.changed
-
-    - name: Install kubernetes python package
-      pip:
-        name: kubernetes
-        state: present
-      become: yes
 
     - name: Setup Kubernetes access for user
       block:
@@ -384,9 +433,16 @@
       shell: wg-quick down wg0; wg-quick up wg0
       when: wireguard_primary.changed or wireguard_worker.changed
 
-    - name: Set hostname
-      hostname:
-        name: "{{ inventory_hostname }}"
+    - name: Update DNS resolution config
+      template:
+        src: resolved.conf.j2
+        dest: "/etc/systemd/resolved.conf"
+        mode: '0644'
+
+    - name: Restart systemd-resolved
+      systemd:
+        name: systemd-resolved
+        state: restarted
 
     - name: Reboot
       reboot:
@@ -397,12 +453,20 @@
         pre_reboot_delay: 0
         post_reboot_delay: 30
         test_command: uptime
-      when: gpu_setup.changed or cni_updated.changed
+      when: gpu_setup.changed
       register: rebooted
 
     - name: Wait for system to be ready
       wait_for_connection:
         timeout: 600
+      when: rebooted.changed
+
+    - name: Set hostname again just in case
+      systemd:
+        name: set-hostname
+        enabled: yes
+        state: restarted
+        daemon_reload: yes
       when: rebooted.changed
 
     - name: Wait for microk8s to be ready
@@ -439,13 +503,6 @@
       loop: "{{ microk8s_services.stdout_lines }}"
       when: container_runtime.changed
 
-    - name: Restart Docker service
-      systemd:
-        name: docker
-        state: restarted
-      when: container_runtime.changed
-      ignore_errors: yes
-
     - name: Install iptables-persistent
       package:
         name:
@@ -462,13 +519,20 @@
         state: present
       when: is_primary | bool
 
-    - name: Add NAT masquerade rule
+    - name: Get network interface information
+      ansible.builtin.shell: |
+        ip -o link show | awk '$2 !~ /^(docker|cali|cilium|veth|vxlan|lo|wg)/ && $2 ~ /^en/ {gsub(/:/, "", $2); print $2}'
+      register: ethernet_interfaces
+      changed_when: false
+
+    - name: Add NAT masquerade rules for ethernet interfaces
       iptables:
         table: nat
         chain: POSTROUTING
-        out_interface: eth0
+        out_interface: "{{ item }}"
         jump: MASQUERADE
         state: present
+      loop: "{{ ethernet_interfaces.stdout_lines }}"
       when: is_primary | bool
 
     - name: Save iptables rules
