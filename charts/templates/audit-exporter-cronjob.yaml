@@ -11,6 +11,8 @@ spec:
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 5
       template:
         metadata:
           labels:
