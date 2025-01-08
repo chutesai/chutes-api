@@ -138,18 +138,24 @@ async def create_nodes(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="One or more invalid verification_hosts provided.",
         )
-    for node_args in nodes_args:
-        node = Node(
-            **{
-                **node_args.dict(),
-                **{"miner_hotkey": hotkey, "seed": seed, "verified_at": verified_at},
-            }
+    try:
+        for node_args in nodes_args:
+            node = Node(
+                **{
+                    **node_args.dict(),
+                    **{"miner_hotkey": hotkey, "seed": seed, "verified_at": verified_at},
+                }
+            )
+            db.add(node)
+            nodes.append(node)
+        await db.commit()
+        for idx in range(len(nodes)):
+            await db.refresh(nodes[idx])
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"GPU parameter validation error: {exc}",
         )
-        db.add(node)
-        nodes.append(node)
-    await db.commit()
-    for idx in range(len(nodes)):
-        await db.refresh(nodes[idx])
 
     # Purge any old challenges.
     node_uuids = [node.uuid for node in args.nodes]
