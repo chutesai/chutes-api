@@ -104,7 +104,7 @@ SUPPORTED_GPUS = {
         "major": 8,
         "minor": 9,
         "tensor_cores": 240,
-        "processors": 60,
+        "processors": 58,
         "clock_rate": {"base": 795, "boost": 2040},
         "max_threads_per_processor": 1536,
         "concurrent_kernels": True,
