@@ -3,11 +3,14 @@ Endpoints specific to miners.
 """
 
 import orjson as json
-from fastapi import APIRouter, Depends, Header, status, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi_cache.decorator import cache
+from fastapi import APIRouter, Depends, Header, status, HTTPException, Response
 from starlette.responses import StreamingResponse
+from sqlalchemy import text
 from sqlalchemy.future import select
 from sqlalchemy.orm import class_mapper
-from typing import Any
+from typing import Any, Optional
 from pydantic.fields import ComputedFieldInfo
 import api.database.orms  # noqa
 from api.user.schemas import User
@@ -17,7 +20,7 @@ from api.image.schemas import Image
 from api.instance.schemas import Instance
 from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
-from api.database import get_session
+from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 
@@ -116,3 +119,71 @@ async def get_chute(
                 detail=f"{chute_id=} not found",
             )
         return model_to_dict(chute)
+
+
+@cache(expire=60)
+@router.get("/stats")
+async def get_stats(
+    session: AsyncSession = Depends(get_db_session), per_chute: Optional[bool] = False
+) -> Response:
+    """
+    Get invocation status over different intervals.
+    """
+    bounty_query = """
+        SELECT miner_hotkey, SUM(bounty) as total_bounty
+          FROM invocations
+         WHERE started_at >= NOW() - INTERVAL '{interval}'
+           AND error_message IS NULL
+           AND miner_uid > 0
+         GROUP BY miner_hotkey
+    """
+    compute_query = """
+        SELECT
+            i.miner_hotkey,
+            SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
+        FROM invocations i
+        WHERE i.started_at > NOW() - INTERVAL '{interval}'
+        AND i.error_message IS NULL
+        AND miner_uid > 0
+        GROUP BY i.miner_hotkey
+        HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
+        ORDER BY compute_units DESC
+    """
+    if per_chute:
+        compute_query = """
+        SELECT
+            i.miner_hotkey,
+            i.chute_id,
+            SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
+        FROM invocations i
+        WHERE i.started_at > NOW() - INTERVAL '{interval}'
+        AND i.error_message IS NULL
+        AND miner_uid > 0
+        GROUP BY i.miner_hotkey, i.chute_id
+        HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
+        ORDER BY compute_units DESC
+        """
+    results = {}
+    for interval, label in (("1 hour", "past_hour"), ("1 day", "past_day"), ("1 week", "all")):
+        bounty_result = await session.execute(text(bounty_query.format(interval=interval)))
+        compute_result = await session.execute(text(compute_query.format(interval=interval)))
+        bounty_data = [
+            {"miner_hotkey": row[0], "total_bounty": float(row[1])}
+            for row in bounty_result.fetchall()
+        ]
+        compute_data = []
+        if per_chute:
+            compute_data = [
+                {"miner_hotkey": row[0], "chute_id": row[1], "compute_units": float(row[2])}
+                for row in compute_result.fetchall()
+            ]
+        else:
+            compute_data = [
+                {"miner_hotkey": row[0], "compute_units": float(row[1])}
+                for row in compute_result.fetchall()
+            ]
+        results[label] = {
+            "bounties": bounty_data,
+            "compute_units": compute_data,
+        }
+    return results

@@ -450,6 +450,8 @@ async def easy_deploy_vllm_chute(
                 )
             except Exception:
                 node_selector = NodeSelector(gpu_count=1, min_vram_gb_per_gpu=80)
+    if "h200" not in (node_selector.include or []) and not node_selector.exclude:
+        node_selector.exclude = ["h200"]
     chute_args = ChuteArgs(
         name=args.model,
         image=image,
@@ -485,6 +487,8 @@ async def easy_deploy_diffusion_chute(
             gpu_count=1,
             min_vram_gb_per_gpu=24,
         )
+    if not node_selector.include and not node_selector.exclude:
+        node_selector.exclude = ["h200"]
     chute_args = ChuteArgs(
         name=args.name,
         image=image,

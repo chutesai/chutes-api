@@ -43,9 +43,9 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
         .order_by(
             subquery.c.instance_count,
             case(
-                (Instance.last_queried_at.is_(None), datetime.min),
-                else_=Instance.last_queried_at,
+                (Instance.last_queried_at.is_(None), datetime.min), else_=Instance.last_queried_at
             ).asc(),
+            Instance.last_verified_at.asc(),
         )
         .limit(3)
     )
