@@ -33,6 +33,7 @@ WITH computation_rates AS (
 )
 SELECT
     i.miner_hotkey,
+    count(*) as invocation_count,
     sum(
         i.bounty +
         i.compute_multiplier *
@@ -54,21 +55,7 @@ WHERE i.started_at > NOW() - INTERVAL '{interval}'
 AND i.error_message IS NULL
 AND i.miner_uid > 0
 GROUP BY i.miner_hotkey
-HAVING SUM(
-    i.bounty +
-    i.compute_multiplier *
-    CASE
-        WHEN i.metrics->>'steps' IS NOT NULL
-            AND r.median_step_time IS NOT NULL
-            AND EXTRACT(EPOCH FROM (i.completed_at - i.started_at)) > ((i.metrics->>'steps')::float * r.median_step_time)
-        THEN (i.metrics->>'steps')::float * r.median_step_time
-        WHEN i.metrics->>'tokens' IS NOT NULL
-            AND r.median_token_time IS NOT NULL
-            AND EXTRACT(EPOCH FROM (i.completed_at - i.started_at)) > ((i.metrics->>'tokens')::float * r.median_token_time)
-        THEN (i.metrics->>'tokens')::float * r.median_token_time
-        ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
-    END
-) > 0 ORDER BY compute_units DESC;
+ORDER BY compute_units DESC;
 """
 
 
@@ -98,20 +85,30 @@ async def _get_weights_to_set(
     query = text(NORMALIZED_COMPUTE_QUERY.format(interval=interval))
 
     miner_compute_units = {}
+    miner_invocation_counts = {}
     async with get_session() as session:
         result = await session.execute(query)
-        for miner_hotkey, compute_units in result:
-            logger.info(f"Compute units for {miner_hotkey=} = {compute_units}")
+        for miner_hotkey, invocation_count, compute_units in result:
+            logger.info(f"{miner_hotkey=}: {compute_units=} {invocation_count=}")
             miner_compute_units[miner_hotkey] = compute_units
+            miner_invocation_counts[miner_hotkey] = invocation_count
+    total_compute = sum(miner_compute_units.values()) or 1.0
+    total_count = sum(miner_invocation_counts.values()) or 1.0
+    normalized_values = {
+        hotkey: sum([
+            miner_compute_units[hotkey] / total_compute,
+            miner_invocation_counts[hotkey] / total_count,
+        ]) / 2.0,
+    }
 
     node_ids = []
     node_weights = []
-    for hotkey, compute_units in miner_compute_units.items():
+    for hotkey, compute_score in normalized_compute.items():
         if hotkey not in hotkeys_to_node_ids:
             logger.debug(f"Miner {hotkey} not found on metagraph. Ignoring.")
             continue
 
-        node_weights.append(compute_units)
+        node_weights.append(compute_score)
         node_ids.append(hotkeys_to_node_ids[hotkey])
 
     return node_ids, node_weights
