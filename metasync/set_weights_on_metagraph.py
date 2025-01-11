@@ -20,6 +20,14 @@ from fiber.chain.chain_utils import query_substrate
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
 logger = get_logger(__name__)
 
+# Proportion of weights to assign to each metric.
+FEATURE_WEIGHTS = {
+    "compute_units": 0.45,      # Total amount of compute time (compute muliplier * total time).
+    "invocation_count": 0.25,   # Total number of invocations.
+    "unique_chute_count": 0.2,  # Number of unique chutes over the scoring period.
+    "bounty_count": 0.1,        # Number of bounties received (not bounty values, just counts).
+}
+SCORING_INTERVAL = "7 days"
 NORMALIZED_COMPUTE_QUERY = """
 WITH computation_rates AS (
     SELECT
@@ -33,7 +41,9 @@ WITH computation_rates AS (
 )
 SELECT
     i.miner_hotkey,
-    count(*) as invocation_count,
+    COUNT(*) as invocation_count,
+    COUNT(DISTINCT(i.chute_id)) AS unique_chute_count,
+    COUNT(CASE WHEN i.bounty > 0 THEN 1 END) AS bounty_count,
     sum(
         i.bounty +
         i.compute_multiplier *
@@ -72,44 +82,61 @@ async def _get_weights_to_set(
     hotkeys_to_node_ids: dict[str, int],
 ) -> tuple[list[int], list[float]] | None:
     """
-    Naive v1; Sum compute time for non errored invocations multiplied by compute multiplier.
+    Query the invocations for the past {SCORING INTERVAL} to calculate weights.
 
-    IMPROVEMENTS:
-    - Factor in cold starts
+    Factors included in scoring are:
+    - total compute time provided (as a factor of compute multiplier PLUS bounties awarded)
+    - total number of invocations processed
+    - number of unique chutes executed
+    - number of bounties claimed
+
+    Future improvements:
     - Punish errors more than just ignoring them
     - Have a decaying, normalised reward, rather than a fixed window
-    - Reward for time registered on the network (capped)
     """
 
-    interval = "7 days"
-    query = text(NORMALIZED_COMPUTE_QUERY.format(interval=interval))
-
-    miner_compute_units = {}
-    miner_invocation_counts = {}
+    query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
+    raw_compute_values = {}
+    header = ["hotkey", "invocation_count", "unique_chute_count", "bounty_count", "compute_units"]
     async with get_session() as session:
         result = await session.execute(query)
-        for miner_hotkey, invocation_count, compute_units in result:
-            logger.info(f"{miner_hotkey=}: {compute_units=} {invocation_count=}")
-            miner_compute_units[miner_hotkey] = compute_units
-            miner_invocation_counts[miner_hotkey] = invocation_count
-    total_compute = sum(miner_compute_units.values()) or 1.0
-    total_count = sum(miner_invocation_counts.values()) or 1.0
+        for row in result:
+            obj = dict(zip(header, row))
+            raw_compute_values[obj["hotkey"]] = obj
+            logger.info(obj)
+
+    # Normalize the values based on totals so they are all in the range [0.0, 1.0]
+    totals = {
+        key: sum(row[key] for row in raw_compute_values.values()) or 1.0
+        for key in header[1:]
+    }
     normalized_values = {
-        hotkey: sum([
-            miner_compute_units[hotkey] / total_compute,
-            miner_invocation_counts[hotkey] / total_count,
-        ]) / 2.0,
+        hotkey: {
+            key: row[key] / totals[key]
+            for key in header[1:]
+        }
+        for hotkey, row in raw_compute_values.items()
+    }
+    # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
+    final_scores = {
+        hotkey: sum(
+            norm_value * FEATURE_WEIGHTS[key]
+            for key, norm_value in metrics.items()
+        )
+        for hotkey, metrics in normalized_values.items()
     }
 
+    # Final weights per node.
     node_ids = []
     node_weights = []
-    for hotkey, compute_score in normalized_compute.items():
+    for hotkey, compute_score in final_scores.items():
         if hotkey not in hotkeys_to_node_ids:
             logger.debug(f"Miner {hotkey} not found on metagraph. Ignoring.")
             continue
 
         node_weights.append(compute_score)
         node_ids.append(hotkeys_to_node_ids[hotkey])
+        logger.info(f"Normalized score for {hotkey}: {compute_score}")
 
     return node_ids, node_weights
 
