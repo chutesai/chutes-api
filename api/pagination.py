@@ -3,7 +3,7 @@ Helper to paginate list endpoints.
 """
 
 from pydantic import BaseModel
-from typing import List, Any
+from typing import List, Any, Optional
 
 
 class PaginatedResponse(BaseModel):
@@ -11,3 +11,4 @@ class PaginatedResponse(BaseModel):
     page: int
     limit: int
     items: List[Any]
+    cord_refs: Optional[dict] = None

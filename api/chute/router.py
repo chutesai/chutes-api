@@ -11,6 +11,7 @@ import aiohttp
 from loguru import logger
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,6 +56,7 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
         response.current_estimated_price = {"error": "pricing unavailable"}
 
 
+@cache(expire=60)
 @router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
@@ -113,17 +115,28 @@ async def list_chutes(
 
     result = await db.execute(query)
     responses = []
+    cord_refs = {}
     for item in result.scalars().all():
-        responses.append(ChuteResponse.from_orm(item))
+        chute_response = ChuteResponse.from_orm(item)
+        cord_defs = json.dumps(item.cords).decode()
+        if item.standard_template == "vllm":
+            cord_defs = cord_defs.replace(f'"default":"{item.name}"', '"default":""')
+        cord_ref_id = str(uuid.uuid5(uuid.NAMESPACE_OID, cord_defs))
+        cord_refs[cord_ref_id] = item.cords
+        chute_response.cords = None
+        chute_response.cord_ref_id = cord_ref_id
+        responses.append(chute_response)
         await _inject_current_estimated_price(item, responses[-1])
     return {
         "total": total,
         "page": page,
         "limit": limit,
         "items": responses,
+        "cord_refs": cord_refs,
     }
 
 
+@cache(expire=60)
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
     chute_id_or_name: str,

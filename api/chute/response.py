@@ -20,7 +20,8 @@ class ChuteResponse(BaseModel):
     version: str
     slug: Optional[str]
     standard_template: Optional[str]
-    cords: List[Cord]
+    cords: Optional[List[Cord]] = []
+    cord_ref_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     image: ImageResponse

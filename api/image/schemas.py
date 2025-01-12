@@ -42,7 +42,7 @@ class Image(Base):
         Index("idx_image_name_tag", "name", "tag"),
         Index("idx_name_public", "name", "public"),
         Index("idx_name_created_at", "name", "created_at"),
-        UniqueConstraint("name", "tag", name="constraint_image_name_tag"),
+        UniqueConstraint("user_id", "name", "tag", name="constraint_user_id_image_name_tag"),
     )
 
     @validates("name")

@@ -53,7 +53,11 @@ def get_current_user(
                 token = authorization.split(" ")[-1]
 
                 # JWT auth.
-                if token and authorization.lower().lstrip().startswith("bearer "):
+                if (
+                    token
+                    and authorization.lower().lstrip().startswith("bearer ")
+                    and not token.strip().startswith("cpk_")
+                ):
                     return await get_user_from_token(token)
 
                 # API key auth.
