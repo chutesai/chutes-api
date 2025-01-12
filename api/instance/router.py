@@ -79,12 +79,12 @@ async def create_instance(
     gpu_type = None
     for node_id in instance_args.node_ids:
         node = await get_node_by_id(node_id, db, hotkey)
-        gpu_type = node.name
         if not node:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Node {node_id} not found",
             )
+        gpu_type = node.name
         if not node.is_suitable(chute):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
