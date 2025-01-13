@@ -124,9 +124,8 @@ async def check_encryption_challenge(
     url = f"http://{node.verification_host}:{node.verification_port}/challenge/decrypt"
     error_message = None
     try:
-        logger.info(f"POSTING: {challenge.dict()}")
         async with miner_client.post(
-            node.miner_hotkey, url, payload=challenge.dict(), timeout=5.0
+            node.miner_hotkey, url, payload=challenge.dict(), timeout=12.0
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
@@ -167,7 +166,7 @@ async def check_device_info_challenge(
             url,
             purpose,
             params={"challenge": challenge},
-            timeout=5.0,
+            timeout=12.0,
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform device info challenge: {response.status=} {await response.text()}"
@@ -309,7 +308,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
         f"http://{instance.host}:{instance.port}/_ping",
         payload,
         headers={"X-Chutes-Encrypted": "true"},
-        timeout=5.0,
+        timeout=12.0,
     ) as resp:
         resp.raise_for_status()
         if (await resp.json())["hello"] == expected:
@@ -340,7 +339,7 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
             offset=challenge.offset,
             length=challenge.length,
         ),
-        timeout=3.0,
+        timeout=12.0,
     ) as resp:
         resp.raise_for_status()
         result = await resp.text()
