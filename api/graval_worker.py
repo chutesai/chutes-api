@@ -473,6 +473,7 @@ async def verify_instance(instance_id: str):
         logger.success(f"Instance {instance_id=} has passed verification!")
         instance.verified = True
         instance.last_verified_at = func.now()
+        instance.verification_error = None
         await session.commit()
         await session.refresh(instance)
 
