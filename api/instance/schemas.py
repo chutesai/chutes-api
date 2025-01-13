@@ -23,7 +23,7 @@ instance_nodes = Table(
     "instance_nodes",
     Base.metadata,
     Column("instance_id", String, ForeignKey("instances.instance_id", ondelete="CASCADE")),
-    Column("node_id", String, ForeignKey("nodes.uuid", ondelete="CASCADE")),
+    Column("node_id", String, ForeignKey("nodes.uuid", ondelete="NO ACTION")),
     UniqueConstraint("instance_id", "node_id", name="uq_instance_node"),
 )
 
