@@ -63,6 +63,7 @@ class Settings(BaseSettings):
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "3600"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
+    scan_timeout: int = int(os.getenv("SCAN_TIMEOUT", "1200"))
     netuid: int = int(os.getenv("NETUID", "64"))
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
     first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "25.0"))

@@ -182,7 +182,7 @@ async def build_and_push_image(image):
                 _capture_logs(process.stderr, "stderr"),
                 process.wait(),
             ),
-            timeout=300,
+            timeout=settings.scan_timeout,
         )
         if process.returncode == 0:
             message = f"No HIGH|CRITICAL vulnerabilities detected in {short_tag}"

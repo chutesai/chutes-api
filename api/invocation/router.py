@@ -8,6 +8,8 @@ import gzip
 import orjson as json
 import csv
 import uuid
+from pydantic import BaseModel, ValidationError, Field
+from loguru import logger
 from datetime import date, datetime
 from io import BytesIO, StringIO
 from typing import Optional
@@ -28,6 +30,19 @@ from api.permissions import Permissioning
 
 router = APIRouter()
 host_invocation_router = APIRouter()
+
+
+class DiffusionInput(BaseModel):
+    prompt: str
+    negative_prompt: str = ""
+    height: int = Field(default=1024, ge=128, le=2048)
+    width: int = Field(default=1024, ge=128, le=2048)
+    num_inference_steps: int = Field(default=25, ge=1, le=50)
+    guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0)
+    seed: Optional[int] = Field(default=None, ge=0, le=2**32 - 1)
+
+    class Config:
+        extra = "forbid"
 
 
 @router.get("/exports/{year}/{month}/{day}/{hour}.csv")
@@ -226,6 +241,20 @@ async def _invoke(
 
     # Wrap up the args/kwargs in the way the miner execution service expects them.
     args, kwargs = None, None
+    if chute.standard_template == "diffusion":
+        logger.info(f"Diffusion input: {request_body}")
+        request_body.pop("cord", None)
+        request_body.pop("method", None)
+        steps = request_body.get("num_inference_steps")
+        max_steps = 30 if chute.name == "FLUX-1.dev" else 50
+        if steps and (isinstance(steps, int) or steps.isdigit()) and int(steps) > max_steps:
+            request_body["num_inference_steps"] = max_steps
+        try:
+            _ = DiffusionInput(**request_body)
+        except ValidationError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="bad request, naughty naughty"
+            )
     if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
