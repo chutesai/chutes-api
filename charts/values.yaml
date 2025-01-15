@@ -9,6 +9,7 @@ consecutive_failure_limit: 3
 
 # Taken from https://taostats.io/validators - allows linking accounts (where validators get free access)
 validators:
+  - 5DFwFpurRFaT5VtjdsATUnRakGhvUdgCghF61457QbWdsnJp
   - 5GKH9FPPnWSUoeeTJp19wVtd84XqFW4pyK2ijV2GsFbhTrP1
   - 5F4tQyWrhfGVcNhoqeiNsR6KjD4wMZ2kfhLj4oHYuyHbZAc3
   - 5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp

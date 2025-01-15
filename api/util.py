@@ -163,7 +163,12 @@ async def rate_limit(chute_id, user, requests, window):
     """
     Invocation rate limits.
     """
-    if user.username in ("bonnoliver", "chutes") or user.has_role(Permissioning.unlimited):
+    if (
+        user.username in ("bonnoliver", "chutes")
+        or user.has_role(Permissioning.unlimited)
+        or user.validator_hotkey
+        or user.subnet_owner_hotkey
+    ):
         return
     key = f"rate_limit:{user.user_id}:{chute_id}"
     now = datetime.datetime.now().timestamp()
