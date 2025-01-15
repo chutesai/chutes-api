@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.chute.schemas import Chute
 from api.chute.util import get_chute_by_id_or_name, invoke
+from api.util import rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.report.schemas import Report, ReportArgs
@@ -221,6 +222,11 @@ async def _invoke(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
         )
+
+    # Rate limits.
+    await rate_limit(
+        chute.chute_id, current_user, settings.rate_limit_count, settings.rate_limit_window
+    )
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None

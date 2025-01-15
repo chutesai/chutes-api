@@ -222,7 +222,7 @@ async def _invoke_one(
     try:
         if response.status == 429:
             raise InstanceRateLimit(
-                "Instance {target.instance_id=} has returned a rate limit error!"
+                f"Instance {target.instance_id=} has returned a rate limit error!"
             )
         elif response.status == 400:
             raise BadRequest("Invalid request: " + await response.text())

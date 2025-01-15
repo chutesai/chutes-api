@@ -31,6 +31,10 @@ class Permissioning:
         bitmask=1 << 4,
         description="Free invocation -- run anything, for free.",
     )
+    unlimited = Role(
+        bitmask=1 << 5,
+        description="No rate limits.",
+    )
 
     @classmethod
     def enabled(cls, user, role):

@@ -94,11 +94,22 @@ async def get_full_inventory(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     session: AsyncSession = Depends(get_db_session),
 ):
-    return (
-        await session.execute(select(Node).filter(Node.miner_hotkey == hotkey).unique())
-        .scalars()
-        .all()
+    query = text(
+        f"""
+    SELECT
+      nodes.uuid AS gpu_id,
+      instances.verified,
+      chutes.chute_id,
+      chutes.name AS chute_name
+    FROM nodes
+    JOIN instance_nodes ON nodes.uuid = instance_nodes.node_id
+    JOIN instances ON instance_nodes.instance_id = instances.instance_id
+    JOIN chutes ON instances.chute_id = chutes.chute_id
+    WHERE nodes.miner_hotkey = '{hotkey}'
+    """
     )
+    result = await session.execute(query, {"hotkey": hotkey})
+    return [dict(row._mapping) for row in result]
 
 
 @router.get("/metrics/")

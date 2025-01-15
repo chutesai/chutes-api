@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # Consecutive failure count that triggers instance deletion.
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "3"))
 
+    # Rate limits (10 requests per minute)
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 10))
+    rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
+
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))
     maintainer_take: float = float(os.getenv("MAINTAINER_TAKE", "0.2"))

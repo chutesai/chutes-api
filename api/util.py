@@ -11,6 +11,7 @@ import random
 import string
 import time
 import orjson as json
+from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
 from fastapi import status, HTTPException
@@ -156,3 +157,22 @@ async def ensure_is_developer(session, user):
             f"to your developer deposit address: {user.developer_payment_address}"
         ),
     )
+
+
+async def rate_limit(chute_id, user, requests, window):
+    """
+    Invocation rate limits.
+    """
+    if user.username in ("bonnoliver", "chutes") or user.has_role(Permissioning.unlimited):
+        return
+    key = f"rate_limit:{user.user_id}:{chute_id}"
+    now = datetime.datetime.now().timestamp()
+    await settings.redis_client.zremrangebyscore(key, 0, now - window)
+    request_count = await settings.redis_client.zcard(key)
+    if request_count >= requests:
+        logger.warning(f"Rate limiting user: {user.username} on chute: {chute_id} {request_count=}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests"
+        )
+    await settings.redis_client.zadd(key, {str(now): now})
+    await settings.redis_client.expire(key, window)

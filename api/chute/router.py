@@ -38,7 +38,7 @@ from api.instance.util import discover_chute_targets
 from api.database import get_db_session
 from api.pagination import PaginatedResponse
 from api.config import settings
-from api.util import ensure_is_developer
+from api.util import ensure_is_developer, rate_limit
 from api.permissions import Permissioning
 from api.guesser import guesser
 
@@ -570,6 +570,9 @@ async def invoke_(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
         )
+
+    # Rate limit requests.
+    await rate_limit(chute_id, current_user, settings.rate_limit_count, settings.rate_limit_window)
 
     args = invocation.args
     kwargs = invocation.kwargs
