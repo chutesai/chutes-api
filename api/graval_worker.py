@@ -4,11 +4,13 @@ GraVal node validation worker.
 
 import asyncio
 import aiohttp
+import binascii
 import uuid
 import random
 import hashlib
 import traceback
 import backoff
+import secrets
 import orjson as json
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -38,23 +40,16 @@ class CipherChallenge(BaseModel):
     seed: int
 
 
-@backoff.on_exception(
-    backoff.constant,
-    Exception,
-    jitter=None,
-    interval=10,
-    max_tries=7,
-)
-async def generate_device_info_challenge(device_count: int):
+def generate_device_info_challenge(device_count: int):
     """
     Generate a device info challenge.
     """
-    async with aiohttp.ClientSession(raise_for_status=True) as session:
-        async with session.get(
-            f"{settings.graval_url}/device_challenge",
-            params={"device_count": str(device_count)},
-        ) as resp:
-            return (await resp.json())["challenge"]
+    bytes_array = secrets.token_bytes(32)
+    bytes_list = list(bytes_array)
+    device_id = bytes_list[0]
+    if device_id >= device_count and bytes_list[0] > 25:
+        bytes_list[0] = 0
+    return binascii.hexlify(bytes(bytes_list)).decode("ascii")
 
 
 @backoff.on_exception(
@@ -160,7 +155,7 @@ async def check_device_info_challenge(
         url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
     error_message = None
     try:
-        challenge = await generate_device_info_challenge(len(nodes))
+        challenge = generate_device_info_challenge(len(nodes))
         async with miner_client.get(
             nodes[0].miner_hotkey,
             url,

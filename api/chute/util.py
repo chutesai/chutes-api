@@ -21,7 +21,7 @@ from sqlalchemy.orm import selectinload
 from api.config import settings
 from api.constants import ENCRYPTED_HEADER
 from api.database import get_session
-from api.exceptions import InstanceRateLimit
+from api.exceptions import InstanceRateLimit, BadRequest
 from api.util import sse, now_str
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
@@ -224,6 +224,8 @@ async def _invoke_one(
             raise InstanceRateLimit(
                 "Instance {target.instance_id=} has returned a rate limit error!"
             )
+        elif response.status == 400:
+            raise BadRequest("Invalid request: " + await response.text())
         response.raise_for_status()
         if stream:
             async for chunk in response.content:
@@ -428,8 +430,12 @@ async def invoke(
             return
         except Exception as exc:
             error_message = f"{exc}\n{traceback.format_exc()}"
+            error_detail = None
             if isinstance(exc, InstanceRateLimit):
                 error_message = "RATE_LIMIT"
+            elif isinstance(exc, BadRequest):
+                error_message = "BAD_REQUEST"
+                error_detail = str(exc)
             async with get_session() as session:
                 await session.execute(
                     text(UPDATE_INVOCATION_ERROR.format(suffix=partition_suffix)),
@@ -441,7 +447,7 @@ async def invoke(
                 )
 
                 # Handle consecutive failures (auto-delete instances).
-                if error_message != "RATE_LIMIT":
+                if error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
                     consecutive_failures = (
                         await session.execute(
                             text(
@@ -483,6 +489,12 @@ async def invoke(
                                 "miner_broadcast", json.dumps(event_data).decode()
                             )
                         )
+            if error_message == "BAD_REQUEST":
+                logger.warning(
+                    f"instance_id={target.instance_id} [chute_id={target.chute_id}]: bad request {error_detail}"
+                )
+                yield sse({"error": f"Invalid request: {error_detail}"})
+                return
 
             yield sse(
                 {

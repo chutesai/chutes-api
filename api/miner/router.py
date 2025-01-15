@@ -89,6 +89,18 @@ async def list_instances(
     )
 
 
+@router.get("/inventory")
+async def get_full_inventory(
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    session: AsyncSession = Depends(get_db_session),
+):
+    return (
+        await session.execute(select(Node).filter(Node.miner_hotkey == hotkey).unique())
+        .scalars()
+        .all()
+    )
+
+
 @router.get("/metrics/")
 async def metrics(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
