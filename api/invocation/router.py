@@ -41,6 +41,10 @@ class DiffusionInput(BaseModel):
     num_inference_steps: int = Field(default=25, ge=1, le=50)
     guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0)
     seed: Optional[int] = Field(default=None, ge=0, le=2**32 - 1)
+    img_guidance_scale: float = Field(default=7.5, ge=1.0, le=20.0)
+    image_b64: Optional[list[str]] = Field(
+        default=None, description="Base64 encoded images for image-to-image pipelines."
+    )
 
     class Config:
         extra = "forbid"

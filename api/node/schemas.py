@@ -35,7 +35,7 @@ class NodeArgs(BaseModel):
     max_threads_per_processor: int
     concurrent_kernels: bool
     ecc: bool
-    device_index: int = Field(gte=0, lt=8)
+    device_index: int = Field(gte=0, lt=10)
     gpu_identifier: str
     verification_host: str
     verification_port: int
