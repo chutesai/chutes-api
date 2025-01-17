@@ -437,21 +437,29 @@ async def verify_instance(instance_id: str):
         try:
             if not await _verify_instance_graval(instance):
                 logger.warning(f"{instance_id=} failed GraVal verification!")
+                instance.verification_error = "Failed one or more GraVal encryption challenges."
+                await session.commit()
                 return
         except Exception as exc:
-            logger.error(
-                f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
-            )
+            error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+            logger.error(error_message)
+            instance.verification_error = error_message
+            await session.commit()
+            return
 
         # Filesystem test.
         try:
             if not await _verify_filesystem(session, instance):
                 logger.warning(f"{instance_id=} failed filesystem verification!")
+                instance.verification_error = "Failed one or more filesystem challenges."
+                await session.commit()
                 return
         except Exception as exc:
-            logger.error(
-                f"Failed to perform filesystem validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
-            )
+            error_message = f"Failed to perform filesystem validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+            logger.error(error_message)
+            instance.verification_error = error_message
+            await session.commit()
+            return
 
         # Device info challenges.
         url = f"http://{instance.host}:{instance.port}/_device_challenge"
@@ -460,7 +468,10 @@ async def verify_instance(instance_id: str):
             futures.append(check_device_info_challenge(instance.nodes, url=url, purpose="chutes"))
             if len(futures) == 10:
                 if not all(await asyncio.gather(*futures)):
-                    logger.warning(f"{instance_id=} failed one or more device info challenges")
+                    error_message = f"{instance_id=} failed one or more device info challenges"
+                    logger.warning(error_message)
+                    instance.verification_error = error_message
+                    await session.commit()
                     return
                 futures = []
 

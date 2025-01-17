@@ -54,6 +54,7 @@ class Instance(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True))
     last_verified_at = Column(DateTime(timezone=True))
+    verification_error = Column(String, nullable=True)
     consecutive_failures = Column(Integer, default=0)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance", lazy="joined")
