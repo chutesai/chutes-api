@@ -85,7 +85,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.57,
     },
     "a6000_ada": {
-        "model_name_check": "RTX A6000 Ada",
+        "model_name_check": "RTX 6000 Ada",
         "memory": 48,
         "major": 8,
         "minor": 9,
