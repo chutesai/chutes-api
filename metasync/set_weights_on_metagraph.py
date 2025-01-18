@@ -22,9 +22,9 @@ logger = get_logger(__name__)
 
 # Proportion of weights to assign to each metric.
 FEATURE_WEIGHTS = {
-    "compute_units": 0.45,      # Total amount of compute time (compute muliplier * total time).
-    "invocation_count": 0.25,   # Total number of invocations.
-    "unique_chute_count": 0.2,  # Number of unique chutes over the scoring period.
+    "compute_units": 0.35,      # Total amount of compute time (compute muliplier * total time).
+    "invocation_count": 0.3,    # Total number of invocations.
+    "unique_chute_count": 0.25, # Number of unique chutes over the scoring period.
     "bounty_count": 0.1,        # Number of bounties received (not bounty values, just counts).
 }
 SCORING_INTERVAL = "7 days"
