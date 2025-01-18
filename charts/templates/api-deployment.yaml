@@ -28,7 +28,7 @@ spec:
       {{- end }}
       {{- if .Values.squad_enabled }}
       volumes:
-        - name: squad-cert
+        - name: squad-certs
           secret:
             secretName: squad-cert
             items:

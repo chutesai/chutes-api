@@ -70,6 +70,9 @@ class User(Base):
     # Subnet owner association (for free accounts).
     subnet_owner_hotkey = Column(String, nullable=True)
 
+    # Squad enabled.
+    squad_enabled = Column(Boolean, default=False)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 

@@ -7,7 +7,7 @@ import hashlib
 from sqlalchemy import select
 from aiocache import cached, Cache
 from datetime import datetime, timedelta, timezone
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from api.user.schemas import User
 from api.database import get_session
 from api.config import settings
@@ -43,7 +43,7 @@ def create_token(user: User) -> str:
     return encoded_jwt
 
 
-async def get_user_from_token(token: str) -> User:
+async def get_user_from_token(token: str, request: Request) -> User:
     """
     Verify a token.
     """
@@ -52,6 +52,11 @@ async def get_user_from_token(token: str) -> User:
 
     # Squad access?
     if payload.get("iss") == "squad":
+        if request.state.auth_method == "delete":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Delete prohibited with squad access.",
+            )
         try:
             payload = jwt.decode(
                 token,
@@ -68,7 +73,9 @@ async def get_user_from_token(token: str) -> User:
             )
             async with get_session() as session:
                 return (
-                    await session.execute(select(User).where(User.user_id == user_id))
+                    await session.execute(
+                        select(User).where(User.user_id == user_id, User.squad_enabled.is_(True))
+                    )
                 ).scalar_one_or_none()
         except jwt.InvalidTokenError:
             raise HTTPException(

@@ -261,3 +261,27 @@ async def fingerprint_login(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Missing or invalid fingerprint provided.",
     )
+
+
+@router.put("/squad_access")
+async def update_squad_access(
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user()),
+):
+    """
+    Enable squad access.
+    """
+    body = await request.json()
+    if body.get("enable") in (True, "true", "True"):
+        user.squad_enabled = True
+    elif "enable" in body:
+        user.squad_enabled = False
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='Invalid request, payload should be {"enable": true|false}',
+        )
+    await db.commit()
+    await db.refresh(user)
+    return {"squad_enabled": user.squad_enabled}

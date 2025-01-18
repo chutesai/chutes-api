@@ -58,7 +58,7 @@ def get_current_user(
                     and authorization.lower().lstrip().startswith("bearer ")
                     and not token.strip().startswith("cpk_")
                 ):
-                    return await get_user_from_token(token)
+                    return await get_user_from_token(token, request)
 
                 # API key auth.
                 if token:
