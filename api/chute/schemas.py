@@ -15,6 +15,13 @@ from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional, Dict, Any
 
 
+class ChuteUpdateArgs(BaseModel):
+    tagline: Optional[str] = Field(default="", max_length=1024)
+    readme: Optional[str] = Field(default="", max_length=16384)
+    tool_description: Optional[str] = Field(default="", max_length=16384)
+    logo_id: Optional[str] = None
+
+
 class Cord(BaseModel):
     method: str
     path: str
@@ -128,6 +135,7 @@ class ChuteArgs(BaseModel):
     name: str = Field(min_length=3, max_length=128)
     tagline: Optional[str] = Field(default="", max_length=1024)
     readme: Optional[str] = Field(default="", max_length=16384)
+    tool_description: Optional[str] = Field(None, max_length=16384)
     logo_id: Optional[str] = None
     image: str
     public: bool
@@ -151,6 +159,7 @@ class Chute(Base):
     name = Column(String)
     tagline = Column(String, default="")
     readme = Column(String, default="")
+    tool_description = Column(String, nullable=True)
     image_id = Column(String, ForeignKey("images.image_id"))
     logo_id = Column(String, ForeignKey("logos.logo_id", ondelete="SET NULL"), nullable=True)
     public = Column(Boolean, default=False)

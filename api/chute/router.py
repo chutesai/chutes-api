@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import Optional
-from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector
+from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector, ChuteUpdateArgs
 from api.chute.templates import (
     VLLMChuteArgs,
     VLLMEngineArgs,
@@ -230,6 +230,7 @@ async def _deploy_chute(
         chute.tagline = chute_args.tagline
         chute.readme = chute_args.readme
         chute.code = chute_args.code
+        chute.tool_description = chute_args.tool_description
         chute.filename = chute_args.filename
         chute.ref_str = chute_args.ref_str
         chute.version = version
@@ -247,6 +248,7 @@ async def _deploy_chute(
             name=chute_args.name,
             tagline=chute_args.tagline,
             readme=chute_args.readme,
+            tool_description=chute_args.tool_description,
             logo_id=chute_args.logo_id if chute_args.logo_id else None,
             code=chute_args.code,
             filename=chute_args.filename,
@@ -469,6 +471,7 @@ async def easy_deploy_vllm_chute(
         image=image,
         tagline=args.tagline,
         readme=args.readme,
+        tool_description=args.tool_description,
         logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
         code=code,
@@ -504,6 +507,7 @@ async def easy_deploy_diffusion_chute(
         image=image,
         tagline=args.tagline,
         readme=args.readme,
+        tool_description=args.tool_description,
         logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
         code=code,
@@ -541,6 +545,7 @@ async def easy_deploy_tei_chute(
         image=image,
         tagline=args.tagline,
         readme=args.readme,
+        tool_description=args.tool_description,
         logo_id=args.logo_id if args.logo_id and args.logo_id.strip() else None,
         public=args.public,
         code=code,
@@ -642,3 +647,32 @@ async def invoke_(
         ),
         headers={"X-Chutes-InvocationID": parent_invocation_id},
     )
+
+
+@router.put("/{chute_id_or_name:path}", response_model=ChuteResponse)
+async def update_common_attributes(
+    chute_id_or_name: str,
+    args: ChuteUpdateArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Update readme, tagline, etc. (but not code, image, etc.).
+    """
+    chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances=True)
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    if args.tagline and args.tagline.strip():
+        chute.tagline = args.tagline
+    if args.readme and args.readme.strip():
+        chute.readme = args.readme
+    if args.tool_description and args.tool_description.strip():
+        chute.tool_description = args.tool_description
+    if args.logo_id:
+        chute.logo_id = args.logo_id
+    await db.commit()
+    await db.refresh(chute)
+    return chute

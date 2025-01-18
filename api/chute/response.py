@@ -18,6 +18,7 @@ class ChuteResponse(BaseModel):
     readme: str
     public: bool
     version: str
+    tool_description: Optional[str]
     slug: Optional[str]
     standard_template: Optional[str]
     cords: Optional[List[Cord]] = []

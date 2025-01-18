@@ -25,6 +25,7 @@ instance_nodes = Table(
     Column("instance_id", String, ForeignKey("instances.instance_id", ondelete="CASCADE")),
     Column("node_id", String, ForeignKey("nodes.uuid", ondelete="NO ACTION")),
     UniqueConstraint("instance_id", "node_id", name="uq_instance_node"),
+    UniqueConstraint("node_id", name="uq_inode"),
 )
 
 
