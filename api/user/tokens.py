@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException, status
 from api.user.schemas import User
 from api.database import get_session
+from api.config import settings
 
 
 @cached(ttl=60 * 60, cache=Cache.MEMORY)
@@ -48,6 +49,34 @@ async def get_user_from_token(token: str) -> User:
     """
     payload = jwt.decode(token, options={"verify_signature": False})
     user_id = payload.get("sub")
+
+    # Squad access?
+    if payload.get("iss") == "squad":
+        try:
+            payload = jwt.decode(
+                token,
+                settings.squad_cert,
+                algorithms=["RS256"],
+                options={
+                    "verify_signature": True,
+                    "verify_exp": True,
+                    "verify_iat": True,
+                    "verify_iss": True,
+                    "require": ["exp", "iat", "iss"],
+                },
+                issuer="squad",
+            )
+            async with get_session() as session:
+                return (
+                    await session.execute(select(User).where(User.user_id == user_id))
+                ).scalar_one_or_none()
+        except jwt.InvalidTokenError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token.",
+            )
+
+    # Normal user JWT access.
     fingerprint_hash = await get_user_fingerprint_hash(user_id)
     if fingerprint_hash:
         try:

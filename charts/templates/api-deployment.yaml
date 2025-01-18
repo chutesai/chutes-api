@@ -26,6 +26,15 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.squad_enabled }}
+      volumes:
+        - name: squad-cert
+          secret:
+            secretName: squad-cert
+            items:
+              - key: squad_pub.pem
+                path: squad_pub.pem
+      {{- end }}
       containers:
         - name: api
           image: "{{ .Values.api.image }}"
@@ -48,6 +57,16 @@ spec:
               value: "{{ .Values.account_settings.developer_deposit }}"
             - name: CONSECUTIVE_FAILURE_LIMIT
               value: "{{ .Values.consecutive_failure_limit }}"
+            {{- if .Values.squad_enabled }}
+            - name: SQUAD_CERT_PATH
+              value: /etc/squad/squad_pub.pem
+            {{- end }}
+          {{- if .Values.squad_enabled }}
+          volumeMounts:
+            - name: squad-certs
+              mountPath: "/etc/squad"
+              readOnly: true
+          {{- end }}
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

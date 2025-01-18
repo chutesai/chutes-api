@@ -2,8 +2,10 @@ account_settings:
   first_payment_bonus:
     threshold: 100.00
     bonus: 25.00
-  all_accounts_free: true
+  all_accounts_free: false
   developer_deposit: 250.00
+
+squad_enabled: true
 
 consecutive_failure_limit: 3
 
@@ -293,7 +295,7 @@ forge:
   tolerations: []
 
 gravalWorker:
-  replicaCount: 4
+  replicaCount: 8
   image: parachutes/validator:latest
   imagePullPolicy: Always
   resources:
@@ -327,6 +329,7 @@ gravalWorker:
 paymentWatcher:
   image: parachutes/validator:latest
   imagePullPolicy: Always
+  subtensor: wss://entrypoint-finney.opentensor.ai
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -450,7 +453,7 @@ graval:
     targetPort: 8000
     nodePort: 32002
   nodeSelector:
-    kubernetes.io/hostname: chutes-prod-gpu-0
+    kubernetes.io/hostname: cvali-h200-0
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:

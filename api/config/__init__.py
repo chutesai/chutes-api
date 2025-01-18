@@ -12,6 +12,12 @@ from pydantic_settings import BaseSettings
 from contextlib import asynccontextmanager
 
 
+def load_squad_cert():
+    if (path := os.getenv("SQUAD_CERT_PATH")) is not None:
+        with open(path, "rb") as infile:
+            return infile.read()
+
+
 class Settings(BaseSettings):
     sqlalchemy: str = os.getenv(
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
@@ -87,6 +93,9 @@ class Settings(BaseSettings):
 
     # Flag indicating that all accounts created are free.
     all_accounts_free: bool = os.getenv("ALL_ACCOUNTS_FREE", "false").lower() == "true"
+
+    # Squad cert (for JWT auth from agents).
+    squad_cert: bytes = load_squad_cert()
 
     # Consecutive failure count that triggers instance deletion.
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "3"))
