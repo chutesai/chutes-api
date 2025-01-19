@@ -1,9 +1,9 @@
 -- migrate:up
-ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS permissions_bitmask BIGINT NOT NULL DEFAULT 0;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS developer_payment_address TEXT NOT NULL DEFAULT '';
 ALTER TABLE users ADD COLUMN IF NOT EXISTS developer_wallet_secret TEXT NOT NULL DEFAULT '';
 
 -- migrate:down
-ALTER TABLE users DROP COLUMN IF EXISTS permissions;
+ALTER TABLE users DROP COLUMN IF EXISTS permissions_bitmask;
 ALTER TABLE users DROP COLUMN IF EXISTS developer_payment_address;
 ALTER TABLE users DROP COLUMN IF EXISTS developer_wallet_secret;
