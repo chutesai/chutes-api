@@ -6,7 +6,12 @@ from chutes.image import Image
 from chutes.chute import Chute, NodeSelector
 
 image = (
-    Image(username="chutes", name="micro", tag="test0", readme="## Base image with cuda and python 3.12.7")
+    Image(
+        username="chutes",
+        name="micro",
+        tag="test0",
+        readme="## Base image with cuda and python 3.12.7",
+    )
     .from_base("parachutes/base-python:3.12.7")
     .add("parachute.png", "/app/parachute.png")
 )
@@ -73,6 +78,7 @@ async def image(self) -> FileResponse:
 
 async def main():
     print(await echo("bar"))
+
 
 if __name__ == "__main__":
     asyncio.run(main())

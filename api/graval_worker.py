@@ -126,9 +126,9 @@ async def check_encryption_challenge(
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
             else:
                 response_text = (await response.json())["plaintext"]
-                assert (
-                    response_text == plaintext
-                ), f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
+                assert response_text == plaintext, (
+                    f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
+                )
     except Exception as exc:
         logger.error(traceback.format_exc())
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"

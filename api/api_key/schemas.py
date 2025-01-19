@@ -173,7 +173,7 @@ class APIKey(Base):
             # Special handler for llm.chutes.ai endpoint.
             if (
                 object_type == "chutes"
-                and object_id == "__megallm__"
+                and object_id in ("__megallm__", "__megadiffuser__")
                 and (not scope.action or scope.action.value == action)
             ):
                 return True

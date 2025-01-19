@@ -256,7 +256,7 @@ async def create_image(
                 yield f"data: {data[b'data'].decode()}\n\n"
         delta = time.time() - started_at
         logger.success(
-            "\N{hammer and wrench} "
+            "\N{HAMMER AND WRENCH} "
             + f"finished building image {image_id} in {round(delta, 5)} seconds"
         )
 

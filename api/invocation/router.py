@@ -9,7 +9,6 @@ import orjson as json
 import csv
 import uuid
 from pydantic import BaseModel, ValidationError, Field
-from loguru import logger
 from datetime import date, datetime
 from io import BytesIO, StringIO
 from typing import Optional
@@ -252,9 +251,9 @@ async def _invoke(
     # Wrap up the args/kwargs in the way the miner execution service expects them.
     args, kwargs = None, None
     if chute.standard_template == "diffusion":
-        logger.info(f"Diffusion input: {request_body}")
         request_body.pop("cord", None)
         request_body.pop("method", None)
+        request_body.pop("model", None)
         steps = request_body.get("num_inference_steps")
         max_steps = 30 if chute.name == "FLUX-1.dev" else 50
         if steps and (isinstance(steps, int) or steps.isdigit()) and int(steps) > max_steps:
@@ -393,11 +392,12 @@ async def hostname_invocation(
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
-    # MegaLLM handler.
-    if request.state.chute_id == "__megallm__":
+    # Mega LLM/diffusion request handler.
+    if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
         payload = await request.json()
         model = payload.get("model")
         chute = None
+        template = "vllm" if "llm" in request.state.chute_id else "diffusion"
         if model:
             chute_user = await chutes_user_id()
             chute = (
@@ -410,7 +410,7 @@ async def hostname_invocation(
                                 Chute.public.is_(True),
                                 Chute.user_id == current_user.user_id,
                             ),
-                            Chute.standard_template == "vllm",
+                            Chute.standard_template == template,
                         )
                         .order_by((Chute.user_id == chute_user).desc())
                         .limit(1)

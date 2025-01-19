@@ -2,6 +2,7 @@ from chutes.chute import NodeSelector
 from chutes.chute.template.diffusion import build_diffusion_chute
 
 from chutes.image import Image
+
 image = (
     Image(username="chutes", name="diffusion", tag="0.31.0", readme="## Diffusion pipelines")
     .from_base("parachutes/base-python:3.12.7")

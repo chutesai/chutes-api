@@ -242,7 +242,7 @@ async def build_and_push_image(image):
             logger.success(f"Successfull pushed {full_image_tag}, done!")
             delta = time.time() - started_at
             message = (
-                "\N{hammer and wrench} "
+                "\N{HAMMER AND WRENCH} "
                 + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
             )
             await settings.redis_client.xadd(
@@ -334,7 +334,7 @@ async def build_and_push_image(image):
     # DONE!
     delta = time.time() - started_at
     message = (
-        "\N{hammer and wrench} "
+        "\N{HAMMER AND WRENCH} "
         + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
     )
     await settings.redis_client.xadd(

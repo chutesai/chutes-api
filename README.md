@@ -37,7 +37,7 @@ Again, not recommended at all, but if you'd really like to run your own validato
 
 We recommend at least two very large CPU-only (+ high RAM & several TB SSD volumes) instances for running the primary components, e.g. API, socket.io servers, graval workers, redis, forge instances (to build images), etc.
 
-Additionally, you'll need GPUs for performing the actual GraVal encryption/verification operations.  Since miners can operate instances with 8+ GPUs each, and we support GPUs with up to 80GB VRAM, you'll likely want to run *at least* 8x a100s/h100s to handle this efficiently.
+Additionally, you'll need GPUs for performing the actual GraVal encryption/verification operations.  Since miners can operate instances with 8+ GPUs each, and we support GPUs with up to 80GB VRAM, you'll likely want to run *at least* 8x h200s to handle this efficiently.
 
 #### Ansible install (prerequisite)
 

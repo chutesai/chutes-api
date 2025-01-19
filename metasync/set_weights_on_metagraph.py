@@ -22,10 +22,10 @@ logger = get_logger(__name__)
 
 # Proportion of weights to assign to each metric.
 FEATURE_WEIGHTS = {
-    "compute_units": 0.35,      # Total amount of compute time (compute muliplier * total time).
-    "invocation_count": 0.3,    # Total number of invocations.
-    "unique_chute_count": 0.25, # Number of unique chutes over the scoring period.
-    "bounty_count": 0.1,        # Number of bounties received (not bounty values, just counts).
+    "compute_units": 0.35,  # Total amount of compute time (compute muliplier * total time).
+    "invocation_count": 0.3,  # Total number of invocations.
+    "unique_chute_count": 0.25,  # Number of unique chutes over the scoring period.
+    "bounty_count": 0.1,  # Number of bounties received (not bounty values, just counts).
 }
 SCORING_INTERVAL = "7 days"
 NORMALIZED_COMPUTE_QUERY = """
@@ -108,22 +108,15 @@ async def _get_weights_to_set(
 
     # Normalize the values based on totals so they are all in the range [0.0, 1.0]
     totals = {
-        key: sum(row[key] for row in raw_compute_values.values()) or 1.0
-        for key in header[1:]
+        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in header[1:]
     }
     normalized_values = {
-        hotkey: {
-            key: row[key] / totals[key]
-            for key in header[1:]
-        }
+        hotkey: {key: row[key] / totals[key] for key in header[1:]}
         for hotkey, row in raw_compute_values.items()
     }
     # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
     final_scores = {
-        hotkey: sum(
-            norm_value * FEATURE_WEIGHTS[key]
-            for key, norm_value in metrics.items()
-        )
+        hotkey: sum(norm_value * FEATURE_WEIGHTS[key] for key, norm_value in metrics.items())
         for hotkey, metrics in normalized_values.items()
     }
 

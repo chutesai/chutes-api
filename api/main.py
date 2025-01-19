@@ -155,6 +155,14 @@ async def host_router_middleware(request: Request, call_next):
         request.state.auth_object_id = "__megallm__"
         app.router = host_invocation_router
 
+    # MEGADIFFUSER
+    elif host_parts and host_parts.group(1) == "image" and request.method.lower() == "post":
+        request.state.chute_id = "__megadiffuser__"
+        request.state.auth_method = "invoke"
+        request.state.auth_object_type = "chutes"
+        request.state.auth_object_id = "__megadiffuser__"
+        app.router = host_invocation_router
+
     # Hostname based router.
     elif (
         host_parts

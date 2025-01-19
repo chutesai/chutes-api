@@ -244,7 +244,7 @@ def reset():
 def start_miner(
     chutes_dir: str = typer.Option(
         default="~/chutes", help="The directory containing the chutes source code."
-    )
+    ),
 ):
     """Start the miner."""
     # First copy chutes source dir to the data/ container
