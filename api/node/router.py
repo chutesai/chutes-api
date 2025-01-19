@@ -4,10 +4,11 @@ Routes for nodes.
 
 import asyncio
 import random
+from loguru import logger
 from typing import Optional
 from collections import defaultdict
 from taskiq_redis.exceptions import ResultIsMissingError
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from fastapi_cache.decorator import cache
 from sqlalchemy import select, func, delete, case
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,6 +207,7 @@ async def check_verification_status(
 @router.delete("/{node_id}")
 async def delete_node(
     node_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
@@ -222,6 +224,17 @@ async def delete_node(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Node does not exist, or does not belong to you",
+        )
+    origin_ip = request.headers.get("x-forwarded-for")
+    if (
+        origin_ip
+        and origin_ip.startswith("80.66.81.5")
+        and hotkey == "5E4pekHmvKsngYBt69g6iGGrzWq9BAGoGTTbPVazYtTJpoh8"
+    ):
+        logger.warning(f"Preventing node deletion per miner request: {origin_ip} {hotkey}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Old/defunct miner setup: verification 50d5068fa0f24aa707eeb07c33329ca31d343707c226b8655d4a4a766968f054a930a2a7b691bd9ddfd071d8cfa6010c30acc3c541deb4f86c744c37db7f158c",
         )
     await db.delete(node)
     await db.commit()
