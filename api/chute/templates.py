@@ -36,6 +36,7 @@ class VLLMChuteArgs(BaseModel):
     model: str
     logo_id: Optional[str] = None
     tagline: Optional[str] = ""
+    tool_description: Optional[str] = None
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
@@ -59,6 +60,7 @@ class DiffusionChuteArgs(BaseModel):
     name: str
     logo_id: Optional[str] = None
     tagline: Optional[str] = ""
+    tool_description: Optional[str] = None
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
@@ -92,6 +94,7 @@ class TEIChuteArgs(BaseModel):
     revision: Optional[str] = None
     logo_id: Optional[str] = None
     tagline: Optional[str] = ""
+    tool_description: Optional[str] = None
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
