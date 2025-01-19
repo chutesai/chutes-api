@@ -9,14 +9,13 @@
     enable_gpu: "{{ gpu_enabled | default(false) }}"
 
   tasks:
-    - name: Set environment variables
-      shell: |
-        export DEBIAN_FRONTEND=noninteractive
-        export NEEDRESTART_SUSPEND=y
-
     - name: Update apt cache
       apt:
         update_cache: yes
+
+    - name: Gather package facts
+      package_facts:
+        manager: auto
 
     - name: Stop and disable unattended upgrades
       systemd:
@@ -66,6 +65,52 @@
         name: containerd.io
         state: absent
 
+    - name: Remove unwanted files in sources.list.d
+      find:
+        paths: /etc/apt/sources.list.d
+        patterns:
+          - "*"
+        excludes:
+          - "ubuntu.sources"
+          - "cuda-*.list"
+          - "deadsnakes.list"
+          - "docker.list"
+          - "nvidia-docker-container.list"
+        file_type: file
+      register: apt_files_to_remove
+
+    - name: Delete found files
+      file:
+        path: "{{ item.path }}"
+        state: absent
+      with_items: "{{ apt_files_to_remove.files }}"
+
+    - name: Remove proxy configuration files
+      file:
+        path: "{{ item }}"
+        state: absent
+      with_fileglob:
+        - "/etc/apt/apt.conf.d/*proxy*"
+
+    - name: Remove proxy settings from apt.conf
+      lineinfile:
+        path: /etc/apt/apt.conf
+        regexp: "{{ item }}"
+        state: absent
+      with_items:
+        - 'Acquire::http::Proxy'
+        - 'Acquire::https::Proxy'
+      when: ansible_path_apt_conf.stat.exists is defined and ansible_path_apt_conf.stat.exists
+
+    - name: Unset all snap proxy settings
+      command: snap unset system {{ item }}
+      loop:
+        - proxy.http
+        - proxy.https
+        - proxy.no-proxy
+      changed_when: true
+      ignore_errors: true
+
     - name: Install basic system prerequisites
       apt:
         name:
@@ -93,6 +138,8 @@
           - rsyslog
           - libpq-dev
           - snapd
+          - iputils-ping
+          - systemd-timesyncd
         state: present
 
     - name: Set vim as default editor
@@ -168,7 +215,7 @@
           apt:
             name:
               - cuda-toolkit-{{ cuda_version }}
-              - nvidia-open-{{ nvidia_version }}
+              - cuda-drivers-{{ nvidia_version }}
               - nvidia-fabricmanager-{{ nvidia_version }}
             state: present
 
@@ -215,67 +262,6 @@
         - /etc/pam.d/common-session
         - /etc/pam.d/common-session-noninteractive
 
-    - name: Install Wireguard
-      apt:
-        name: wireguard
-        state: present
-
-    - name: Check if Wireguard private key exists
-      stat:
-        path: /etc/wireguard/private.key
-      register: wg_private_exists
-
-    - name: Generate Wireguard keys
-      shell: |
-        wg genkey > /etc/wireguard/private.key
-        cat /etc/wireguard/private.key | wg pubkey > /etc/wireguard/public.key
-        chmod 600 /etc/wireguard/private.key /etc/wireguard/public.key
-      when: not wg_private_exists.stat.exists
-      register: wg_key_created
-
-    - name: Get public keys
-      slurp:
-        src: /etc/wireguard/public.key
-      register: public_keys
-
-    - name: Get private keys
-      slurp:
-        src: /etc/wireguard/private.key
-      register: private_keys
-
-    - name: Set facts for keys
-      set_fact:
-        wg_public_key: "{{ public_keys['content'] | b64decode | trim }}"
-        wg_private_key: "{{ private_keys['content'] | b64decode | trim }}"
-
-    - name: Debug hostvars for wg keys
-      debug:
-        msg: "Host {{ item }}: has wg_public_key = {{ hostvars[item]['wg_public_key'] is defined }}"
-      loop: "{{ groups['all'] }}"
-      when: is_primary | bool
-
-    - name: Create Wireguard config for primary
-      when: is_primary | bool
-      template:
-        src: wg0-primary.conf.j2
-        dest: /etc/wireguard/wg0.conf
-        mode: '0600'
-      register: wireguard_primary
-
-    - name: Create Wireguard config for worker
-      when: not is_primary | bool
-      template:
-        src: wg0-worker.conf.j2
-        dest: /etc/wireguard/wg0.conf
-        mode: '0600'
-      register: wireguard_worker
-
-    - name: Enable and start Wireguard
-      systemd:
-        name: wg-quick@wg0
-        enabled: yes
-        state: started
-
     - name: Set hostname
       hostname:
         name: "{{ inventory_hostname }}"
@@ -302,6 +288,7 @@
         mode: '0755'
         content: |
           #!/bin/bash
+          hostnamectl set-hostname "{{ inventory_hostname }}"
           hostname "{{ inventory_hostname }}"
           echo -n "{{ inventory_hostname }}" > /etc/hostname
 
@@ -321,15 +308,31 @@
           [Install]
           WantedBy=multi-user.target
 
-    - name: Enable and start service
+    - name: Enable and start hostname service
       systemd:
         name: set-hostname
         enabled: yes
         state: started
         daemon_reload: yes
 
-    - name: Set hostname one more time with hostnamectl
-      shell: hostnamectl set-hostname {{ inventory_hostname }}
+    - name: Configure and ensure time synchronization
+      block:
+        - name: Ensure timesyncd is installed and enabled
+          systemd:
+            name: systemd-timesyncd
+            state: started
+            enabled: yes
+
+        - name: Configure NTP servers
+          lineinfile:
+            path: /etc/systemd/timesyncd.conf
+            regexp: '^#?NTP='
+            line: 'NTP=pool.ntp.org'
+
+        - name: Force time synchronization
+          shell: |
+            timedatectl set-ntp true
+            systemctl restart systemd-timesyncd
 
     - name: Install MicroK8s
       community.general.snap:
@@ -348,9 +351,18 @@
             src: /var/snap/microk8s/current/args/kubelet
           register: kubelet_args
 
+        - name: Get current kube-apiserver args
+          slurp:
+            src: /var/snap/microk8s/current/args/kube-apiserver
+          register: kubeapi_args
+
         - name: Check if node-ip is already configured
           set_fact:
             has_node_ip: "{{ (kubelet_args.content | b64decode) is regex('--node-ip=') }}"
+
+        - name: Check if advertise-addr is already configured
+          set_fact:
+            has_adv_ip: "{{ (kubeapi_args.content | b64decode) is regex('--advertise-address=') }}"
 
         - name: Add node-ip to kubelet args
           lineinfile:
@@ -360,11 +372,19 @@
           when: not has_node_ip
           register: kubelet_modified
 
+        - name: Add advertise-address to to kubeapi args
+          lineinfile:
+            path: /var/snap/microk8s/current/args/kube-apiserver
+            line: "--advertise-address={{ wireguard_ip }}"
+            create: yes
+          when: not has_adv_ip
+          register: kubeapi_modified
+
         - name: Restart kubelet if config changed
           systemd:
             name: snap.microk8s.daemon-kubelite
             state: restarted
-          when: kubelet_modified.changed
+          when: kubelet_modified.changed or kubeapi_modified.changed
 
     - name: Setup Kubernetes access for user
       block:
@@ -396,10 +416,6 @@
             mode: '0600'
             owner: "{{ username }}"
             group: "{{ username }}"
-
-    - name: Restart Wireguard if config changed
-      shell: wg-quick down wg0; wg-quick up wg0
-      when: wireguard_primary.changed or wireguard_worker.changed
 
     - name: Update DNS resolution config
       template:
@@ -517,8 +533,3 @@
         sysctl_set: yes
         reload: yes
       when: is_primary | bool
-
-    - name: Fix and restart containerd
-      shell:
-        perl -pi -e 's/^\s*disabled_plugins\s*=/##disabled_plugins = []/g' /etc/containerd/config.toml
-        systemctl restart containerd
