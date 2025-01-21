@@ -27,4 +27,4 @@ class ImageResponse(BaseModel):
     @computed_field
     @property
     def logo(self) -> Optional[str]:
-        return f"/logos/{self.logo_id}.png" if self.logo_id else None
+        return f"/logos/{self.logo_id}.webp" if self.logo_id else None

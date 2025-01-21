@@ -10,11 +10,13 @@ from fastapi import HTTPException, UploadFile, status
 
 async def validate_and_convert_image(file: UploadFile) -> Tuple[bytes, str]:
     """
-    Validates that the uploaded file is an image and converts it to PNG format.
+    Validates that the uploaded file is an image and converts it to WebP format.
     """
     content = await file.read()
     try:
         image = Image.open(io.BytesIO(content))
+
+        # Handle transparency
         if image.mode in ("RGBA", "LA"):
             background = Image.new("RGB", image.size, (255, 255, 255))
             background.paste(image, mask=image.split()[-1])
@@ -30,11 +32,14 @@ async def validate_and_convert_image(file: UploadFile) -> Tuple[bytes, str]:
         right = left + size
         bottom = top + size
         image = image.crop((left, top, right, bottom))
-        image = image.resize((512, 512), Image.Resampling.LANCZOS)
+        image = image.resize((128, 128), Image.Resampling.LANCZOS)
+
+        # Save as WebP
         img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format="PNG", optimize=True)
+        image.save(img_byte_arr, format="WEBP", quality=85, method=6, lossless=False, exact=False)
         img_byte_arr.seek(0)
-        return img_byte_arr.getvalue(), "image/png"
+        return img_byte_arr.getvalue(), "image/webp"
+
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image file: {str(e)}"

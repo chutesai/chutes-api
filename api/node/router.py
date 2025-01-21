@@ -10,7 +10,7 @@ from collections import defaultdict
 from taskiq_redis.exceptions import ResultIsMissingError
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from fastapi_cache.decorator import cache
-from sqlalchemy import select, func, delete, case
+from sqlalchemy import select, func, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.database import get_db_session
 from api.config import settings
@@ -30,12 +30,18 @@ async def _list_nodes_compact(db: AsyncSession = Depends(get_db_session)):
     """
     List nodes in a compact fashion, aggregating by model and verification status.
     """
-    verification_status = case((Node.instance != None, True), else_=False).label(  # noqa
-        "is_provisioned"
-    )
-    query = select(Node.gpu_identifier, verification_status, func.count().label("count")).group_by(
-        Node.gpu_identifier, verification_status
-    )
+    query = text("""
+       SELECT
+           n.gpu_identifier,
+           CASE WHEN EXISTS (
+               SELECT 1 FROM instance_nodes in_join
+               JOIN instances i ON i.instance_id = in_join.instance_id
+               WHERE in_join.node_id = n.uuid
+           ) THEN true ELSE false END as is_provisioned,
+           COUNT(*) as count
+       FROM nodes n
+       GROUP BY n.gpu_identifier, is_provisioned
+    """)
     result = await db.execute(query)
     stats = result.all()
     results = {}

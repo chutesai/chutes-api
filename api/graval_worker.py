@@ -339,7 +339,9 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
         resp.raise_for_status()
         result = await resp.text()
         if result != challenge.expected:
-            logger.warning(f"Expected {challenge.expected}, got {result}: {challenge}")
+            logger.warning(
+                f"Expected {challenge.expected}, got {result}: {challenge.filename} [{challenge.offset}:{challenge.length}]"
+            )
             return False
         logger.success(f"Successfully processed filesystem challenge: {challenge}")
         return True

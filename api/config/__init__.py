@@ -16,7 +16,7 @@ def load_squad_cert():
     if (path := os.getenv("SQUAD_CERT_PATH")) is not None:
         with open(path, "rb") as infile:
             return infile.read()
-    return b''
+    return b""
 
 
 class Settings(BaseSettings):

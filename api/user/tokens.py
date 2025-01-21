@@ -47,7 +47,22 @@ async def get_user_from_token(token: str, request: Request) -> User:
     """
     Verify a token.
     """
-    payload = jwt.decode(token, options={"verify_signature": False})
+    if not token or not token.strip():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token.",
+        )
+
+    # Unverified decode to get the user ID from the token, since we can't
+    # decode until we have the user's fingerprint hash...
+    payload = None
+    try:
+        payload = jwt.decode(token, options={"verify_signature": False})
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token.",
+        )
     user_id = payload.get("sub")
 
     # Squad access?
