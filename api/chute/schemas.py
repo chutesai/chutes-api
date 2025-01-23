@@ -6,7 +6,7 @@ import re
 import ast
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE, COMPUTE_UNIT_PRICE_BASIS
@@ -171,6 +171,7 @@ class Chute(Base):
     filename = Column(String, nullable=False)
     ref_str = Column(String, nullable=False)
     version = Column(String)
+    discount = Column(Float, nullable=True, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 

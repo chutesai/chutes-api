@@ -183,7 +183,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.9375,
     },
     "a100_40gb_sxm": {
-        "model_name_check": "A100.?SXM.?40GB",
+        "model_name_check": "A100.?SXM.?.?40GB",
         "memory": 40,
         "major": 8,
         "minor": 0,

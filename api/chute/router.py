@@ -52,6 +52,10 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     response.current_estimated_price = await NodeSelector(
         **chute.node_selector
     ).current_estimated_price()
+    if chute.discount and response.current_estimated_price:
+        for key, values in response.current_estimated_price.items():
+            for unit in values:
+                values[unit] -= values[unit] * chute.discount
     if not response.current_estimated_price:
         response.current_estimated_price = {"error": "pricing unavailable"}
 

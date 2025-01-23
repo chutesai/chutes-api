@@ -399,21 +399,23 @@ async def invoke(
                 compute_units = result.scalar_one_or_none()
                 if compute_units:
                     balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
-                    result = await session.execute(
-                        update(User)
-                        .where(User.user_id == user_id)
-                        .where(
-                            User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
-                            == 0
+                    if chute.discount and 0 < chute.discount < 1:
+                        balance_used -= balance_used * chute.discount
+                        result = await session.execute(
+                            update(User)
+                            .where(User.user_id == user_id)
+                            .where(
+                                User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
+                                == 0
+                            )
+                            .values(balance=User.balance - balance_used)
+                            .returning(User.balance)
                         )
-                        .values(balance=User.balance - balance_used)
-                        .returning(User.balance)
-                    )
-                    new_balance = result.scalar_one_or_none()
-                    if new_balance is not None:
-                        logger.info(
-                            f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
-                        )
+                        new_balance = result.scalar_one_or_none()
+                        if new_balance is not None:
+                            logger.info(
+                                f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                            )
                 await session.commit()
 
             yield sse(
