@@ -67,10 +67,10 @@ async def get_user_from_token(token: str, request: Request) -> User:
 
     # Squad access?
     if payload.get("iss") == "squad":
-        if request.state.auth_method == "delete":
+        if request.state.auth_method != "invoke":
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Delete prohibited with squad access.",
+                detail="Only invocations are allowed with squad auth (for now).",
             )
         try:
             payload = jwt.decode(
@@ -87,11 +87,14 @@ async def get_user_from_token(token: str, request: Request) -> User:
                 issuer="squad",
             )
             async with get_session() as session:
-                return (
+                user = (
                     await session.execute(
                         select(User).where(User.user_id == user_id, User.squad_enabled.is_(True))
                     )
                 ).scalar_one_or_none()
+                request.state.squad_request = True
+                request.state.free_invocation = True
+                return user
         except jwt.InvalidTokenError:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

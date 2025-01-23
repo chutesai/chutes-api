@@ -648,6 +648,7 @@ async def invoke_(
             targets,
             parent_invocation_id,
             metrics=metrics,
+            request=request,
         ),
         headers={"X-Chutes-InvocationID": parent_invocation_id},
     )

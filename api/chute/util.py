@@ -13,6 +13,7 @@ import time
 import traceback
 import orjson as json
 import pybase64 as base64
+from fastapi import Request
 from loguru import logger
 from typing import List
 from sqlalchemy import and_, or_, text, update, func, String
@@ -304,6 +305,7 @@ async def invoke(
     targets: List[Instance],
     parent_invocation_id: str,
     metrics: dict = {},
+    request: Request = None,
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
@@ -397,7 +399,7 @@ async def invoke(
 
                 # Calculate the credits used and deduct from user's balance.
                 compute_units = result.scalar_one_or_none()
-                if compute_units:
+                if compute_units and not request.state.free_invocation:
                     balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
                     if chute.discount and 0 < chute.discount < 1:
                         balance_used -= balance_used * chute.discount

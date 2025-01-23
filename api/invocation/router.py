@@ -310,6 +310,7 @@ async def _invoke(
                 targets,
                 parent_invocation_id,
                 metrics=metrics,
+                request=request,
             ):
                 if skip:
                     continue
@@ -343,6 +344,7 @@ async def _invoke(
         targets,
         parent_invocation_id,
         metrics=metrics,
+        request=request,
     ):
         if response:
             continue
