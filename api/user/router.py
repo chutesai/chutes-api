@@ -272,6 +272,7 @@ async def update_squad_access(
     """
     Enable squad access.
     """
+    user = await db.merge(user)
     body = await request.json()
     if body.get("enable") in (True, "true", "True"):
         user.squad_enabled = True

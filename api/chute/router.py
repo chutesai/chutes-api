@@ -67,6 +67,7 @@ async def list_chutes(
     template: Optional[str] = None,
     name: Optional[str] = None,
     image: Optional[str] = None,
+    slug: Optional[str] = None,
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
     db: AsyncSession = Depends(get_db_session),
@@ -98,6 +99,8 @@ async def list_chutes(
                 Image.tag.ilike("%{image}%"),
             )
         )
+    if slug and slug.strip():
+        query = query.where(Chute.slug.ilike(slug))
 
     # Standard template filtering.
     if template and template.strip() and template != "other":
