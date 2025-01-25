@@ -90,11 +90,13 @@ async def list_nodes(
                         {
                             "username": node.instance.chute.user.username,
                             "name": node.instance.chute.name,
+                            "chute_id": node.instance.chute_id,
                         }
                         if node.instance.chute.public
                         else {
                             "username": None,
                             "name": "[private chute]",
+                            "chute_id": node.instance.chute_id,
                         }
                     ),
                 }
