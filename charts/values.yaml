@@ -295,7 +295,7 @@ forge:
   tolerations: []
 
 gravalWorker:
-  replicaCount: 8
+  replicaCount: 16
   image: parachutes/validator:latest
   imagePullPolicy: Always
   resources:
@@ -411,21 +411,11 @@ weightsetter:
   tolerations: []
 
 graval:
-  replicaCount: 8
+  replicaCount: 16
   image: parachutes/graval:latest
   imagePullPolicy: Always
   validatorWhitelist:
-    - 5HNCJfK3PzFcNHmkdaWnHyw7hEvtNoM4SZpoqB6QchzpFxT5
-    - 5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY
-    - 5E1nK3myeWNWrmffVaH76f2mCFCbe9VcHGwgkfdcD7k3E8D1
-    - 5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2
-    - 5FFApaS75bv5pJHfAp2FVLBj9ZaXuFDjEypsaBNc1wCfe52v
-    - 5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp
-    - 5F2CsUDVbRbVMXTh9fAzF9GacjVX7UapvRxidrxe7z8BYckQ
-    - 5HYk8DMKWK8TJyPzZJ9vmZk7B5NPCgjnZoyZ1ZsB54RXdN47
-    - 5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe
-    - 5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT
-    - 5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY
+    - 5Dt7HZ7Zpw4DppPxFM7Ke3Cm7sDAWhsZXmM5ZAmE7dSVJbcQ
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -452,8 +442,6 @@ graval:
     port: 8000
     targetPort: 8000
     nodePort: 32002
-  nodeSelector:
-    kubernetes.io/hostname: cvali-h200-0
   affinity:
     nodeAffinity:
       requiredDuringSchedulingIgnoredDuringExecution:
@@ -606,6 +594,11 @@ registryProxy:
     targetPort: 5000
 
 auditExporter:
+  image: parachutes/validator:latest
+  nodeSelector:
+    kubernetes.io/hostname: chutes-prod-0
+
+failedChuteCleanup:
   image: parachutes/validator:latest
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
