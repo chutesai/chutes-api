@@ -86,14 +86,15 @@ def get_current_user(
         #   4063dc072f57f6ce77ad1208dc002373c7c491c5f3d75248a51b856b061f6838656a9052b0717bbed20e437cd6e168c784605cd9adb8fb2f90b9a1b25e94528a
         #   My cold key is 5C5zpdLSSxFeFkLFw9tAc7DdxdK82GCAjnoe5pub73GMvKLt
         # miner hotkey 5FhMaRd59y5nyDEtCz1JMMEMZzAGimtmC8m5AfCeXVE3vzCx
-        origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
-        client_ip = request.client.host
-        if hotkey == "5FhMaRd59y5nyDEtCz1JMMEMZzAGimtmC8m5AfCeXVE3vzCx":
-            if origin_ip != "207.246.94.14" and client_ip != "207.246.94.14":
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Unauthorized IP address: {origin_ip=} {client_ip}",
-                )
+        if purpose != "registry":
+            origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+            client_ip = request.client.host
+            if hotkey == "5FhMaRd59y5nyDEtCz1JMMEMZzAGimtmC8m5AfCeXVE3vzCx":
+                if origin_ip != "207.246.94.14" and client_ip != "207.246.94.14":
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail=f"Unauthorized IP address: {origin_ip=} {client_ip}",
+                    )
 
         # Now get the Signing message
         body_sha256 = getattr(request.state, "body_sha256", None)
