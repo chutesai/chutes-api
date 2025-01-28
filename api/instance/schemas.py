@@ -57,6 +57,7 @@ class Instance(Base):
     last_verified_at = Column(DateTime(timezone=True))
     verification_error = Column(String, nullable=True)
     consecutive_failures = Column(Integer, default=0)
+    symmetric_key = Column(String)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance", lazy="joined")
     chute = relationship("Chute", back_populates="instances", lazy="joined")

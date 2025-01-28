@@ -91,6 +91,8 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.commonEnv" -}}
+- name: CHUTES_VERSION
+  value: {{ .Values.chutes_version }}
 - name: GRAVAL_URL
   value: http://graval:{{ .Values.graval.service.port }}
 - name: VALIDATOR_SS58
