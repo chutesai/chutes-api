@@ -6,7 +6,7 @@ import re
 import ast
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey
+from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey, BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE, COMPUTE_UNIT_PRICE_BASIS
@@ -174,6 +174,9 @@ class Chute(Base):
     discount = Column(Float, nullable=True, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Stats for sorting.
+    invocation_count = Column(BigInteger, default=0)
 
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
