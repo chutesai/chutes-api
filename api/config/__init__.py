@@ -99,10 +99,10 @@ class Settings(BaseSettings):
     squad_cert: bytes = load_squad_cert()
 
     # Consecutive failure count that triggers instance deletion.
-    consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "3"))
+    consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
     # Rate limits (10 requests per minute)
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 10))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 25))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.

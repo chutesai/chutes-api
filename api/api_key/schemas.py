@@ -97,7 +97,7 @@ class APIKey(Base):
         """
         Keep the API key names simple, please...
         """
-        if not re.match(r"[a-zA-Z0-9][a-zA-Z0-9_ -]{2,31}$", name):
+        if not re.match(r"[\$\w\u0080-\uFFFF\._\s-]{1,24}$", name):
             raise ValueError(
                 "API key name should start with alphanumeric character and contain up to 32 total allowed characters (letters, numbers, dashes, underscores, or spaces)"
             )

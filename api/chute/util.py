@@ -207,7 +207,9 @@ async def _invoke_one(
                     f"Error encrypting payload: {str(exc)}, sending plain text\n{traceback.format_exc()}"
                 )
 
-    session = aiohttp.ClientSession(read_bufsize=8 * 1024 * 1024)
+    session = aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
+    )
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
     if encrypted:
         headers.update({ENCRYPTED_HEADER: "true"})
@@ -221,6 +223,9 @@ async def _invoke_one(
         headers=headers,
     )
     try:
+        logger.info(
+            f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
+        )
         if response.status == 429:
             raise InstanceRateLimit(
                 f"Instance {target.instance_id=} has returned a rate limit error!"
@@ -310,7 +315,6 @@ async def invoke(
     """
     Helper to actual perform function invocations, retrying when a target fails.
     """
-    invocation_id = str(uuid.uuid4())
     chute_id = chute.chute_id
     yield sse(
         {
@@ -330,6 +334,7 @@ async def invoke(
 
     partition_suffix = None
     for target in targets:
+        invocation_id = str(uuid.uuid4())
         async with get_session() as session:
             result = await session.execute(
                 TRACK_INVOCATION,
@@ -459,9 +464,12 @@ async def invoke(
                             ),
                             {"instance_id": target.instance_id},
                         )
-                    ).scalar_one()
+                    ).scalar_one_or_none()
                     await session.commit()
-                    if consecutive_failures >= settings.consecutive_failure_limit:
+                    if (
+                        consecutive_failures
+                        and consecutive_failures >= settings.consecutive_failure_limit
+                    ):
                         await session.execute(
                             text("DELETE FROM instances WHERE instance_id = :instance_id"),
                             {"instance_id": target.instance_id},
@@ -512,6 +520,6 @@ async def invoke(
                 }
             )
             logger.error(
-                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {exc} -- {traceback.format_exc()}"
+                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
             )
     yield sse({"error": "exhausted all available targets to no avail"})

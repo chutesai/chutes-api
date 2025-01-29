@@ -31,7 +31,7 @@ from api.chute.templates import (
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, invoke
 from api.user.schemas import User
-from api.user.service import get_current_user
+from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
 from api.image.util import get_image_by_id_or_name
 from api.instance.util import discover_chute_targets
@@ -230,6 +230,28 @@ async def _deploy_chute(
             detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
 
+    # Prevent h200 usage for now.
+    if not chute_args.node_selector:
+        chute_args.node_selector = {"gpu_count": 1}
+    if current_user.user_id != await chutes_user_id():
+        if (
+            chute_args.node_selector.get("min_vram_gp_per_gpu")
+            and chute_args.node_selector["min_vram_gp_per_gpu"] > 80
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to require h200 at this time.",
+            )
+        if not chute_args["node_selector"].get("exclude"):
+            chute_args.node_selector["exclude"] = []
+        if "h200" not in chute_args.node_selector["exclude"]:
+            chute_args.node_selector["exclude"].append("h200")
+        if not chute_args.node_selector["supported_gpus"]:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No supported GPUs based on node selector!",
+            )
+
     old_version = None
     if chute:
         old_version = chute.version
@@ -237,6 +259,7 @@ async def _deploy_chute(
         chute.tagline = chute_args.tagline
         chute.readme = chute_args.readme
         chute.code = chute_args.code
+        chute.node_selector = chute_args.node_selector
         chute.tool_description = chute_args.tool_description
         chute.filename = chute_args.filename
         chute.ref_str = chute_args.ref_str
@@ -287,6 +310,16 @@ async def _deploy_chute(
             ).scalar()
 
         db.add(chute)
+
+    # Limit h200 access for now.
+    if (chute.node_selector or {}).get("supported_gpus", []) == [
+        "h200"
+    ] and chute.user_id != await chutes_user_id():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to require h200 at this time.",
+        )
+
     await db.commit()
 
     if old_version:
