@@ -34,7 +34,7 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
             ).asc(),
             Instance.last_verified_at.asc(),
         )
-        .limit(3)
+        .limit(7)
     )
 
     # Execute the query asynchronously
