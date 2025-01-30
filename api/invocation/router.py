@@ -269,6 +269,13 @@ async def _invoke(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail="bad request, naughty naughty"
             )
+    elif chute.standard_template == "vllm":
+        # Force usage metrics.
+        if request_body.get("stream"):
+            if "stream_options" not in request_body:
+                request_body["stream_options"] = {}
+            if not request_body["stream_options"].get("include_usage"):
+                request_body["stream_options"]["include_usage"] = True
     if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
@@ -291,6 +298,8 @@ async def _invoke(
             "ttft": None,
             "tps": 0.0,
             "tokens": 0,
+            "it": 0,
+            "ot": 0,
         }
     elif chute.standard_template == "diffusion":
         metrics = {

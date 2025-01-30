@@ -30,6 +30,7 @@ from api.miner_client import sign_request
 from api.instance.schemas import Instance
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.permissions import Permissioning
+from api.metrics.vllm import track_usage as track_vllm_usage
 
 REQUEST_SAMPLE_RATIO = 0.05
 LLM_PATHS = {"chat_stream", "completion_stream", "chat", "completion"}
@@ -234,6 +235,7 @@ async def _invoke_one(
             raise BadRequest("Invalid request: " + await response.text())
         response.raise_for_status()
         if stream:
+            last_chunk = None
             async for chunk in response.content:
                 if (
                     chute.standard_template == "vllm"
@@ -244,9 +246,29 @@ async def _invoke_one(
                     if metrics["ttft"] is None:
                         metrics["ttft"] = time.time() - started_at
                     metrics["tokens"] += 1
+                if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
+                    last_chunk = chunk
+
                 yield chunk.decode()
             if chute.standard_template == "vllm":
-                metrics["tps"] = metrics["tokens"] / (time.time() - started_at)
+                total_time = time.time() - started_at
+                if last_chunk and b'"usage"' in last_chunk:
+                    try:
+                        usage_obj = json.loads(last_chunk[6:].decode())
+                        usage = usage_obj.get("usage", {})
+                        metrics["it"] = usage.get("prompt_tokens")
+                        metrics["ot"] = usage.get("completion_tokens")
+                        if metrics.get("ot"):
+                            metrics["tps"] = metrics["ot"] / total_time
+                            logger.info(
+                                f"Metrics for {chute.chute_id=} [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
+                            )
+                    except Exception as exc:
+                        logger.warning(f"Error checking metrics: {exc}")
+
+                if not metrics.get("tps"):
+                    metrics["tps"] = metrics["tokens"] / total_time
+                track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
         else:
             content_type = response.headers.get("content-type")
             if content_type in (None, "application/json"):
@@ -256,6 +278,12 @@ async def _invoke_one(
                     if (usage := json_data.get("usage")) is not None:
                         metrics["tokens"] = usage.get("completion_tokens", 0)
                         metrics["tps"] = metrics["tokens"] / (time.time() - started_at)
+                        metrics["it"] = usage.get("prompt_tokens")
+                        metrics["ot"] = usage.get("completion_tokens")
+                        logger.info(
+                            f"Metrics for {chute.chute_id=} [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
+                        )
+                        track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 elif (
                     chute.standard_template == "diffusion"
                     and path == "generate"
