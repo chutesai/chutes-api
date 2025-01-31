@@ -24,7 +24,7 @@ from api.util import rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.report.schemas import Report, ReportArgs
-from api.database import get_db_session
+from api.database import get_db_session, get_session
 from api.instance.util import discover_chute_targets
 from api.permissions import Permissioning
 
@@ -209,11 +209,11 @@ async def report_invocation(
 
 async def _invoke(
     request: Request,
-    db: AsyncSession,
     current_user: User,
 ):
     # This call will perform auth/access checks.
-    chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
+    async with get_session() as db:
+        chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
@@ -287,7 +287,8 @@ async def _invoke(
     else:
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
-    targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
+    async with get_session() as db:
+        targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
     if not targets:
         chute_id = request.state.chute_id
         raise HTTPException(
@@ -409,7 +410,6 @@ async def _invoke(
 )
 async def hostname_invocation(
     request: Request,
-    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
     # Mega LLM/diffusion request handler.
@@ -420,25 +420,26 @@ async def hostname_invocation(
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"
         if model:
             chute_user = await chutes_user_id()
-            chute = (
-                (
-                    await db.execute(
-                        select(Chute)
-                        .where(
-                            Chute.name == model,
-                            or_(
-                                Chute.public.is_(True),
-                                Chute.user_id == current_user.user_id,
-                            ),
-                            Chute.standard_template == template,
+            async with get_session() as db:
+                chute = (
+                    (
+                        await db.execute(
+                            select(Chute)
+                            .where(
+                                Chute.name == model,
+                                or_(
+                                    Chute.public.is_(True),
+                                    Chute.user_id == current_user.user_id,
+                                ),
+                                Chute.standard_template == template,
+                            )
+                            .order_by((Chute.user_id == chute_user).desc())
+                            .limit(1)
                         )
-                        .order_by((Chute.user_id == chute_user).desc())
-                        .limit(1)
                     )
+                    .unique()
+                    .scalar_one_or_none()
                 )
-                .unique()
-                .scalar_one_or_none()
-            )
         if not chute:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -446,4 +447,4 @@ async def hostname_invocation(
             )
         request.state.chute_id = chute.chute_id
         request.state.auth_object_id = chute.chute_id
-    return await _invoke(request, db, current_user)
+    return await _invoke(request, current_user)

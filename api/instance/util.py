@@ -11,9 +11,8 @@ from api.config import settings
 from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import case, text
+from sqlalchemy import text, func
 from sqlalchemy.orm import aliased
-from datetime import datetime
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
@@ -28,12 +27,7 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
         .where(Instance.active.is_(True))
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
-        .order_by(
-            case(
-                (Instance.last_queried_at.is_(None), datetime.min), else_=Instance.last_queried_at
-            ).asc(),
-            Instance.last_verified_at.asc(),
-        )
+        .order_by(func.random())
         .limit(7)
     )
 
