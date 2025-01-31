@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: memcached
+  labels:
+    {{- include "memcached.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.memcached.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "memcached.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "memcached.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.memcached.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.memcached.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.memcached.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: memcached
+          image: "{{ .Values.memcached.image }}"
+          imagePullPolicy: {{ .Values.memcached.imagePullPolicy }}
+          args: ["-m", "{{ .Values.memcached.config.memory_mb }}"]
+          ports:
+            - name: memcached
+              containerPort: {{ .Values.memcached.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.memcached.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: {{ .Values.memcached.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: {{ .Values.memcached.service.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10

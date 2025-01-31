@@ -220,7 +220,11 @@ async def _invoke(
         )
 
     # Check account balance.
-    if current_user.balance <= 0 and not current_user.has_role(Permissioning.free_account):
+    if (
+        current_user.balance <= 0
+        and not current_user.has_role(Permissioning.free_account)
+        and (not chute.discount or chute.discount < 1.0)
+    ):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
