@@ -16,6 +16,7 @@ from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
+from api.util import aes_encrypt, aes_decrypt, use_encryption_v2
 from api.database import get_session
 from api.node.schemas import Node
 from api.instance.schemas import Instance
@@ -319,6 +320,70 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     interval=5,
     max_tries=3,
 )
+async def exchange_symmetric_key(instance: Instance) -> bool:
+    """
+    Create a new symmetric key and send it over to the miner via GraVal encryption.
+    """
+    # Generate a random symmetric key to use for the instance.
+    instance.symmetric_key = secrets.token_bytes(16).hex()
+
+    # Encrypt that key with GraVal so it can only be decrypted by one of the miner GPUs.
+    device_dicts = [node.graval_dict() for node in instance.nodes]
+    target_index = random.randint(0, len(device_dicts) - 1)
+    target_device = device_dicts[target_index]
+    seed = instance.nodes[0].seed
+    payload = None
+    async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
+        async with graval_session.post(
+            f"{settings.graval_url}/encrypt",
+            json={
+                "payload": {
+                    "symmetric_key": instance.symmetric_key,
+                },
+                "device_info": target_device,
+                "device_id": target_index,
+                "seed": seed,
+            },
+            timeout=60.0,
+        ) as resp:
+            payload = await resp.json()
+
+    # Now we can send that over to the miner's /_exchange endpoint.
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/_exchange",
+        payload,
+        timeout=12.0,
+    ) as resp:
+        # Good so far, now let's verify we can actually use the key.
+        resp.raise_for_status()
+        expected = str(uuid.uuid4())
+        payload = await aes_encrypt(json.dumps({"hello": expected}), instance.symmetric_key)
+        iv = bytes.fromhex(payload[:32])
+        async with miner_client.post(
+            instance.miner_hotkey,
+            f"http://{instance.host}:{instance.port}/_ping",
+            payload,
+            timeout=12.0,
+        ) as decrypted_response:
+            decrypted_response.raise_for_status()
+            ciphertext = await decrypted_response.read()
+            plaintext = aes_decrypt(ciphertext, instance.symmetric_key, iv)
+            if json.loads(plaintext).get("hello") != expected:
+                logger.warning(f"Expected {expected}, result: {plaintext}")
+                return False
+
+    logger.success(f"Successfully exchanged new symmetric key for {instance.instance_id=}")
+    return True
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=5,
+    max_tries=3,
+)
 async def _verify_filesystem_challenge(instance: Instance, challenge: FSChallenge) -> bool:
     """
     Check a single filesystem challenge on the remote instance.
@@ -435,19 +500,29 @@ async def verify_instance(instance_id: str):
             logger.warning("Found no matching nodes, did they disappear?")
             return
 
-        # Ping test (decryption, ensures graval initialization happened).
-        try:
-            if not await _verify_instance_graval(instance):
-                logger.warning(f"{instance_id=} failed GraVal verification!")
-                instance.verification_error = "Failed one or more GraVal encryption challenges."
+        if not use_encryption_v2(instance.chutes_version):
+            # Legacy/encryption V1 tests.
+            try:
+                if not await _verify_instance_graval(instance):
+                    logger.warning(f"{instance_id=} failed GraVal verification!")
+                    instance.verification_error = "Failed one or more GraVal encryption challenges."
+                    await session.commit()
+                    return
+            except Exception as exc:
+                error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+                logger.error(error_message)
+                instance.verification_error = error_message
                 await session.commit()
-                return
-        except Exception as exc:
-            error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
-            logger.error(error_message)
-            instance.verification_error = error_message
-            await session.commit()
             return
+        else:
+            # Encryption V2, create and exchange an AES key.
+            try:
+                await exchange_symmetric_key(instance)
+            except Exception as exc:
+                error_message = f"Failed to exchange symmetric key via GraVal encryption for {instance_id=}: {exc}\n{traceback.format_exc()}"
+                logger.error(error_message)
+                instance.verification_error = error_message
+                await session.commit()
 
         # Filesystem test.
         try:

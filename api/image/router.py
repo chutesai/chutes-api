@@ -192,6 +192,9 @@ async def create_image(
     # Double check we've purged all FS challenges.
     await db.execute(delete(FSChallenge).where(FSChallenge.image_id == image_id))
 
+    # Force installation of chutes with the specified version.
+    dockerfile = dockerfile + "\n\nRUN pip install --upgrade chutes=={settings.chutes_version}"
+
     # Upload the build context to our S3-compatible storage backend.
     for obj, destination in (
         (build_context, f"forge/{current_user.user_id}/{image_id}.zip"),
@@ -220,6 +223,7 @@ async def create_image(
         logo_id=logo_id if logo_id and logo_id != "__none__" else None,
         tag=tag,
         public=public,
+        chutes_version=settings.chutes_version,
     )
     db.add(image)
     await db.commit()

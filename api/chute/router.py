@@ -268,6 +268,7 @@ async def _deploy_chute(
         chute.logo_id = (
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
         )
+        chute.chutes_version = image.chutes_version
     else:
         chute = Chute(
             chute_id=str(
@@ -288,6 +289,7 @@ async def _deploy_chute(
             cords=chute_args.cords,
             node_selector=chute_args.node_selector,
             standard_template=chute_args.standard_template,
+            chutes_version=image.chutes_version,
         )
 
         # Generate a unique slug (subdomain).

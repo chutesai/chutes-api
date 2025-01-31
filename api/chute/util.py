@@ -13,7 +13,7 @@ import time
 import traceback
 import orjson as json
 import pybase64 as base64
-from fastapi import Request
+from fastapi import Request, status
 from loguru import logger
 from typing import List
 from sqlalchemy import and_, or_, text, update, func, String
@@ -22,8 +22,8 @@ from sqlalchemy.orm import selectinload
 from api.config import settings
 from api.constants import ENCRYPTED_HEADER
 from api.database import get_session
-from api.exceptions import InstanceRateLimit, BadRequest
-from api.util import sse, now_str
+from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired
+from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.miner_client import sign_request
@@ -180,42 +180,53 @@ async def _invoke_one(
     path = path.lstrip("/")
     response = None
     payload = {"args": args, "kwargs": kwargs}
-    encrypted = False
-    if settings.graval_url and random.random() <= 0.1:
-        device_dicts = [node.graval_dict() for node in target.nodes]
-        target_index = random.randint(0, len(device_dicts) - 1)
-        target_device = device_dicts[target_index]
-        seed = target.nodes[0].seed
-        async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
-            try:
-                async with graval_session.post(
-                    f"{settings.graval_url}/encrypt",
-                    json={
-                        "payload": {
-                            "args": args,
-                            "kwargs": kwargs,
+
+    # Legacy chutes/encryption V1.
+    iv = None
+    legacy_encrypted = False
+    if not use_encryption_v2(target.chutes_version):
+        if settings.graval_url and random.random() <= 0.1:
+            device_dicts = [node.graval_dict() for node in target.nodes]
+            target_index = random.randint(0, len(device_dicts) - 1)
+            target_device = device_dicts[target_index]
+            seed = target.nodes[0].seed
+            async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
+                try:
+                    async with graval_session.post(
+                        f"{settings.graval_url}/encrypt",
+                        json={
+                            "payload": {
+                                "args": args,
+                                "kwargs": kwargs,
+                            },
+                            "device_info": target_device,
+                            "device_id": target_index,
+                            "seed": seed,
                         },
-                        "device_info": target_device,
-                        "device_id": target_index,
-                        "seed": seed,
-                    },
-                    timeout=3.0,
-                ) as resp:
-                    payload = await resp.json()
-                    encrypted = True
-            except Exception as exc:
-                logger.error(
-                    f"Error encrypting payload: {str(exc)}, sending plain text\n{traceback.format_exc()}"
-                )
+                        timeout=3.0,
+                    ) as resp:
+                        payload = await resp.json()
+                        legacy_encrypted = True
+                except Exception as exc:
+                    logger.error(
+                        f"Error encrypting payload: {str(exc)}, sending plain text\n{traceback.format_exc()}"
+                    )
+    else:
+        # Using encryption V2, make sure we have a key.
+        if not target.symmetric_key:
+            raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
+        payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
+        iv = bytes.fromhex(payload[:32])
 
     session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
     )
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
-    if encrypted:
+    if legacy_encrypted:
         headers.update({ENCRYPTED_HEADER: "true"})
+    iv_hex = iv.hex() if iv else None
     logger.debug(
-        f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {encrypted=}"
+        f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {legacy_encrypted=} {iv_hex=}"
     )
     started_at = time.time()
     response = await session.post(
@@ -227,16 +238,30 @@ async def _invoke_one(
         logger.info(
             f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
         )
-        if response.status == 429:
+
+        # Check if the instance restarted and is using encryption V2.
+        if response.status == status.HTTP_426_UPGRADE_REQUIRED and iv:
+            raise KeyExchangeRequired(
+                f"Instance {target.instance_id} responded with 426, new key exchange required."
+            )
+
+        # Check if the instance is overwhelmed.
+        if response.status == status.HTTP_429_TOO_MANY_REQUESTS:
             raise InstanceRateLimit(
                 f"Instance {target.instance_id=} has returned a rate limit error!"
             )
-        elif response.status == 400:
+
+        # Handle bad client requests.
+        if response.status == status.HTTP_400_BAD_REQUEST:
             raise BadRequest("Invalid request: " + await response.text())
+
         response.raise_for_status()
+
+        # All good, send back the response.
         if stream:
             last_chunk = None
-            async for chunk in response.content:
+            async for raw_chunk in response.content:
+                chunk = aes_decrypt(raw_chunk, target.symmetric_key, iv) if iv else raw_chunk
                 if (
                     chute.standard_template == "vllm"
                     and path in LLM_PATHS
@@ -270,33 +295,60 @@ async def _invoke_one(
                     metrics["tps"] = metrics["tokens"] / total_time
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
         else:
-            content_type = response.headers.get("content-type")
-            if content_type in (None, "application/json"):
-                json_data = await response.json()
-                data = {"content_type": content_type, "json": json_data}
-                total_time = time.time() - started_at
-                if chute.standard_template == "vllm" and path in LLM_PATHS:
-                    if (usage := json_data.get("usage")) is not None:
-                        metrics["tokens"] = usage.get("completion_tokens", 0)
-                        metrics["tps"] = metrics["tokens"] / total_time
-                        metrics["it"] = usage.get("prompt_tokens")
-                        metrics["ot"] = usage.get("completion_tokens")
-                        logger.info(
-                            f"Metrics for {chute.chute_id=} [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
-                        )
-                        track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
-                elif (
-                    chute.standard_template == "diffusion"
-                    and path == "generate"
-                    and (metrics or {}).get("steps")
-                ):
-                    metrics["sps"] = metrics["steps"] / (time.time() - started_at)
-            elif content_type.startswith("text/"):
-                text_data = await response.text()
-                data = {"content_type": content_type, "text": text_data}
+            # Non-streamed responses, which may be encrypted with the new chutes encryption V2.
+            headers = response.headers
+            body_bytes = await response.read()
+            data = {}
+            if iv:
+                # Encryption V2 always uses JSON, regardless of the underlying data type.
+                response_data = json.loads(body_bytes)
+                if "json" in response_data:
+                    plaintext = aes_decrypt(response_data["json"], target.symmetric_key, iv)
+                    data = {"content_type": "application/json", "json": json.loads(plaintext)}
+                else:
+                    # Response was a file or other response object.
+                    plaintext = aes_decrypt(response_data["body"], target.symmetric_key, iv)
+                    headers = response_data["headers"]
+                    data = {
+                        "content_type": headers.get("media_type"),
+                        "bytes": base64.b64encode(plaintext).decode(),
+                    }
             else:
-                raw_data = await response.read()
-                data = {"content_type": content_type, "bytes": base64.b64encode(raw_data).decode()}
+                # Legacy response handling.
+                content_type = response.headers.get("content-type")
+                if content_type in (None, "application/json"):
+                    json_data = await response.json()
+                    data = {"content_type": content_type, "json": json_data}
+                elif content_type.startswith("text/"):
+                    text_data = await response.text()
+                    data = {"content_type": content_type, "text": text_data}
+                else:
+                    raw_data = await response.read()
+                    data = {
+                        "content_type": content_type,
+                        "bytes": base64.b64encode(raw_data).decode(),
+                    }
+
+            # Track metrics for the standard LLM/diffusion templates.
+            total_time = time.time() - started_at
+            if chute.standard_template == "vllm" and path in LLM_PATHS:
+                json_data = data.get("json")
+                if json_data and (usage := json_data.get("usage")) is not None:
+                    metrics["tokens"] = usage.get("completion_tokens", 0)
+                    metrics["tps"] = metrics["tokens"] / total_time
+                    metrics["it"] = usage.get("prompt_tokens")
+                    metrics["ot"] = usage.get("completion_tokens")
+                    logger.info(
+                        f"Metrics for {chute.chute_id=} [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
+                    )
+                    track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
+            elif (
+                chute.standard_template == "diffusion"
+                and path == "generate"
+                and (metrics or {}).get("steps")
+            ):
+                metrics["sps"] = metrics["steps"] / (time.time() - started_at)
+
             yield data
     finally:
         await response.release()
@@ -475,6 +527,9 @@ async def invoke(
             elif isinstance(exc, BadRequest):
                 error_message = "BAD_REQUEST"
                 error_detail = str(exc)
+            elif isinstance(exc, KeyExchangeRequired):
+                error_message = "KEY_EXCHANGE_REQUIRED"
+
             async with get_session() as session:
                 await session.execute(
                     text(UPDATE_INVOCATION_ERROR.format(suffix=partition_suffix)),
@@ -485,8 +540,41 @@ async def invoke(
                     },
                 )
 
-                # Handle consecutive failures (auto-delete instances).
-                if error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
+                # Handle the case where encryption V2 is in use and the instance needs a new key exchange.
+                if error_message == "KEY_EXCHANGE_REQUIRED":
+                    # NOTE: Could probably just re-validate rather than deleting the instance, but this ensures no shenanigans are afoot.
+                    await session.execute(
+                        text("DELETE FROM instances WHERE instance_id = :instance_id"),
+                        {"instance_id": target.instance_id},
+                    )
+                    await session.execute(
+                        text(
+                            "UPDATE instance_audit SET deletion_reason = 'miner responded with 426 upgrade required, new symmetric key needed' WHERE instance_id = :instance_id"
+                        ),
+                        {"instance_id": target.instance_id},
+                    )
+                    await session.commit()
+                    event_data = {
+                        "reason": "instance_deleted",
+                        "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} responded with a 426 error, indicating a new key exchange is required.",
+                        "data": {
+                            "chute_id": target.chute_id,
+                            "instance_id": target.instance_id,
+                            "miner_hotkey": target.miner_hotkey,
+                        },
+                    }
+                    asyncio.create_task(
+                        settings.redis_client.publish("events", json.dumps(event_data).decode())
+                    )
+                    event_data["filter_recipients"] = [target.miner_hotkey]
+                    asyncio.create_task(
+                        settings.redis_client.publish(
+                            "miner_broadcast", json.dumps(event_data).decode()
+                        )
+                    )
+
+                elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
+                    # Handle consecutive failures (auto-delete instances).
                     consecutive_failures = (
                         await session.execute(
                             text(

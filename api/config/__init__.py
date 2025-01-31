@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     graval_url: str = os.getenv("GRAVAL_URL", "")
 
     # Database settings.
-    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "256"))
+    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "64"))
     db_overflow: int = int(os.getenv("DB_OVERFLOW", "32"))
 
     # Debug logging.

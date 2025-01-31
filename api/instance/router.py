@@ -66,6 +66,7 @@ async def create_instance(
         region="n/a",
         active=False,
         verified=False,
+        chutes_version=chute.chutes_version,
     )
     db.add(instance)
 

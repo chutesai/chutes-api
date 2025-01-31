@@ -171,7 +171,7 @@ class Chute(Base):
     filename = Column(String, nullable=False)
     ref_str = Column(String, nullable=False)
     version = Column(String)
-    chutes_version = Column(String)
+    chutes_version = Column(String, nullable=True)
     discount = Column(Float, nullable=True, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())

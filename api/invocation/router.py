@@ -24,7 +24,7 @@ from api.util import rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.report.schemas import Report, ReportArgs
-from api.database import get_db_session
+from api.database import get_db_session, get_session
 from api.instance.util import discover_chute_targets
 from api.permissions import Permissioning
 
@@ -209,11 +209,12 @@ async def report_invocation(
 
 async def _invoke(
     request: Request,
-    db: AsyncSession,
     current_user: User,
 ):
     # This call will perform auth/access checks.
-    chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
+    async with get_session() as db:
+        chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
+
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
@@ -287,7 +288,8 @@ async def _invoke(
     else:
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
-    targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
+    async with get_session() as db:
+        targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
     if not targets:
         chute_id = request.state.chute_id
         raise HTTPException(
