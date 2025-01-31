@@ -16,7 +16,7 @@ import pybase64 as base64
 from fastapi import Request, status
 from loguru import logger
 from typing import List
-from sqlalchemy import and_, or_, text, update, func, String
+from sqlalchemy import and_, or_, text, update, String
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -167,14 +167,15 @@ async def _invoke_one(
     """
     Try invoking a chute/cord with a single instance.
     """
-    # Update last query time for this target.
-    async with get_session() as session:
-        await session.execute(
-            update(Instance)
-            .where(Instance.instance_id == target.instance_id)
-            .values({"last_queried_at": func.now()})
-        )
-        await session.commit()
+    ### XXX too much load on the DB doing this.
+    # # Update last query time for this target.
+    # async with get_session() as session:
+    #     await session.execute(
+    #         update(Instance)
+    #         .where(Instance.instance_id == target.instance_id)
+    #         .values({"last_queried_at": func.now()})
+    #     )
+    #     await session.commit()
 
     # Call the miner's endpoint.
     path = path.lstrip("/")
