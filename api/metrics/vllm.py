@@ -34,8 +34,9 @@ def track_usage(chute_id: str, miner_hotkey: str, duration: float, metrics: dict
         return
 
     tokens_per_second.labels(chute_id=chute_id, miner_hotkey=miner_hotkey).set(metrics["tps"])
-    time_to_first_token.labels(chute_id=chute_id, miner_hotkey=miner_hotkey).set(
-        metrics.get("ttft", 0.0)
-    )
+    if metrics.get("ttft"):
+        time_to_first_token.labels(chute_id=chute_id, miner_hotkey=miner_hotkey).set(
+            metrics.get("ttft", 0.0)
+        )
     prompt_tokens.labels(chute_id=chute_id, miner_hotkey=miner_hotkey).inc(metrics["it"])
     completion_tokens.labels(chute_id=chute_id, miner_hotkey=miner_hotkey).inc(metrics["ot"])

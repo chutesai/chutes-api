@@ -274,10 +274,11 @@ async def _invoke_one(
             if content_type in (None, "application/json"):
                 json_data = await response.json()
                 data = {"content_type": content_type, "json": json_data}
+                total_time = time.time() - started_at
                 if chute.standard_template == "vllm" and path in LLM_PATHS:
                     if (usage := json_data.get("usage")) is not None:
                         metrics["tokens"] = usage.get("completion_tokens", 0)
-                        metrics["tps"] = metrics["tokens"] / (time.time() - started_at)
+                        metrics["tps"] = metrics["tokens"] / total_time
                         metrics["it"] = usage.get("prompt_tokens")
                         metrics["ot"] = usage.get("completion_tokens")
                         logger.info(

@@ -34,6 +34,8 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: MEMCACHED
+              value: memcached
           ports:
             - name: http
               containerPort: {{ .Values.socket.service.targetPort }}

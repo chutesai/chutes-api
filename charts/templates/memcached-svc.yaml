@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: memcached
+  labels:
+    {{- include "memcached.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.memcached.service.type }}
+  ports:
+    - port: {{ .Values.memcached.service.port }}
+      targetPort: memcached
+      protocol: TCP
+      name: memcached
+  selector:
+    {{- include "memcached.labels" . | nindent 4 }}

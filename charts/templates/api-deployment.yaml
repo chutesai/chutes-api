@@ -48,6 +48,8 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: MEMCACHED
+              value: memcached
             - name: VALIDATOR_HOTKEYS
               value: {{ join "," .Values.validators | quote }}
             - name: SUBNET_OWNER_HOTKEYS

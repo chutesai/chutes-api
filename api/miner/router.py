@@ -2,6 +2,7 @@
 Endpoints specific to miners.
 """
 
+import re
 import orjson as json
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi_cache.decorator import cache
@@ -148,31 +149,44 @@ async def get_chute(
 @cache(expire=60)
 @router.get("/stats")
 async def get_stats(
-    session: AsyncSession = Depends(get_db_session), per_chute: Optional[bool] = False
+    miner_hotkey: Optional[str] = None,
+    session: AsyncSession = Depends(get_db_session),
+    per_chute: Optional[bool] = False,
 ) -> Response:
     """
     Get invocation status over different intervals.
     """
-    bounty_query = """
+    if miner_hotkey and not re.match(r"^[a-zA-Z0-9]{48}$", miner_hotkey):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid hotkey parameter."
+        )
+    hk_filter = f" AND miner_hotkey = '{miner_hotkey}' " if miner_hotkey else " "
+    bounty_query = (
+        """
         SELECT miner_hotkey, SUM(bounty) as total_bounty
           FROM invocations
          WHERE started_at >= NOW() - INTERVAL '{interval}'
            AND error_message IS NULL
-           AND miner_uid > 0
-         GROUP BY miner_hotkey
-    """
-    compute_query = """
+           AND miner_uid > 0"""
+        + hk_filter
+        + "GROUP BY miner_hotkey"
+    )
+    compute_query = (
+        """
         SELECT
             i.miner_hotkey,
             SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
         FROM invocations i
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
         AND i.error_message IS NULL
-        AND miner_uid > 0
+        AND miner_uid > 0"""
+        + hk_filter
+        + """
         GROUP BY i.miner_hotkey
         HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
         ORDER BY compute_units DESC
     """
+    )
     if per_chute:
         compute_query = """
         SELECT

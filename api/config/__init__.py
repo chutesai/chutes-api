@@ -4,6 +4,7 @@ Application-wide settings.
 
 import os
 import aioboto3
+import aiomcache
 import redis.asyncio as redis
 from boto3.session import Config
 from typing import Optional
@@ -64,6 +65,11 @@ class Settings(BaseSettings):
     redis_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     )
+    memcache: Optional[aiomcache.Client] = (
+        aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211)
+        if os.getenv("MEMCACHED")
+        else None
+    )
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
     registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
@@ -101,7 +107,7 @@ class Settings(BaseSettings):
     # Consecutive failure count that triggers instance deletion.
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
-    # Rate limits (10 requests per minute)
+    # Rate limits.
     rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 25))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
 
