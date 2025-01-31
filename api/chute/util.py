@@ -311,7 +311,9 @@ async def _invoke_one(
                     plaintext = aes_decrypt(response_data["body"], target.symmetric_key, iv)
                     headers = response_data["headers"]
                     data = {
-                        "content_type": headers.get("media_type"),
+                        "content_type": response_data.get(
+                            "media_type", headers.get("Content-Type", "text/plain")
+                        ),
                         "bytes": base64.b64encode(plaintext).decode(),
                     }
             else:

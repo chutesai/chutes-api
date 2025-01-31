@@ -193,7 +193,7 @@ async def create_image(
     await db.execute(delete(FSChallenge).where(FSChallenge.image_id == image_id))
 
     # Force installation of chutes with the specified version.
-    dockerfile = dockerfile + "\n\nRUN pip install --upgrade chutes=={settings.chutes_version}"
+    dockerfile += f"\n\nRUN pip install --upgrade chutes=={settings.chutes_version}"
 
     # Upload the build context to our S3-compatible storage backend.
     for obj, destination in (
