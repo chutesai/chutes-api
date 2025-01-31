@@ -177,10 +177,13 @@ async def rate_limit(chute_id, user, requests, window):
         await settings.redis_client.zremrangebyscore(key, 0, now - window)
         request_count = await settings.redis_client.zcard(key)
         if request_count >= requests:
-            logger.warning(f"Rate limiting user: {user.username} on chute: {chute_id} {request_count=}")
+            logger.warning(
+                f"Rate limiting user: {user.username} on chute: {chute_id} {request_count=}"
+            )
             block = True
-        await settings.redis_client.zadd(key, {str(now): now})
-        await settings.redis_client.expire(key, window)
+        else:
+            await settings.redis_client.zadd(key, {str(now): now})
+            await settings.redis_client.expire(key, window)
     except Exception as exc:
         logger.error(f"Error checking rate limits: {exc}")
     if block:
