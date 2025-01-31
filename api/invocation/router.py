@@ -237,7 +237,7 @@ async def _invoke(
         current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc"
         and chute.chute_id == "de510462-c319-543b-9c67-00bcf807d2a7"
     ):
-        limit = int(limit * 2.5)
+        limit = int(limit * 3.0)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # Identify the cord that we'll trying to access by the public API path and method.
