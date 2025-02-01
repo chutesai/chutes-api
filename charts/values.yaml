@@ -7,6 +7,8 @@ account_settings:
 
 squad_enabled: true
 
+chutes_version: 0.2.1
+
 consecutive_failure_limit: 3
 
 # Taken from https://taostats.io/validators - allows linking accounts (where validators get free access)
@@ -537,7 +539,7 @@ pgproxy:
 registry:
   image: registry:2
   imagePullPolicy: IfNotPresent
-  replicaCount: 1
+  replicaCount: 2
   nodeSelector: {}
   affinity:
     nodeAffinity:
@@ -569,7 +571,7 @@ registryProxy:
     workerProcesses: 64
     workerConnections: 4096
     accessLogPath: "/var/log/nginx/access.log"
-  replicaCount: 1
+  replicaCount: 2
   nodeSelector: {}
   affinity:
     nodeAffinity:

@@ -28,6 +28,7 @@ class Image(Base):
     public = Column(Boolean, default=False)
     status = Column(String, default="pending build")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    chutes_version = Column(String, nullable=True)
     build_started_at = Column(DateTime(timezone=True))
     build_completed_at = Column(DateTime(timezone=True))
 

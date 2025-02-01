@@ -10,7 +10,9 @@ import hashlib
 import random
 import string
 import time
+import secrets
 import orjson as json
+import pybase64 as base64
 from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
@@ -21,6 +23,9 @@ from api.config import settings
 from api.payment.schemas import Payment
 from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import padding
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
 
@@ -190,3 +195,59 @@ async def rate_limit(chute_id, user, requests, window):
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests"
         )
+
+
+def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None) -> str:
+    """
+    Encrypt with AES.
+    """
+    if isinstance(key, str):
+        key = key.encode()
+    if isinstance(plaintext, str):
+        plaintext = plaintext.encode()
+    if not iv:
+        iv = secrets.token_bytes(16)
+    padder = padding.PKCS7(128).padder()
+    cipher = Cipher(
+        algorithms.AES(bytes.fromhex(key)),
+        modes.CBC(iv),
+        backend=default_backend(),
+    )
+    padded_data = padder.update(plaintext) + padder.finalize()
+    encryptor = cipher.encryptor()
+    encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
+    return iv.hex() + base64.b64encode(encrypted_data).decode()
+
+
+def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
+    """
+    Decrypt an AES encrypted ciphertext.
+    """
+    if isinstance(key, str):
+        key = key.encode()
+    if isinstance(ciphertext, str):
+        ciphertext = ciphertext.encode()
+    if isinstance(iv, str):
+        iv = bytes.fromhex(iv)
+    cipher = Cipher(
+        algorithms.AES(key),
+        modes.CBC(iv),
+        backend=default_backend(),
+    )
+    unpadder = padding.PKCS7(128).unpadder()
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(base64.b64decode(ciphertext)) + decryptor.finalize()
+    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
+    return unpadded_data
+
+
+def use_encryption_v2(chutes_version: str):
+    """
+    Check if encryption V2 (chutes >= 0.2.0) is enabled.
+    """
+    if not chutes_version:
+        return False
+    major, minor = chutes_version.split(".")[:2]
+    if major == "0" and int(minor) < 2:
+        return False
+    return True
