@@ -217,12 +217,15 @@ async def _invoke_one(
         if not target.symmetric_key:
             raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
         payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
+        logger.info(f"Encrypted the payload: {payload}")
         iv = bytes.fromhex(payload[:32])
 
     session = aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
     )
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
+    if iv:
+        logger.info(f"Encryption v2: {headers} {payload_string}")
     if legacy_encrypted:
         headers.update({ENCRYPTED_HEADER: "true"})
     iv_hex = iv.hex() if iv else None
@@ -350,7 +353,7 @@ async def _invoke_one(
                 and path == "generate"
                 and (metrics or {}).get("steps")
             ):
-                metrics["sps"] = metrics["steps"] / (time.time() - started_at)
+                metrics["sps"] = int(metrics["steps"]) / (time.time() - started_at)
 
             yield data
     finally:

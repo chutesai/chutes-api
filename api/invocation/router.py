@@ -266,7 +266,7 @@ async def _invoke(
         steps = request_body.get("num_inference_steps")
         max_steps = 30 if chute.name == "FLUX-1.dev" else 50
         if steps and (isinstance(steps, int) or steps.isdigit()) and int(steps) > max_steps:
-            request_body["num_inference_steps"] = max_steps
+            request_body["num_inference_steps"] = int(max_steps)
         try:
             _ = DiffusionInput(**request_body)
         except ValidationError:

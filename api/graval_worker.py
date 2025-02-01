@@ -393,7 +393,7 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
     logger.info(
         f"Sending filesystem challenge {challenge.filename=} {challenge.length=} {challenge.offset=} to {instance.instance_id=}"
     )
-    payload=dict(
+    payload = dict(
         filename=challenge.filename,
         offset=challenge.offset,
         length=challenge.length,
@@ -403,11 +403,7 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
     async with miner_client.post(
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/_fs_challenge",
-        payload=dict(
-            filename=challenge.filename,
-            offset=challenge.offset,
-            length=challenge.length,
-        ),
+        payload=payload,
         timeout=12.0,
     ) as resp:
         resp.raise_for_status()
@@ -522,7 +518,7 @@ async def verify_instance(instance_id: str):
                 logger.error(error_message)
                 instance.verification_error = error_message
                 await session.commit()
-            return
+                return
         else:
             # Encryption V2, create and exchange an AES key.
             try:
