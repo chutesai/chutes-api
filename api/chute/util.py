@@ -217,7 +217,6 @@ async def _invoke_one(
         if not target.symmetric_key:
             raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
         payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
-        logger.info(f"Encrypted the payload: {payload}")
         iv = bytes.fromhex(payload[:32])
 
     session = aiohttp.ClientSession(
@@ -225,7 +224,7 @@ async def _invoke_one(
     )
     headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
     if iv:
-        logger.info(f"Encryption v2: {headers} {payload_string}")
+        headers["X-Chutes-Serialized"] = "true"
     if legacy_encrypted:
         headers.update({ENCRYPTED_HEADER: "true"})
     iv_hex = iv.hex() if iv else None
@@ -265,7 +264,9 @@ async def _invoke_one(
         if stream:
             last_chunk = None
             async for raw_chunk in response.content:
-                chunk = aes_decrypt(raw_chunk, target.symmetric_key, iv) if iv else raw_chunk
+                chunk = raw_chunk
+                if iv:
+                    chunk = aes_decrypt(raw_chunk, target.symmetric_key, iv)
                 if (
                     chute.standard_template == "vllm"
                     and path in LLM_PATHS
