@@ -358,8 +358,9 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
         # Good so far, now let's verify we can actually use the key.
         resp.raise_for_status()
         expected = str(uuid.uuid4())
-        payload = await aes_encrypt(json.dumps({"hello": expected}), instance.symmetric_key)
+        payload = aes_encrypt(json.dumps({"hello": expected}), instance.symmetric_key)
         iv = bytes.fromhex(payload[:32])
+        logger.info(f"Sending {payload=} to _ping of {instance.instance_id=}")
         async with miner_client.post(
             instance.miner_hotkey,
             f"http://{instance.host}:{instance.port}/_ping",
@@ -367,8 +368,9 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
             timeout=12.0,
         ) as decrypted_response:
             decrypted_response.raise_for_status()
-            ciphertext = await decrypted_response.read()
+            ciphertext = json.loads(await decrypted_response.read())["json"]
             plaintext = aes_decrypt(ciphertext, instance.symmetric_key, iv)
+            logger.info(f"Plain text response from _ping on {instance.instance_id=}: {plaintext}")
             if json.loads(plaintext).get("hello") != expected:
                 logger.warning(f"Expected {expected}, result: {plaintext}")
                 return False

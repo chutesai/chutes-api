@@ -197,10 +197,12 @@ async def rate_limit(chute_id, user, requests, window):
         )
 
 
-def aes_encrypt(plaintext: bytes, key: str, iv: bytes = None) -> str:
+def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None) -> str:
     """
     Encrypt with AES.
     """
+    if isinstance(key, str):
+        key = key.encode()
     if isinstance(plaintext, str):
         plaintext = plaintext.encode()
     if not iv:
@@ -217,10 +219,12 @@ def aes_encrypt(plaintext: bytes, key: str, iv: bytes = None) -> str:
     return iv.hex() + base64.b64encode(encrypted_data).decode()
 
 
-def aes_decrypt(ciphertext: bytes, key: str, iv: bytes) -> bytes:
+def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
     """
     Decrypt an AES encrypted ciphertext.
     """
+    if isinstance(key, str):
+        key = key.encode()
     if isinstance(ciphertext, str):
         ciphertext = ciphertext.encode()
     if isinstance(iv, str):
@@ -243,7 +247,7 @@ def use_encryption_v2(chutes_version: str):
     """
     if not chutes_version:
         return False
-    major, minor = chutes_version.split(".")[2:]
+    major, minor = chutes_version.split(".")[:2]
     if major == "0" and int(minor) < 2:
         return False
     return True
