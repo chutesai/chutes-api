@@ -393,6 +393,13 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
     logger.info(
         f"Sending filesystem challenge {challenge.filename=} {challenge.length=} {challenge.offset=} to {instance.instance_id=}"
     )
+    payload=dict(
+        filename=challenge.filename,
+        offset=challenge.offset,
+        length=challenge.length,
+    )
+    if use_encryption_v2(instance.chutes_version):
+        payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
     async with miner_client.post(
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/_fs_challenge",

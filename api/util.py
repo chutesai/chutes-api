@@ -202,14 +202,14 @@ def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None) -> str:
     Encrypt with AES.
     """
     if isinstance(key, str):
-        key = key.encode()
+        key = bytes.fromhex(key)
     if isinstance(plaintext, str):
         plaintext = plaintext.encode()
     if not iv:
         iv = secrets.token_bytes(16)
     padder = padding.PKCS7(128).padder()
     cipher = Cipher(
-        algorithms.AES(bytes.fromhex(key)),
+        algorithms.AES(key),
         modes.CBC(iv),
         backend=default_backend(),
     )
@@ -224,7 +224,7 @@ def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
     Decrypt an AES encrypted ciphertext.
     """
     if isinstance(key, str):
-        key = key.encode()
+        key = bytes.fromhex(key)
     if isinstance(ciphertext, str):
         ciphertext = ciphertext.encode()
     if isinstance(iv, str):
