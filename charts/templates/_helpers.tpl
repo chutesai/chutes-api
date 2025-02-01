@@ -2,21 +2,18 @@
 app.kubernetes.io/name: api
 redis-access: "true"
 db-access: "true"
-memcached-access: "true"
 {{- end }}
 
 {{- define "socket.labels" -}}
 app.kubernetes.io/name: socket
 redis-access: "true"
 db-access: "true"
-memcached-access: "true"
 {{- end }}
 
 {{- define "eventSocket.labels" -}}
 app.kubernetes.io/name: event-socket
 redis-access: "true"
 db-access: "true"
-memcached-access: "true"
 {{- end }}
 
 {{- define "paymentWatcher.labels" -}}
