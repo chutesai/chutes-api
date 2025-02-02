@@ -489,6 +489,10 @@ async def verify_instance(instance_id: str):
     """
     Verify a single instance.
     """
+    if not await settings.redis_client.setnx(f"verify:lock:{instance_id}", "1"):
+        logger.warning(f"Verification of {instance_id=} already in progress")
+        return
+    await settings.redis_client.expire(f"verify:lock:{instance_id}", 60)
     attempts = await settings.redis_client.incr(f"verify_instance:backend:{instance_id}")
     if attempts >= 8:
         return

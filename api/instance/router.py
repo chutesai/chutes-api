@@ -180,6 +180,10 @@ async def activate_instance(
             logger.warning(f"Error broadcasting instance event: {exc}")
 
     # Kick off validation.
+    if await settings.redis_client.get(f"verify:lock:{instance_id}"):
+        logger.warning("Ignoring verification request, already in progress...")
+        return instance
+
     if (attempts := await settings.redis_client.incr(f"verify_instance:{instance_id}")) >= 7:
         logger.warning(
             f"Refusing to attempt verification more than 7 times for {instance_id=} {attempts=}"
