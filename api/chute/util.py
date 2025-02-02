@@ -12,7 +12,7 @@ import io
 import time
 import traceback
 import orjson as json
-import pybase64 as base64
+import base64
 from fastapi import Request, status
 from loguru import logger
 from typing import List
@@ -257,6 +257,9 @@ async def _invoke_one(
         # Handle bad client requests.
         if response.status == status.HTTP_400_BAD_REQUEST:
             raise BadRequest("Invalid request: " + await response.text())
+
+        if response.status == 451:
+            logger.info(f"BAD ENCRYPTION: {await response.text()} from {payload=}")
 
         response.raise_for_status()
 
@@ -530,7 +533,7 @@ async def invoke(
             error_detail = None
             if isinstance(exc, InstanceRateLimit):
                 error_message = "RATE_LIMIT"
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.5)
             elif isinstance(exc, BadRequest):
                 error_message = "BAD_REQUEST"
                 error_detail = str(exc)

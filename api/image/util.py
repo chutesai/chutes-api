@@ -10,7 +10,7 @@ async def get_image_by_id_or_name(image_id_or_name, db, current_user):
     Helper to load an image by ID or full image name (optional username/image name:image tag)
     """
     name_match = re.match(
-        r"(?:([a-z0-9][a-z0-9_-]*)/)?([a-z0-9][a-z0-9_-]*):([a-z0-9][a-z0-9_\.-]*)$",
+        r"(?:([a-z0-9][a-z0-9_\.-]*)/)?([a-z0-9][a-z0-9_\.-]*):([a-z0-9][a-z0-9_\.-]*)$",
         image_id_or_name.lstrip("/"),
         re.I,
     )

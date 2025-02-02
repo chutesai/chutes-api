@@ -12,7 +12,7 @@ import string
 import time
 import secrets
 import orjson as json
-import pybase64 as base64
+import base64
 from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
@@ -216,7 +216,7 @@ def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None) -> str:
     padded_data = padder.update(plaintext) + padder.finalize()
     encryptor = cipher.encryptor()
     encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-    return iv.hex() + base64.b64encode(encrypted_data).decode()
+    return "".join([iv.hex(), base64.b64encode(encrypted_data).decode()])
 
 
 def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
@@ -236,7 +236,8 @@ def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
     )
     unpadder = padding.PKCS7(128).unpadder()
     decryptor = cipher.decryptor()
-    decrypted_data = decryptor.update(base64.b64decode(ciphertext)) + decryptor.finalize()
+    cipher_bytes = base64.b64decode(ciphertext)
+    decrypted_data = decryptor.update(cipher_bytes) + decryptor.finalize()
     unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
     return unpadded_data
 

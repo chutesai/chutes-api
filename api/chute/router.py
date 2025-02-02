@@ -71,7 +71,7 @@ async def list_chutes(
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes")),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
 ):
     """
     List (and optionally filter/paginate) chutes.
@@ -79,15 +79,18 @@ async def list_chutes(
     query = select(Chute).options(selectinload(Chute.instances))
 
     # Filter by public and/or only the user's chutes.
-    if include_public:
-        query = query.where(
-            or_(
-                Chute.public.is_(True),
-                Chute.user_id == current_user.user_id,
+    if current_user:
+        if include_public:
+            query = query.where(
+                or_(
+                    Chute.public.is_(True),
+                    Chute.user_id == current_user.user_id,
+                )
             )
-        )
+        else:
+            query = query.where(Chute.user_id == current_user.user_id)
     else:
-        query = query.where(Chute.user_id == current_user.user_id)
+        query = query.where(Chute.public.is_(True))
 
     # Filter by name/tag/etc.
     if name and name.strip():
@@ -222,6 +225,7 @@ async def _deploy_chute(
             select(Chute)
             .where(Chute.name.ilike(chute_args.name))
             .where(Chute.user_id == current_user.user_id)
+            .options(selectinload(Chute.instances))
         )
     ).scalar_one_or_none()
     if chute and chute.version == version and chute.public == chute_args.public:
@@ -254,6 +258,9 @@ async def _deploy_chute(
 
     old_version = None
     if chute:
+        # Make sure we delete the old instances.
+        for instance in chute.instances:
+            await db.delete(instance)
         old_version = chute.version
         chute.image_id = image.image_id
         chute.tagline = chute_args.tagline
@@ -269,6 +276,7 @@ async def _deploy_chute(
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
         )
         chute.chutes_version = image.chutes_version
+        chute.updated_at = func.now()
     else:
         chute = Chute(
             chute_id=str(
@@ -323,6 +331,7 @@ async def _deploy_chute(
         )
 
     await db.commit()
+    await db.refresh(chute)
 
     if old_version:
         await settings.redis_client.publish(

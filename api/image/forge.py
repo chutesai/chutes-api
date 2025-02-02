@@ -13,7 +13,7 @@ import tempfile
 import traceback
 import time
 import random
-import pybase64 as base64
+import base64
 import orjson as json
 from loguru import logger
 from api.config import settings

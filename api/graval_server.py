@@ -9,7 +9,7 @@ import hashlib
 import argparse
 import uvicorn
 import asyncio
-import pybase64 as base64
+import base64
 import orjson as json
 from ipaddress import ip_address
 from loguru import logger

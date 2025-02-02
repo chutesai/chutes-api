@@ -324,9 +324,6 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
     """
     Create a new symmetric key and send it over to the miner via GraVal encryption.
     """
-    # Generate a random symmetric key to use for the instance.
-    instance.symmetric_key = secrets.token_bytes(16).hex()
-
     # Encrypt that key with GraVal so it can only be decrypted by one of the miner GPUs.
     device_dicts = [node.graval_dict() for node in instance.nodes]
     target_index = random.randint(0, len(device_dicts) - 1)

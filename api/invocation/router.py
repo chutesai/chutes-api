@@ -2,7 +2,7 @@
 Invocations router.
 """
 
-import pybase64 as base64
+import base64
 import pickle
 import gzip
 import orjson as json

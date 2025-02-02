@@ -51,6 +51,10 @@ def sign_request(miner_ss58: str, payload: Dict[str, Any] | str | None = None, p
             headers["Content-Type"] = "application/json"
             payload_string = json.dumps(payload)
         else:
+            if isinstance(payload, str):
+                headers["Content-Type"] = "text/plain; charset=utf-8"
+            else:
+                headers["Content-Type"] = "application/octet-stream"
             payload_string = payload
         signature_string = get_signing_message(
             miner_ss58,

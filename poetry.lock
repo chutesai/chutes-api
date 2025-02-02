@@ -909,12 +909,12 @@ files = [
 
 [[package]]
 name = "chutes"
-version = "0.2.4"
+version = "0.2.6"
 description = "Chutes development kit and CLI."
 optional = false
 python-versions = "*"
 files = [
-    {file = "chutes-0.2.4-py3-none-any.whl", hash = "sha256:ecf3d3a44e24c99b6209245a42bd59d1dc32cdc757bb8bb00ce8b0d65c21e581"},
+    {file = "chutes-0.2.6-py3-none-any.whl", hash = "sha256:cdc64ace805afdd1539d0c6acc700cea5eaee2787ecfb3c731ec9fe54d7e471e"},
 ]
 
 [package.dependencies]
@@ -928,7 +928,6 @@ loguru = "0.7.2"
 orjson = ">=3.10"
 prometheus-client = "0.21.0"
 psutil = "*"
-pybase64 = ">=1.4.0"
 pydantic = ">=2.9,<3"
 requests = ">=2.32"
 rich = ">=13.0.0"
@@ -4691,4 +4690,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "3bc8b11dbe000b8cb19796ec4e23c5ebcd319d71f850c0ea65524b1870e68238"
+content-hash = "5c4948e35edc557c6d3cf062a16e5b1e2b4771575cefcc5983486886e302ec18"

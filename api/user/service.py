@@ -67,10 +67,12 @@ def get_current_user(
                     return api_key.user
 
             # NOTE: Need a nicer error message if the user is trying to register (and has no api key)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Can't find a user with that api key in our db :(",
-            )
+            if raise_not_found:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Can't find a user with that api key in our db :(",
+                )
+            return None
 
         # Otherwise we are using hotkey auth, so need to check the nonce
         # and check the message was signed correctly

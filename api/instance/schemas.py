@@ -2,6 +2,7 @@
 ORM definitions for instances (deployments of chutes and/or inventory announcements).
 """
 
+import secrets
 from pydantic import BaseModel
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -58,7 +59,7 @@ class Instance(Base):
     verification_error = Column(String, nullable=True)
     consecutive_failures = Column(Integer, default=0)
     chutes_version = Column(String, nullable=True)
-    symmetric_key = Column(String)
+    symmetric_key = Column(String, default=lambda: secrets.token_bytes(16).hex())
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance", lazy="joined")
     chute = relationship("Chute", back_populates="instances", lazy="joined")
