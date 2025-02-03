@@ -225,7 +225,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     futures = []
     for _ in range(settings.device_info_challenge_count):
         futures.append(check_device_info_challenge(nodes))
-        if len(futures) == 10:
+        if len(futures) == 3:
             if not all(await asyncio.gather(*futures)):
                 error_message = "one or more device info challenges failed"
                 logger.warning(error_message)
@@ -489,13 +489,6 @@ async def verify_instance(instance_id: str):
     """
     Verify a single instance.
     """
-    if not await settings.redis_client.setnx(f"verify:lock:{instance_id}", "1"):
-        logger.warning(f"Verification of {instance_id=} already in progress")
-        return
-    await settings.redis_client.expire(f"verify:lock:{instance_id}", 60)
-    attempts = await settings.redis_client.incr(f"verify_instance:backend:{instance_id}")
-    if attempts >= 8:
-        return
     async with get_session() as session:
         instance = (
             (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
@@ -549,7 +542,7 @@ async def verify_instance(instance_id: str):
         futures = []
         for _ in range(settings.device_info_challenge_count):
             futures.append(check_device_info_challenge(instance.nodes, url=url, purpose="chutes"))
-            if len(futures) == 10:
+            if len(futures) == 3:
                 if not all(await asyncio.gather(*futures)):
                     error_message = f"{instance_id=} failed one or more device info challenges"
                     logger.warning(error_message)
