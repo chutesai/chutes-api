@@ -219,25 +219,26 @@ async def _invoke_one(
         payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
         iv = bytes.fromhex(payload[:32])
 
-    session = aiohttp.ClientSession(
-        timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
-    )
-    headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
-    if iv:
-        headers["X-Chutes-Serialized"] = "true"
-    if legacy_encrypted:
-        headers.update({ENCRYPTED_HEADER: "true"})
-    iv_hex = iv.hex() if iv else None
-    logger.debug(
-        f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {legacy_encrypted=} {iv_hex=}"
-    )
-    started_at = time.time()
-    response = await session.post(
-        f"http://{target.host}:{target.port}/{path}",
-        data=payload_string,
-        headers=headers,
-    )
+    session, response = None, None
     try:
+        session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
+        )
+        headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
+        if iv:
+            headers["X-Chutes-Serialized"] = "true"
+        if legacy_encrypted:
+            headers.update({ENCRYPTED_HEADER: "true"})
+        iv_hex = iv.hex() if iv else None
+        logger.debug(
+            f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {legacy_encrypted=} {iv_hex=}"
+        )
+        started_at = time.time()
+        response = await session.post(
+            f"http://{target.host}:{target.port}/{path}",
+            data=payload_string,
+            headers=headers,
+        )
         logger.info(
             f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
         )
@@ -361,8 +362,10 @@ async def _invoke_one(
 
             yield data
     finally:
-        await response.release()
-        await session.close()
+        if response:
+            await response.release()
+        if session:
+            await session.close()
 
 
 async def _s3_upload(data: io.BytesIO, path: str):
