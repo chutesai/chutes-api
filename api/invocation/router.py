@@ -237,7 +237,7 @@ async def _invoke(
         current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc"
         and chute.chute_id == "de510462-c319-543b-9c67-00bcf807d2a7"
     ):
-        limit = int(limit * 4.0)
+        limit = int(limit * 4)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # Identify the cord that we'll trying to access by the public API path and method.
@@ -280,6 +280,22 @@ async def _invoke(
                 request_body["stream_options"] = {}
             if not request_body["stream_options"].get("include_usage"):
                 request_body["stream_options"]["include_usage"] = True
+        if request_body.get("logprobs"):
+            if not request_body.get("top_logprobs"):
+                request_body["top_logprobs"] = 1
+
+        # SGLang chute we use for R1 uses the default overlap scheduler which does not support
+        # these penalty params, and sampling params are causing crashes.
+        if chute.chute_id == "de510462-c319-543b-9c67-00bcf807d2a7":
+            for param in [
+                "frequency_penalty",
+                "presence_penalty",
+                "repetition_penalty",
+                "min_p",
+                "top_p",
+                "top_k",
+            ]:
+                request_body.pop(param, None)
     if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()

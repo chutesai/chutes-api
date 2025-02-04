@@ -109,6 +109,11 @@ async def create_api_key(
                 detail="An API key already exists with this name",
             )
         raise
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid request: {exc}",
+        )
     result = APIKeyCreationResponse.model_validate(api_key)
     result.secret_key = one_time_secret
     return result
