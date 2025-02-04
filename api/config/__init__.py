@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.6")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.7")
 
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))
