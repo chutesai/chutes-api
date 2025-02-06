@@ -4,7 +4,7 @@ Address = {{ wireguard_ip }}/20
 ListenPort = 51820
 {% for host in hostvars %}
 {% if hostvars[host]['is_primary']|bool %}
-MTU = {{ hostvars[host]['wireguard_mtu'] | default(1380) }}
+MTU = {{ wireguard_mtu | default(1380) }}
 
 [Peer]
 PublicKey = {{ hostvars[host]['wg_public_key'] }}

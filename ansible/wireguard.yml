@@ -21,6 +21,14 @@
   hosts: all
   become: true
   tasks:
+    - name: Get primary node wireguard IP
+      ansible.builtin.set_fact:
+        primary_wg_ip: "{{ hostvars[item]['wireguard_ip'] }}"
+        wireguard_mtu: "{{ hostvars[item]['wireguard_mtu'] }}"
+      when: hostvars[item]['is_primary'] | bool
+      with_items: "{{ groups['all'] }}"
+      run_once: true
+
     - name: Update apt cache
       apt:
         update_cache: yes
@@ -86,19 +94,9 @@
         enabled: yes
         state: started
 
-    - name: Get primary node wireguard IP
-      ansible.builtin.set_fact:
-        primary_wg_ip: "{{ hostvars[item]['wireguard_ip'] }}"
-        primary_host: "{{ item }}"
-      when: hostvars[item]['is_primary'] | bool
-      with_items: "{{ groups['all'] }}"
-      run_once: true
-
     - name: Set MTU for Wireguard interface
-      command: ip link set mtu {{ hostvars[primary_host]['wireguard_mtu'] | default(1380) }} dev wg0
+      command: ip link set mtu {{ wireguard_mtu | default(1280) }} dev wg0
       become: true
-      when: wireguard_primary.changed or wireguard_worker.changed or hostvars[item]['is_primary'] | bool
-      with_items: "{{ groups['all'] }}"
 
     - name: Kick WG
       shell: wg-quick down wg0 && wg-quick up wg0
