@@ -8,6 +8,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
+from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
 from io import BytesIO, StringIO
@@ -220,11 +221,15 @@ async def _invoke(
         )
 
     # Check account balance.
+    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
     if (
         current_user.balance <= 0
         and not current_user.has_role(Permissioning.free_account)
         and (not chute.discount or chute.discount < 1.0)
     ):
+        logger.warning(
+            f"Payment required: attempted invocation of {chute.name} from user {current_user.username} [{origin_ip}] with no balance"
+        )
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
@@ -238,7 +243,6 @@ async def _invoke(
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
     if (
         current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
         and not request.state.squad_request

@@ -2,8 +2,10 @@
 User routes.
 """
 
+import time
 import secrets
 import hashlib
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from api.database import get_db_session
 from api.user.schemas import UserRequest, User, AdminUserRequest
@@ -12,7 +14,12 @@ from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
 from sqlalchemy.ext.asyncio import AsyncSession
-from api.constants import HOTKEY_HEADER
+from api.constants import (
+    HOTKEY_HEADER,
+    COLDKEY_HEADER,
+    NONCE_HEADER,
+    SIGNATURE_HEADER,
+)
 from api.permissions import Permissioning
 from api.config import settings
 from api.api_key.schemas import APIKey, APIKeyArgs
@@ -22,6 +29,10 @@ from substrateinterface import Keypair, KeypairType
 from sqlalchemy import select
 
 router = APIRouter()
+
+
+class FingerprintChange(BaseModel):
+    fingerprint: str
 
 
 async def _link_hotkey(
@@ -236,6 +247,86 @@ async def admin_create_user(
     response.api_key = key_response
 
     return response
+
+
+@router.post("/change_fingerprint")
+async def change_fingerprint(
+    args: FingerprintChange,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    coldkey: str | None = Header(None, alias=COLDKEY_HEADER),
+    nonce: str = Header(..., description="Nonce", alias=NONCE_HEADER),
+    signature: str = Header(..., description="Hotkey signature", alias=SIGNATURE_HEADER),
+):
+    """
+    Reset a user's fingerprint using either the hotkey or coldkey.
+    """
+    fingerprint = args.fingerprint
+
+    # Get the signature bytes.
+    try:
+        signature_hex = bytes.fromhex(signature)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid signature",
+        )
+
+    # Check the nonce.
+    valid_nonce = False
+    if nonce.isdigit():
+        nonce_val = int(nonce)
+        now = int(time.time())
+        if now - 30 <= nonce_val <= now + 30:
+            valid_nonce = True
+    if not valid_nonce:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid nonce: {nonce}",
+        )
+    if not coldkey and not hotkey or not signature:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="You must provide either coldkey or hotkey along with a signature and nonce.",
+        )
+
+    # Check hotkey or coldkey, depending on what was passed.
+    def _check(header):
+        if not header:
+            return False
+        signing_message = f"{header}:{fingerprint}:{nonce}"
+        keypair = Keypair(hotkey)
+        try:
+            if keypair.verify(signing_message, signature_hex):
+                return True
+        except Exception:
+            ...
+        return False
+
+    user = None
+    if _check(coldkey):
+        user = (
+            (await db.execute(select(User).where(User.coldkey == coldkey)))
+            .unique()
+            .scalar_one_or_none()
+        )
+    elif _check(hotkey):
+        user = (
+            (await db.execute(select(User).where(User.hotkey == hotkey)))
+            .unique()
+            .scalar_one_or_none()
+        )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="No user found with the provided hotkey/coldkey",
+        )
+
+    # If we have a user, and the signature passed, we can change the fingerprint.
+    user.fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
+    await db.commit()
+    await db.refresh(user)
+    return {"status": "Fingerprint updated"}
 
 
 @router.post("/login")
