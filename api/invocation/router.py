@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.chute.schemas import Chute
 from api.chute.util import get_chute_by_id_or_name, invoke
-from api.util import rate_limit
+from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.report.schemas import Report, ReportArgs
@@ -231,14 +231,21 @@ async def _invoke(
         )
 
     # Rate limits.
-    ### XXX manual override for now
+    ### XXX manual override for now for OpenRouter.
     limit = settings.rate_limit_count
-    if (
-        current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc"
-        and chute.chute_id == "de510462-c319-543b-9c67-00bcf807d2a7"
-    ):
+    if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
         limit = int(limit * 4)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
+
+    # IP address rate limits.
+    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    if (
+        current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
+        and not request.state.squad_request
+    ):
+        await ip_rate_limit(
+            current_user, origin_ip, settings.ip_rate_limit_count, settings.ip_rate_limit_window
+        )
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None

@@ -427,6 +427,7 @@ async def invoke(
     request_path = await _sample_request(chute_id, parent_invocation_id, args, kwargs)
 
     partition_suffix = None
+    rate_limited = 0
     for target in targets:
         invocation_id = str(uuid.uuid4())
         async with get_session() as session:
@@ -536,6 +537,7 @@ async def invoke(
             error_detail = None
             if isinstance(exc, InstanceRateLimit):
                 error_message = "RATE_LIMIT"
+                rate_limited += 1
                 await asyncio.sleep(0.5)
             elif isinstance(exc, BadRequest):
                 error_message = "BAD_REQUEST"
@@ -653,4 +655,7 @@ async def invoke(
             logger.error(
                 f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
             )
-    yield sse({"error": "exhausted all available targets to no avail"})
+    if rate_limited == len(targets):
+        yield sse({"error": "rate_limit", "detail": "All miners are all maximum capacity"})
+    else:
+        yield sse({"error": "exhausted all available targets to no avail"})

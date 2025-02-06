@@ -166,7 +166,7 @@ async def ensure_is_developer(session, user):
 
 async def rate_limit(chute_id, user, requests, window):
     """
-    Invocation rate limits.
+    Invocation rate limits per user.
     """
     if (
         user.username in ("bonnoliver", "chutes")
@@ -185,6 +185,37 @@ async def rate_limit(chute_id, user, requests, window):
             logger.warning(
                 f"Rate limiting user: {user.username} on chute: {chute_id} {request_count=}"
             )
+            block = True
+        else:
+            await settings.redis_client.zadd(key, {str(now): now})
+            await settings.redis_client.expire(key, window)
+    except Exception as exc:
+        logger.error(f"Error checking rate limits: {exc}")
+    if block:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many requests"
+        )
+
+
+async def ip_rate_limit(user, ip, requests, window):
+    """
+    Invocation rate limits per IP.
+    """
+    if (
+        user.username in ("bonnoliver", "chutes")
+        or user.has_role(Permissioning.unlimited)
+        or user.validator_hotkey
+        or user.subnet_owner_hotkey
+    ):
+        return
+    key = f"rate_limit:ip:{ip}"
+    now = datetime.datetime.now().timestamp()
+    block = False
+    try:
+        await settings.redis_client.zremrangebyscore(key, 0, now - window)
+        request_count = await settings.redis_client.zcard(key)
+        if request_count >= requests:
+            logger.warning(f"Rate limiting IP address: {ip} [{user.username}] {request_count=}")
             block = True
         else:
             await settings.redis_client.zadd(key, {str(now): now})
