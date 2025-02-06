@@ -97,7 +97,8 @@
     - name: Set MTU for Wireguard interface
       command: ip link set mtu {{ hostvars[primary_host]['wireguard_mtu'] | default(1380) }} dev wg0
       become: true
-      when: wireguard_primary.changed or wireguard_worker.changed
+      when: wireguard_primary.changed or wireguard_worker.changed or hostvars[item]['is_primary'] | bool
+      with_items: "{{ groups['all'] }}"
 
     - name: Kick WG
       shell: wg-quick down wg0 && wg-quick up wg0
