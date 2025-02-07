@@ -421,7 +421,6 @@ async def invoke(
             },
         }
     )
-    logger.info(f"trying function invocation with up to {len(targets)} targets")
 
     # Randomly sample for validation purposes.
     request_path = await _sample_request(chute_id, parent_invocation_id, args, kwargs)
@@ -656,6 +655,8 @@ async def invoke(
                 f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
             )
     if rate_limited == len(targets):
+        logger.warning(f"All miners are at max capacity: {rate_limited=} {chute.name=}")
         yield sse({"error": "rate_limit", "detail": "All miners are all maximum capacity"})
     else:
+        logger.error(f"Failed to query all miners: {len(targets)} attempts")
         yield sse({"error": "exhausted all available targets to no avail"})

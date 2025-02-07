@@ -184,15 +184,27 @@ async def host_router_middleware(request: Request, call_next):
             request.state.auth_method = "write"
         elif request.method.lower() == "delete":
             request.state.auth_method = "delete"
-        request.state.auth_object_type = request.url.path.split("/")[-1]
-        # XXX at some point, perhaps we can support objects by name too, but for
-        # now, for auth to work (easily) we just need to only support UUIDs when
-        # using API keys.
-        path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
-        if path_match:
-            request.state.auth_object_id = path_match.group(1)
-        else:
-            request.state.auth_object_id = "__list_or_invalid__"
+
+        # Invocations are special.
+        if request.method.lower() == "post":
+            inv_match = re.match(r"^/chutes/([^/]+)/(.+)$", request.url.path, re.I)
+            if inv_match:
+                chute_id = inv_match.group(1)
+                request.state.auth_method = "invoke"
+                request.state.chute_id = chute_id
+                request.state.auth_object_id = chute_id
+                request.state.auth_object_type = "chutes"
+
+        if request.state.auth_method != "invoke":
+            request.state.auth_object_type = request.url.path.split("/")[-1]
+            # XXX at some point, perhaps we can support objects by name too, but for
+            # now, for auth to work (easily) we just need to only support UUIDs when
+            # using API keys.
+            path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
+            if path_match:
+                request.state.auth_object_id = path_match.group(1)
+            else:
+                request.state.auth_object_id = "__list_or_invalid__"
         app.router = default_router
     return await call_next(request)
 

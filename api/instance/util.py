@@ -28,7 +28,7 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
         .order_by(func.random())
-        .limit(7)
+        .limit(9)
     )
 
     # Execute the query asynchronously

@@ -339,9 +339,16 @@ async def _invoke(
             "steps": request_body.get("num_inference_steps", 25.0),
         }
 
+    # Ready to query the miners finally :)
+    logger.info(
+        f"Calling {selected_cord['path']} of {chute.name} with {len(targets)} "
+        f"targets on behalf of {current_user.username} [{origin_ip}]"
+    )
+
     # To stream, or not to stream.
     parent_invocation_id = str(uuid.uuid4())
-    if stream:
+    include_trace = request.headers.get("X-Chutes-Trace", "").lower() == "true"
+    if stream or include_trace:
 
         async def _stream_response():
             skip = False
@@ -358,6 +365,9 @@ async def _invoke(
                 metrics=metrics,
                 request=request,
             ):
+                if include_trace:
+                    yield chunk
+                    continue
                 if skip:
                     continue
                 if chunk.startswith('data: {"result"'):
