@@ -77,6 +77,11 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: IP_CHECK_SALT
+  valueFrom:
+    secretKeyRef:
+      name: ip-check-salt
+      key: salt
 - name: VALIDATOR_SEED
   valueFrom:
     secretKeyRef:

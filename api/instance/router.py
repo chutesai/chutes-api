@@ -2,9 +2,10 @@
 Routes for instances.
 """
 
+import uuid
 import orjson as json
 from loguru import logger
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -132,6 +133,12 @@ async def create_instance(
         logger.warning(f"Error broadcasting instance event: {exc}")
 
     return instance
+
+
+@router.get("/get_token")
+async def get_token(request: Request):
+    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    return {"token": str(uuid.uuid5(uuid.NAMESPACE_OID, f"{origin_ip}:{settings.ip_check_salt}"))}
 
 
 @router.patch("/{chute_id}/{instance_id}")

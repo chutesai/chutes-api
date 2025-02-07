@@ -23,7 +23,7 @@ from api.config import settings
 from api.constants import ENCRYPTED_HEADER
 from api.database import get_session
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired
-from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2
+from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
 from api.miner_client import sign_request
@@ -218,6 +218,13 @@ async def _invoke_one(
             raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
         payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
         iv = bytes.fromhex(payload[:32])
+
+    # Encrypted paths?
+    if use_encrypted_path(target.chutes_version):
+        path = "/" + path.lstrip("/")
+        encrypted_path = aes_encrypt(path.ljust(24, "?"), target.symmetric_key, hex_encode=True)
+        logger.info(f"Encrypted target path: {path=} {encrypted_path=}")
+        path = encrypted_path
 
     session, response = None, None
     try:
@@ -457,6 +464,7 @@ async def invoke(
                     "trace": {
                         "timestamp": now_str(),
                         "invocation_id": parent_invocation_id,
+                        "child_id": invocation_id,
                         "chute_id": chute_id,
                         "function": function,
                         "message": f"attempting to query target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
@@ -524,6 +532,7 @@ async def invoke(
                     "trace": {
                         "timestamp": now_str(),
                         "invocation_id": parent_invocation_id,
+                        "child_id": invocation_id,
                         "chute_id": chute_id,
                         "function": function,
                         "message": f"successfully called {function=} on target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
@@ -533,6 +542,10 @@ async def invoke(
             return
         except Exception as exc:
             error_message = f"{exc}\n{traceback.format_exc()}"
+            error_message = error_message.replace(
+                f"{target.host}:{target.port}", "[host redacted]"
+            ).replace(target.host, "[host redacted]")
+
             error_detail = None
             if isinstance(exc, InstanceRateLimit):
                 error_message = "RATE_LIMIT"
@@ -645,9 +658,10 @@ async def invoke(
                     "trace": {
                         "timestamp": now_str(),
                         "invocation_id": parent_invocation_id,
+                        "child_id": invocation_id,
                         "chute_id": chute_id,
                         "function": function,
-                        "message": f"error encountered while querying target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}: {exc=}",
+                        "message": f"error encountered while querying target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}: exc={error_message}",
                     },
                 }
             )

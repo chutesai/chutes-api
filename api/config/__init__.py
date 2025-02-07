@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     # Debug logging.
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
 
+    # IP hash check salt.
+    ip_check_salt: str = os.getenv("IP_CHECK_SALT", "salt")
+
     # Validator and subnet owner keys allowed to link/get free+dev access.
     validators: list[str] = os.getenv("VALIDATOR_HOTKEYS", "").split(",")
     subnet_owners: list[str] = os.getenv("SUBNET_OWNER_HOTKEYS", "").split(",")
@@ -114,7 +117,7 @@ class Settings(BaseSettings):
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.10")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.14")
 
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))

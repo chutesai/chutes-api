@@ -16,7 +16,7 @@ from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt, use_encryption_v2
+from api.util import aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
 from api.database import get_session
 from api.node.schemas import Node
 from api.instance.schemas import Instance
@@ -51,6 +51,16 @@ def generate_device_info_challenge(device_count: int):
     if device_id >= device_count and bytes_list[0] > 25:
         bytes_list[0] = 0
     return binascii.hexlify(bytes(bytes_list)).decode("ascii")
+
+
+def get_actual_path(instance, path):
+    """
+    Get the real path, which may be encrypted.
+    """
+    if not use_encrypted_path(instance.chutes_version):
+        return path
+    path = "/" + path.lstrip("/")
+    return aes_encrypt(path.ljust(24, "?"), instance.symmetric_key, hex_encode=True)
 
 
 @backoff.on_exception(
@@ -231,6 +241,12 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
                 logger.warning(error_message)
                 return False, error_message
             futures = []
+    if futures:
+        if not all(await asyncio.gather(*futures)):
+            error_message = "one or more device info challenges failed"
+            logger.warning(error_message)
+            return False, error_message
+
     logger.success(f"Nodes {uuids} passed all preliminary node validation challenges!")
     async with get_session() as session:
         await session.execute(
@@ -299,9 +315,10 @@ async def _verify_instance_graval(instance: Instance) -> bool:
             payload = await resp.json()
 
     logger.info(f"Sending encrypted payload to _ping endpoint for graval verification: {payload}")
+    path = get_actual_path(instance, "_ping")
     async with miner_client.post(
         instance.miner_hotkey,
-        f"http://{instance.host}:{instance.port}/_ping",
+        f"http://{instance.host}:{instance.port}/{path}",
         payload,
         headers={"X-Chutes-Encrypted": "true"},
         timeout=12.0,
@@ -358,9 +375,10 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
         payload = aes_encrypt(json.dumps({"hello": expected}), instance.symmetric_key)
         iv = bytes.fromhex(payload[:32])
         logger.info(f"Sending {payload=} to _ping of {instance.instance_id=}")
+        path = get_actual_path(instance, "_ping")
         async with miner_client.post(
             instance.miner_hotkey,
-            f"http://{instance.host}:{instance.port}/_ping",
+            f"http://{instance.host}:{instance.port}/{path}",
             payload,
             timeout=12.0,
         ) as decrypted_response:
@@ -397,9 +415,10 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
     )
     if use_encryption_v2(instance.chutes_version):
         payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    path = get_actual_path(instance, "_fs_challenge")
     async with miner_client.post(
         instance.miner_hotkey,
-        f"http://{instance.host}:{instance.port}/_fs_challenge",
+        f"http://{instance.host}:{instance.port}/{path}",
         payload=payload,
         timeout=12.0,
     ) as resp:
@@ -538,7 +557,8 @@ async def verify_instance(instance_id: str):
             return
 
         # Device info challenges.
-        url = f"http://{instance.host}:{instance.port}/_device_challenge"
+        path = get_actual_path(instance, "_device_challenge")
+        url = f"http://{instance.host}:{instance.port}/{path}"
         futures = []
         for _ in range(settings.device_info_challenge_count):
             futures.append(check_device_info_challenge(instance.nodes, url=url, purpose="chutes"))

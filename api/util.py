@@ -228,7 +228,7 @@ async def ip_rate_limit(user, ip, requests, window):
         )
 
 
-def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None) -> str:
+def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None, hex_encode=False) -> str:
     """
     Encrypt with AES.
     """
@@ -247,7 +247,9 @@ def aes_encrypt(plaintext: bytes, key: bytes, iv: bytes = None) -> str:
     padded_data = padder.update(plaintext) + padder.finalize()
     encryptor = cipher.encryptor()
     encrypted_data = encryptor.update(padded_data) + encryptor.finalize()
-    return "".join([iv.hex(), base64.b64encode(encrypted_data).decode()])
+    if not hex_encode:
+        return "".join([iv.hex(), base64.b64encode(encrypted_data).decode()])
+    return "".join([iv.hex(), encrypted_data.hex()])
 
 
 def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
@@ -283,3 +285,15 @@ def use_encryption_v2(chutes_version: str):
     if major == "0" and int(minor) < 2:
         return False
     return True
+
+
+def use_encrypted_path(chutes_version: str):
+    """
+    Check if the URL paths should be encrypted as well.
+    """
+    if not chutes_version:
+        return False
+    major, minor, bug = chutes_version.split(".")[:3]
+    if int(minor) >= 2 and int(bug) >= 14:
+        return True
+    return False
