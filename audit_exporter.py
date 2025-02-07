@@ -27,12 +27,6 @@ from api.audit.schemas import AuditEntry
 import api.database.orms  # noqa
 
 
-AUDIT_QUERY = text(
-    """
-SELECT * FROM instance_audit
- WHERE deleted_at IS NULL OR (deleted_at >= :start_time AND deleted_at <= :end_time)
-"""
-)
 INVOCATION_QUERY = text(
     """
 SELECT
@@ -50,7 +44,8 @@ SELECT
      completed_at,
      error_message,
      compute_multiplier,
-     bounty
+     bounty,
+     metrics
  FROM invocations
 WHERE (started_at >= :start_time AND started_at < :end_time) OR (completed_at >= :start_time AND completed_at < :end_time)
  ORDER BY started_at ASC
