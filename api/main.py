@@ -10,10 +10,11 @@ import hashlib
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from loguru import logger
-from fastapi import FastAPI, Request, APIRouter
+from fastapi import FastAPI, Request, APIRouter, HTTPException, status
 from fastapi.responses import ORJSONResponse
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.redis import RedisBackend
+from sqlalchemy import text
 import api.database.orms  # noqa: F401
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
@@ -31,7 +32,7 @@ from api.logo.router import router as logo_router
 from api.guesser import router as guess_router
 from api.audit.router import router as audit_router
 from api.chute.util import chute_id_by_slug
-from api.database import Base, engine
+from api.database import Base, engine, get_session
 from api.config import settings
 
 
@@ -125,8 +126,19 @@ default_router.include_router(logo_router, prefix="/logos", tags=["Logo"])
 default_router.include_router(guess_router, prefix="/guess", tags=["ConfigGuesser"])
 default_router.include_router(audit_router, prefix="/audit", tags=["Audit"])
 
+
 # Do not use app for this, else middleware picks it up
-default_router.get("/ping")(lambda: {"message": "pong"})
+async def ping():
+    try:
+        async with get_session() as session:
+            await session.execute(text("SELECT 1"))
+            return {"message": "pong"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Database connectivity problems: {str(e)}",
+        )
+default_router.get("/ping")(ping)
 
 app.include_router(default_router)
 app.include_router(host_invocation_router)
