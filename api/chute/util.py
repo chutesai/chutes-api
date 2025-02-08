@@ -13,6 +13,9 @@ import time
 import traceback
 import orjson as json
 import base64
+import gzip
+import pickle
+import backoff
 from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
@@ -160,6 +163,9 @@ async def chute_id_by_slug(slug: str):
 
 @alru_cache(maxsize=100)
 async def get_one(name_or_id: str):
+    """
+    Load a chute by it's name or ID.l
+    """
     chute_user = await chutes_user_id()
     async with get_session() as db:
         return (
@@ -346,7 +352,11 @@ async def _invoke_one(
                 response_data = json.loads(body_bytes)
                 if "json" in response_data:
                     plaintext = aes_decrypt(response_data["json"], target.symmetric_key, iv)
-                    data = {"content_type": "application/json", "json": json.loads(plaintext)}
+                    try:
+                        data = {"content_type": "application/json", "json": json.loads(plaintext)}
+                    except Exception as exc2:
+                        logger.error(f"FAILED HERE: {str(exc2)} from {plaintext=}")
+                        raise
                 else:
                     # Response was a file or other response object.
                     plaintext = aes_decrypt(response_data["body"], target.symmetric_key, iv)
@@ -697,3 +707,81 @@ async def invoke(
     else:
         logger.error(f"Failed to query all miners: {len(targets)} attempts")
         yield sse({"error": "exhausted all available targets to no avail"})
+
+
+async def get_vllm_models(request: Request):
+    """
+    Get the combined /v1/models return value for chutes that are public and belong to chutes user.
+    """
+    cached = await settings.redis_client.get("vllm_model_info")
+    if cached:
+        return json.loads(cached)
+
+    @backoff.on_exception(
+        backoff.constant,
+        Exception,
+        jitter=None,
+        interval=3,
+        max_tries=5,
+    )
+    async def _get_models_data(chute):
+        nonlocal request
+        cached = await settings.redis_client.get(
+            f"vllm_model_info:{chute.chute_id}:{chute.version}"
+        )
+        if cached:
+            return json.loads(cached)
+        active = [inst for inst in chute.instances if inst.verified and inst.active]
+        if not active:
+            return None
+        args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
+        kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
+        inv_id = str(uuid.uuid4())
+        result = None
+        async for chunk in invoke(
+            chute,
+            await chutes_user_id(),
+            "/get_models",
+            "get_models",
+            False,
+            args,
+            kwargs,
+            active,
+            inv_id,
+            metrics={},
+            request=request,
+        ):
+            if chunk.startswith('data: {"result"'):
+                result = json.loads(chunk[6:])["result"]
+        await settings.redis_client.set(
+            f"vllm_model_info:{chute.chute_id}:{chute.version}", json.dumps(result), ex=3600
+        )
+        return result
+
+    async with get_session() as session:
+        chutes = (
+            (
+                await session.execute(
+                    select(Chute)
+                    .where(
+                        Chute.standard_template == "vllm",
+                        Chute.chutes_version >= "0.2.15",
+                        Chute.public.is_(True),
+                        Chute.user_id == await chutes_user_id(),
+                    )
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalars()
+        )
+        model_data = {"object": "list", "data": []}
+        results = await asyncio.gather(*[_get_models_data(chute) for chute in chutes])
+        for info in results:
+            if not info:
+                continue
+            logger.info(f"Trying to add to vllm models data: {info}")
+            data = info["json"]["data"][0]
+            model_data["data"].append(data)
+    await settings.redis_client.set("vllm_model_info", json.dumps(model_data), ex=300)
+    return model_data

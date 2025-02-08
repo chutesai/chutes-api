@@ -164,7 +164,11 @@ async def host_router_middleware(request: Request, call_next):
     host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host.lower())
 
     # MEGALLM
-    if host_parts and host_parts.group(1) == "llm" and request.method.lower() == "post":
+    if (
+        host_parts
+        and host_parts.group(1) == "llm"
+        and (request.method.lower() == "post" or request.url.path == "/v1/models")
+    ):
         request.state.chute_id = "__megallm__"
         request.state.auth_method = "invoke"
         request.state.auth_object_type = "chutes"

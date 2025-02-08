@@ -19,7 +19,7 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
-from api.chute.util import invoke, get_one
+from api.chute.util import invoke, get_one, get_vllm_models
 from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user
@@ -237,7 +237,7 @@ async def _invoke(
     ### XXX manual override for now for OpenRouter.
     limit = settings.rate_limit_count
     if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
-        limit = int(limit * 4)
+        limit = int(limit * 5)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
@@ -447,6 +447,14 @@ async def hostname_invocation(
     request: Request,
     current_user: User = Depends(get_current_user()),
 ):
+    # /v1/models endpoint for llm.chutes.ai is handled differently.
+    if (
+        request.state.chute_id == "__megallm__"
+        and request.url.path == "/v1/models"
+        and request.method.lower() == "get"
+    ):
+        return await get_vllm_models(request)
+
     # Mega LLM/diffusion request handler.
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
         payload = await request.json()
