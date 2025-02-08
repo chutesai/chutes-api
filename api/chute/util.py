@@ -90,14 +90,14 @@ UPDATE partitioned_invocations_{suffix} SET
     response_path = CAST(:response_path AS TEXT),
     bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty),
     metrics = :metrics
-WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
+WHERE invocation_id = :invocation_id
 RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
 """
 UPDATE_INVOCATION_ERROR = """
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
     error_message = CAST(:error_message AS TEXT)
-WHERE invocation_id = :invocation_id AND miner_uid = :miner_uid
+WHERE invocation_id = :invocation_id
 """
 
 
@@ -518,14 +518,13 @@ async def invoke(
                     {
                         "chute_id": chute_id,
                         "invocation_id": invocation_id,
-                        "miner_uid": target.miner_uid,
                         "response_path": response_path,
                         "metrics": json.dumps(metrics).decode(),
                     },
                 )
                 await session.execute(
                     text(
-                        "UPDATE instances SET consecutive_failures = 0 WHERE instance_id = :instance_id"
+                        "UPDATE instances SET consecutive_failures = 0 WHERE instance_id = :instance_id AND consecutive_failures > 0"
                     ),
                     {"instance_id": target.instance_id},
                 )
@@ -587,7 +586,6 @@ async def invoke(
                     text(UPDATE_INVOCATION_ERROR.format(suffix=partition_suffix)),
                     {
                         "invocation_id": invocation_id,
-                        "miner_uid": target.miner_uid,
                         "error_message": error_message,
                     },
                 )

@@ -4,36 +4,40 @@ Helper functions for instances.
 
 import time
 import asyncio
+import random
 import orjson as json
+from async_lru import alru_cache
 from loguru import logger
 from api.instance.schemas import Instance
 from api.config import settings
 from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import text, func
+from sqlalchemy import text
 from sqlalchemy.orm import aliased
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
 
 
-async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait: int = 0):
-    """
-    Evenly distribute queries to miners.
-    """
+@alru_cache(maxsize=100, ttl=30)
+async def load_chute_targets(chute_id: str, nonce: float = 0):
     query = (
         select(Instance)
         .where(Instance.active.is_(True))
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
-        .order_by(func.random())
-        .limit(9)
     )
+    async with get_session() as session:
+        result = await session.execute(query)
+        return result.scalars().unique().all()
 
-    # Execute the query asynchronously
-    result = await session.execute(query)
-    instances = result.scalars().unique().all()
+
+async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait: int = 0):
+    """
+    Evenly distribute queries to miners.
+    """
+    instances = await load_chute_targets(chute_id, nonce=0)
     started_at = time.time()
     if max_wait > 0:
         try:
@@ -72,12 +76,13 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
                         ).decode(),
                     )
                 await asyncio.sleep(1)
-                result = await session.execute(query)
-                instances = result.scalars().unique().all()
+                instances = await load_chute_targets(chute_id, nonce=time.time())
         except asyncio.CancelledError:
             logger.warning("Target discovery cancelled")
             return []
-    return instances
+    if not instances:
+        return []
+    return random.sample(instances, min(7, len(instances)))
 
 
 async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
