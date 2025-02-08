@@ -27,6 +27,7 @@ from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired
 from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
+from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
@@ -155,6 +156,29 @@ async def chute_id_by_slug(slug: str):
         ).scalar_one_or_none():
             return chute_id
     return None
+
+
+@alru_cache(maxsize=100)
+async def get_one(name_or_id: str):
+    chute_user = await chutes_user_id()
+    async with get_session() as db:
+        return (
+            (
+                await db.execute(
+                    select(Chute)
+                    .where(
+                        or_(
+                            Chute.name == name_or_id,
+                            Chute.chute_id == name_or_id,
+                        )
+                    )
+                    .order_by((Chute.user_id == chute_user).desc())
+                    .limit(1)
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
 
 
 async def _invoke_one(

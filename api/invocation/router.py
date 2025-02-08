@@ -8,7 +8,6 @@ import gzip
 import orjson as json
 import csv
 import uuid
-from async_lru import alru_cache
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -20,11 +19,10 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
-from api.chute.schemas import Chute
-from api.chute.util import get_chute_by_id_or_name, invoke
+from api.chute.util import invoke, get_one
 from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
-from api.user.service import get_current_user, chutes_user_id
+from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session
 from api.instance.util import discover_chute_targets
@@ -214,9 +212,8 @@ async def _invoke(
     current_user: User,
 ):
     # This call will perform auth/access checks.
-    async with get_session() as db:
-        chute = await get_chute_by_id_or_name(request.state.chute_id, db, current_user)
-    if not chute:
+    chute = await get_one(request.state.chute_id)
+    if not chute or (not chute.public and chute.user_id != current_user.user_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
         )
@@ -443,24 +440,6 @@ async def _invoke(
     )
 
 
-@alru_cache(maxsize=100)
-async def _load_chute_by_name(name: str):
-    chute_user = await chutes_user_id()
-    async with get_session() as db:
-        return (
-            (
-                await db.execute(
-                    select(Chute)
-                    .where(Chute.name == name)
-                    .order_by((Chute.user_id == chute_user).desc())
-                    .limit(1)
-                )
-            )
-            .unique()
-            .scalar_one_or_none()
-        )
-
-
 @host_invocation_router.api_route(
     "{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
 )
@@ -475,7 +454,7 @@ async def hostname_invocation(
         chute = None
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"
         if model:
-            if (chute := await _load_chute_by_name(model)) is None:
+            if (chute := await get_one(model)) is None:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"model not found: {model}",
