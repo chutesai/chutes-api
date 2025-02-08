@@ -232,17 +232,8 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
         f"All encryption checks [count={len(successes)}] passed successfully, trying device challenges..."
     )
 
-    futures = []
     for _ in range(settings.device_info_challenge_count):
-        futures.append(check_device_info_challenge(nodes))
-        if len(futures) == 3:
-            if not all(await asyncio.gather(*futures)):
-                error_message = "one or more device info challenges failed"
-                logger.warning(error_message)
-                return False, error_message
-            futures = []
-    if futures:
-        if not all(await asyncio.gather(*futures)):
+        if not await check_device_info_challenge(nodes):
             error_message = "one or more device info challenges failed"
             logger.warning(error_message)
             return False, error_message

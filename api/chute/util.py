@@ -103,6 +103,33 @@ UPDATE partitioned_invocations_{suffix} SET
 WHERE invocation_id = :invocation_id
 """
 
+# R1 runs in SGLang and doesn't return the model info the same way, so we'll just manually add it.
+R1_MODEL_INFO = {
+    "id": "deepseek-ai/DeepSeek-R1",
+    "object": "model",
+    "created": 1739025299,
+    "owned_by": "sglang",
+    "root": "deepseek-ai/DeepSeek-R1",
+    "parent": None,
+    "max_model_len": 163840,
+    "permission": [
+        {
+            "id": "modelperm-2db824e1a47b4dfe9eb7d65b744df1f9",
+            "object": "model_permission",
+            "created": 1739025299,
+            "allow_create_engine": False,
+            "allow_sampling": True,
+            "allow_logprobs": True,
+            "allow_search_indices": False,
+            "allow_view": True,
+            "allow_fine_tuning": False,
+            "organization": "*",
+            "group": None,
+            "is_blocking": False,
+        }
+    ],
+}
+
 
 async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances: bool = False):
     """
@@ -783,5 +810,6 @@ async def get_vllm_models(request: Request):
             logger.info(f"Trying to add to vllm models data: {info}")
             data = info["json"]["data"][0]
             model_data["data"].append(data)
+    model_data["data"].append(R1_MODEL_INFO)
     await settings.redis_client.set("vllm_model_info", json.dumps(model_data), ex=300)
     return model_data
