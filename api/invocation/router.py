@@ -238,11 +238,14 @@ async def _invoke(
     limit = settings.rate_limit_count
     if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
         limit = int(limit * 5)
+    if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
+        limit = int(limit * 2.5)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
     if (
         current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
+        and current_user.user_id != "2104acf4-999e-5452-84f1-de82de35a7e7"
         and not request.state.squad_request
     ):
         await ip_rate_limit(
@@ -445,7 +448,7 @@ async def _invoke(
 )
 async def hostname_invocation(
     request: Request,
-    current_user: User = Depends(get_current_user()),
+    current_user: User = Depends(get_current_user(raise_not_found=False)),
 ):
     # /v1/models endpoint for llm.chutes.ai is handled differently.
     if (
@@ -454,6 +457,13 @@ async def hostname_invocation(
         and request.method.lower() == "get"
     ):
         return await get_vllm_models(request)
+
+    # The /v1/models endpoint can be checked with no auth, but otherwise we need users.
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required.",
+        )
 
     # Mega LLM/diffusion request handler.
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):

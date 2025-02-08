@@ -34,7 +34,7 @@ async-lru = "^2.0.4"
 # TODO: Pin the below version
 # fiber = { git = "https://github.com/rayonlabs/fiber.git" }
 aiodns = "^3.2.0"
-chutes = "0.2.15"
+chutes = "0.2.16"
 graval = "^0.0.6"
 fastapi-cache2 = "^0.2.2"
 python-socketio = {extras = ["asyncio-client"], version = "^5.11.4"}

@@ -237,21 +237,23 @@ async def _deploy_chute(
     # Prevent h200 usage for now.
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
+    if isinstance(chute_args.node_selector, dict):
+        chute_args.node_selector = NodeSelector(**chute_args.node_selector)
     if current_user.user_id != await chutes_user_id():
         if (
             chute_args.node_selector
-            and chute_args.node_selector.get("min_vram_gp_per_gpu")
-            and chute_args.node_selector["min_vram_gp_per_gpu"] > 80
+            and chute_args.node_selector.min_vram_gp_per_gpu
+            and chute_args.node_selector.min_vram_gp_per_gpu > 80
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You are not allowed to require h200 at this time.",
             )
-        if not chute_args["node_selector"].get("exclude"):
-            chute_args.node_selector["exclude"] = []
-        if "h200" not in chute_args.node_selector["exclude"]:
-            chute_args.node_selector["exclude"].append("h200")
-        if not chute_args.node_selector["supported_gpus"]:
+        if not chute_args.node_selector.exclude:
+            chute_args.node_selector.exclude = []
+        if "h200" not in chute_args.node_selector.exclude:
+            chute_args.node_selector.exclude.append("h200")
+        if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No supported GPUs based on node selector!",
