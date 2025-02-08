@@ -173,7 +173,7 @@ class PaymentMonitor:
                 self._payment_addresses.add(payment_address)
                 if developer_payment_address:
                     self._developer_payment_addresses.add(developer_payment_address)
-                logger.info(f"Addresses: {payment_address=} {developer_payment_address=}")
+                # logger.info(f"Addresses: {payment_address=} {developer_payment_address=}")
                 self._user_refresh_timestamp = updated_at
 
     async def _handle_payment(
