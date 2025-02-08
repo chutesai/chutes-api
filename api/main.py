@@ -138,6 +138,8 @@ async def ping():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Database connectivity problems: {str(e)}",
         )
+
+
 default_router.get("/ping")(ping)
 
 app.include_router(default_router)

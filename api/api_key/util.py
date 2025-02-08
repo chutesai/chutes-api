@@ -3,8 +3,8 @@ Helpers and application logic related to API keys.
 """
 
 import re
+from async_lru import alru_cache
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Request, HTTPException, status
 from api.api_key.schemas import APIKey
 from api.database import get_session
@@ -15,6 +15,16 @@ def reinject_dash(uuid_str: str) -> str:
     Re-inject the dashes into a uuid string.
     """
     return f"{uuid_str[0:8]}-{uuid_str[8:12]}-{uuid_str[12:16]}-{uuid_str[16:20]}-{uuid_str[20:32]}"
+
+
+@alru_cache(maxsize=200, ttl=60)
+async def _load_key(token_id: str):
+    async with get_session() as session:
+        return (
+            (await session.execute(select(APIKey).where(APIKey.api_key_id == token_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
 
 
 async def get_and_check_api_key(key: str, request: Request):
@@ -34,24 +44,21 @@ async def get_and_check_api_key(key: str, request: Request):
     user_id = reinject_dash(user_id)
     token_id = reinject_dash(token_id)
 
-    async with get_session() as session:
-        session: AsyncSession
-        result = await session.execute(select(APIKey).where(APIKey.api_key_id == token_id))
-        api_token = result.unique().scalar_one_or_none()
-        if not api_token or not api_token.verify(key):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token or user not found",
-            )
-        if not api_token.has_access(
-            request.state.auth_object_type,
-            request.state.auth_object_id,
-            request.state.auth_method,
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token or user not found",
-            )
+    api_token = await _load_key(token_id)
+    if not api_token or not api_token.verify(key):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token or user not found",
+        )
+    if not api_token.has_access(
+        request.state.auth_object_type,
+        request.state.auth_object_id,
+        request.state.auth_method,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token or user not found",
+        )
 
-        # TODO: Add checking of the user_id?
-        return api_token
+    # TODO: Add checking of the user_id?
+    return api_token

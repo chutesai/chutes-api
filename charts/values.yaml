@@ -11,6 +11,8 @@ chutes_version: 0.2.15
 
 consecutive_failure_limit: 7
 
+datadog_enabled: false
+
 # Taken from https://taostats.io/validators - allows linking accounts (where validators get free access)
 validators:
   - 5DFwFpurRFaT5VtjdsATUnRakGhvUdgCghF61457QbWdsnJp

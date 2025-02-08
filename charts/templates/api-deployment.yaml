@@ -4,6 +4,11 @@ metadata:
   name: api
   labels:
     {{- include "api.labels" . | nindent 4 }}
+    {{- if .Values.datadog_enabled }}
+    tags.datadoghq.com/env: chutes-prod
+    tags.datadoghq.com/service: api
+    tags.datadoghq.com/version: 0.0.1
+    {{- end }}
 spec:
   replicas: {{ .Values.api.replicaCount }}
   strategy:
@@ -18,6 +23,16 @@ spec:
     metadata:
       labels:
         {{- include "api.labels" . | nindent 8 }}
+        {{- if .Values.datadog_enabled }}
+        tags.datadoghq.com/env: chutes-prod
+        tags.datadoghq.com/service: api
+        tags.datadoghq.com/version: 0.0.1
+        admission.datadoghq.com/enabled: "true"
+        {{- end }}
+      {{- if .Values.datadog_enabled }}
+      annotations:
+        admission.datadoghq.com/python-lib.version: v2.20.0
+      {{- end }}
     spec:
       {{- with .Values.api.nodeSelector }}
       nodeSelector:
@@ -48,6 +63,10 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- if .Values.datadog_enabled }}
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            {{- end }}
             - name: MEMCACHED
               value: memcached
             - name: VALIDATOR_HOTKEYS

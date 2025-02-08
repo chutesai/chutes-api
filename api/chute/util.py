@@ -13,6 +13,7 @@ import time
 import traceback
 import orjson as json
 import base64
+from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from typing import List
@@ -143,6 +144,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     return result.scalar_one_or_none()
 
 
+@alru_cache(maxsize=100)
 async def chute_id_by_slug(slug: str):
     """
     Check if a chute exists with the specified slug (which is a subdomain for standard apps).

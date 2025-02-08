@@ -8,6 +8,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
+from async_lru import alru_cache
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -16,7 +17,7 @@ from typing import Optional
 from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
-from sqlalchemy import text, select, or_
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.chute.schemas import Chute
@@ -442,6 +443,24 @@ async def _invoke(
     )
 
 
+@alru_cache(maxsize=100)
+async def _load_chute_by_name(name: str):
+    chute_user = await chutes_user_id()
+    async with get_session() as db:
+        return (
+            (
+                await db.execute(
+                    select(Chute)
+                    .where(Chute.name == name)
+                    .order_by((Chute.user_id == chute_user).desc())
+                    .limit(1)
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+
+
 @host_invocation_router.api_route(
     "{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
 )
@@ -456,32 +475,18 @@ async def hostname_invocation(
         chute = None
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"
         if model:
-            chute_user = await chutes_user_id()
-            async with get_session() as db:
-                chute = (
-                    (
-                        await db.execute(
-                            select(Chute)
-                            .where(
-                                Chute.name == model,
-                                or_(
-                                    Chute.public.is_(True),
-                                    Chute.user_id == current_user.user_id,
-                                ),
-                                Chute.standard_template == template,
-                            )
-                            .order_by((Chute.user_id == chute_user).desc())
-                            .limit(1)
-                        )
-                    )
-                    .unique()
-                    .scalar_one_or_none()
+            if (chute := await _load_chute_by_name(model)) is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"model not found: {model}",
                 )
-        if not chute:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"model not found: {model}",
-            )
-        request.state.chute_id = chute.chute_id
-        request.state.auth_object_id = chute.chute_id
+            if chute.standard_template != template or (
+                not chute.public and chute.user_id != current_user.user_id
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"model not found: {model}",
+                )
+            request.state.chute_id = chute.chute_id
+            request.state.auth_object_id = chute.chute_id
     return await _invoke(request, current_user)
