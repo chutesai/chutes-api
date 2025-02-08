@@ -95,7 +95,7 @@
         state: started
 
     - name: Set MTU for Wireguard interface
-      command: ip link set mtu {{ wireguard_mtu | default(1280) }} dev wg0
+      command: ip link set mtu {{ wireguard_mtu | default(1380) }} dev wg0
       become: true
 
     - name: Kick WG
