@@ -111,7 +111,7 @@ class Settings(BaseSettings):
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 20))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
     ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 25))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))

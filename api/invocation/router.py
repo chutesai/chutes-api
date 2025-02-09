@@ -237,7 +237,7 @@ async def _invoke(
     ### XXX manual override for now for OpenRouter.
     limit = settings.rate_limit_count
     if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
-        limit = int(limit * 5)
+        limit = int(limit * 5.5)
     if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
         limit = int(limit * 2.5)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
