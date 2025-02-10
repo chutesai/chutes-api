@@ -36,7 +36,7 @@ WITH computation_rates AS (
         percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch from completed_at - started_at) / (metrics->>'tokens')::float) as median_token_time
     FROM invocations
     WHERE ((metrics->>'steps' IS NOT NULL and (metrics->>'steps')::float > 0) OR (metrics->>'tokens' IS NOT NULL and (metrics->>'tokens')::float > 0))
-      AND started_at >= NOW() - INTERVAL '{interval}'
+      AND started_at >= NOW() - INTERVAL '2 days'
     GROUP BY chute_id
 )
 SELECT
