@@ -42,7 +42,7 @@ ENV PATH=/home/chutes/venv/bin:$PATH
 ADD pyproject.toml /tmp/
 RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg|aioboto3|cryptography) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/"//g' > /tmp/requirements.txt
 # TODO: Pin the below versions
-RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr && pip install -r /tmp/requirements.txt 
+RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr aiomcache && pip install -r /tmp/requirements.txt
 ADD --chown=chutes api /app/api
 ADD --chown=chutes metasync /app/metasync
 WORKDIR /app
