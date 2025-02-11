@@ -242,8 +242,8 @@ async def _deploy_chute(
     if current_user.user_id != await chutes_user_id():
         if (
             chute_args.node_selector
-            and chute_args.node_selector.min_vram_gp_per_gpu
-            and chute_args.node_selector.min_vram_gp_per_gpu > 80
+            and chute_args.node_selector.min_vram_gb_per_gpu
+            and chute_args.node_selector.min_vram_gb_per_gpu > 80
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
