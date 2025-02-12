@@ -499,6 +499,11 @@ async def verify_instance(instance_id: str):
     """
     Verify a single instance.
     """
+    if not await settings.redis_client.setnx(f"verify:lock:{instance_id}", b"1"):
+        logger.warning(f"Instance {instance_id} is already being verified...")
+        return
+    await settings.redis_client.expire(f"verify:lock:{instance_id}", 120)
+
     async with get_session() as session:
         instance = (
             (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
@@ -507,6 +512,7 @@ async def verify_instance(instance_id: str):
         )
         if not instance:
             logger.warning("Found no matching nodes, did they disappear?")
+            await settings.redis_client.delete(f"verify:lock:{instance_id}")
             return
 
         if not use_encryption_v2(instance.chutes_version):
@@ -516,12 +522,14 @@ async def verify_instance(instance_id: str):
                     logger.warning(f"{instance_id=} failed GraVal verification!")
                     instance.verification_error = "Failed one or more GraVal encryption challenges."
                     await session.commit()
+                    await settings.redis_client.delete(f"verify:lock:{instance_id}")
                     return
             except Exception as exc:
                 error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
                 logger.error(error_message)
                 instance.verification_error = error_message
                 await session.commit()
+                await settings.redis_client.delete(f"verify:lock:{instance_id}")
                 return
         else:
             # Encryption V2, create and exchange an AES key.
@@ -532,6 +540,8 @@ async def verify_instance(instance_id: str):
                 logger.error(error_message)
                 instance.verification_error = error_message
                 await session.commit()
+                await settings.redis_client.delete(f"verify:lock:{instance_id}")
+                return
 
         # Filesystem test.
         try:
@@ -539,12 +549,14 @@ async def verify_instance(instance_id: str):
                 logger.warning(f"{instance_id=} failed filesystem verification!")
                 instance.verification_error = "Failed one or more filesystem challenges."
                 await session.commit()
+                await settings.redis_client.delete(f"verify:lock:{instance_id}")
                 return
         except Exception as exc:
             error_message = f"Failed to perform filesystem validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
             logger.error(error_message)
             instance.verification_error = error_message
             await session.commit()
+            await settings.redis_client.delete(f"verify:lock:{instance_id}")
             return
 
         # Device info challenges.
@@ -559,6 +571,7 @@ async def verify_instance(instance_id: str):
                     logger.warning(error_message)
                     instance.verification_error = error_message
                     await session.commit()
+                    await settings.redis_client.delete(f"verify:lock:{instance_id}")
                     return
                 futures = []
 
@@ -604,3 +617,4 @@ async def verify_instance(instance_id: str):
             )
         except Exception as exc:
             logger.warning(f"Error broadcasting instance event: {exc}")
+        await settings.redis_client.delete(f"verify:lock:{instance_id}")

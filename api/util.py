@@ -294,6 +294,6 @@ def use_encrypted_path(chutes_version: str):
     if not chutes_version:
         return False
     major, minor, bug = chutes_version.split(".")[:3]
-    if int(minor) >= 2 and int(bug) >= 14:
+    if int(minor) >= 2 and int(bug) >= 14 or int(minor) > 2:
         return True
     return False

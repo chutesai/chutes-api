@@ -308,6 +308,14 @@ async def _invoke(
                 "top_k",
             ]:
                 request_body.pop(param, None)
+            request_body["model"] = "deepseek-ai/DeepSeek-R1"
+            if (max_tokens := request_body.get("max_tokens")) is not None:
+                try:
+                    max_tokens = int(request_body["max_tokens"])
+                    if max_tokens > 8192:
+                        request_body["max_tokens"] = 8192
+                except ValueError:
+                    request_body["max_tokens"] = 4096
     if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
