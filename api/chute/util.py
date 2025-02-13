@@ -282,7 +282,6 @@ async def _invoke_one(
     if use_encrypted_path(target.chutes_version):
         path = "/" + path.lstrip("/")
         encrypted_path = aes_encrypt(path.ljust(24, "?"), target.symmetric_key, hex_encode=True)
-        logger.info(f"Encrypted target path: {path=} {encrypted_path=}")
         path = encrypted_path
 
     session, response = None, None

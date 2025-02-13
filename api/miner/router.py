@@ -228,7 +228,11 @@ async def get_stats(
     return results
 
 
-@cache(expire=300)
 @router.get("/scores")
 async def get_scores():
-    return await get_scoring_data()
+    cached = await settings.memcache.get(b"miner_scores")
+    if cached:
+        return json.loads(cached)
+    result = await get_scoring_data()
+    await settings.memcache.set(b"miner_scores", json.dumps(result), exptime=600)
+    return result

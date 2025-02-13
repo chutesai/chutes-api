@@ -1409,6 +1409,7 @@ files = [
 ]
 
 [package.dependencies]
+aiomcache = {version = ">=0.8.2,<0.9.0", optional = true, markers = "extra == \"memcache\" or extra == \"all\""}
 fastapi = "*"
 pendulum = ">=3.0.0,<4.0.0"
 typing-extensions = ">=4.1.0"
@@ -4690,4 +4691,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "587c6fb062e40129768be4187901cedafa98e7980466120f93f228edfb46a1f4"
+content-hash = "a693c9898d7e3d7cd5d57373552460f71307f58f08dea95be1514615a17955e2"

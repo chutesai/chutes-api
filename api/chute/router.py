@@ -77,6 +77,28 @@ async def list_chutes(
     """
     List (and optionally filter/paginate) chutes.
     """
+    cache_key = str(
+        uuid.uuid5(
+            uuid.NAMESPACE_OID,
+            ":".join(
+                [
+                    "chutes_list",
+                    f"template:{template}",
+                    f"image:{image}",
+                    f"slug:{slug}",
+                    f"page:{page}",
+                    f"limit:{limit}",
+                    f"name:{name}",
+                    f"include_public:{include_public}",
+                    f"include_schemas:{include_schemas}",
+                    f"user:{current_user.user_id if current_user else None}",
+                ]
+            ),
+        )
+    ).encode()
+    cached = await settings.memcache.get(cache_key)
+    if cached:
+        return json.loads(cached)
     query = select(Chute).options(selectinload(Chute.instances))
 
     # Filter by public and/or only the user's chutes.
@@ -144,13 +166,15 @@ async def list_chutes(
         chute_response.cord_ref_id = cord_ref_id
         responses.append(chute_response)
         await _inject_current_estimated_price(item, responses[-1])
-    return {
+    result = {
         "total": total,
         "page": page,
         "limit": limit,
-        "items": responses,
+        "items": [item.model_dump() for item in responses],
         "cord_refs": cord_refs,
     }
+    await settings.memcache.set(cache_key, json.dumps(result), exptime=300)
+    return result
 
 
 @cache(expire=60)

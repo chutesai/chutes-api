@@ -13,7 +13,7 @@ from loguru import logger
 from fastapi import FastAPI, Request, APIRouter, HTTPException, status
 from fastapi.responses import ORJSONResponse
 from fastapi_cache import FastAPICache
-from fastapi_cache.backends.redis import RedisBackend
+from fastapi_cache.backends.memcached import MemcachedBackend
 from sqlalchemy import text
 import api.database.orms  # noqa: F401
 from api.api_key.router import router as api_key_router
@@ -41,7 +41,7 @@ async def lifespan(_: FastAPI):
     """
     Execute all initialization/startup code, e.g. ensuring tables exist and such.
     """
-    FastAPICache.init(RedisBackend(settings.redis_client), prefix="chutes-api-cache")
+    FastAPICache.init(MemcachedBackend(settings.memcache), prefix="chutes-api-cache")
 
     # Normal table creation stuff.
     async with engine.begin() as conn:
