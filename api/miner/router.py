@@ -24,6 +24,7 @@ from api.user.service import get_current_user
 from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
+from api.metasync import get_scoring_data
 
 router = APIRouter()
 
@@ -225,3 +226,9 @@ async def get_stats(
             "compute_units": compute_data,
         }
     return results
+
+
+@cache(expire=300)
+@router.get("/scores")
+async def get_scores():
+    return await get_scoring_data()
