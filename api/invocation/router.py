@@ -237,7 +237,7 @@ async def _invoke(
     ### XXX manual override for now for OpenRouter.
     limit = settings.rate_limit_count
     if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
-        limit = int(limit * 5.5)
+        limit = int(limit * 10)
     if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
         limit = int(limit * 2.5)
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
@@ -298,7 +298,7 @@ async def _invoke(
 
         # SGLang chute we use for R1 uses the default overlap scheduler which does not support
         # these penalty params, and sampling params are causing crashes.
-        if chute.chute_id == "de510462-c319-543b-9c67-00bcf807d2a7":
+        if chute.name in ("deepseek-ai/DeepSeek-R1", "deepseek-ai/DeepSeek-V3"):
             for param in [
                 "frequency_penalty",
                 "presence_penalty",
@@ -308,7 +308,6 @@ async def _invoke(
                 "top_k",
             ]:
                 request_body.pop(param, None)
-            request_body["model"] = "deepseek-ai/DeepSeek-R1"
             if (max_tokens := request_body.get("max_tokens")) is not None:
                 try:
                     max_tokens = int(request_body["max_tokens"])
@@ -316,6 +315,11 @@ async def _invoke(
                         request_body["max_tokens"] = 8192
                 except ValueError:
                     request_body["max_tokens"] = 4096
+        if (requested_model := request_body.get("model")) != chute.name:
+            logger.warning(
+                f"User requested model {requested_model} but chute name is: {chute.name}"
+            )
+            request_body["model"] = chute.name
     if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()

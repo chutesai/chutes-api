@@ -612,6 +612,7 @@ async def invoke(
             if isinstance(exc, InstanceRateLimit):
                 error_message = "RATE_LIMIT"
                 rate_limited += 1
+                await asyncio.sleep(0.25)
             elif isinstance(exc, BadRequest):
                 error_message = "BAD_REQUEST"
                 error_detail = str(exc)

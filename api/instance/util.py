@@ -82,7 +82,7 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
             return []
     if not instances:
         return []
-    return random.sample(instances, min(7, len(instances)))
+    return random.sample(instances, min(9, len(instances)))
 
 
 async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):

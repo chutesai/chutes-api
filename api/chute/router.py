@@ -70,6 +70,7 @@ async def list_chutes(
     slug: Optional[str] = None,
     page: Optional[int] = 0,
     limit: Optional[int] = 25,
+    include_schemas: Optional[bool] = False,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
 ):
@@ -132,7 +133,13 @@ async def list_chutes(
         if item.standard_template == "vllm":
             cord_defs = cord_defs.replace(f'"default":"{item.name}"', '"default":""')
         cord_ref_id = str(uuid.uuid5(uuid.NAMESPACE_OID, cord_defs))
-        cord_refs[cord_ref_id] = item.cords
+        if cord_ref_id not in cord_refs:
+            cord_refs[cord_ref_id] = item.cords
+            if not include_schemas:
+                for cord in cord_refs[cord_ref_id] or []:
+                    cord.pop("input_schema", None)
+                    cord.pop("minimal_input_schema", None)
+                    cord.pop("output_schema", None)
         chute_response.cords = None
         chute_response.cord_ref_id = cord_ref_id
         responses.append(chute_response)
@@ -390,7 +397,7 @@ async def _find_latest_image(db: AsyncSession, name: str) -> Image:
         select(Image)
         .where(Image.name == name)
         .where(Image.user_id == chute_user.user_id)
-        .order_by(func.version_numbers(Image.tag).desc())
+        .order_by(Image.created_at.desc())
         .limit(1)
     )
     return (await db.execute(query)).scalar_one_or_none()
