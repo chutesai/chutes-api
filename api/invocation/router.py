@@ -355,9 +355,16 @@ async def _invoke(
             "ot": 0,
         }
     elif chute.standard_template == "diffusion":
+        steps = request_body.get("num_inference_steps", 25)
+        if not isinstance(steps, int):
+            try:
+                steps = int(steps)
+            except ValueError:
+                steps = 25
+        request_body["num_inference_steps"] = steps
         metrics = {
             "sps": 0,
-            "steps": request_body.get("num_inference_steps", 25.0),
+            "steps": steps,
         }
 
     # Ready to query the miners finally :)
