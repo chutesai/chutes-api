@@ -29,7 +29,7 @@ from api.chute.templates import (
     build_tei_code,
 )
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, invoke
+from api.chute.util import get_chute_by_id_or_name, invoke, selector_hourly_price
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -37,7 +37,12 @@ from api.image.util import get_image_by_id_or_name
 from api.instance.util import discover_chute_targets
 from api.database import get_db_session
 from api.pagination import PaginatedResponse
+from api.fmv.fetcher import get_fetcher
 from api.config import settings
+from api.constants import (
+    LLM_PRICE_MULT_PER_MILLION,
+    DIFFUSION_PRICE_MULT_PER_STEP,
+)
 from api.util import ensure_is_developer, rate_limit
 from api.permissions import Permissioning
 from api.guesser import guesser
@@ -49,15 +54,34 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     """
     Inject the current estimated price data into a response.
     """
-    response.current_estimated_price = await NodeSelector(
-        **chute.node_selector
-    ).current_estimated_price()
-    if chute.discount and response.current_estimated_price:
-        for key, values in response.current_estimated_price.items():
-            for unit in values:
-                values[unit] -= values[unit] * chute.discount
-    if not response.current_estimated_price:
-        response.current_estimated_price = {"error": "pricing unavailable"}
+    if chute.standard_template == "vllm":
+        hourly = await selector_hourly_price(chute.node_selector)
+        per_million = hourly * LLM_PRICE_MULT_PER_MILLION
+        if chute.discount:
+            per_million -= per_million * chute.discount
+        response.current_estimated_price = {"per_million_tokens": {"usd": per_million}}
+        tao_usd = await get_fetcher().get_price("tao")
+        if tao_usd:
+            response.current_estimated_price["per_million_tokens"]["tao"] = per_million / tao_usd
+    elif chute.standard_template == "diffusion":
+        hourly = await selector_hourly_price(chute.node_selector)
+        per_step = hourly * DIFFUSION_PRICE_MULT_PER_STEP
+        if chute.discount:
+            per_step -= per_step * chute.discount
+        response.current_estimated_price = {"per_step": {"usd": per_step}}
+        tao_usd = await get_fetcher().get_price("tao")
+        if tao_usd:
+            response.current_estimated_price["per_step"]["tao"] = per_step / tao_usd
+    else:
+        response.current_estimated_price = await NodeSelector(
+            **chute.node_selector
+        ).current_estimated_price()
+        if chute.discount and response.current_estimated_price:
+            for key, values in response.current_estimated_price.items():
+                for unit in values:
+                    values[unit] -= values[unit] * chute.discount
+        if not response.current_estimated_price:
+            response.current_estimated_price = {"error": "pricing unavailable"}
 
 
 @cache(expire=60)
