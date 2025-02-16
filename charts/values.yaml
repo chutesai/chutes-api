@@ -116,7 +116,7 @@ subnet_owners:
   - 5EsNzkZ3DwDqCsYmSJDeGXX51dQJd5broUCH6dbDjvkTcicD
 
 api:
-  replicaCount: 4
+  replicaCount: 12
   image: parachutes/validator:latest
   imagePullPolicy: Always
   livenessProbe:
@@ -134,10 +134,10 @@ api:
   resources:
     requests:
       cpu: "4"
-      memory: "16Gi"
+      memory: "20Gi"
     limits:
       cpu: "4"
-      memory: "16Gi"
+      memory: "20Gi"
   service:
     type: NodePort
     nodePort: 32000

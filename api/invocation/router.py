@@ -296,6 +296,14 @@ async def _invoke(
             if not request_body.get("top_logprobs"):
                 request_body["top_logprobs"] = 1
 
+        # Custom temp for Dolphin.
+        if chute.name in (
+            "cognitivecomputations/Dolphin3.0-R1-Mistral-24B",
+            "cognitivecomputations/Dolphin3.0-Mistral-24B",
+        ):
+            if "temperature" not in request_body:
+                request_body["temperature"] = 0.05
+
         # SGLang chute we use for R1 uses the default overlap scheduler which does not support
         # these penalty params, and sampling params are causing crashes.
         if chute.name in ("deepseek-ai/DeepSeek-R1", "deepseek-ai/DeepSeek-V3"):
@@ -311,8 +319,8 @@ async def _invoke(
             if (max_tokens := request_body.get("max_tokens")) is not None:
                 try:
                     max_tokens = int(request_body["max_tokens"])
-                    if max_tokens > 8192:
-                        request_body["max_tokens"] = 8192
+                    if max_tokens > 4096:
+                        request_body["max_tokens"] = 4096
                 except ValueError:
                     request_body["max_tokens"] = 4096
         if (requested_model := request_body.get("model")) != chute.name:
@@ -396,7 +404,9 @@ async def _invoke(
                     skip = True
 
         return StreamingResponse(
-            _stream_response(), headers={"X-Chutes-InvocationID": parent_invocation_id}
+            _stream_response(),
+            media_type="text/event-stream",
+            headers={"X-Chutes-InvocationID": parent_invocation_id},
         )
 
     # Non-streamed (which we actually do stream but we'll just return the first item)

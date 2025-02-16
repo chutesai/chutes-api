@@ -2,8 +2,10 @@
 Helpers for invocations.
 """
 
+import orjson as json
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.database import get_session
+from api.config import settings
 from sqlalchemy import text
 
 
@@ -11,6 +13,13 @@ async def gather_metrics(interval: str = "1 hour"):
     """
     Generate invocation metrics for the last (interval).
     """
+    cached = await settings.memcache.get(b"miner_metrics_stream")
+    if cached:
+        rows = json.loads(cached)
+        for item in rows:
+            yield item
+        return
+
     query = text(
         f"""
 SELECT
@@ -29,6 +38,7 @@ INNER JOIN chutes c ON i.chute_id = c.chute_id
 WHERE i.started_at > NOW() - INTERVAL '{interval}'
 GROUP BY i.chute_id"""
     )
+    items = []
     async with get_session() as session:
         result = await session.stream(query)
         async for row in result:
@@ -40,4 +50,6 @@ GROUP BY i.chute_id"""
                 float(item["total_compute_time"]) if item.get("total_compute_time") else 0
             )
             item["total_usage_usd"] = item["per_second_price_usd"] * item["total_compute_time"]
+            items.append(item)
             yield item
+    await settings.memcache.set(b"miner_metrics_stream", json.dumps(items), exptime=600)
