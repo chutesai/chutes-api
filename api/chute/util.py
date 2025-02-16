@@ -135,8 +135,7 @@ R1_MODEL_INFO = {
 }
 
 
-# @alru_cache(maxsize=200)
-async def selector_hourly_price(node_selector: dict) -> float:
+async def selector_hourly_price(node_selector) -> float:
     """
     Helper to quickly get the hourly price of a node selector, caching for subsequent calls.
     """
@@ -593,9 +592,11 @@ async def invoke(
                     if chute.discount and 0 < chute.discount < 1:
                         discount = chute.discount
 
+                    # Calculate standard hourly price.
+                    hourly_price = await selector_hourly_price(chute.node_selector)
+
                     # LLM per token pricing.
                     if chute.standard_template == "vllm":
-                        hourly_price = await selector_hourly_price(chute.node_selector)
                         if output_tokens := metrics.get("ot"):
                             tokens = output_tokens + metrics.get("it", 0)
                             balance_used = (
