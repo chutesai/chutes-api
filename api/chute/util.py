@@ -24,7 +24,11 @@ from sqlalchemy import and_, or_, text, update, String
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
-from api.constants import ENCRYPTED_HEADER
+from api.constants import (
+    ENCRYPTED_HEADER,
+    LLM_PRICE_MULT_PER_MILLION,
+    DIFFUSION_PRICE_MULT_PER_STEP,
+)
 from api.database import get_session
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired
 from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
@@ -129,6 +133,18 @@ R1_MODEL_INFO = {
         }
     ],
 }
+
+
+# @alru_cache(maxsize=200)
+async def selector_hourly_price(node_selector: dict) -> float:
+    """
+    Helper to quickly get the hourly price of a node selector, caching for subsequent calls.
+    """
+    node_selector = (
+        NodeSelector(**node_selector) if isinstance(node_selector, dict) else node_selector
+    )
+    price = await node_selector.current_estimated_price()
+    return price["usd"]["hour"]
 
 
 async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances: bool = False):
@@ -566,26 +582,69 @@ async def invoke(
                 )
 
                 # Calculate the credits used and deduct from user's balance.
+                # For LLMs and Diffusion chutes, we use custom per token/image step pricing, otherwise
+                # it's just based on time used.
                 compute_units = result.scalar_one_or_none()
                 if compute_units and not request.state.free_invocation:
-                    balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
+                    balance_used = None
+
+                    # Track any discounts.
+                    discount = 0.0
                     if chute.discount and 0 < chute.discount < 1:
-                        balance_used -= balance_used * chute.discount
-                        result = await session.execute(
-                            update(User)
-                            .where(User.user_id == user_id)
-                            .where(
-                                User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
-                                == 0
+                        discount = chute.discount
+
+                    # LLM per token pricing.
+                    if chute.standard_template == "vllm":
+                        hourly_price = await selector_hourly_price(chute.node_selector)
+                        if output_tokens := metrics.get("ot"):
+                            tokens = output_tokens + metrics.get("it", 0)
+                            balance_used = (
+                                tokens / 1000000.0 * hourly_price * LLM_PRICE_MULT_PER_MILLION
                             )
-                            .values(balance=User.balance - balance_used)
-                            .returning(User.balance)
-                        )
-                        new_balance = result.scalar_one_or_none()
-                        if new_balance is not None:
+                            balance_used -= balance_used * discount
                             logger.info(
-                                f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                                f"BALANCE: LLM token pricing: {hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}$/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
                             )
+
+                    # Diffusion per step pricing.
+                    elif chute.standard_template == "diffusion":
+                        if steps := metrics.get("steps"):
+                            balance_used = steps * hourly_price * DIFFUSION_PRICE_MULT_PER_STEP
+                            balance_used -= balance_used * discount
+                            logger.info(
+                                f"BALANCE: Diffusion step pricing: {hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}$/step for {chute.name}, {balance_used=} {discount=}"
+                            )
+
+                    # Sanity check and default pricing if not a standard template.
+                    default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
+                    default_balance_used -= default_balance_used * discount
+                    if balance_used and balance_used > default_balance_used:
+                        logger.info(
+                            f"BALANCE: Balance per token/step exceeded default calculation for {chute.name}: {balance_used=} vs {default_balance_used=} {discount=}"
+                        )
+                        balance_used = default_balance_used
+                    if not balance_used:
+                        balance_used = default_balance_used
+                        logger.info(
+                            f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
+                        )
+
+                    # Deduct the balance used.
+                    result = await session.execute(
+                        update(User)
+                        .where(User.user_id == user_id)
+                        .where(
+                            User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
+                            == 0
+                        )
+                        .values(balance=User.balance - balance_used)
+                        .returning(User.balance)
+                    )
+                    new_balance = result.scalar_one_or_none()
+                    if new_balance is not None:
+                        logger.info(
+                            f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                        )
                 await session.commit()
 
             yield sse(
