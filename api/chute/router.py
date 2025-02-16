@@ -72,16 +72,19 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
         tao_usd = await get_fetcher().get_price("tao")
         if tao_usd:
             response.current_estimated_price["per_step"]["tao"] = per_step / tao_usd
-    else:
-        response.current_estimated_price = await NodeSelector(
-            **chute.node_selector
-        ).current_estimated_price()
-        if chute.discount and response.current_estimated_price:
-            for key, values in response.current_estimated_price.items():
+
+    # Legacy/fallback.
+    if not response.current_estimated_price:
+        response.current_estimated_price = {}
+    response.current_estimated_price.update(
+        await NodeSelector(**chute.node_selector).current_estimated_price()
+    )
+    if chute.discount and response.current_estimated_price:
+        for key in ("usd", "tao"):
+            values = response.current_estimated_price.get(key)
+            if values:
                 for unit in values:
                     values[unit] -= values[unit] * chute.discount
-        if not response.current_estimated_price:
-            response.current_estimated_price = {"error": "pricing unavailable"}
 
 
 @cache(expire=60)

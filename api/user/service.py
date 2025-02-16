@@ -6,7 +6,7 @@ from typing import Optional
 from sqlalchemy import exists
 from sqlalchemy.future import select
 from fastapi import APIRouter, Header, Request, HTTPException, Security, status
-from substrateinterface import Keypair
+from bittensor_wallet.keypair import Keypair
 from api.config import settings
 from api.metasync import MetagraphNode
 from api.database import get_session

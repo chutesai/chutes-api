@@ -13,7 +13,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.exc import IntegrityError
-from substrateinterface import SubstrateInterface
+from async_substrate_interface.sync_substrate import SubstrateInterface
 import asyncio
 from datetime import timedelta
 from loguru import logger
@@ -399,7 +399,7 @@ class PaymentMonitor:
                     developer_deposits = 0
                     logger.info(f"Processing block {current_block_number}...")
                     for event in events:
-                        event = event.value or {}
+                        #event = event.value or {}
                         if (
                             event.get("module_id") != "Balances"
                             or event.get("event_id") != "Transfer"

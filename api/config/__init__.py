@@ -8,7 +8,7 @@ import aiomcache
 import redis.asyncio as redis
 from boto3.session import Config
 from typing import Optional
-from substrateinterface import Keypair
+from bittensor_wallet.keypair import Keypair
 from pydantic_settings import BaseSettings
 from contextlib import asynccontextmanager
 
@@ -56,7 +56,7 @@ class Settings(BaseSettings):
 
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     validator_keypair: Optional[Keypair] = (
-        Keypair.create_from_seed(os.environ["VALIDATOR_SEED"])
+        Keypair.create_from_seed(bytes.fromhex(os.environ["VALIDATOR_SEED"]))
         if os.getenv("VALIDATOR_SEED")
         else None
     )
@@ -118,6 +118,9 @@ class Settings(BaseSettings):
 
     # Chutes pinned version.
     chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.18")
+
+    # Auto stake amount when DCAing into alpha after receiving payments.
+    autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.05"))
 
     # XXX unused for now - future in which payouts to various parties.
     miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))

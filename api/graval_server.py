@@ -15,7 +15,7 @@ from ipaddress import ip_address
 from loguru import logger
 from pydantic import BaseModel
 from graval import Validator
-from substrateinterface import Keypair, KeypairType
+from bittensor_wallet.keypair import Keypair
 from fastapi import FastAPI, Request, status, HTTPException
 
 
@@ -73,7 +73,7 @@ def main():
                 extra_key,
             ]
         )
-        if not Keypair(ss58_address=validator_hotkey, crypto_type=KeypairType.SR25519).verify(
+        if not Keypair(ss58_address=validator_hotkey).verify(
             signature_string, bytes.fromhex(signature)
         ):
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="go away")

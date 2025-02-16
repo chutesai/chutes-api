@@ -1,7 +1,8 @@
 import re
 from typing import Any, Tuple
 from sqlalchemy import select
-from substrateinterface import Keypair, SubstrateInterface
+from async_substrate_interface.sync_substrate import SubstrateInterface
+from bittensor_wallet.keypair import Keypair
 from loguru import logger
 from api.config import settings
 from api.database import get_session

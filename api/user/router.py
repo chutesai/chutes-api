@@ -25,7 +25,7 @@ from api.config import settings
 from api.api_key.schemas import APIKey, APIKeyArgs
 from api.api_key.response import APIKeyCreationResponse
 from api.user.util import validate_the_username, generate_payment_address
-from substrateinterface import Keypair, KeypairType
+from bittensor_wallet.keypair import Keypair
 from sqlalchemy import select
 
 router = APIRouter()
@@ -48,9 +48,7 @@ async def _link_hotkey(
     """
     signature_string = f"{hotkey}:{current_user.username}"
     if hotkey in allow_list:
-        if Keypair(ss58_address=hotkey, crypto_type=KeypairType.SR25519).verify(
-            signature_string, bytes.fromhex(signature)
-        ):
+        if Keypair(ss58_address=hotkey).verify(signature_string, bytes.fromhex(signature)):
             # Any other accounts already associated?
             existing = (
                 await db.execute(
