@@ -107,33 +107,6 @@ UPDATE partitioned_invocations_{suffix} SET
 WHERE invocation_id = :invocation_id
 """
 
-# R1 runs in SGLang and doesn't return the model info the same way, so we'll just manually add it.
-R1_MODEL_INFO = {
-    "id": "deepseek-ai/DeepSeek-R1",
-    "object": "model",
-    "created": 1739025299,
-    "owned_by": "sglang",
-    "root": "deepseek-ai/DeepSeek-R1",
-    "parent": None,
-    "max_model_len": 163840,
-    "permission": [
-        {
-            "id": "modelperm-2db824e1a47b4dfe9eb7d65b744df1f9",
-            "object": "model_permission",
-            "created": 1739025299,
-            "allow_create_engine": False,
-            "allow_sampling": True,
-            "allow_logprobs": True,
-            "allow_search_indices": False,
-            "allow_view": True,
-            "allow_fine_tuning": False,
-            "organization": "*",
-            "group": None,
-            "is_blocking": False,
-        }
-    ],
-}
-
 
 async def selector_hourly_price(node_selector) -> float:
     """
@@ -801,7 +774,7 @@ async def get_vllm_models(request: Request):
     """
     Get the combined /v1/models return value for chutes that are public and belong to chutes user.
     """
-    cached = await settings.redis_client.get("vllm_model_info")
+    cached = await settings.redis_client.get("vllm_models")
     if cached:
         return json.loads(cached)
 
@@ -871,6 +844,5 @@ async def get_vllm_models(request: Request):
             logger.info(f"Trying to add to vllm models data: {info}")
             data = info["json"]["data"][0]
             model_data["data"].append(data)
-    model_data["data"].append(R1_MODEL_INFO)
-    await settings.redis_client.set("vllm_model_info", json.dumps(model_data), ex=300)
+    await settings.redis_client.set("vllm_models", json.dumps(model_data), ex=300)
     return model_data
