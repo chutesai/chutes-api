@@ -25,6 +25,7 @@ from api.payment.schemas import Payment, PaymentMonitorState
 from api.permissions import Permissioning
 from api.config import settings
 from api.database import get_session, engine, Base
+from api.autostake import stake
 
 
 class PaymentMonitor:
@@ -254,6 +255,9 @@ class PaymentMonitor:
                 f"Received payment [user_id={user.user_id} username={user.username}]: {amount} rao @ ${fmv} FMV = ${delta} balance increase, updated balance: ${user.balance}"
             )
 
+            # Autostake the payment tao to chutes.
+            await stake.kiq(user.user_id)
+
     async def _handle_developer_deposit(
         self,
         to_address: str,
@@ -399,7 +403,7 @@ class PaymentMonitor:
                     developer_deposits = 0
                     logger.info(f"Processing block {current_block_number}...")
                     for event in events:
-                        #event = event.value or {}
+                        # event = event.value or {}
                         if (
                             event.get("module_id") != "Balances"
                             or event.get("event_id") != "Transfer"

@@ -38,6 +38,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "autostaker.labels" -}}
+app.kubernetes.io/name: autostaker
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "forge.labels" -}}
 app.kubernetes.io/name: forge
 redis-access: "true"

@@ -122,13 +122,5 @@ class Settings(BaseSettings):
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.05"))
 
-    # XXX unused for now - future in which payouts to various parties.
-    miner_take: float = float(os.getenv("MINER_TAKE", "0.73"))
-    maintainer_take: float = float(os.getenv("MAINTAINER_TAKE", "0.2"))
-    moderator_take: float = float(os.getenv("MODERATOR_TAKE", "0.02"))
-    contributor_take: float = float(os.getenv("CONTRIBUTOR_TAKE", "0.03"))
-    image_creator_take: float = float(os.getenv("IMAGE_CREATOR_TAKE", "0.01"))
-    chute_creator_take: float = float(os.getenv("CHUTE_CREATOR_TAKE", "0.01"))
-
 
 settings = Settings()

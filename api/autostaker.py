@@ -11,6 +11,12 @@ from api.config import settings
 from async_substrate_interface.sync_substrate import SubstrateInterface
 from bittensor_wallet.keypair import Keypair
 import api.database.orms  # noqa
+from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
+
+
+broker = ListQueueBroker(url=settings.redis_url, queue_name="autostaker").with_result_backend(
+    RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
+)
 
 
 class InsufficientBalance(Exception): ...
@@ -21,8 +27,8 @@ def get_balance(substrate, address, block_hash) -> int:
     Get free balance on an account.
     """
     result = substrate.query(
-        module='System',
-        storage_function='Account',
+        module="System",
+        storage_function="Account",
         params=[address],
         block_hash=block_hash,
     )
@@ -54,9 +60,7 @@ def _add_stake(
     """
     Create an subnet an extrinsic to stake to the chutes validator.
     """
-    logger.info(
-        f"Syncing with chain: {settings.subtensor}..."
-    )
+    logger.info(f"Syncing with chain: {settings.subtensor}...")
     block = substrate.get_block_number(substrate.get_chain_head())
     block_hash = substrate.get_block_hash(block)
     old_balance = get_balance(substrate, keypair.ss58_address, block_hash)
@@ -100,9 +104,7 @@ def _add_stake(
     substrate.submit_extrinsic(extrinsic, wait_for_inclusion=False)
 
     # Check balance and stake.
-    logger.info(
-        f"Checking Balance on {settings.subtensor}..."
-    )
+    logger.info(f"Checking Balance on {settings.subtensor}...")
     new_block = substrate.get_block_number(substrate.get_chain_head())
     block_hash = substrate.get_block_hash(new_block)
     new_balance = get_balance(substrate, keypair.ss58_address, block_hash)
@@ -112,14 +114,18 @@ def _add_stake(
     return (new_balance - existential_deposit) / 10**9
 
 
+@broker.task
 async def stake(user_id: str) -> None:
     """
     When a payment is received, automatically begin staking via DCA
     to chutes until the balance is zero.
     """
-    if not (await settings.redis_client.setnx(f"autostake:{user_id}", "1")) and False:
-        logger.warning(f"Staking operation already in progress for {user_id=}")
-        return
+    try:
+        if not (await settings.redis_client.setnx(f"autostake:{user_id}", "1")):
+            logger.warning(f"Staking operation already in progress for {user_id=}")
+            return
+    finally:
+        await settings.redis_client.expire(f"autostake:{user_id}", 60 * 60)
 
     async with get_session() as session:
         user = (
@@ -129,6 +135,7 @@ async def stake(user_id: str) -> None:
         )
         if user is None:
             logger.warning(f"User {user_id} not found")
+            await settings.redis_client.delete(f"autostake:{user_id}")
             return
 
     # Load the keypair.
@@ -142,6 +149,7 @@ async def stake(user_id: str) -> None:
                 amount = available
         except InsufficientBalance:
             logger.success(f"All balance is now staked to {settings.validator_ss58}")
+            await settings.redis_client.delete(f"autostake:{user_id}")
             break
         except Exception as exc:
             logger.error(

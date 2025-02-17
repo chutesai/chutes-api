@@ -138,6 +138,18 @@ async def create_nodes(
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
     nodes_args = args.nodes
 
+    # Check if any of the nodes are already in inventory.
+    node_uuids = [node.uuid for node in args.nodes]
+    existing = (
+        (await db.execute(select(Node).where(Node.uuid.in_(node_uuids)))).unique().scalars().all()
+    )
+    if existing:
+        nodes = [node.uuid for node in existing]
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Nodes already exist in inventory, please contact chutes team to resolve: {nodes}",
+        )
+
     # Random seed.
     seed = random.randint(1, 2**63 - 1)
     nodes = []
@@ -167,7 +179,6 @@ async def create_nodes(
         )
 
     # Purge any old challenges.
-    node_uuids = [node.uuid for node in args.nodes]
     await db.execute(delete(Challenge).where(Challenge.uuid.in_(node_uuids)))
 
     task_id = "skip"

@@ -2,13 +2,14 @@
 Payments router.
 """
 
+import orjson as json
+from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, status, HTTPException, Depends
 from fastapi_cache.decorator import cache
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.gpu import SUPPORTED_GPUS, COMPUTE_UNIT_PRICE_BASIS, COMPUTE_MIN
-from api.payment.constants import PAYOUT_STRUCTURE
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
 from api.database import get_db_session
@@ -16,7 +17,7 @@ from api.user.util import refund_deposit
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.payment.schemas import Payment
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, func
 
 router = APIRouter()
 
@@ -86,20 +87,6 @@ async def get_pricing():
     }
 
 
-@router.get("/payout_structure")
-async def get_payout_structure():
-    """
-    Get the current theoretical payout structure.
-    """
-    return {
-        "notice": "This is not in effect at the moment, simply a theoretically mechansim.",
-        "theoretical_structure": {
-            key: {k: v for k, v in value.items() if not k.startswith("address")}
-            for key, value in PAYOUT_STRUCTURE.items()
-        },
-    }
-
-
 @router.get("/developer_deposit")
 async def get_developer_deposit():
     """
@@ -146,3 +133,52 @@ async def return_developer_deposit(
         "status": "transferred",
         "message": message,
     }
+
+
+@router.get("/payments")
+async def list_payments(
+    page: Optional[int] = 0, limit: Optional[int] = 25, db: AsyncSession = Depends(get_db_session)
+):
+    """
+    List all payments.
+    """
+    cache_key = b"payment_list:{page}:{limit}"
+    if cached := await settings.memcache.get(cache_key):
+        return json.loads(cached)
+    query = (
+        select(Payment, User)
+        .join(User, Payment.user_id == User.user_id)
+        .where(Payment.purpose == "credits")
+    )
+    total_query = select(func.count()).select_from(query.subquery())
+    total_result = await db.execute(total_query)
+    total = total_result.scalar() or 0
+
+    query = (
+        query.order_by(Payment.created_at.desc())
+        .offset((page or 0) * (limit or 25))
+        .limit((limit or 250))
+    )
+    results = []
+    for payment, user in (await db.execute(query)).all():
+        results.append(
+            dict(
+                payment_id=payment.payment_id,
+                block=payment.block,
+                rao_amount=payment.rao_amount,
+                fmv=payment.fmv,
+                usd_amount=payment.usd_amount,
+                transaction_hash=payment.transaction_hash,
+                timestamp=payment.created_at.isoformat(),
+                tx_link=f"https://taostats.io/transfer/{payment.transaction_hash}",
+                wallet_link=f"https://taostats.io/account/{user.payment_address}",
+            )
+        )
+    response = {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": results,
+    }
+    await settings.memcache.set(cache_key, json.dumps(response), exptime=300)
+    return response
