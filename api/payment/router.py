@@ -142,7 +142,7 @@ async def list_payments(
     """
     List all payments.
     """
-    cache_key = b"payment_list:{page}:{limit}"
+    cache_key = f"payment_list:{page}:{limit}".encode()
     if cached := await settings.memcache.get(cache_key):
         return json.loads(cached)
     query = (

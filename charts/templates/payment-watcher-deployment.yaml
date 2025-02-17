@@ -38,6 +38,8 @@ spec:
             {{- include "chutes.commonEnv" . | nindent 12 }}
             - name: SUBTENSOR_ADDRESS
               value: {{ .Values.paymentWatcher.subtensor }}
+            - name: PAYMENT_RECOVERY_BLOCKS
+              value: "{{ .Values.paymentWatcher.recovery_blocks }}"
           ports:
             - name: http
               containerPort: {{ .Values.paymentWatcher.service.targetPort }}

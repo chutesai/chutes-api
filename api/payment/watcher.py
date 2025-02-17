@@ -14,6 +14,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.exc import IntegrityError
 from async_substrate_interface.sync_substrate import SubstrateInterface
+from async_substrate_interface.types import ss58_encode
 import asyncio
 from datetime import timedelta
 from loguru import logger
@@ -402,8 +403,10 @@ class PaymentMonitor:
                     payments = 0
                     developer_deposits = 0
                     logger.info(f"Processing block {current_block_number}...")
-                    for event in events:
-                        # event = event.value or {}
+                    for raw_event in events:
+                        event = raw_event.get("event")
+                        if not event:
+                            continue
                         if (
                             event.get("module_id") != "Balances"
                             or event.get("event_id") != "Transfer"
@@ -413,6 +416,9 @@ class PaymentMonitor:
                             continue
                         from_address = event["attributes"]["from"]
                         to_address = event["attributes"]["to"]
+                        if isinstance(from_address, (list, tuple)):
+                            from_address = ss58_encode(bytes(from_address[0]).hex(), ss58_format=42)
+                            to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
                         amount = event["attributes"]["amount"]
                         if to_address in self._payment_addresses:
                             await self._handle_payment(
