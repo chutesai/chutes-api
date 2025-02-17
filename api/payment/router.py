@@ -157,13 +157,14 @@ async def list_payments(
     query = (
         query.order_by(Payment.created_at.desc())
         .offset((page or 0) * (limit or 25))
-        .limit((limit or 250))
+        .limit((limit or 25))
     )
     results = []
     for payment, user in (await db.execute(query)).all():
         results.append(
             dict(
                 payment_id=payment.payment_id,
+                ss58_address=user.payment_address,
                 block=payment.block,
                 rao_amount=payment.rao_amount,
                 fmv=payment.fmv,
@@ -171,7 +172,7 @@ async def list_payments(
                 transaction_hash=payment.transaction_hash,
                 timestamp=payment.created_at.isoformat(),
                 tx_link=f"https://taostats.io/transfer/{payment.transaction_hash}",
-                wallet_link=f"https://taostats.io/account/{user.payment_address}",
+                delegations_link=f"https://taostats.io/account/{user.payment_address}/delegation",
             )
         )
     response = {

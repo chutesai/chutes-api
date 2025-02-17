@@ -81,7 +81,7 @@ def _add_stake(
         staking_balance = staking_balance
 
     # Check enough to stake.
-    if staking_balance > old_balance or staking_balance <= 0:
+    if staking_balance > old_balance or staking_balance <= 500000 + existential_deposit:
         logger.error("Not enough stake:")
         logger.error(f"\t\tbalance:{old_balance}")
         logger.error(f"\t\tamount: {staking_balance}")
@@ -90,7 +90,9 @@ def _add_stake(
         )
 
     # Perform the actual staking operation.
-    logger.info(f"Staking to netuid: {netuid}, amount: {staking_balance} on {hotkey_ss58}")
+    logger.info(
+        f"Staking to netuid: {netuid}, amount: {staking_balance} from {keypair.ss58_address} to {hotkey_ss58}"
+    )
     call = substrate.compose_call(
         call_module="SubtensorModule",
         call_function="add_stake",
@@ -104,13 +106,12 @@ def _add_stake(
     substrate.submit_extrinsic(extrinsic, wait_for_inclusion=False)
 
     # Check balance and stake.
-    logger.info(f"Checking Balance on {settings.subtensor}...")
     new_block = substrate.get_block_number(substrate.get_chain_head())
     block_hash = substrate.get_block_hash(new_block)
     new_balance = get_balance(substrate, keypair.ss58_address, block_hash)
     new_stake = get_stake(substrate, keypair.ss58_address, block_hash)
-    logger.info(f"Balance is now {new_balance}")
-    logger.info(f"Stake: is now {new_stake}")
+    logger.info(f"Balance of {keypair.ss58_address} after stake operation is now {new_balance}")
+    logger.info(f"Stake of {keypair.ss58_address} after stake operation is now {new_stake}")
     return (new_balance - existential_deposit) / 10**9
 
 
@@ -139,7 +140,13 @@ async def stake(user_id: str) -> None:
             return
 
     # Load the keypair.
-    keypair = Keypair.create_from_mnemonic(await decrypt_wallet_secret(user.wallet_secret))
+    try:
+        keypair = Keypair.create_from_mnemonic(await decrypt_wallet_secret(user.wallet_secret))
+    except Exception as exc:
+        logger.error(f"Failed to initialize wallet: {exc}")
+        return
+
+    consecutive_failures = 0
     while True:
         amount = settings.autostake_amount
         try:
@@ -155,6 +162,12 @@ async def stake(user_id: str) -> None:
             logger.error(
                 f"Unhandled exception performing staking operation: {exc}\n{traceback.format_exc()}"
             )
+            consecutive_failures += 1
+            if consecutive_failures >= 5:
+                logger.error(
+                    "Giving up staking, max consecutive failures reached for {user.user_id=} {keypair.ss58_address=}"
+                )
+                break
         await asyncio.sleep(12)
 
 
