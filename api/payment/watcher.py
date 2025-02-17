@@ -25,7 +25,7 @@ from api.payment.schemas import Payment, PaymentMonitorState
 from api.permissions import Permissioning
 from api.config import settings
 from api.database import get_session, engine, Base
-from api.autostake import stake
+from api.autostaker import stake
 
 
 class PaymentMonitor:
