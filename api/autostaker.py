@@ -147,10 +147,12 @@ async def stake(user_id: str) -> None:
         return
 
     consecutive_failures = 0
+    substrate = None
     while True:
         amount = settings.autostake_amount
         try:
-            substrate = SubstrateInterface(url=settings.subtensor)
+            if not substrate:
+                substrate = SubstrateInterface(url=settings.subtensor)
             available = _add_stake(substrate, keypair, amount=amount)
             if available < amount:
                 amount = available
@@ -159,6 +161,8 @@ async def stake(user_id: str) -> None:
             await settings.redis_client.delete(f"autostake:{user_id}")
             break
         except Exception as exc:
+            await asyncio.sleep(5)
+            substrate = SubstrateInterface(url=settings.subtensor)
             logger.error(
                 f"Unhandled exception performing staking operation: {exc}\n{traceback.format_exc()}"
             )
