@@ -229,10 +229,16 @@ async def get_stats(
 
 
 @router.get("/scores")
-async def get_scores():
+async def get_scores(hotkey: Optional[str] = None):
     cached = await settings.memcache.get(b"miner_scores")
+    rv = None
     if cached:
-        return json.loads(cached)
-    result = await get_scoring_data()
-    await settings.memcache.set(b"miner_scores", json.dumps(result), exptime=600)
-    return result
+        rv = json.loads(cached)
+    if not rv:
+        rv = await get_scoring_data()
+        await settings.memcache.set(b"miner_scores", json.dumps(rv), exptime=600)
+    if hotkey:
+        for key in rv:
+            if key != "totals":
+                rv[key] = {hotkey: rv[key].get(hotkey)}
+    return rv
