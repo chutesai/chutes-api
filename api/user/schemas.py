@@ -6,6 +6,7 @@ from typing import Self
 from pydantic import BaseModel
 from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInteger
 from sqlalchemy.orm import relationship, validates
+from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 import hashlib
 from api.util import gen_random_token
@@ -72,6 +73,9 @@ class User(Base):
 
     # Squad enabled.
     squad_enabled = Column(Boolean, default=False)
+
+    # Rate limit overrides.
+    rate_limit_overrides = Column(JSONB, default=None)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())

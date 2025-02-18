@@ -234,12 +234,20 @@ async def _invoke(
         )
 
     # Rate limits.
-    ### XXX manual override for now for OpenRouter.
     limit = settings.rate_limit_count
-    if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
-        limit = int(limit * 10)
-    if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
-        limit = int(limit * 2.5)
+    overrides = current_user.rate_limit_overrides or {}
+    override = overrides.get(chute.chute_id, overrides.get("*"))
+    if override:
+        limit = override
+    else:
+        # Temporary fallback manual overrides.
+        if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
+            limit = int(limit * 10)
+        if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
+            limit = int(limit * 2.5)
+    # Allow extra capacity for the models not on OpenRouter.
+    if not chute.openrouter:
+        limit *= 2
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
@@ -247,6 +255,7 @@ async def _invoke(
         current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
         and current_user.user_id != "2104acf4-999e-5452-84f1-de82de35a7e7"
         and not request.state.squad_request
+        and not override
     ):
         await ip_rate_limit(
             current_user, origin_ip, settings.ip_rate_limit_count, settings.ip_rate_limit_window
