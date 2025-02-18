@@ -1,6 +1,6 @@
 # Proportion of weights to assign to each metric.
 FEATURE_WEIGHTS = {
-    "compute_units": 0.42,  # Total amount of compute time (compute muliplier * total time).
+    "compute_units": 0.45,  # Total amount of compute time (compute muliplier * total time).
     "invocation_count": 0.25,  # Total number of invocations.
     "unique_chute_count": 0.20,  # Number of unique chutes over the scoring period.
     "bounty_count": 0.1,  # Number of bounties received (not bounty values, just counts).
