@@ -275,7 +275,7 @@ async def change_fingerprint(
     if nonce.isdigit():
         nonce_val = int(nonce)
         now = int(time.time())
-        if now - 30 <= nonce_val <= now + 30:
+        if now - 300 <= nonce_val <= now + 300:
             valid_nonce = True
     if not valid_nonce:
         raise HTTPException(
