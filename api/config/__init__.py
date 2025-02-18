@@ -5,11 +5,12 @@ Application-wide settings.
 import os
 import aioboto3
 import aiomcache
+from functools import cached_property
 import redis.asyncio as redis
 from boto3.session import Config
 from typing import Optional
 from bittensor_wallet.keypair import Keypair
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from contextlib import asynccontextmanager
 
 
@@ -21,6 +22,17 @@ def load_squad_cert():
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(arbitrary_types_allowed=True)
+    _validator_keypair: Optional[Keypair] = None
+
+    @cached_property
+    def validator_keypair(self) -> Optional[Keypair]:
+        if not self._validator_keypair and os.getenv("VALIDATOR_SEED"):
+            self._validator_keypair = Keypair.create_from_seed(
+                bytes.fromhex(os.environ["VALIDATOR_SEED"])
+            )
+        return self._validator_keypair
+
     sqlalchemy: str = os.getenv(
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
     )
@@ -55,11 +67,6 @@ class Settings(BaseSettings):
     pg_encryption_key: Optional[str] = os.getenv("PG_ENCRYPTION_KEY", "secret")
 
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
-    validator_keypair: Optional[Keypair] = (
-        Keypair.create_from_seed(bytes.fromhex(os.environ["VALIDATOR_SEED"]))
-        if os.getenv("VALIDATOR_SEED")
-        else None
-    )
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     redis_client: redis.Redis = redis.Redis.from_url(
