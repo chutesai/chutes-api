@@ -243,7 +243,7 @@ SUPPORTED_GPUS = {
         "memory": 96,
         "major": 9,
         "minor": 0,
-        "tensor_cores": 456,,
+        "tensor_cores": 456,
         "processors": 132,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 2048,
