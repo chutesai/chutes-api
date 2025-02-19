@@ -21,6 +21,8 @@ def create_metagraph_node_class(base):
         incentive = Column(Float)
         netuid = Column(Integer)
         stake = Column(Float)
+        tao_stake = Column(Float)
+        alpha_stake = Column(Float)
         trust = Column(Float)
         vtrust = Column(Float)
         last_updated = Column(Integer)
