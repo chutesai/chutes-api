@@ -12,17 +12,20 @@ QUERY = """
 SELECT 
     chutes.name,
     chutes.chute_id,
+    chutes.version,
     chutes.created_at,
     NOT EXISTS (
         SELECT 1 
         FROM instance_audit 
         WHERE instance_audit.chute_id = chutes.chute_id 
+        AND instance_audit.version = chutes.version
         AND verified_at IS NOT NULL
     ) as never_deployed,
     (
         SELECT COUNT(DISTINCT miner_hotkey)
         FROM instance_audit
         WHERE instance_audit.chute_id = chutes.chute_id
+        AND instance_audit.version = chutes.version
         AND created_at < NOW() - INTERVAL '3 hours'
     ) >= 5 as has_five_miners
 FROM chutes
@@ -30,12 +33,14 @@ WHERE NOT EXISTS (
     SELECT 1 
     FROM instance_audit 
     WHERE instance_audit.chute_id = chutes.chute_id 
+    AND instance_audit.version = chutes.version
     AND verified_at IS NOT NULL
 )
 AND (
     SELECT COUNT(DISTINCT miner_hotkey)
     FROM instance_audit
     WHERE instance_audit.chute_id = chutes.chute_id
+    AND instance_audit.version = chutes.version
     AND created_at < NOW() - INTERVAL '90 minutes'
 ) >= 5
 """
