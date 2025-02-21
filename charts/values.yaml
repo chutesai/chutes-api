@@ -7,7 +7,7 @@ account_settings:
 
 squad_enabled: true
 
-chutes_version: 0.2.19
+chutes_version: 0.2.20
 
 consecutive_failure_limit: 7
 

@@ -53,28 +53,32 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
                 if bounty != current_bounty:
                     logger.info(f"Bounty for {chute_id=} is now {bounty}")
                     current_bounty = bounty
-                    await settings.redis_client.publish(
-                        "miner_broadcast",
-                        json.dumps(
-                            {
-                                "reason": "bounty_change",
-                                "data": {"chute_id": chute_id, "bounty": bounty},
-                            }
-                        ).decode(),
-                    )
-                    await settings.redis_client.publish(
-                        "events",
-                        json.dumps(
-                            {
-                                "reason": "bounty_change",
-                                "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
-                                "data": {
-                                    "chute_id": chute_id,
-                                    "bounty": bounty,
-                                },
-                            }
-                        ).decode(),
-                    )
+                    if not await settings.memcache.get(f"bounty_broadcast:{chute_id}:{bounty}"):
+                        await settings.memcache.set(
+                            f"bounty_broadcast:{chute_id}:{bounty}", "1", exptime=60
+                        )
+                        await settings.redis_client.publish(
+                            "miner_broadcast",
+                            json.dumps(
+                                {
+                                    "reason": "bounty_change",
+                                    "data": {"chute_id": chute_id, "bounty": bounty},
+                                }
+                            ).decode(),
+                        )
+                        await settings.redis_client.publish(
+                            "events",
+                            json.dumps(
+                                {
+                                    "reason": "bounty_change",
+                                    "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
+                                    "data": {
+                                        "chute_id": chute_id,
+                                        "bounty": bounty,
+                                    },
+                                }
+                            ).decode(),
+                        )
                 await asyncio.sleep(1)
                 instances = await load_chute_targets(chute_id, nonce=time.time())
         except asyncio.CancelledError:

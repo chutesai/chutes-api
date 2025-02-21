@@ -1125,12 +1125,12 @@ files = [
 
 [[package]]
 name = "chutes"
-version = "0.2.18"
+version = "0.2.20"
 description = "Chutes development kit and CLI."
 optional = false
 python-versions = "*"
 files = [
-    {file = "chutes-0.2.18-py3-none-any.whl", hash = "sha256:90c800877290dc1564ed9edd1f0374b4981ef1f29c7c546f3499132b43db28d3"},
+    {file = "chutes-0.2.20-py3-none-any.whl", hash = "sha256:e16d5f9aa450bb894e16277cb18753122e10e902ee33b086dc40b0566bc9cfb6"},
 ]
 
 [package.dependencies]
@@ -5087,4 +5087,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.0"
 python-versions = "<3.13,>=3.9"
-content-hash = "02e404647aa4f7cbb71a07a459b0d77c921c7815186ec3c24087cf1df899dfba"
+content-hash = "7dbd62e8c8974b3479fec6a755270e347f28370fdb3d2ca1d2651f4c93097e95"

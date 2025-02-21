@@ -27,7 +27,7 @@ SELECT
     current_timestamp AS end_date,
     current_timestamp - INTERVAL '{interval}' AS start_date,
     AVG(i.compute_multiplier) AS compute_multiplier,
-    COUNT(DISTINCT i.invocation_id) as total_invocations,
+    COUNT(DISTINCT i.parent_invocation_id) as total_invocations,
     SUM(EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS total_compute_time,
     COUNT(CASE WHEN i.error_message IS NOT NULL THEN 1 END) AS error_count,
     COUNT(CASE WHEN i.error_message = 'RATE_LIMIT' THEN 1 END) AS rate_limit_count,
