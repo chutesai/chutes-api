@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autostaker
+  labels:
+    {{- include "autostaker.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.autostaker.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "autostaker.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "autostaker.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.autostaker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.autostaker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.autostaker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: autostaker
+          image: "{{ .Values.autostaker.image }}"
+          imagePullPolicy: {{ .Values.autostaker.imagePullPolicy }}
+          command: ["poetry", "run", "taskiq", "worker", "api.autostaker:broker", "--workers", "1", "--max-async-tasks", "4"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: SUBTENSOR_ADDRESS
+              value: {{ .Values.autostaker.subtensor }}
+          resources:
+            {{- toYaml .Values.autostaker.resources | nindent 12 }}

@@ -19,7 +19,7 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
-from api.chute.util import invoke, get_one, get_vllm_models
+from api.chute.util import invoke, get_one, get_vllm_models, count_prompt_tokens
 from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user
@@ -356,13 +356,14 @@ async def _invoke(
     # Initialize metrics.
     metrics = None
     if chute.standard_template == "vllm":
-        metrics = {
-            "ttft": None,
-            "tps": 0.0,
-            "tokens": 0,
-            "it": 0,
-            "ot": 0,
-        }
+        if request.url.path.lstrip("/").startswith(("v1/chat", "v1/completion")):
+            metrics = {
+                "ttft": None,
+                "tps": 0.0,
+                "tokens": 0,
+                "it": await count_prompt_tokens(request_body),
+                "ot": 0,
+            }
     elif chute.standard_template == "diffusion":
         steps = request_body.get("num_inference_steps", 25)
         if not isinstance(steps, int):

@@ -30,6 +30,7 @@ ADD data/generate_fs_challenge.sh /usr/local/bin/generate_fs_challenge.sh
 ADD data/trivy_scan.sh /usr/local/bin/trivy_scan.sh
 ADD --chown=chutes api /forge/api
 ADD --chown=chutes metasync /forge/metasync
+ADD --chown=chutes tokenizer /app/tokenizer
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
 
 # Layer for the metagraph syncer.
@@ -42,9 +43,10 @@ ENV PATH=/home/chutes/venv/bin:$PATH
 ADD pyproject.toml /tmp/
 RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg|aioboto3|cryptography) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/"//g' > /tmp/requirements.txt
 # TODO: Pin the below versions
-RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr aiomcache && pip install -r /tmp/requirements.txt
+RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr aiomcache 'transformers<4.49.0' && pip install -r /tmp/requirements.txt
 ADD --chown=chutes api /app/api
 ADD --chown=chutes metasync /app/metasync
+ADD --chown=chutes tokenizer /app/tokenizer
 WORKDIR /app
 ENV PYTHONPATH=/app
 ENTRYPOINT ["python", "metasync/sync_metagraph.py"]
@@ -65,6 +67,7 @@ ADD --chown=chutes api /app/api
 ADD --chown=chutes audit_exporter.py /app/audit_exporter.py
 ADD --chown=chutes failed_chute_cleanup.py /app/failed_chute_cleanup.py
 ADD --chown=chutes metasync /app/metasync
+ADD --chown=chutes tokenizer /app/tokenizer
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
@@ -97,4 +100,5 @@ WORKDIR /app
 RUN poetry install
 ADD --chown=chutes api /app/api
 ADD --chown=chutes metasync /app/metasync
+ADD --chown=chutes tokenizer /app/tokenizer
 ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]

@@ -2,6 +2,7 @@
 Application logic and utilities for chutes.
 """
 
+import os
 import aiohttp
 import asyncio
 import re
@@ -20,6 +21,7 @@ from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from typing import List
+from transformers import AutoTokenizer
 from sqlalchemy import and_, or_, text, update, String
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -40,6 +42,16 @@ from api.instance.schemas import Instance
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.permissions import Permissioning
 from api.metrics.vllm import track_usage as track_vllm_usage
+
+# Tokenizer for input/output token estimation.
+TOKENIZER = AutoTokenizer.from_pretrained(
+    os.path.join(
+        os.path.dirname(os.path.abspath(__file__)),
+        "..",
+        "..",
+        "tokenizer",
+    )
+)
 
 REQUEST_SAMPLE_RATIO = 0.05
 LLM_PATHS = {"chat_stream", "completion_stream", "chat", "completion"}
@@ -214,16 +226,6 @@ async def _invoke_one(
     """
     Try invoking a chute/cord with a single instance.
     """
-    ### XXX too much load on the DB doing this.
-    # # Update last query time for this target.
-    # async with get_session() as session:
-    #     await session.execute(
-    #         update(Instance)
-    #         .where(Instance.instance_id == target.instance_id)
-    #         .values({"last_queried_at": func.now()})
-    #     )
-    #     await session.commit()
-
     # Call the miner's endpoint.
     path = path.lstrip("/")
     response = None
@@ -267,6 +269,7 @@ async def _invoke_one(
         iv = bytes.fromhex(payload[:32])
 
     # Encrypted paths?
+    plain_path = path.lstrip("/").rstrip("/")
     if use_encrypted_path(target.chutes_version):
         path = "/" + path.lstrip("/")
         encrypted_path = aes_encrypt(path.ljust(24, "?"), target.symmetric_key, hex_encode=True)
@@ -326,7 +329,7 @@ async def _invoke_one(
                     chunk = aes_decrypt(raw_chunk, target.symmetric_key, iv)
                 if (
                     chute.standard_template == "vllm"
-                    and path in LLM_PATHS
+                    and plain_path in LLM_PATHS
                     and chunk.startswith(b"data: {")
                     and b'"content":""' not in chunk
                 ):
@@ -339,22 +342,51 @@ async def _invoke_one(
                 yield chunk.decode()
             if chute.standard_template == "vllm":
                 total_time = time.time() - started_at
+                prompt_tokens = metrics.get("it", 0)
+                completion_tokens = metrics.get("tokens", 0)
+
+                # Sanity check on prompt token counts.
+                if not metrics["it"]:
+                    # Have to guess since this was done from the SDK and we aren't going to unpickle here.
+                    raw_payload_size = len(json.dumps(payload))
+                    metrics["it"] = len(raw_payload_size) / 3
+                    prompt_tokens = metrics["it"]
+                    logger.warning(f"Estimated the prompt tokens: {prompt_tokens} for {chute.name}")
+
+                # Use usage data from the engine, but sanity check it...
                 if last_chunk and b'"usage"' in last_chunk:
                     try:
                         usage_obj = json.loads(last_chunk[6:].decode())
                         usage = usage_obj.get("usage", {})
-                        metrics["it"] = usage.get("prompt_tokens")
-                        metrics["ot"] = usage.get("completion_tokens")
-                        if metrics.get("ot"):
-                            metrics["tps"] = metrics["ot"] / total_time
-                            logger.info(
-                                f"Metrics for {chute.chute_id=} [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
+                        claimed_prompt_tokens = usage.get("prompt_tokens")
+
+                        # Sanity check on prompt token counts.
+                        if claimed_prompt_tokens > prompt_tokens * 1.5:
+                            logger.warning(
+                                f"Prompt tokens exceeded expectations [stream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens}"
                             )
+                            # else:
+                            prompt_tokens = min(claimed_prompt_tokens, prompt_tokens)
+
+                        # Sanity check on completion token counts.
+                        claimed_completion_tokens = usage.get("completion_tokens")
+                        if claimed_completion_tokens is not None:
+                            # Some chutes do multi-token prediction, but even so let's make sure people don't do shenanigans.
+                            if claimed_completion_tokens > completion_tokens * 4:
+                                logger.warning(
+                                    f"Completion tokens exceeded expectations [stream]: {claimed_completion_tokens=} vs estimated={completion_tokens}"
+                                )
+                                # else:
+                                completion_tokens = claimed_completion_tokens
                     except Exception as exc:
                         logger.warning(f"Error checking metrics: {exc}")
 
-                if not metrics.get("tps"):
-                    metrics["tps"] = metrics["tokens"] / total_time
+                metrics["it"] = max(0, prompt_tokens or 0)
+                metrics["ot"] = max(0, completion_tokens or 0)
+                metrics["tps"] = metrics["ot"] / total_time
+                logger.info(
+                    f"Metrics for chute={chute.name} miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
+                )
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
         else:
             # Non-streamed responses, which may be encrypted with the new chutes encryption V2.
@@ -399,15 +431,56 @@ async def _invoke_one(
 
             # Track metrics for the standard LLM/diffusion templates.
             total_time = time.time() - started_at
-            if chute.standard_template == "vllm" and path in LLM_PATHS:
+            if chute.standard_template == "vllm" and plain_path in LLM_PATHS:
                 json_data = data.get("json")
-                if json_data and (usage := json_data.get("usage")) is not None:
-                    metrics["tokens"] = usage.get("completion_tokens", 0)
-                    metrics["tps"] = metrics["tokens"] / total_time
-                    metrics["it"] = usage.get("prompt_tokens")
-                    metrics["ot"] = usage.get("completion_tokens")
+                if json_data:
+                    prompt_tokens = metrics.get("it", 0)
+                    if not prompt_tokens:
+                        # Have to guess since this was done from the SDK and we aren't going to unpickle here.
+                        raw_payload_size = len(json.dumps(payload))
+                        metrics["it"] = len(raw_payload_size) / 3
+                        prompt_tokens = metrics["it"]
+                        logger.warning(
+                            f"Estimated the prompt tokens: {prompt_tokens} for {chute.name}"
+                        )
+
+                    output_text = None
+                    if plain_path == "chat":
+                        try:
+                            output_text = json_data["choices"][0]["message"]["content"]
+                        except (KeyError, IndexError):
+                            ...
+                    else:
+                        try:
+                            output_text = json_data["choices"][0]["text"]
+                        except (KeyError, IndexError):
+                            ...
+                    if not output_text:
+                        output_text = json.dumps(json_data).decode()
+                    completion_tokens = await count_str_tokens(output_text)
+                    if (usage := json_data.get("usage")) is not None:
+                        if claimed_completion_tokens := usage.get("completion_tokens", 0):
+                            if claimed_completion_tokens > completion_tokens * 4:
+                                logger.warning(
+                                    f"Completion tokens exceeded expectations [nostream]: {claimed_completion_tokens=} vs estimated={completion_tokens}"
+                                )
+                            else:
+                                completion_tokens = claimed_completion_tokens
+                        if claimed_prompt_tokens := usage.get("prompt_tokens", 0):
+                            if claimed_prompt_tokens > prompt_tokens * 1.5:
+                                logger.warning(
+                                    f"Prompt tokens exceeded expectations [nostream]: {claimed_completion_tokens=} vs estimated={prompt_tokens}"
+                                )
+                            else:
+                                prompt_tokens = claimed_prompt_tokens
+
+                    # Track metrics using either sane claimed usage metrics or estimates.
+                    metrics["tokens"] = completion_tokens
+                    metrics["tps"] = completion_tokens / total_time
+                    metrics["it"] = prompt_tokens
+                    metrics["ot"] = completion_tokens
                     logger.info(
-                        f"Metrics for {chute.chute_id=} [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
+                        f"Metrics for [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                     )
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
             elif (
@@ -846,3 +919,41 @@ async def get_vllm_models(request: Request):
             model_data["data"].append(data)
     await settings.redis_client.set("vllm_models", json.dumps(model_data), ex=300)
     return model_data
+
+
+async def count_prompt_tokens(body):
+    """
+    Estimate the number of input tokens.
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        if messages := body.get("messages"):
+            if isinstance(messages, list):
+                tokens = await loop.run_in_executor(
+                    None,
+                    TOKENIZER.apply_chat_template,
+                    messages,
+                )
+                return len(tokens)
+        if prompt := body.get("prompt"):
+            return await count_str_tokens(prompt)
+    except Exception as exc:
+        logger.warning(f"Error estimating tokens: {exc}, defaulting to dumb method.")
+    return int(len(json.dumps(body)) / 4)
+
+
+async def count_str_tokens(output_str):
+    """
+    Estimate the number of output tokens.
+    """
+    loop = asyncio.get_event_loop()
+    try:
+        if isinstance(output_str, bytes):
+            output_str = output_str.decode()
+        tokens = await loop.run_in_executor(None, TOKENIZER, output_str)
+        return max(0, len(tokens.input_ids) - 1)
+    except Exception as exc:
+        logger.warning(
+            f"Error estimating tokens: {exc}, defaulting to dumb method: {output_str.__class__}"
+        )
+    return int(len(output_str) / 4)
