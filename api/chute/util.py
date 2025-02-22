@@ -469,7 +469,7 @@ async def _invoke_one(
                         if claimed_prompt_tokens := usage.get("prompt_tokens", 0):
                             if claimed_prompt_tokens > prompt_tokens * 1.5:
                                 logger.warning(
-                                    f"Prompt tokens exceeded expectations [nostream]: {claimed_completion_tokens=} vs estimated={prompt_tokens}"
+                                    f"Prompt tokens exceeded expectations [nostream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens}"
                                 )
                             else:
                                 prompt_tokens = claimed_prompt_tokens
