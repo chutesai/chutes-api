@@ -53,9 +53,11 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
                 if bounty != current_bounty:
                     logger.info(f"Bounty for {chute_id=} is now {bounty}")
                     current_bounty = bounty
-                    if not await settings.memcache.get(f"bounty_broadcast:{chute_id}:{bounty}"):
+                    if not await settings.memcache.get(
+                        f"bounty_broadcast:{chute_id}:{bounty}".encode()
+                    ):
                         await settings.memcache.set(
-                            f"bounty_broadcast:{chute_id}:{bounty}", "1", exptime=60
+                            f"bounty_broadcast:{chute_id}:{bounty}".encode(), b"1", exptime=60
                         )
                         await settings.redis_client.publish(
                             "miner_broadcast",

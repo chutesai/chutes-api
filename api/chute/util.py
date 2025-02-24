@@ -619,12 +619,12 @@ async def invoke(
                         "metrics": json.dumps(metrics).decode(),
                     },
                 )
-                await session.execute(
-                    text(
-                        "UPDATE instances SET consecutive_failures = 0 WHERE instance_id = :instance_id AND consecutive_failures > 0"
-                    ),
-                    {"instance_id": target.instance_id},
-                )
+                try:
+                    await settings.redis_client.delete(
+                        f"consecutive_failures:{target.instance_id}".encode()
+                    )
+                except Exception as exc:
+                    logger.warning(f"Error clearing consecutive failures: {exc}")
 
                 # Calculate the credits used and deduct from user's balance.
                 # For LLMs and Diffusion chutes, we use custom per token/image step pricing, otherwise
@@ -718,7 +718,6 @@ async def invoke(
             if isinstance(exc, InstanceRateLimit):
                 error_message = "RATE_LIMIT"
                 rate_limited += 1
-                await asyncio.sleep(0.25)
             elif isinstance(exc, BadRequest):
                 error_message = "BAD_REQUEST"
                 error_detail = str(exc)
@@ -769,15 +768,9 @@ async def invoke(
 
                 elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
                     # Handle consecutive failures (auto-delete instances).
-                    consecutive_failures = (
-                        await session.execute(
-                            text(
-                                "UPDATE instances SET consecutive_failures = consecutive_failures + 1 WHERE instance_id = :instance_id RETURNING consecutive_failures"
-                            ),
-                            {"instance_id": target.instance_id},
-                        )
-                    ).scalar_one_or_none()
-                    await session.commit()
+                    consecutive_failures = await settings.redis_client.incr(
+                        f"consecutive_failures:{target.instance_id}"
+                    )
                     if (
                         consecutive_failures
                         and consecutive_failures >= settings.consecutive_failure_limit
