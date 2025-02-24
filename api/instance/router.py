@@ -207,6 +207,7 @@ async def activate_instance(
 async def delete_instance(
     chute_id: str,
     instance_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(purpose="instances", registered_to=settings.netuid)),
@@ -217,6 +218,8 @@ async def delete_instance(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance with {chute_id=} {instance_id} associated with {hotkey=} not found",
         )
+    origin_ip = request.headers.get("x-forwarded-for")
+    logger.info(f"INSTANCE DELETION INITIALIZED: {instance_id=} {hotkey=} {origin_ip=}")
     await db.delete(instance)
     await db.execute(
         text(

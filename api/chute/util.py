@@ -340,7 +340,7 @@ async def _invoke_one(
                     last_chunk = chunk
 
                 yield chunk.decode()
-            if chute.standard_template == "vllm":
+            if chute.standard_template == "vllm" and plain_path in LLM_PATHS and metrics:
                 total_time = time.time() - started_at
                 prompt_tokens = metrics.get("it", 0)
                 completion_tokens = metrics.get("tokens", 0)
@@ -620,9 +620,7 @@ async def invoke(
                     },
                 )
                 try:
-                    await settings.redis_client.delete(
-                        f"consecutive_failures:{target.instance_id}".encode()
-                    )
+                    await settings.redis_client.delete(f"consecutive_failures:{target.instance_id}")
                 except Exception as exc:
                     logger.warning(f"Error clearing consecutive failures: {exc}")
 
@@ -643,7 +641,7 @@ async def invoke(
                         hourly_price = await selector_hourly_price(chute.node_selector)
 
                         # LLM per token pricing.
-                        if chute.standard_template == "vllm":
+                        if chute.standard_template == "vllm" and metrics:
                             if output_tokens := metrics.get("ot"):
                                 tokens = output_tokens + metrics.get("it", 0)
                                 balance_used = (
@@ -771,6 +769,14 @@ async def invoke(
                     consecutive_failures = await settings.redis_client.incr(
                         f"consecutive_failures:{target.instance_id}"
                     )
+                    if (
+                        consecutive_failures
+                        and consecutive_failures >= settings.consecutive_failure_limit
+                    ):
+                        logger.warning(
+                            f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
+                        )
+
                     if (
                         consecutive_failures
                         and consecutive_failures >= settings.consecutive_failure_limit

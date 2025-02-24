@@ -682,6 +682,12 @@ async def invoke_(
     """
     Invoke a "chute" aka function.
     """
+    logger.warning(f"INVOKE_VIA_SDK: {chute_id=} {path=}")
+    return HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Please use the standard JSON API calls",
+    )
+
     if current_user.balance <= 0 and not current_user.has_role(Permissioning.free_account):
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
