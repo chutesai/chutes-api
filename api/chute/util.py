@@ -557,10 +557,11 @@ async def invoke(
 
     partition_suffix = None
     rate_limited = 0
-    failed = []
+    avoid = []
     for attempt_idx in range(3):
-        async with manager.get_target(avoid=failed) as target:
+        async with manager.get_target(avoid=avoid) as target:
             if not target:
+                logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
                 await asyncio.sleep(0.5)
                 continue
 
@@ -662,7 +663,7 @@ async def invoke(
                                     )
                                     balance_used -= balance_used * discount
                                     logger.info(
-                                        f"BALANCE: LLM token pricing: {hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}$/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
+                                        f"BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
                                     )
 
                             # Diffusion per step pricing.
@@ -673,7 +674,7 @@ async def invoke(
                                     )
                                     balance_used -= balance_used * discount
                                     logger.info(
-                                        f"BALANCE: Diffusion step pricing: {hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}$/step for {chute.name}, {balance_used=} {discount=}"
+                                        f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
                                     )
 
                             # Sanity check and default pricing if not a standard template.
@@ -724,7 +725,7 @@ async def invoke(
                 )
                 return
             except Exception as exc:
-                failed.append(target.instance_id)
+                avoid.append(target.instance_id)
                 error_message = f"{exc}\n{traceback.format_exc()}"
                 error_message = error_message.replace(
                     f"{target.host}:{target.port}", "[host redacted]"
