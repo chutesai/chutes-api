@@ -349,7 +349,7 @@ async def _invoke(
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
     async with get_session() as db:
         manager = await get_chute_target_manager(db, chute.chute_id, max_wait=60)
-    if not manager.instances:
+    if not manager or not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

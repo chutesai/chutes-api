@@ -161,7 +161,7 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
             logger.warning("Target discovery cancelled")
             return []
     if not instances:
-        return []
+        return None
     if chute_id not in MANAGERS:
         MANAGERS[chute_id] = LeastConnManager(instances=instances)
         async with MANAGERS[chute_id].lock:
