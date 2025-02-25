@@ -58,17 +58,19 @@ class LeastConnManager:
             await self._session.close()
             self._session = None
 
-    async def get_targets(self):
+    async def get_targets(self, avoid=[]):
         counts = {}
-        for instance in self.instances:
-            counts[instance.instance_id] = await settings.least_conn_redis.zcard(
-                f"conn:{instance.instance_id}"
-            )
+        for instance_id in self.instances:
+            if instance_id in avoid:
+                continue
+            counts[instance_id] = await settings.redis_client.zcard(f"conn:{instance_id}")
+        if not counts:
+            return []
         grouped_by_count = {}
         for instance_id, count in counts.items():
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
-            grouped_by_count[count].append(instance_id)
+            grouped_by_count[count].append(self.instances[instance_id])
         for count in grouped_by_count:
             random.shuffle(grouped_by_count[count])
         result = []
@@ -81,26 +83,26 @@ class LeastConnManager:
         conn_id = str(uuid.uuid4())
         now = time.time()
         try:
-            targets = [inst for _id, inst in await self.get_targets() if _id not in avoid]
+            targets = await self.get_targets(avoid=avoid)
         except Exception as exc:
             logger.error(f"Failed to sort chute targets: {exc}, using random order")
-            return random.choice([inst for _id, inst in self.instances.items() if _id not in avoid])
-
+            yield random.choice([inst for _id, inst in self.instances.items() if _id not in avoid])
+            return
         if not targets:
             yield None
             return
         instance = targets[0]
-        await settings.least_conn_redis.zadd(f"conn:{instance.instance_id}", {conn_id: now})
-        await settings.least_conn_redis.expire(
+        await settings.redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
+        await settings.redis_client.expire(
             f"conn:{instance.instance_id}", self.connection_expiry
         )
         try:
             yield instance
         except Exception:
-            await settings.least_conn_redis.zrem(f"conn:{instance.instance_id}", conn_id)
+            await settings.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
             raise
         finally:
-            await settings.least_conn_redis.zrem(f"conn:{instance.instance_id}", conn_id)
+            await settings.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
 
 
 async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
