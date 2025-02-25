@@ -65,7 +65,9 @@ class LeastConnManager:
                 continue
             counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
         if random.random() < 0.05:
-            logger.info(f"Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()]))
+            logger.info(
+                "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
+            )
         if not counts:
             return []
         grouped_by_count = {}

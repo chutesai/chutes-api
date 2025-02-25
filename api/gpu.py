@@ -57,7 +57,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.24,
     },
     "a4000_ada": {
-        "model_name_check": "RTX A4000 Ada",
+        "model_name_check": "RTX 4000 Ada",
         "memory": 20,
         "major": 8,
         "minor": 9,

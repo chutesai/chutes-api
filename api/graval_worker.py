@@ -502,7 +502,7 @@ async def verify_instance(instance_id: str):
     if not await settings.redis_client.setnx(f"verify:lock:{instance_id}", b"1"):
         logger.warning(f"Instance {instance_id} is already being verified...")
         return
-    await settings.redis_client.expire(f"verify:lock:{instance_id}", 120)
+    await settings.redis_client.expire(f"verify:lock:{instance_id}", 180)
 
     async with get_session() as session:
         instance = (

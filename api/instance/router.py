@@ -191,7 +191,11 @@ async def activate_instance(
         logger.warning("Ignoring verification request, already in progress...")
         return instance
 
-    if (attempts := await settings.redis_client.incr(f"verify_instance:{instance_id}")) >= 7:
+    if await settings.redis_client.get(f"verify:lock:{instance_id}"):
+        logger.info(f"Verification request is currently in progress: {instance_id=}")
+        return instance
+    attempts = await settings.redis_client.get(f"verify_instance:{instance_id}")
+    if attempts and int(attempts) > 5:
         logger.warning(
             f"Refusing to attempt verification more than 7 times for {instance_id=} {attempts=}"
         )
@@ -199,6 +203,8 @@ async def activate_instance(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail="Too may verification requests.",
         )
+    await settings.redis_client.incr(f"verify_instance:{instance_id}")
+    await settings.redis_client.expire(f"verify_instance:{instance_id}", 600)
     await verify_instance.kiq(instance_id)
     return instance
 

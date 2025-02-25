@@ -34,6 +34,7 @@ from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
 from api.image.util import get_image_by_id_or_name
+
 # XXX from api.instance.util import discover_chute_targets
 from api.database import get_db_session
 from api.pagination import PaginatedResponse
