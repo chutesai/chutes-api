@@ -25,7 +25,7 @@ from api.user.schemas import User
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session
-from api.instance.util import discover_chute_targets
+from api.instance.util import get_chute_target_manager
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -220,9 +220,10 @@ async def _invoke(
 
     # Check account balance.
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    is_paid_account = not current_user.has_role(Permissioning.free_account)
     if (
         current_user.balance <= 0
-        and not current_user.has_role(Permissioning.free_account)
+        and is_paid_account
         and (not chute.discount or chute.discount < 1.0)
     ):
         logger.warning(
@@ -248,6 +249,8 @@ async def _invoke(
     # Allow extra capacity for the models not on OpenRouter.
     if not chute.openrouter:
         limit *= 2
+    if is_paid_account:
+        limit *= 3
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
@@ -345,8 +348,8 @@ async def _invoke(
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
     async with get_session() as db:
-        targets = await discover_chute_targets(db, chute.chute_id, max_wait=60)
-    if not targets:
+        manager = await get_chute_target_manager(db, chute.chute_id, max_wait=60)
+    if not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -379,7 +382,7 @@ async def _invoke(
 
     # Ready to query the miners finally :)
     logger.info(
-        f"Calling {selected_cord['path']} of {chute.name} with {len(targets)} "
+        f"Calling {selected_cord['path']} of {chute.name} with up to {len(manager.instances)} "
         f"targets on behalf of {current_user.username} [{origin_ip}]"
     )
 
@@ -398,7 +401,7 @@ async def _invoke(
                 stream,
                 args,
                 kwargs,
-                targets,
+                manager,
                 parent_invocation_id,
                 metrics=metrics,
                 request=request,
@@ -437,7 +440,7 @@ async def _invoke(
         stream,
         args,
         kwargs,
-        targets,
+        manager,
         parent_invocation_id,
         metrics=metrics,
         request=request,

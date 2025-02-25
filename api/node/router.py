@@ -249,6 +249,7 @@ async def delete_node(
             detail="Node does not exist, or does not belong to you",
         )
     origin_ip = request.headers.get("x-forwarded-for")
+    logger.info(f"NODE DELETION REQUEST: {hotkey=} {origin_ip=} {node_id=}")
     if (
         origin_ip
         and origin_ip.startswith("80.66.81.5")
