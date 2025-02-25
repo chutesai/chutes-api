@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     redis_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     )
+    cm_redis_client: redis.Redis = redis.Redis.from_url(
+        os.getenv("CM_REDIS_URL", "redis://127.0.0.1:6379/0").replace(
+            "@redis.chutes.svc.cluster.local", "@cm-redis.chutes.svc.cluster.local"
+        )
+    )
     memcache: Optional[aiomcache.Client] = (
         aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211)
         if os.getenv("MEMCACHED")

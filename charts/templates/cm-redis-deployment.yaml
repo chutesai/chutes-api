@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cm-redis
+  labels:
+    {{- include "cmRedis.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cmRedis.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cmRedis.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cmRedis.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.cmRedis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cmRedis.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.cmRedis.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.cmRedis.image }}"
+          imagePullPolicy: {{ .Values.cmRedis.imagePullPolicy }}
+          args:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            {{- range .Values.cmRedis.config.customArgs }}
+            - {{ . }}
+            {{- end }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+          ports:
+            - name: redis
+              containerPort: {{ .Values.cmRedis.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.cmRedis.resources | nindent 12 }}

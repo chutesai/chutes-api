@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cm-redis-network-policy
+  labels:
+    {{- include "cmRedis.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "cmRedis.labels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              redis-access: "true"
+      ports:
+        - protocol: TCP
+          port: {{ .Values.cmRedis.service.port }}
+    {{- if .Values.datadog_enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              agent.datadoghq.com/component: "agent"
+    {{- end }}
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

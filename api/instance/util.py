@@ -63,7 +63,7 @@ class LeastConnManager:
         for instance_id in self.instances:
             if instance_id in avoid:
                 continue
-            counts[instance_id] = await settings.redis_client.zcard(f"conn:{instance_id}")
+            counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
         if not counts:
             return []
         grouped_by_count = {}
@@ -92,17 +92,17 @@ class LeastConnManager:
             yield None
             return
         instance = targets[0]
-        await settings.redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
-        await settings.redis_client.expire(
+        await settings.cm_redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
+        await settings.cm_redis_client.expire(
             f"conn:{instance.instance_id}", self.connection_expiry
         )
         try:
             yield instance
         except Exception:
-            await settings.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
             raise
         finally:
-            await settings.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
 
 
 async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
