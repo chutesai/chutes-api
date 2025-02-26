@@ -38,7 +38,7 @@ from api.user.schemas import User
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager
+from api.instance.util import LeastConnManager, get_chute_target_manager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.permissions import Permissioning
 from api.metrics.vllm import track_usage as track_vllm_usage
@@ -885,9 +885,10 @@ async def get_vllm_models(request: Request):
         )
         if cached:
             return json.loads(cached)
-        active = [inst for inst in chute.instances if inst.verified and inst.active]
-        if not active:
-            return None
+        async with get_session() as session:
+            target_manager = await get_chute_target_manager(session, chute.chute_id, max_wait=0)
+            if not target_manager or not target_manager.instances:
+                return None
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
         inv_id = str(uuid.uuid4())
@@ -900,7 +901,7 @@ async def get_vllm_models(request: Request):
             False,
             args,
             kwargs,
-            active,
+            target_manager,
             inv_id,
             metrics={},
             request=request,
