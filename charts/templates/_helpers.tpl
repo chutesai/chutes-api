@@ -66,6 +66,10 @@ db-access: "true"
 app.kubernetes.io/name: redis
 {{- end }}
 
+{{- define "cmRedis.labels" -}}
+app.kubernetes.io/name: cm-redis
+{{- end }}
+
 {{- define "memcached.labels" -}}
 app.kubernetes.io/name: memcached
 {{- end }}

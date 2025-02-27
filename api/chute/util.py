@@ -20,7 +20,6 @@ import backoff
 from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
-from typing import List
 from transformers import AutoTokenizer
 from sqlalchemy import and_, or_, text, update, String
 from sqlalchemy.future import select
@@ -39,6 +38,7 @@ from api.user.schemas import User
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
+from api.instance.util import LeastConnManager, get_chute_target_manager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.permissions import Permissioning
 from api.metrics.vllm import track_usage as track_vllm_usage
@@ -531,7 +531,7 @@ async def invoke(
     stream: bool,
     args: str,
     kwargs: str,
-    targets: List[Instance],
+    manager: LeastConnManager,
     parent_invocation_id: str,
     metrics: dict = {},
     request: Request = None,
@@ -547,7 +547,7 @@ async def invoke(
                 "invocation_id": parent_invocation_id,
                 "chute_id": chute_id,
                 "function": function,
-                "message": f"identified {len(targets)} available targets",
+                "message": f"identified {len(manager.instances)} available targets",
             },
         }
     )
@@ -557,244 +557,216 @@ async def invoke(
 
     partition_suffix = None
     rate_limited = 0
-    for target in targets:
-        invocation_id = str(uuid.uuid4())
-        async with get_session() as session:
-            result = await session.execute(
-                TRACK_INVOCATION,
-                {
-                    "parent_invocation_id": parent_invocation_id,
-                    "invocation_id": invocation_id,
-                    "function_name": function,
-                    "chute_id": chute.chute_id,
-                    "chute_user_id": chute.user_id,
-                    "user_id": user_id,
-                    "image_id": chute.image_id,
-                    "image_user_id": chute.image.user_id,
-                    "instance_id": target.instance_id,
-                    "miner_uid": target.miner_uid,
-                    "miner_hotkey": target.miner_hotkey,
-                    "request_path": request_path,
-                    "compute_multiplier": NodeSelector(**chute.node_selector).compute_multiplier,
-                },
-            )
-            partition_suffix = result.scalar()
-            await session.commit()
+    avoid = []
+    for attempt_idx in range(3):
+        async with manager.get_target(avoid=avoid) as target:
+            if not target:
+                logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
+                await asyncio.sleep(0.5)
+                continue
 
-        try:
-            yield sse(
-                {
-                    "trace": {
-                        "timestamp": now_str(),
-                        "invocation_id": parent_invocation_id,
-                        "child_id": invocation_id,
-                        "chute_id": chute_id,
-                        "function": function,
-                        "message": f"attempting to query target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
-                    },
-                }
-            )
-            response_data = []
-            async for data in _invoke_one(chute, path, stream, args, kwargs, target, metrics):
-                yield sse({"result": data})
-                if request_path:
-                    response_data.append(data)
-
+            invocation_id = str(uuid.uuid4())
             async with get_session() as session:
-                # Save the response if we're randomly sampling this one.
-                response_path = None
-                if request_path:
-                    response_path = request_path.replace("/request", "/response")
-                    asyncio.create_task(
-                        _s3_upload(io.BytesIO(json.dumps(response_data)), response_path)
-                    )
-
-                # Mark the invocation as complete.
                 result = await session.execute(
-                    text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
+                    TRACK_INVOCATION,
                     {
-                        "chute_id": chute_id,
+                        "parent_invocation_id": parent_invocation_id,
                         "invocation_id": invocation_id,
-                        "response_path": response_path,
-                        "metrics": json.dumps(metrics).decode(),
+                        "function_name": function,
+                        "chute_id": chute.chute_id,
+                        "chute_user_id": chute.user_id,
+                        "user_id": user_id,
+                        "image_id": chute.image_id,
+                        "image_user_id": chute.image.user_id,
+                        "instance_id": target.instance_id,
+                        "miner_uid": target.miner_uid,
+                        "miner_hotkey": target.miner_hotkey,
+                        "request_path": request_path,
+                        "compute_multiplier": NodeSelector(
+                            **chute.node_selector
+                        ).compute_multiplier,
                     },
                 )
-                try:
-                    await settings.redis_client.delete(f"consecutive_failures:{target.instance_id}")
-                except Exception as exc:
-                    logger.warning(f"Error clearing consecutive failures: {exc}")
+                partition_suffix = result.scalar()
+                await session.commit()
 
-                # Calculate the credits used and deduct from user's balance.
-                # For LLMs and Diffusion chutes, we use custom per token/image step pricing, otherwise
-                # it's just based on time used.
-                compute_units = result.scalar_one_or_none()
-                if compute_units and not request.state.free_invocation:
-                    balance_used = None
-
-                    # Track any discounts.
-                    discount = 0.0
-                    if chute.discount and 0 < chute.discount <= 1:
-                        discount = chute.discount
-
-                    if discount < 1.0:
-                        # Calculate standard hourly price.
-                        hourly_price = await selector_hourly_price(chute.node_selector)
-
-                        # LLM per token pricing.
-                        if chute.standard_template == "vllm" and metrics:
-                            if output_tokens := metrics.get("ot"):
-                                tokens = output_tokens + metrics.get("it", 0)
-                                balance_used = (
-                                    tokens / 1000000.0 * hourly_price * LLM_PRICE_MULT_PER_MILLION
-                                )
-                                balance_used -= balance_used * discount
-                                logger.info(
-                                    f"BALANCE: LLM token pricing: {hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}$/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
-                                )
-
-                        # Diffusion per step pricing.
-                        elif chute.standard_template == "diffusion":
-                            if steps := metrics.get("steps"):
-                                balance_used = steps * hourly_price * DIFFUSION_PRICE_MULT_PER_STEP
-                                balance_used -= balance_used * discount
-                                logger.info(
-                                    f"BALANCE: Diffusion step pricing: {hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}$/step for {chute.name}, {balance_used=} {discount=}"
-                                )
-
-                        # Sanity check and default pricing if not a standard template.
-                        default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
-                        default_balance_used -= default_balance_used * discount
-                        if balance_used and balance_used > default_balance_used:
-                            logger.info(
-                                f"BALANCE: Balance per token/step exceeded default calculation for {chute.name}: {balance_used=} vs {default_balance_used=} {discount=}"
-                            )
-                            balance_used = default_balance_used
-                        if balance_used is None:
-                            balance_used = default_balance_used
-                            logger.info(
-                                f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
-                            )
-
-                        # Deduct the balance used.
-                        result = await session.execute(
-                            update(User)
-                            .where(User.user_id == user_id)
-                            .where(
-                                User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask)
-                                == 0
-                            )
-                            .values(balance=User.balance - balance_used)
-                            .returning(User.balance)
-                        )
-                        new_balance = result.scalar_one_or_none()
-                        if new_balance is not None:
-                            logger.info(
-                                f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
-                            )
-                    await session.commit()
-
-            yield sse(
-                {
-                    "trace": {
-                        "timestamp": now_str(),
-                        "invocation_id": parent_invocation_id,
-                        "child_id": invocation_id,
-                        "chute_id": chute_id,
-                        "function": function,
-                        "message": f"successfully called {function=} on target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
-                    }
-                }
-            )
-            return
-        except Exception as exc:
-            error_message = f"{exc}\n{traceback.format_exc()}"
-            error_message = error_message.replace(
-                f"{target.host}:{target.port}", "[host redacted]"
-            ).replace(target.host, "[host redacted]")
-
-            error_detail = None
-            if isinstance(exc, InstanceRateLimit):
-                error_message = "RATE_LIMIT"
-                rate_limited += 1
-            elif isinstance(exc, BadRequest):
-                error_message = "BAD_REQUEST"
-                error_detail = str(exc)
-            elif isinstance(exc, KeyExchangeRequired):
-                error_message = "KEY_EXCHANGE_REQUIRED"
-
-            async with get_session() as session:
-                await session.execute(
-                    text(UPDATE_INVOCATION_ERROR.format(suffix=partition_suffix)),
+            try:
+                yield sse(
                     {
-                        "invocation_id": invocation_id,
-                        "error_message": error_message,
-                    },
-                )
-
-                # Handle the case where encryption V2 is in use and the instance needs a new key exchange.
-                if error_message == "KEY_EXCHANGE_REQUIRED":
-                    # NOTE: Could probably just re-validate rather than deleting the instance, but this ensures no shenanigans are afoot.
-                    await session.execute(
-                        text("DELETE FROM instances WHERE instance_id = :instance_id"),
-                        {"instance_id": target.instance_id},
-                    )
-                    await session.execute(
-                        text(
-                            "UPDATE instance_audit SET deletion_reason = 'miner responded with 426 upgrade required, new symmetric key needed' WHERE instance_id = :instance_id"
-                        ),
-                        {"instance_id": target.instance_id},
-                    )
-                    await session.commit()
-                    event_data = {
-                        "reason": "instance_deleted",
-                        "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} responded with a 426 error, indicating a new key exchange is required.",
-                        "data": {
-                            "chute_id": target.chute_id,
-                            "instance_id": target.instance_id,
-                            "miner_hotkey": target.miner_hotkey,
+                        "trace": {
+                            "timestamp": now_str(),
+                            "invocation_id": parent_invocation_id,
+                            "child_id": invocation_id,
+                            "chute_id": chute_id,
+                            "function": function,
+                            "message": f"attempting to query target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
                         },
                     }
-                    asyncio.create_task(
-                        settings.redis_client.publish("events", json.dumps(event_data).decode())
-                    )
-                    event_data["filter_recipients"] = [target.miner_hotkey]
-                    asyncio.create_task(
-                        settings.redis_client.publish(
-                            "miner_broadcast", json.dumps(event_data).decode()
-                        )
-                    )
+                )
+                response_data = []
+                async for data in _invoke_one(chute, path, stream, args, kwargs, target, metrics):
+                    yield sse({"result": data})
+                    if request_path:
+                        response_data.append(data)
 
-                elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
-                    # Handle consecutive failures (auto-delete instances).
-                    consecutive_failures = await settings.redis_client.incr(
-                        f"consecutive_failures:{target.instance_id}"
-                    )
-                    if (
-                        consecutive_failures
-                        and consecutive_failures >= settings.consecutive_failure_limit
-                    ):
-                        logger.warning(
-                            f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
+                async with get_session() as session:
+                    # Save the response if we're randomly sampling this one.
+                    response_path = None
+                    if request_path:
+                        response_path = request_path.replace("/request", "/response")
+                        asyncio.create_task(
+                            _s3_upload(io.BytesIO(json.dumps(response_data)), response_path)
                         )
 
-                    if (
-                        consecutive_failures
-                        and consecutive_failures >= settings.consecutive_failure_limit
-                    ):
+                    # Mark the invocation as complete.
+                    result = await session.execute(
+                        text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
+                        {
+                            "chute_id": chute_id,
+                            "invocation_id": invocation_id,
+                            "response_path": response_path,
+                            "metrics": json.dumps(metrics).decode(),
+                        },
+                    )
+                    try:
+                        await settings.redis_client.delete(
+                            f"consecutive_failures:{target.instance_id}"
+                        )
+                    except Exception as exc:
+                        logger.warning(f"Error clearing consecutive failures: {exc}")
+
+                    # Calculate the credits used and deduct from user's balance.
+                    # For LLMs and Diffusion chutes, we use custom per token/image step pricing, otherwise
+                    # it's just based on time used.
+                    compute_units = result.scalar_one_or_none()
+                    if compute_units and not request.state.free_invocation:
+                        balance_used = None
+
+                        # Track any discounts.
+                        discount = 0.0
+                        if chute.discount and 0 < chute.discount <= 1:
+                            discount = chute.discount
+
+                        if discount < 1.0:
+                            # Calculate standard hourly price.
+                            hourly_price = await selector_hourly_price(chute.node_selector)
+
+                            # LLM per token pricing.
+                            if chute.standard_template == "vllm" and metrics:
+                                if output_tokens := metrics.get("ot"):
+                                    tokens = output_tokens + metrics.get("it", 0)
+                                    balance_used = (
+                                        tokens
+                                        / 1000000.0
+                                        * hourly_price
+                                        * LLM_PRICE_MULT_PER_MILLION
+                                    )
+                                    balance_used -= balance_used * discount
+                                    logger.info(
+                                        f"BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
+                                    )
+
+                            # Diffusion per step pricing.
+                            elif chute.standard_template == "diffusion":
+                                if steps := metrics.get("steps"):
+                                    balance_used = (
+                                        steps * hourly_price * DIFFUSION_PRICE_MULT_PER_STEP
+                                    )
+                                    balance_used -= balance_used * discount
+                                    logger.info(
+                                        f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
+                                    )
+
+                            # Sanity check and default pricing if not a standard template.
+                            default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
+                            default_balance_used -= default_balance_used * discount
+                            if balance_used and balance_used > default_balance_used:
+                                logger.info(
+                                    f"BALANCE: Balance per token/step exceeded default calculation for {chute.name}: {balance_used=} vs {default_balance_used=} {discount=}"
+                                )
+                                balance_used = default_balance_used
+                            if balance_used is None:
+                                balance_used = default_balance_used
+                                logger.info(
+                                    f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
+                                )
+
+                            # Deduct the balance used.
+                            result = await session.execute(
+                                update(User)
+                                .where(User.user_id == user_id)
+                                .where(
+                                    User.permissions_bitmask.op("&")(
+                                        Permissioning.free_account.bitmask
+                                    )
+                                    == 0
+                                )
+                                .values(balance=User.balance - balance_used)
+                                .returning(User.balance)
+                            )
+                            new_balance = result.scalar_one_or_none()
+                            if new_balance is not None:
+                                logger.info(
+                                    f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                                )
+                        await session.commit()
+
+                yield sse(
+                    {
+                        "trace": {
+                            "timestamp": now_str(),
+                            "invocation_id": parent_invocation_id,
+                            "child_id": invocation_id,
+                            "chute_id": chute_id,
+                            "function": function,
+                            "message": f"successfully called {function=} on target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}",
+                        }
+                    }
+                )
+                return
+            except Exception as exc:
+                avoid.append(target.instance_id)
+                error_message = f"{exc}\n{traceback.format_exc()}"
+                error_message = error_message.replace(
+                    f"{target.host}:{target.port}", "[host redacted]"
+                ).replace(target.host, "[host redacted]")
+
+                error_detail = None
+                if isinstance(exc, InstanceRateLimit):
+                    error_message = "RATE_LIMIT"
+                    rate_limited += 1
+                elif isinstance(exc, BadRequest):
+                    error_message = "BAD_REQUEST"
+                    error_detail = str(exc)
+                elif isinstance(exc, KeyExchangeRequired):
+                    error_message = "KEY_EXCHANGE_REQUIRED"
+
+                async with get_session() as session:
+                    await session.execute(
+                        text(UPDATE_INVOCATION_ERROR.format(suffix=partition_suffix)),
+                        {
+                            "invocation_id": invocation_id,
+                            "error_message": error_message,
+                        },
+                    )
+
+                    # Handle the case where encryption V2 is in use and the instance needs a new key exchange.
+                    if error_message == "KEY_EXCHANGE_REQUIRED":
+                        # NOTE: Could probably just re-validate rather than deleting the instance, but this ensures no shenanigans are afoot.
                         await session.execute(
                             text("DELETE FROM instances WHERE instance_id = :instance_id"),
                             {"instance_id": target.instance_id},
                         )
                         await session.execute(
                             text(
-                                f"UPDATE instance_audit SET deletion_reason = 'max consecutive failures {consecutive_failures} reached' WHERE instance_id = :instance_id"
+                                "UPDATE instance_audit SET deletion_reason = 'miner responded with 426 upgrade required, new symmetric key needed' WHERE instance_id = :instance_id"
                             ),
                             {"instance_id": target.instance_id},
                         )
                         await session.commit()
                         event_data = {
                             "reason": "instance_deleted",
-                            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
+                            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} responded with a 426 error, indicating a new key exchange is required.",
                             "data": {
                                 "chute_id": target.chute_id,
                                 "instance_id": target.instance_id,
@@ -804,41 +776,90 @@ async def invoke(
                         asyncio.create_task(
                             settings.redis_client.publish("events", json.dumps(event_data).decode())
                         )
-
-                        # Miner notification.
                         event_data["filter_recipients"] = [target.miner_hotkey]
                         asyncio.create_task(
                             settings.redis_client.publish(
                                 "miner_broadcast", json.dumps(event_data).decode()
                             )
                         )
-            if error_message == "BAD_REQUEST":
-                logger.warning(
-                    f"instance_id={target.instance_id} [chute_id={target.chute_id}]: bad request {error_detail}"
-                )
-                yield sse({"error": f"Invalid request: {error_detail}"})
-                return
 
-            yield sse(
-                {
-                    "trace": {
-                        "timestamp": now_str(),
-                        "invocation_id": parent_invocation_id,
-                        "child_id": invocation_id,
-                        "chute_id": chute_id,
-                        "function": function,
-                        "message": f"error encountered while querying target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}: exc={error_message}",
-                    },
-                }
-            )
-            logger.error(
-                f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
-            )
-    if rate_limited == len(targets):
+                    elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
+                        # Handle consecutive failures (auto-delete instances).
+                        consecutive_failures = await settings.redis_client.incr(
+                            f"consecutive_failures:{target.instance_id}"
+                        )
+                        if (
+                            consecutive_failures
+                            and consecutive_failures >= settings.consecutive_failure_limit
+                        ):
+                            logger.warning(
+                                f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
+                            )
+
+                        if (
+                            consecutive_failures
+                            and consecutive_failures >= settings.consecutive_failure_limit
+                        ):
+                            await session.execute(
+                                text("DELETE FROM instances WHERE instance_id = :instance_id"),
+                                {"instance_id": target.instance_id},
+                            )
+                            await session.execute(
+                                text(
+                                    f"UPDATE instance_audit SET deletion_reason = 'max consecutive failures {consecutive_failures} reached' WHERE instance_id = :instance_id"
+                                ),
+                                {"instance_id": target.instance_id},
+                            )
+                            await session.commit()
+                            event_data = {
+                                "reason": "instance_deleted",
+                                "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
+                                "data": {
+                                    "chute_id": target.chute_id,
+                                    "instance_id": target.instance_id,
+                                    "miner_hotkey": target.miner_hotkey,
+                                },
+                            }
+                            asyncio.create_task(
+                                settings.redis_client.publish(
+                                    "events", json.dumps(event_data).decode()
+                                )
+                            )
+
+                            # Miner notification.
+                            event_data["filter_recipients"] = [target.miner_hotkey]
+                            asyncio.create_task(
+                                settings.redis_client.publish(
+                                    "miner_broadcast", json.dumps(event_data).decode()
+                                )
+                            )
+                if error_message == "BAD_REQUEST":
+                    logger.warning(
+                        f"instance_id={target.instance_id} [chute_id={target.chute_id}]: bad request {error_detail}"
+                    )
+                    yield sse({"error": f"Invalid request: {error_detail}"})
+                    return
+
+                yield sse(
+                    {
+                        "trace": {
+                            "timestamp": now_str(),
+                            "invocation_id": parent_invocation_id,
+                            "child_id": invocation_id,
+                            "chute_id": chute_id,
+                            "function": function,
+                            "message": f"error encountered while querying target={target.instance_id} uid={target.miner_uid} hotkey={target.miner_hotkey} coldkey={target.miner_coldkey}: exc={error_message}",
+                        },
+                    }
+                )
+                logger.error(
+                    f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
+                )
+    if rate_limited == attempt_idx - 1:
         logger.warning(f"All miners are at max capacity: {rate_limited=} {chute.name=}")
         yield sse({"error": "rate_limit", "detail": "All miners are all maximum capacity"})
     else:
-        logger.error(f"Failed to query all miners: {len(targets)} attempts")
+        logger.error(f"Failed to query all miners after {attempt_idx + 1} attempts")
         yield sse({"error": "exhausted all available targets to no avail"})
 
 
@@ -864,9 +885,10 @@ async def get_vllm_models(request: Request):
         )
         if cached:
             return json.loads(cached)
-        active = [inst for inst in chute.instances if inst.verified and inst.active]
-        if not active:
-            return None
+        async with get_session() as session:
+            target_manager = await get_chute_target_manager(session, chute.chute_id, max_wait=0)
+            if not target_manager or not target_manager.instances:
+                return None
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
         inv_id = str(uuid.uuid4())
@@ -879,7 +901,7 @@ async def get_vllm_models(request: Request):
             False,
             args,
             kwargs,
-            active,
+            target_manager,
             inv_id,
             metrics={},
             request=request,

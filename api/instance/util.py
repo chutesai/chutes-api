@@ -3,11 +3,14 @@ Helper functions for instances.
 """
 
 import time
+import uuid
 import asyncio
 import random
+import aiohttp
 import orjson as json
 from async_lru import alru_cache
 from loguru import logger
+from contextlib import asynccontextmanager
 from api.instance.schemas import Instance
 from api.config import settings
 from api.database import get_session
@@ -33,9 +36,82 @@ async def load_chute_targets(chute_id: str, nonce: float = 0):
         return result.scalars().unique().all()
 
 
-async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait: int = 0):
+MANAGERS = {}
+
+
+class LeastConnManager:
+    def __init__(self, instances: list[Instance], connection_expiry: int = 600):
+        self.instances = {instance.instance_id: instance for instance in instances}
+        self.connection_expiry = connection_expiry
+        self.lock = asyncio.Lock()
+        self._session = None
+
+    async def initialize(self):
+        if self._session is None:
+            self.session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+                read_bufsize=8 * 1024 * 1024,
+            )
+
+    async def close(self):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    async def get_targets(self, avoid=[]):
+        counts = {}
+        for instance_id in self.instances:
+            if instance_id in avoid:
+                continue
+            counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
+        if random.random() < 0.05:
+            logger.info(
+                "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
+            )
+        if not counts:
+            return []
+        grouped_by_count = {}
+        for instance_id, count in counts.items():
+            if count not in grouped_by_count:
+                grouped_by_count[count] = []
+            grouped_by_count[count].append(self.instances[instance_id])
+        for count in grouped_by_count:
+            random.shuffle(grouped_by_count[count])
+        result = []
+        for count in sorted(grouped_by_count.keys()):
+            result.extend(grouped_by_count[count])
+        return result
+
+    @asynccontextmanager
+    async def get_target(self, avoid=[]):
+        conn_id = str(uuid.uuid4())
+        now = time.time()
+        try:
+            targets = await self.get_targets(avoid=avoid)
+        except Exception as exc:
+            logger.error(f"Failed to sort chute targets: {exc}, using random order")
+            yield random.choice([inst for _id, inst in self.instances.items() if _id not in avoid])
+            return
+        if not targets:
+            yield None
+            return
+        instance = targets[0]
+        await settings.cm_redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
+        await settings.cm_redis_client.expire(
+            f"conn:{instance.instance_id}", self.connection_expiry
+        )
+        try:
+            yield instance
+        except Exception:
+            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            raise
+        finally:
+            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+
+
+async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
     """
-    Evenly distribute queries to miners.
+    Select target instances by least connections (with random on equal counts).
     """
     instances = await load_chute_targets(chute_id, nonce=0)
     started_at = time.time()
@@ -87,8 +163,14 @@ async def discover_chute_targets(session: AsyncSession, chute_id: str, max_wait:
             logger.warning("Target discovery cancelled")
             return []
     if not instances:
-        return []
-    return random.sample(instances, min(9, len(instances)))
+        return None
+    if chute_id not in MANAGERS:
+        MANAGERS[chute_id] = LeastConnManager(instances=instances)
+        async with MANAGERS[chute_id].lock:
+            await MANAGERS[chute_id].initialize()
+    async with MANAGERS[chute_id].lock:
+        MANAGERS[chute_id].instances = {instance.instance_id: instance for instance in instances}
+    return MANAGERS[chute_id]
 
 
 async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
