@@ -644,7 +644,10 @@ async def invoke(
 
                         # Track any discounts.
                         discount = 0.0
-                        if chute.discount and 0 < chute.discount <= 1:
+                        # A negative discount just makes the chute more than our typical pricing,
+                        # e.g. for chutes that have a concurrency of one and we can't really operate
+                        # efficiently with the normal pricing.
+                        if chute.discount and -3 < chute.discount <= 1:
                             discount = chute.discount
 
                         if discount < 1.0:
