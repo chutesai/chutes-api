@@ -558,7 +558,7 @@ async def invoke(
     partition_suffix = None
     rate_limited = 0
     avoid = []
-    for attempt_idx in range(3):
+    for attempt_idx in range(5):
         async with manager.get_target(avoid=avoid) as target:
             if not target:
                 logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
@@ -737,6 +737,7 @@ async def invoke(
                 error_detail = None
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
+                    await asyncio.sleep(0.5)
                     rate_limited += 1
                 elif isinstance(exc, BadRequest):
                     error_message = "BAD_REQUEST"

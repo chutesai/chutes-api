@@ -61,8 +61,8 @@ class Instance(Base):
     chutes_version = Column(String, nullable=True)
     symmetric_key = Column(String, default=lambda: secrets.token_bytes(16).hex())
 
-    nodes = relationship("Node", secondary=instance_nodes, back_populates="instance", lazy="joined")
-    chute = relationship("Chute", back_populates="instances", lazy="joined")
+    nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
+    chute = relationship("Chute", back_populates="instances")
 
     __table_args__ = (
         Index(

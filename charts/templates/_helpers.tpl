@@ -113,7 +113,7 @@ app.kubernetes.io/name: registry-proxy
 - name: CHUTES_VERSION
   value: {{ .Values.chutes_version }}
 - name: GRAVAL_URL
-  value: http://graval:{{ .Values.graval.service.port }}
+  value: https://graval.chutes.ai
 - name: VALIDATOR_SS58
   valueFrom:
     secretKeyRef:

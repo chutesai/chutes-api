@@ -17,7 +17,7 @@ from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, joinedload
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
@@ -30,6 +30,7 @@ async def load_chute_targets(chute_id: str, nonce: float = 0):
         .where(Instance.active.is_(True))
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
+        .options(joinedload(Instance.nodes))
     )
     async with get_session() as session:
         result = await session.execute(query)
@@ -184,6 +185,7 @@ async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
         .where(Instance.instance_id == instance_id)
         .where(Instance.chute_id == chute_id)
         .where(Instance.miner_hotkey == hotkey)
+        .options(joinedload(Instance.nodes))
     )
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()

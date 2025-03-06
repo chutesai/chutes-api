@@ -31,6 +31,7 @@ from api.instance.schemas import Instance
 from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import update, func, and_, not_
 from sqlalchemy.future import select
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 import api.database.orms  # noqa
@@ -602,13 +603,13 @@ async def verify_instance(instance_id: str):
         logger.warning(f"Instance {instance_id} is already being verified...")
         return
     await settings.redis_client.expire(f"verify:lock:{instance_id}", 180)
-
+    query = (
+        select(Instance)
+        .where(Instance.instance_id == instance_id)
+        .options(joinedload(Node.instance).joinedload(Instance.chute))
+    )
     async with get_session() as session:
-        instance = (
-            (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
-            .unique()
-            .scalar_one_or_none()
-        )
+        instance = (await session.execute(query)).unique().scalar_one_or_none()
         if not instance:
             logger.warning("Found no matching nodes, did they disappear?")
             await settings.redis_client.delete(f"verify:lock:{instance_id}")
