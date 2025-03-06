@@ -246,11 +246,11 @@ async def _invoke(
             limit = int(limit * 10)
         if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
             limit = int(limit * 2.5)
-    # Allow extra capacity for the models not on OpenRouter.
-    if not chute.openrouter:
-        limit *= 2
-    if is_paid_account:
-        limit *= 3
+        # Allow extra capacity for the models not on OpenRouter.
+        if not chute.openrouter:
+            limit *= 2
+        if is_paid_account:
+            limit *= 3
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.

@@ -55,9 +55,13 @@ async def clean_failed_chutes():
     to_broadcast = []
     async with get_session() as session:
         result = await session.execute(text(QUERY))
-        for name, chute_id, created_at, _, __ in result:
+        for name, chute_id, version, created_at, _, __ in result:
             chute = (
-                (await session.execute(select(Chute).where(Chute.chute_id == chute_id)))
+                (
+                    await session.execute(
+                        select(Chute).where(Chute.chute_id == chute_id, Chute.version == version)
+                    )
+                )
                 .unique()
                 .scalar_one_or_none()
             )

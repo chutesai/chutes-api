@@ -191,7 +191,7 @@ async def chute_id_by_slug(slug: str):
 @alru_cache(maxsize=100)
 async def get_one(name_or_id: str):
     """
-    Load a chute by it's name or ID.l
+    Load a chute by it's name or ID.
     """
     chute_user = await chutes_user_id()
     async with get_session() as db:
