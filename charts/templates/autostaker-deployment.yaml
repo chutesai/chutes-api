@@ -1,3 +1,4 @@
+{{- if .Values.autostaker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,3 +39,4 @@ spec:
               value: {{ .Values.autostaker.subtensor }}
           resources:
             {{- toYaml .Values.autostaker.resources | nindent 12 }}
+{{- end }}
