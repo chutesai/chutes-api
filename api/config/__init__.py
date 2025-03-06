@@ -123,13 +123,13 @@ class Settings(BaseSettings):
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 30))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
-    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 25))
+    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 90))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.20")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.21")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))

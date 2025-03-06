@@ -12,11 +12,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from fastapi_cache.decorator import cache
 from sqlalchemy import select, func, delete, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 from api.database import get_db_session
 from api.config import settings
 from api.util import is_valid_host
 from api.gpu import SUPPORTED_GPUS
 from api.node.schemas import Node, MultiNodeArgs
+from api.instance.schemas import Instance
 from api.graval_worker import validate_gpus, broker
 from api.challenge.schemas import Challenge
 from api.user.schemas import User
@@ -72,7 +74,7 @@ async def list_nodes(
         return await _list_nodes_compact(db)
 
     # Detailed view, ordered by number of GPUs per miner.
-    query = select(Node)
+    query = select(Node).options(joinedload(Node.instance).joinedload(Instance.chute))
     if hotkey:
         query = query.where(Node.miner_hotkey == hotkey)
     query = query.order_by(Node.miner_hotkey)
