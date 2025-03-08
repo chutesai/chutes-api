@@ -46,6 +46,7 @@ class LeastConnManager:
         self.connection_expiry = connection_expiry
         self.lock = asyncio.Lock()
         self._session = None
+        self._last_cleanup = time.time()
 
     async def initialize(self):
         if self._session is None:
@@ -63,10 +64,16 @@ class LeastConnManager:
         counts = {}
         min_count = 10000000
         instance_ids = list(self.instances)
+        now = time.time()
         for instance_id in instance_ids:
             if instance_id in avoid:
                 continue
-            counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
+            counts[instance_id] = await settings.cm_redis_client.zcount(
+                f"conn:{instance_id}",
+                now - self.connection_expiry,
+                now,
+            )
+            # counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
             if min_count > counts[instance_id]:
                 min_count = counts[instance_id]
         if random.random() < 0.05:
@@ -141,6 +148,7 @@ class LeastConnManager:
 
     @asynccontextmanager
     async def get_target(self, avoid=[], prefixes=None):
+        await self.clean_up_expired_connections()
         conn_id = str(uuid.uuid4())
         now = time.time()
         try:
@@ -164,6 +172,25 @@ class LeastConnManager:
             raise
         finally:
             await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+
+    async def clean_up_expired_connections(self):
+        now = time.time()
+        if now - self._last_cleanup < 60:
+            return
+        for instance_id in self.instances:
+            try:
+                removed_count = await settings.cm_redis_client.zremrangebyscore(
+                    f"conn:{instance_id}",
+                    0,
+                    now - self.connection_expiry,
+                )
+                if removed_count:
+                    logger.info(
+                        f"Successfully cleared {removed_count} expired connections from {instance_id=}"
+                    )
+            except Exception as exc:
+                logger.warning(f"Error purging expired connection counts: {exc}")
+        self._last_cleanup = now
 
 
 async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
