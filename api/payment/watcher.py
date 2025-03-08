@@ -212,6 +212,7 @@ class PaymentMonitor:
             payment = Payment(
                 payment_id=payment_id,
                 user_id=user.user_id,
+                source_address=from_address,
                 block=block,
                 rao_amount=amount,
                 usd_amount=delta,
@@ -295,6 +296,7 @@ class PaymentMonitor:
             payment = Payment(
                 payment_id=payment_id,
                 user_id=user.user_id,
+                source_address=from_address,
                 block=block,
                 rao_amount=amount,
                 usd_amount=delta,

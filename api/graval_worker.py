@@ -606,7 +606,7 @@ async def verify_instance(instance_id: str):
     query = (
         select(Instance)
         .where(Instance.instance_id == instance_id)
-        .options(joinedload(Node.instance).joinedload(Instance.chute))
+        .options(joinedload(Instance.nodes), joinedload(Instance.chute))
     )
     async with get_session() as session:
         instance = (await session.execute(query)).unique().scalar_one_or_none()

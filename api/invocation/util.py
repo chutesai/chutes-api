@@ -2,6 +2,7 @@
 Helpers for invocations.
 """
 
+import hashlib
 import orjson as json
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.database import get_session
@@ -53,3 +54,27 @@ GROUP BY i.chute_id"""
             items.append(item)
             yield item
     await settings.memcache.set(b"miner_metrics_stream", json.dumps(items), exptime=600)
+
+
+def get_prompt_prefix_hashes(payload: dict) -> list:
+    """
+    Given an LLM prompt, generate a list of prefix hashes that can be used
+    in prefix-aware routing for higher KV cache hit rate. Exponential size,
+    powers of 2, using only characters not tokens for performance, as well
+    as md5 since collections don't really matter here, cache miss is fine.
+    """
+    if (prompt := payload.get("prompt")) is None:
+        if (messages := payload.get("messages")) is None:
+            return []
+        if all([isinstance(v, dict) and isinstance(v.get("content"), str) for v in messages]):
+            prompt = "".join([v["content"] for v in messages])
+        else:
+            return []
+    if not prompt or len(prompt) <= 1024:
+        return []
+    size = 1024
+    hashes = []
+    while len(prompt) > size:
+        hashes.append((size, hashlib.md5(prompt[:size].encode()).hexdigest()))
+        size *= 2
+    return hashes[::-1]

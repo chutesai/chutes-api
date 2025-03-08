@@ -191,7 +191,7 @@ async def chute_id_by_slug(slug: str):
 @alru_cache(maxsize=100)
 async def get_one(name_or_id: str):
     """
-    Load a chute by it's name or ID.l
+    Load a chute by it's name or ID.
     """
     chute_user = await chutes_user_id()
     async with get_session() as db:
@@ -214,6 +214,19 @@ async def get_one(name_or_id: str):
         )
 
 
+async def track_prefix_hashes(prefixes, instance_id):
+    if not prefixes:
+        return
+    try:
+        for _, prefix_hash in prefixes:
+            await settings.memcache.set(
+                f"pfx:{prefix_hash}:{instance_id}".encode(), b"1", exptime=300
+            )
+            break  # XXX only track the largest prefix
+    except Exception as exc:
+        logger.warning(f"Error setting prefix hash cache: {exc}")
+
+
 async def _invoke_one(
     chute: Chute,
     path: str,
@@ -222,6 +235,7 @@ async def _invoke_one(
     kwargs: str,
     target: Instance,
     metrics: dict = {},
+    prefixes: list = None,
 ):
     """
     Try invoking a chute/cord with a single instance.
@@ -340,6 +354,7 @@ async def _invoke_one(
                     last_chunk = chunk
 
                 yield chunk.decode()
+
             if chute.standard_template == "vllm" and plain_path in LLM_PATHS and metrics:
                 total_time = time.time() - started_at
                 prompt_tokens = metrics.get("it", 0)
@@ -388,6 +403,7 @@ async def _invoke_one(
                     f"Metrics for chute={chute.name} miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                 )
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
+                await track_prefix_hashes(prefixes, target.instance_id)
         else:
             # Non-streamed responses, which may be encrypted with the new chutes encryption V2.
             headers = response.headers
@@ -483,6 +499,7 @@ async def _invoke_one(
                         f"Metrics for [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                     )
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
+                    await track_prefix_hashes(prefixes, target.instance_id)
             elif (
                 chute.standard_template == "diffusion"
                 and path == "generate"
@@ -535,6 +552,7 @@ async def invoke(
     parent_invocation_id: str,
     metrics: dict = {},
     request: Request = None,
+    prefixes: list = None,
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
@@ -559,7 +577,7 @@ async def invoke(
     rate_limited = 0
     avoid = []
     for attempt_idx in range(5):
-        async with manager.get_target(avoid=avoid) as target:
+        async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
             if not target:
                 logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
                 await asyncio.sleep(0.5)
@@ -604,7 +622,9 @@ async def invoke(
                     }
                 )
                 response_data = []
-                async for data in _invoke_one(chute, path, stream, args, kwargs, target, metrics):
+                async for data in _invoke_one(
+                    chute, path, stream, args, kwargs, target, metrics, prefixes
+                ):
                     yield sse({"result": data})
                     if request_path:
                         response_data.append(data)

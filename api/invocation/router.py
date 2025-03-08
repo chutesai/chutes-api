@@ -26,6 +26,7 @@ from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session
 from api.instance.util import get_chute_target_manager
+from api.invocation.util import get_prompt_prefix_hashes
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -246,11 +247,11 @@ async def _invoke(
             limit = int(limit * 10)
         if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
             limit = int(limit * 2.5)
-    # Allow extra capacity for the models not on OpenRouter.
-    if not chute.openrouter:
-        limit *= 2
-    if is_paid_account:
-        limit *= 3
+        # Allow extra capacity for the models not on OpenRouter.
+        if not chute.openrouter:
+            limit *= 2
+        if is_paid_account:
+            limit *= 3
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
@@ -283,6 +284,7 @@ async def _invoke(
 
     # Wrap up the args/kwargs in the way the miner execution service expects them.
     args, kwargs = None, None
+    prefix_hashes = None
     if chute.standard_template == "diffusion":
         request_body.pop("cord", None)
         request_body.pop("method", None)
@@ -340,6 +342,10 @@ async def _invoke(
                 f"User requested model {requested_model} but chute name is: {chute.name}"
             )
             request_body["model"] = chute.name
+
+        # Load prompt prefixes so we can do more intelligent routing.
+        prefix_hashes = get_prompt_prefix_hashes(request_body)
+
     if chute.standard_template in ("vllm", "tei") or selected_cord.get("passthrough", False):
         request_body = {"json": request_body, "params": request_params}
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
@@ -405,6 +411,7 @@ async def _invoke(
                 parent_invocation_id,
                 metrics=metrics,
                 request=request,
+                prefixes=prefix_hashes,
             ):
                 if include_trace:
                     yield chunk
@@ -444,6 +451,7 @@ async def _invoke(
         parent_invocation_id,
         metrics=metrics,
         request=request,
+        prefixes=prefix_hashes,
     ):
         if response:
             continue

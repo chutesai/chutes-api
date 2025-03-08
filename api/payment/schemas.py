@@ -26,6 +26,7 @@ class Payment(Base):
     usd_amount = Column(Double, nullable=False)
     transaction_hash = Column(String, nullable=False)
     purpose = Column(String, default="credits")
+    source_address = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

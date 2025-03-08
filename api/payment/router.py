@@ -172,7 +172,7 @@ async def list_payments(
                 transaction_hash=payment.transaction_hash,
                 timestamp=payment.created_at.isoformat(),
                 tx_link=f"https://taostats.io/transfer/{payment.transaction_hash}",
-                delegations_link=f"https://taostats.io/account/{user.payment_address}/delegation",
+                transactions_link=f"https://taostats.io/account/{user.payment_address}/transactions",
             )
         )
     response = {

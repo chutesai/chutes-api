@@ -1,3 +1,4 @@
+{{- if .Values.auditExporter.enabled }}
 apiVersion: batch/v1
 kind: CronJob
 metadata:
@@ -38,3 +39,4 @@ spec:
           - name: tmpdir
             emptyDir: {}
           restartPolicy: OnFailure
+{{- end }}
