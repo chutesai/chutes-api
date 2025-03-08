@@ -369,6 +369,21 @@ paymentWatcher:
             values: ["true"]
   tolerations: []
 
+usageTracker:
+  enabled: true
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
 metasync:
   replicaCount: 1
   image: parachutes/metasync:latest

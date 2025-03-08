@@ -21,7 +21,7 @@ from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, update, String
+from sqlalchemy import and_, or_, text, String
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -40,7 +40,6 @@ from api.miner_client import sign_request
 from api.instance.schemas import Instance
 from api.instance.util import LeastConnManager, get_chute_target_manager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
-from api.permissions import Permissioning
 from api.metrics.vllm import track_usage as track_vllm_usage
 
 # Tokenizer for input/output token estimation.
@@ -220,7 +219,7 @@ async def track_prefix_hashes(prefixes, instance_id):
     try:
         for _, prefix_hash in prefixes:
             await settings.memcache.set(
-                f"pfx:{prefix_hash}:{instance_id}".encode(), b"1", exptime=300
+                f"pfx:{prefix_hash}:{instance_id}".encode(), b"1", exptime=600
             )
             break  # XXX only track the largest prefix
     except Exception as exc:
@@ -714,24 +713,33 @@ async def invoke(
                                     f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
                                 )
 
-                            # Deduct the balance used.
-                            result = await session.execute(
-                                update(User)
-                                .where(User.user_id == user_id)
-                                .where(
-                                    User.permissions_bitmask.op("&")(
-                                        Permissioning.free_account.bitmask
-                                    )
-                                    == 0
-                                )
-                                .values(balance=User.balance - balance_used)
-                                .returning(User.balance)
-                            )
-                            new_balance = result.scalar_one_or_none()
-                            if new_balance is not None:
-                                logger.info(
-                                    f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
-                                )
+                            # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
+                            pipeline = settings.cm_redis_client.pipeline()
+                            key = f"balance:{user_id}:{chute.chute_id}"
+                            pipeline.hincrbyfloat(key, "amount", balance_used)
+                            pipeline.hincrby(key, "count", 1)
+                            pipeline.hset(key, "timestamp", int(time.time()))
+                            await pipeline.execute()
+                            logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
+
+                            # XXX this is what NOT to do, because it causes deadlocks.
+                            # result = await session.execute(
+                            #    update(User)
+                            #    .where(User.user_id == user_id)
+                            #    .where(
+                            #        User.permissions_bitmask.op("&")(
+                            #            Permissioning.free_account.bitmask
+                            #        )
+                            #        == 0
+                            #    )
+                            #    .values(balance=User.balance - balance_used)
+                            #    .returning(User.balance)
+                            # )
+                            # new_balance = result.scalar_one_or_none()
+                            # if new_balance is not None:
+                            #    logger.info(
+                            #        f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                            #    )
                         await session.commit()
 
                 yield sse(

@@ -54,3 +54,12 @@ class PaymentMonitorState(Base):
     lock_holder = Column(String)
     locked_at = Column(DateTime)
     last_updated_at = Column(DateTime, default=func.now())
+
+
+class UsageData(Base):
+    __tablename__ = "usage_data"
+    user_id = Column(String, ForeignKey("users.user_id"), primary_key=True)
+    bucket = Column(DateTime, primary_key=True)
+    chute_id = Column(String, primary_key=True)
+    amount = Column(Double, nullable=False)
+    count = Column(BigInteger, nullable=False)
