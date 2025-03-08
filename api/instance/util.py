@@ -59,12 +59,16 @@ class LeastConnManager:
             await self._session.close()
             self._session = None
 
-    async def get_targets(self, avoid=[]):
+    async def get_targets(self, avoid=[], prefixes=None):
         counts = {}
-        for instance_id in self.instances:
+        min_count = 10000000
+        instance_ids = list(self.instances)
+        for instance_id in instance_ids:
             if instance_id in avoid:
                 continue
             counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
+            if min_count > counts[instance_id]:
+                min_count = counts[instance_id]
         if random.random() < 0.05:
             logger.info(
                 "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
@@ -75,20 +79,72 @@ class LeastConnManager:
         for instance_id, count in counts.items():
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
-            grouped_by_count[count].append(self.instances[instance_id])
+            if instance := self.instances.get(instance_id):
+                grouped_by_count[count].append(instance)
         for count in grouped_by_count:
             random.shuffle(grouped_by_count[count])
+
+        # Prefix aware routing?
+        if prefixes:
+            likely_cached = set([])
+            for size, prefix_hash in prefixes:
+                try:
+                    instance_ids = list(counts)
+                    has_prefix = await settings.memcache.multi_get(
+                        *[
+                            f"pfx:{prefix_hash}:{instance_id}".encode()
+                            for instance_id in instance_ids
+                        ]
+                    )
+                    for idx in range(len(instance_ids)):
+                        if has_prefix[idx]:
+                            likely_cached.add(instance_ids[idx])
+                    if likely_cached:
+                        break
+                except Exception as exc:
+                    logger.error(f"Error performing prefix-aware routing lookups: {exc}")
+                    break
+            if likely_cached:
+                # Allow a small amount of discrepancy on active connection counts when
+                # there is likely a prefix cache hit since it's much better for the user.
+                routable = [
+                    instance_id
+                    for instance_id in likely_cached
+                    if abs(counts[instance_id] - min_count) <= 3
+                ]
+                if routable:
+                    logger.info(
+                        f"Performing prefix aware routing: {len(routable)} potentially cached instances"
+                    )
+                    result = sorted(
+                        [
+                            self.instances[instance_id]
+                            for instance_id in routable
+                            if instance_id in self.instances
+                        ],
+                        key=lambda inst: counts[inst.instance_id],
+                    )[:3]
+                    for count in sorted(grouped_by_count.keys()):
+                        result.extend(
+                            [
+                                instance
+                                for instance in grouped_by_count[count]
+                                if instance.instance_id not in routable
+                            ]
+                        )
+                    return result
+
         result = []
         for count in sorted(grouped_by_count.keys()):
             result.extend(grouped_by_count[count])
         return result
 
     @asynccontextmanager
-    async def get_target(self, avoid=[]):
+    async def get_target(self, avoid=[], prefixes=None):
         conn_id = str(uuid.uuid4())
         now = time.time()
         try:
-            targets = await self.get_targets(avoid=avoid)
+            targets = await self.get_targets(avoid=avoid, prefixes=prefixes)
         except Exception as exc:
             logger.error(f"Failed to sort chute targets: {exc}, using random order")
             yield random.choice([inst for _id, inst in self.instances.items() if _id not in avoid])

@@ -10,7 +10,7 @@ import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func
@@ -203,6 +203,30 @@ async def list_chutes(
     }
     await settings.memcache.set(cache_key, json.dumps(result), exptime=300)
     return result
+
+
+@cache(expire=60)
+@router.get("/code/{chute_id}")
+async def get_chute_code(
+    chute_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+):
+    """
+    Load a chute's code by ID or name.
+    """
+    query = select(Chute).where(Chute.chute_id == chute_id)
+    if current_user:
+        query = query.where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
+    else:
+        query = query.where(Chute.public.is_(True))
+    chute = (await db.execute(query)).unique().scalar_one_or_none()
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    return Response(content=chute.code, media_type="text/plain")
 
 
 @cache(expire=60)
@@ -764,6 +788,7 @@ async def invoke_(
             parent_invocation_id,
             metrics=metrics,
             request=request,
+            prefixes=None,
         ),
         headers={"X-Chutes-InvocationID": parent_invocation_id},
     )
