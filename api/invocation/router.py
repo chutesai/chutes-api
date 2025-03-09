@@ -8,6 +8,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
+import hashlib
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -337,6 +338,19 @@ async def _invoke(
                         request_body["max_tokens"] = 4096
                 except ValueError:
                     request_body["max_tokens"] = 4096
+        try:
+            request_hash = hashlib.md5(
+                request_body["model"].encode() + json.dumps(request_body)
+            ).hexdigest()
+            request_key = f"req:{request_hash}".encode()
+            if not await settings.memcache.get(request_key):
+                await settings.memcache.set(request_key, b"0")
+            count = await settings.memcache.incr(request_key)
+            if count > 1:
+                logger.info(f"SHOULD DEDUPE {request_body['model']} {request_key}: {count=}")
+        except Exception:
+            ...
+
         if (requested_model := request_body.get("model")) != chute.name:
             logger.warning(
                 f"User requested model {requested_model} but chute name is: {chute.name}"

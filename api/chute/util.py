@@ -529,6 +529,9 @@ async def _sample_request(chute_id, parent_invocation_id, args, kwargs):
     """
     Randomly sample and store request data.
     """
+    # XXX disabled
+    return None
+
     request_path = None
     if random.random() <= REQUEST_SAMPLE_RATIO:
         today = datetime.date.today()

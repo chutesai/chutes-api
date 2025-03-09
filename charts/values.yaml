@@ -563,6 +563,27 @@ cmRedis:
   config:
     customArgs: []
 
+llmCacheRedis:
+  redis:
+  image: redis:7
+  imagePullPolicy: IfNotPresent
+  replicaCount: 1
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 1
+      memory: 2Gi
+    limits:
+      cpu: 1
+      memory: 2Gi
+  service:
+    type: ClusterIP
+    port: 6379
+  config:
+    customArgs: []
+
 pgproxy:
   image: haproxy:3.1
   imagePullPolicy: IfNotPresent
