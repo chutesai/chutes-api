@@ -552,7 +552,8 @@ async def purge_unverified():
                 instance, reason="Instance failed to verify within 2.5 hours of creation"
             )
             total += 1
-        logger.success(f"Purged {total} total unverified+old instances.")
+        if total:
+            logger.success(f"Purged {total} total unverified+old instances.")
 
 
 async def main():
