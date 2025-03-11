@@ -197,6 +197,8 @@ async def check_weight_files(
     logger.info(
         f"Checking {path} bytes {start_byte}:{end_byte} of model {model} revision {revision}"
     )
+    digest_counts = {}
+    incorrect = []
     for instance in to_check:
         nice_name = model.replace("/", "--")
         payload = {
@@ -210,11 +212,14 @@ async def check_weight_files(
                 hard_failed.append(instance)
                 continue
             digest = hashlib.sha256(data).hexdigest()
+            if digest not in digest_counts:
+                digest_counts[digest] = 0
+            digest_counts[digest] += 1
             if digest != expected_digest:
                 logger.warning(
                     f"Digest of {path} on {instance.instance_id=} of {model} is incorrect: {expected_digest} vs {digest}"
                 )
-                hard_failed.append(instance)
+                incorrect.append(instance)
             else:
                 logger.success(
                     f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest}"
@@ -224,6 +229,15 @@ async def check_weight_files(
                 f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
             )
             soft_failed.append(instance)
+    if incorrect:
+        hotkeys = set([inst.miner_hotkey for inst in incorrect])
+        if len(digest_counts) == 1 and len(hotkeys) >= 2:
+            logger.warning(
+                f"Huggingface digest mismatch, but all miners are in consensus: {expected_digest=} for {path} of {model}"
+            )
+        else:
+            for inst in incorrect:
+                hard_failed.append(incorrect)
 
 
 async def check_llm_weights(chute, instances):
@@ -261,6 +275,8 @@ async def check_llm_weights(chute, instances):
     ]
     weight_map = None
     for target_path in target_paths:
+        incorrect = []
+        digest_counts = {}
         expected_digest, expected_content = await get_hf_content(chute.name, revision, target_path)
         if not expected_digest:
             # Could try other means later on but for now treat as "OK".
@@ -279,13 +295,15 @@ async def check_llm_weights(chute, instances):
                     hard_failed.append(instance)
                     continue
                 digest = hashlib.sha256(data).hexdigest()
+                if digest not in digest_counts:
+                    digest_counts[digest] = 0
+                digest_counts[digest] += 1
                 if expected_digest and expected_digest != digest:
                     logger.warning(
                         f"Digest of {target_path} on {instance.instance_id=} of {chute.name} "
                         f"is incorrect: {expected_digest} vs {digest}"
                     )
-                    hard_failed.append(instance)
-                    continue
+                    incorrect.append(instance)
                 logger.info(
                     f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest}"
                 )
@@ -294,6 +312,18 @@ async def check_llm_weights(chute, instances):
                     f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
                 )
                 soft_failed.append(instance)
+        # Just out of an abundance of caution, we don't want to deleting everything
+        # if for some reason huggingface has some mismatch but all miners report
+        # exactly the same thing.
+        if incorrect:
+            hotkeys = set([inst.miner_hotkey for inst in incorrect])
+            if len(digest_counts) == 1 and len(hotkeys) >= 2:
+                logger.warning(
+                    f"Huggingface digest mismatch, but all miners are in consensus: {expected_digest=} for {target_path} of {chute.name}"
+                )
+            else:
+                for inst in incorrect:
+                    hard_failed.append(incorrect)
 
     # Now check the actual weights.
     if weight_map:
