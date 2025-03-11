@@ -17,7 +17,7 @@ from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text
-from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, joinedload
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
@@ -30,6 +30,7 @@ async def load_chute_targets(chute_id: str, nonce: float = 0):
         .where(Instance.active.is_(True))
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
+        .options(joinedload(Instance.nodes))
     )
     async with get_session() as session:
         result = await session.execute(query)
@@ -45,6 +46,7 @@ class LeastConnManager:
         self.connection_expiry = connection_expiry
         self.lock = asyncio.Lock()
         self._session = None
+        self._last_cleanup = time.time()
 
     async def initialize(self):
         if self._session is None:
@@ -58,36 +60,99 @@ class LeastConnManager:
             await self._session.close()
             self._session = None
 
-    async def get_targets(self, avoid=[]):
-        counts = {}
-        for instance_id in self.instances:
-            if instance_id in avoid:
-                continue
-            counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
+    async def get_targets(self, avoid=[], prefixes=None):
+        instance_ids = list(self.instances)
+        now = time.time()
+
+        # Get connection counts for each instance via redis pipe.
+        pipe = settings.cm_redis_client.pipeline()
+        to_query = [instance_id for instance_id in instance_ids if instance_id not in avoid]
+        for instance_id in to_query:
+            pipe.zcount(f"conn:{instance_id}", now - self.connection_expiry, now)
+        raw_counts = await pipe.execute()
+        counts = dict(zip(to_query, raw_counts))
+        min_count = min(raw_counts) if raw_counts else 1000000
+
+        # Periodically log counts for debugging.
         if random.random() < 0.05:
             logger.info(
                 "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
             )
         if not counts:
             return []
+
+        # Randomize the ordering for instances that have the same counts.
         grouped_by_count = {}
         for instance_id, count in counts.items():
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
-            grouped_by_count[count].append(self.instances[instance_id])
+            if instance := self.instances.get(instance_id):
+                grouped_by_count[count].append(instance)
         for count in grouped_by_count:
             random.shuffle(grouped_by_count[count])
+
+        # Prefix aware routing for LLM requests.
+        if prefixes:
+            likely_cached = set([])
+            for size, prefix_hash in prefixes:
+                try:
+                    instance_ids = list(counts)
+                    has_prefix = await settings.memcache.multi_get(
+                        *[
+                            f"pfx:{prefix_hash}:{instance_id}".encode()
+                            for instance_id in instance_ids
+                        ]
+                    )
+                    for idx in range(len(instance_ids)):
+                        if has_prefix[idx]:
+                            likely_cached.add(instance_ids[idx])
+                    if likely_cached:
+                        break
+                except Exception as exc:
+                    logger.error(f"Error performing prefix-aware routing lookups: {exc}")
+                    break
+            if likely_cached:
+                # Allow a small amount of discrepancy on active connection counts when
+                # there is likely a prefix cache hit since it's much better for the user.
+                routable = [
+                    instance_id
+                    for instance_id in likely_cached
+                    if abs(counts[instance_id] - min_count) <= 3
+                ]
+                if routable:
+                    logger.info(
+                        f"Performing prefix aware routing: {len(routable)} potentially cached instances"
+                    )
+                    result = sorted(
+                        [
+                            self.instances[instance_id]
+                            for instance_id in routable
+                            if instance_id in self.instances
+                        ],
+                        key=lambda inst: counts[inst.instance_id],
+                    )[:3]
+                    for count in sorted(grouped_by_count.keys()):
+                        result.extend(
+                            [
+                                instance
+                                for instance in grouped_by_count[count]
+                                if instance.instance_id not in routable
+                            ]
+                        )
+                    return result
+
         result = []
         for count in sorted(grouped_by_count.keys()):
             result.extend(grouped_by_count[count])
         return result
 
     @asynccontextmanager
-    async def get_target(self, avoid=[]):
+    async def get_target(self, avoid=[], prefixes=None):
+        await self.clean_up_expired_connections()
         conn_id = str(uuid.uuid4())
         now = time.time()
         try:
-            targets = await self.get_targets(avoid=avoid)
+            targets = await self.get_targets(avoid=avoid, prefixes=prefixes)
         except Exception as exc:
             logger.error(f"Failed to sort chute targets: {exc}, using random order")
             yield random.choice([inst for _id, inst in self.instances.items() if _id not in avoid])
@@ -107,6 +172,25 @@ class LeastConnManager:
             raise
         finally:
             await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+
+    async def clean_up_expired_connections(self):
+        now = time.time()
+        if now - self._last_cleanup < 60:
+            return
+        for instance_id in self.instances:
+            try:
+                removed_count = await settings.cm_redis_client.zremrangebyscore(
+                    f"conn:{instance_id}",
+                    0,
+                    now - self.connection_expiry,
+                )
+                if removed_count:
+                    logger.info(
+                        f"Successfully cleared {removed_count} expired connections from {instance_id=}"
+                    )
+            except Exception as exc:
+                logger.warning(f"Error purging expired connection counts: {exc}")
+        self._last_cleanup = now
 
 
 async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
@@ -184,6 +268,7 @@ async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
         .where(Instance.instance_id == instance_id)
         .where(Instance.chute_id == chute_id)
         .where(Instance.miner_hotkey == hotkey)
+        .options(joinedload(Instance.nodes))
     )
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()

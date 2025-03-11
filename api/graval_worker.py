@@ -9,6 +9,8 @@ import uuid
 import random
 import hashlib
 import traceback
+import re
+import base64
 import backoff
 import secrets
 import orjson as json
@@ -16,13 +18,20 @@ from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
+from api.util import (
+    aes_encrypt,
+    aes_decrypt,
+    use_encryption_v2,
+    use_encrypted_path,
+    should_slurp_code,
+)
 from api.database import get_session
 from api.node.schemas import Node
 from api.instance.schemas import Instance
 from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import update, func, and_, not_
 from sqlalchemy.future import select
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 import api.database.orms  # noqa
@@ -424,6 +433,85 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
         return True
 
 
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=5,
+    max_tries=3,
+)
+async def check_live_code(instance: Instance) -> bool:
+    """
+    Check the running command.
+    """
+    payload = {"path": "/proc/1/cmdline"}
+    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    iv = payload[:32]
+    path = aes_encrypt("/_slurp", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        payload,
+        timeout=12.0,
+    ) as resp:
+        data = await resp.json()
+        command_line = (
+            base64.b64decode(
+                json.loads(aes_decrypt(data["json"], instance.symmetric_key, iv=iv))["contents"]
+            )
+            .decode()
+            .replace("\x00", " ")
+            .strip()
+        )
+        command_line = re.sub(r"python3(\.[0-9]+)", "python3", command_line)
+        expected = " ".join(
+            [
+                "/opt/python/bin/python3",
+                "/home/chutes/.local/bin/chutes",
+                "run",
+                instance.chute.ref_str,
+                "--port",
+                "8000",
+                "--graval-seed",
+                str(instance.nodes[0].seed),
+                "--miner-ss58",
+                instance.miner_hotkey,
+                "--validator-ss58",
+                settings.validator_ss58,
+            ]
+        )
+        if command_line != expected:
+            logger.error(
+                f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"
+            )
+            return False
+
+    # Double check the code.
+    payload = {"path": f"/app/{instance.chute.filename}"}
+    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    iv = payload[:32]
+    path = aes_encrypt("/_slurp", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        payload,
+        timeout=12.0,
+    ) as resp:
+        data = await resp.json()
+        code = base64.b64decode(
+            json.loads(aes_decrypt(data["json"], instance.symmetric_key, iv=iv))["contents"]
+        )
+        if code != instance.chute.code.encode():
+            logger.error(
+                f"Failed code slurp evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n{code}"
+            )
+            return False
+    logger.success(
+        f"Code and proc validation success: {instance.instance_id=} {instance.miner_hotkey=}"
+    )
+    return True
+
+
 async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
     """
     Perform a variety of filesystem challenges.
@@ -465,6 +553,18 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
     challenges = list(result.scalars().all())
 
     # Add in challenges for the chute code file.
+    if should_slurp_code(instance.chute.chutes_version):
+        try:
+            if not await check_live_code(instance):
+                return False
+            return True
+        except Exception as exc:
+            logger.error(
+                f"Error checking live code: {instance.instance_id=} {instance.miner_hotkey=}: {exc}"
+            )
+            return False
+
+    # Use sha256 checks.
     for _ in range(10):
         length = random.randint(10, len(instance.chute.code))
         offset = (
@@ -503,13 +603,13 @@ async def verify_instance(instance_id: str):
         logger.warning(f"Instance {instance_id} is already being verified...")
         return
     await settings.redis_client.expire(f"verify:lock:{instance_id}", 180)
-
+    query = (
+        select(Instance)
+        .where(Instance.instance_id == instance_id)
+        .options(joinedload(Instance.nodes), joinedload(Instance.chute))
+    )
     async with get_session() as session:
-        instance = (
-            (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
-            .unique()
-            .scalar_one_or_none()
-        )
+        instance = (await session.execute(query)).unique().scalar_one_or_none()
         if not instance:
             logger.warning("Found no matching nodes, did they disappear?")
             await settings.redis_client.delete(f"verify:lock:{instance_id}")

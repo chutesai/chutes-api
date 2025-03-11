@@ -77,6 +77,11 @@ class Settings(BaseSettings):
             "@redis.chutes.svc.cluster.local", "@cm-redis.chutes.svc.cluster.local"
         )
     )
+    llm_cache_client: redis.Redis = redis.Redis.from_url(
+        os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
+            "@redis.chutes.svc.cluster.local", "@llm-cache-redis.chutes.svc.cluster.local"
+        )
+    )
     memcache: Optional[aiomcache.Client] = (
         aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211)
         if os.getenv("MEMCACHED")
@@ -123,13 +128,13 @@ class Settings(BaseSettings):
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 30))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
-    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 25))
+    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 90))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.20")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.21")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))

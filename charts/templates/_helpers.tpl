@@ -22,6 +22,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "usageTracker.labels" -}}
+app.kubernetes.io/name: usage-tracker
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 redis-access: "true"
@@ -70,6 +76,10 @@ app.kubernetes.io/name: redis
 app.kubernetes.io/name: cm-redis
 {{- end }}
 
+{{- define "llmCacheRedis.labels" -}}
+app.kubernetes.io/name: llm-cache-redis
+{{- end }}
+
 {{- define "memcached.labels" -}}
 app.kubernetes.io/name: memcached
 {{- end }}
@@ -113,7 +123,7 @@ app.kubernetes.io/name: registry-proxy
 - name: CHUTES_VERSION
   value: {{ .Values.chutes_version }}
 - name: GRAVAL_URL
-  value: http://graval:{{ .Values.graval.service.port }}
+  value: https://graval.chutes.ai
 - name: VALIDATOR_SS58
   valueFrom:
     secretKeyRef:

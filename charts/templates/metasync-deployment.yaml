@@ -1,3 +1,4 @@
+{{- if .Values.metasync.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -48,3 +49,4 @@ spec:
                   key: url
           resources:
             {{- toYaml .Values.metasync.resources | nindent 12 }}
+{{- end }}

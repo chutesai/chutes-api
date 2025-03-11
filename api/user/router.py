@@ -5,6 +5,8 @@ User routes.
 import time
 import secrets
 import hashlib
+from datetime import datetime
+from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from api.database import get_db_session
@@ -13,6 +15,7 @@ from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import (
     HOTKEY_HEADER,
@@ -25,6 +28,7 @@ from api.config import settings
 from api.api_key.schemas import APIKey, APIKeyArgs
 from api.api_key.response import APIKeyCreationResponse
 from api.user.util import validate_the_username, generate_payment_address
+from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from sqlalchemy import select
 
@@ -375,3 +379,97 @@ async def update_squad_access(
     await db.commit()
     await db.refresh(user)
     return {"squad_enabled": user.squad_enabled}
+
+
+@router.get("/me/usage")
+async def list_usage(
+    page: Optional[int] = 0,
+    limit: Optional[int] = 24,
+    per_chute: Optional[bool] = False,
+    chute_id: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    current_user: User = Depends(get_current_user()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    List usage summary data.
+    """
+    base_query = select(UsageData).where(UsageData.user_id == current_user.user_id)
+    if chute_id:
+        base_query = base_query.where(UsageData.chute_id == chute_id)
+    if start_date:
+        base_query = base_query.where(UsageData.bucket >= start_date)
+    if end_date:
+        base_query = base_query.where(UsageData.bucket <= end_date)
+
+    if per_chute:
+        query = base_query
+        total_query = select(func.count()).select_from(query.subquery())
+        total_result = await db.execute(total_query)
+        total = total_result.scalar() or 0
+
+        query = (
+            query.order_by(UsageData.bucket.desc(), UsageData.amount.desc())
+            .offset(page * limit)
+            .limit(limit)
+        )
+
+        results = []
+        for data in (await db.execute(query)).unique().scalars().all():
+            results.append(
+                dict(
+                    bucket=data.bucket.isoformat(),
+                    chute_id=data.chute_id,
+                    amount=data.amount,
+                    count=data.count,
+                )
+            )
+    else:
+        query = select(
+            UsageData.bucket,
+            func.sum(UsageData.amount).label("amount"),
+            func.sum(UsageData.count).label("count"),
+        ).where(UsageData.user_id == current_user.user_id)
+
+        if chute_id:
+            query = query.where(UsageData.chute_id == chute_id)
+        if start_date:
+            query = query.where(UsageData.bucket >= start_date)
+        if end_date:
+            query = query.where(UsageData.bucket <= end_date)
+
+        query = query.group_by(UsageData.bucket)
+
+        count_subquery = select(UsageData.bucket).where(UsageData.user_id == current_user.user_id)
+        if chute_id:
+            count_subquery = count_subquery.where(UsageData.chute_id == chute_id)
+        if start_date:
+            count_subquery = count_subquery.where(UsageData.bucket >= start_date)
+        if end_date:
+            count_subquery = count_subquery.where(UsageData.bucket <= end_date)
+
+        count_query = select(func.count()).select_from(
+            count_subquery.group_by(UsageData.bucket).subquery()
+        )
+
+        total_result = await db.execute(count_query)
+        total = total_result.scalar() or 0
+        query = query.order_by(UsageData.bucket.desc()).offset(page * limit).limit(limit)
+        results = []
+        for row in (await db.execute(query)).all():
+            results.append(
+                dict(
+                    bucket=row.bucket.isoformat(),
+                    amount=row.amount,
+                    count=row.count,
+                )
+            )
+
+    response = {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": results,
+    }
+    return response

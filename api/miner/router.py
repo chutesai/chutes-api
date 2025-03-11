@@ -5,7 +5,6 @@ Endpoints specific to miners.
 import re
 import orjson as json
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, Header, status, HTTPException, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import text
@@ -147,7 +146,6 @@ async def get_chute(
         return model_to_dict(chute)
 
 
-@cache(expire=60)
 @router.get("/stats")
 async def get_stats(
     miner_hotkey: Optional[str] = None,
@@ -157,37 +155,42 @@ async def get_stats(
     """
     Get invocation status over different intervals.
     """
+
+    def _filter_by_key(mstats):
+        if miner_hotkey:
+            for _, data in mstats.items():
+                for key in data:
+                    data[key] = [v for v in data[key] if v["miner_hotkey"] == miner_hotkey]
+        return mstats
+
+    cached = await settings.memcache.get(b"mstats")
+    if cached:
+        return _filter_by_key(json.loads(cached))
+
     if miner_hotkey and not re.match(r"^[a-zA-Z0-9]{48}$", miner_hotkey):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid hotkey parameter."
         )
-    hk_filter = f" AND miner_hotkey = '{miner_hotkey}' " if miner_hotkey else " "
-    bounty_query = (
-        """
-        SELECT miner_hotkey, SUM(bounty) as total_bounty
-          FROM invocations
-         WHERE started_at >= NOW() - INTERVAL '{interval}'
-           AND error_message IS NULL
-           AND miner_uid > 0"""
-        + hk_filter
-        + "GROUP BY miner_hotkey"
-    )
-    compute_query = (
-        """
-        SELECT
-            i.miner_hotkey,
-            SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
-        FROM invocations i
-        WHERE i.started_at > NOW() - INTERVAL '{interval}'
-        AND i.error_message IS NULL
-        AND miner_uid > 0"""
-        + hk_filter
-        + """
-        GROUP BY i.miner_hotkey
-        HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
-        ORDER BY compute_units DESC
+    bounty_query = """
+    SELECT miner_hotkey, SUM(bounty) as total_bounty
+      FROM invocations
+     WHERE started_at >= NOW() - INTERVAL '{interval}'
+       AND error_message IS NULL
+       AND miner_uid > 0
+    GROUP BY miner_hotkey
     """
-    )
+    compute_query = """
+    SELECT
+        i.miner_hotkey,
+        SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
+    FROM invocations i
+    WHERE i.started_at > NOW() - INTERVAL '{interval}'
+    AND i.error_message IS NULL
+    AND miner_uid > 0
+    GROUP BY i.miner_hotkey
+    HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
+    ORDER BY compute_units DESC
+    """
     if per_chute:
         compute_query = """
         SELECT
@@ -225,7 +228,9 @@ async def get_stats(
             "bounties": bounty_data,
             "compute_units": compute_data,
         }
-    return results
+
+    await settings.memcache.set(b"mstats", json.dumps(results), exptime=300)
+    return _filter_by_key(results)
 
 
 @router.get("/scores")

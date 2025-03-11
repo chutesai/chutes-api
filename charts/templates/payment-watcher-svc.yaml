@@ -1,3 +1,4 @@
+{{- if .Values.paymentWatcher.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -13,3 +14,4 @@ spec:
       name: validator-api
   selector:
     {{- include "paymentWatcher.labels" . | nindent 4 }}
+{{- end }}

@@ -1,3 +1,4 @@
+{{- if .Values.paymentWatcher.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -64,3 +65,4 @@ spec:
             failureThreshold: {{ .Values.paymentWatcher.readinessProbe.failureThreshold | default 3 }}
           resources:
             {{- toYaml .Values.paymentWatcher.resources | nindent 12 }}
+{{- end }}

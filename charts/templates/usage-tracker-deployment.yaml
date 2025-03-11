@@ -1,0 +1,46 @@
+{{- if .Values.usageTracker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: usage-tracker
+  labels:
+    {{- include "usageTracker.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "usageTracker.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "usageTracker.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.usageTracker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.usageTracker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.usageTracker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: usage-tracker
+          image: "{{ .Values.usageTracker.image }}"
+          imagePullPolicy: {{ .Values.usageTracker.imagePullPolicy }}
+          command: ["poetry", "run", "python", "api/payment/usage_tracker.py"]
+          env:
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- if .Values.datadog_enabled }}
+            - name: DD_LOGS_INJECTION
+              value: "true"
+            {{- end }}
+          resources:
+            {{- toYaml .Values.usageTracker.resources | nindent 12 }}
+{{- end }}

@@ -297,3 +297,15 @@ def use_encrypted_path(chutes_version: str):
     if int(minor) >= 2 and int(bug) >= 14 or int(minor) > 2:
         return True
     return False
+
+
+def should_slurp_code(chutes_version: str):
+    """
+    Check if we should read the code instead of using FS challenges.
+    """
+    if not chutes_version:
+        return False
+    major, minor, bug = chutes_version.split(".")[:3]
+    if int(minor) >= 2 and int(bug) >= 20 or int(minor) > 2:
+        return True
+    return False

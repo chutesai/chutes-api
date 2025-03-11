@@ -21,7 +21,7 @@ from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, update, String
+from sqlalchemy import and_, or_, text, String
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -40,7 +40,6 @@ from api.miner_client import sign_request
 from api.instance.schemas import Instance
 from api.instance.util import LeastConnManager, get_chute_target_manager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
-from api.permissions import Permissioning
 from api.metrics.vllm import track_usage as track_vllm_usage
 
 # Tokenizer for input/output token estimation.
@@ -191,7 +190,7 @@ async def chute_id_by_slug(slug: str):
 @alru_cache(maxsize=100)
 async def get_one(name_or_id: str):
     """
-    Load a chute by it's name or ID.l
+    Load a chute by it's name or ID.
     """
     chute_user = await chutes_user_id()
     async with get_session() as db:
@@ -214,6 +213,19 @@ async def get_one(name_or_id: str):
         )
 
 
+async def track_prefix_hashes(prefixes, instance_id):
+    if not prefixes:
+        return
+    try:
+        for _, prefix_hash in prefixes:
+            await settings.memcache.set(
+                f"pfx:{prefix_hash}:{instance_id}".encode(), b"1", exptime=600
+            )
+            break  # XXX only track the largest prefix
+    except Exception as exc:
+        logger.warning(f"Error setting prefix hash cache: {exc}")
+
+
 async def _invoke_one(
     chute: Chute,
     path: str,
@@ -222,6 +234,7 @@ async def _invoke_one(
     kwargs: str,
     target: Instance,
     metrics: dict = {},
+    prefixes: list = None,
 ):
     """
     Try invoking a chute/cord with a single instance.
@@ -340,6 +353,7 @@ async def _invoke_one(
                     last_chunk = chunk
 
                 yield chunk.decode()
+
             if chute.standard_template == "vllm" and plain_path in LLM_PATHS and metrics:
                 total_time = time.time() - started_at
                 prompt_tokens = metrics.get("it", 0)
@@ -388,6 +402,7 @@ async def _invoke_one(
                     f"Metrics for chute={chute.name} miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                 )
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
+                await track_prefix_hashes(prefixes, target.instance_id)
         else:
             # Non-streamed responses, which may be encrypted with the new chutes encryption V2.
             headers = response.headers
@@ -483,6 +498,7 @@ async def _invoke_one(
                         f"Metrics for [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                     )
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
+                    await track_prefix_hashes(prefixes, target.instance_id)
             elif (
                 chute.standard_template == "diffusion"
                 and path == "generate"
@@ -513,6 +529,9 @@ async def _sample_request(chute_id, parent_invocation_id, args, kwargs):
     """
     Randomly sample and store request data.
     """
+    # XXX disabled
+    return None
+
     request_path = None
     if random.random() <= REQUEST_SAMPLE_RATIO:
         today = datetime.date.today()
@@ -535,6 +554,7 @@ async def invoke(
     parent_invocation_id: str,
     metrics: dict = {},
     request: Request = None,
+    prefixes: list = None,
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
@@ -558,8 +578,8 @@ async def invoke(
     partition_suffix = None
     rate_limited = 0
     avoid = []
-    for attempt_idx in range(3):
-        async with manager.get_target(avoid=avoid) as target:
+    for attempt_idx in range(5):
+        async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
             if not target:
                 logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
                 await asyncio.sleep(0.5)
@@ -604,7 +624,9 @@ async def invoke(
                     }
                 )
                 response_data = []
-                async for data in _invoke_one(chute, path, stream, args, kwargs, target, metrics):
+                async for data in _invoke_one(
+                    chute, path, stream, args, kwargs, target, metrics, prefixes
+                ):
                     yield sse({"result": data})
                     if request_path:
                         response_data.append(data)
@@ -644,7 +666,10 @@ async def invoke(
 
                         # Track any discounts.
                         discount = 0.0
-                        if chute.discount and 0 < chute.discount <= 1:
+                        # A negative discount just makes the chute more than our typical pricing,
+                        # e.g. for chutes that have a concurrency of one and we can't really operate
+                        # efficiently with the normal pricing.
+                        if chute.discount and -3 < chute.discount <= 1:
                             discount = chute.discount
 
                         if discount < 1.0:
@@ -691,24 +716,33 @@ async def invoke(
                                     f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
                                 )
 
-                            # Deduct the balance used.
-                            result = await session.execute(
-                                update(User)
-                                .where(User.user_id == user_id)
-                                .where(
-                                    User.permissions_bitmask.op("&")(
-                                        Permissioning.free_account.bitmask
-                                    )
-                                    == 0
-                                )
-                                .values(balance=User.balance - balance_used)
-                                .returning(User.balance)
-                            )
-                            new_balance = result.scalar_one_or_none()
-                            if new_balance is not None:
-                                logger.info(
-                                    f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
-                                )
+                            # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
+                            pipeline = settings.cm_redis_client.pipeline()
+                            key = f"balance:{user_id}:{chute.chute_id}"
+                            pipeline.hincrbyfloat(key, "amount", balance_used)
+                            pipeline.hincrby(key, "count", 1)
+                            pipeline.hset(key, "timestamp", int(time.time()))
+                            await pipeline.execute()
+                            logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
+
+                            # XXX this is what NOT to do, because it causes deadlocks.
+                            # result = await session.execute(
+                            #    update(User)
+                            #    .where(User.user_id == user_id)
+                            #    .where(
+                            #        User.permissions_bitmask.op("&")(
+                            #            Permissioning.free_account.bitmask
+                            #        )
+                            #        == 0
+                            #    )
+                            #    .values(balance=User.balance - balance_used)
+                            #    .returning(User.balance)
+                            # )
+                            # new_balance = result.scalar_one_or_none()
+                            # if new_balance is not None:
+                            #    logger.info(
+                            #        f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
+                            #    )
                         await session.commit()
 
                 yield sse(
@@ -734,6 +768,7 @@ async def invoke(
                 error_detail = None
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
+                    await asyncio.sleep(0.5)
                     rate_limited += 1
                 elif isinstance(exc, BadRequest):
                     error_message = "BAD_REQUEST"
