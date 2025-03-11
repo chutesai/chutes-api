@@ -68,6 +68,7 @@ ADD --chown=chutes audit_exporter.py /app/audit_exporter.py
 ADD --chown=chutes failed_chute_cleanup.py /app/failed_chute_cleanup.py
 ADD --chown=chutes metasync /app/metasync
 ADD --chown=chutes tokenizer /app/tokenizer
+ADD --chown=chutes watchtower.py /app/watchtower.py
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 

@@ -230,6 +230,11 @@ async def check_weight_files(
             )
             soft_failed.append(instance)
     if incorrect:
+        remaining = [i for i in to_check if i not in [incorrect + soft_failed + hard_failed]]
+        if not remaining:
+            logger.warning("No instances would remain after purging incorrect weights!")
+            return
+
         hotkeys = set([inst.miner_hotkey for inst in incorrect])
         if len(digest_counts) == 1 and len(hotkeys) >= 2:
             logger.warning(
@@ -316,6 +321,11 @@ async def check_llm_weights(chute, instances):
         # if for some reason huggingface has some mismatch but all miners report
         # exactly the same thing.
         if incorrect:
+            remaining = [i for i in instances if i not in [incorrect + soft_failed + hard_failed]]
+            if not remaining:
+                logger.warning("No instances would remain after purging incorrect weights!")
+                return
+
             hotkeys = set([inst.miner_hotkey for inst in incorrect])
             if len(digest_counts) == 1 and len(hotkeys) >= 2:
                 logger.warning(

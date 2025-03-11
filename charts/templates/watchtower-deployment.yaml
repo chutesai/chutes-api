@@ -30,9 +30,11 @@ spec:
         - name: watchtower
           image: "{{ .Values.watchtower.image }}"
           imagePullPolicy: {{ .Values.watchtower.imagePullPolicy }}
-          command: ["poetry", "run", "python", "api/watchtower.py"]
+          command: ["poetry", "run", "python", "watchtower.py"]
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: MEMCACHED
+              value: memcached
           resources:
             {{- toYaml .Values.watchtower.resources | nindent 12 }}
