@@ -58,7 +58,6 @@ async def purge_and_notify(target):
     """
     Purge an instance and send a notification with the reason.
     """
-    return
     async with get_session() as session:
         await session.execute(
             text("DELETE FROM instances WHERE instance_id = :instance_id"),
@@ -261,12 +260,12 @@ async def check_llm_weights(chute, instances):
     ]
     weight_map = None
     for target_path in target_paths:
-        expected_digest, expected_content = (
-            None,
-            None,
-        )  # await get_hf_content(chute.name, revision, target_path)
+        expected_digest, expected_content = await get_hf_content(chute.name, revision, target_path)
         if not expected_digest:
             # Could try other means later on but for now treat as "OK".
+            logger.warning(
+                f"Failed to check huggingface for {target_path} on {chute.name} {revision=}"
+            )
             continue
         if expected_content and target_path == "model.safetensors.index.json":
             weight_map = json.loads(expected_content)
@@ -510,21 +509,31 @@ async def check_chute(chute_id):
             await session.commit()
 
 
-async def main():
-    await check_chute("60b4480a-adb3-5d00-acfd-49c7d0476040")
-    return
-
+async def check_all_chutes():
+    """
+    Check all chutes and instances, one time.
+    """
     started_at = int(time.time())
     async with get_session() as session:
         chute_ids = (await session.execute(select(Chute.chute_id))).unique().scalars().all()
     if chute_ids and isinstance(chute_ids[0], tuple):
         chute_ids = [chute_id[0] for chute_id in chute_ids]
+    chute_ids = list(sorted(chute_ids))
     for i in range(0, len(chute_ids), 4):
         batch = chute_ids[i : i + 4]
         logger.info(f"Initializing check of chutes: {batch}")
         await asyncio.gather(*[check_chute(chute_id) for chute_id in batch])
     delta = int(time.time()) - started_at
     logger.info(f"Finished probing all instances of {len(chute_ids)} chutes in {delta} seconds.")
+
+
+async def main():
+    """
+    Main loop, continuously check all chutes and instances.
+    """
+    while True:
+        await check_all_chutes()
+        await asyncio.sleep(90)
 
 
 asyncio.run(main())
