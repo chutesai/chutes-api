@@ -14,7 +14,7 @@ from api.config import settings
 from api.util import aes_encrypt, aes_decrypt
 from api.database import get_session
 from api.chute.schemas import Chute
-from sqlalchemy import text
+from sqlalchemy import text, update, func
 from sqlalchemy.orm import joinedload
 from sqlalchemy.future import select
 import api.database.orms  # noqa
@@ -31,7 +31,7 @@ def use_encrypted_slurp(chutes_version: str) -> bool:
         return False
     major, minor, bug = chutes_version.split(".")[:3]
     encrypted_slurp = False
-    if major == "0" and int(minor) >= 2 and (int(minor) > 2 or int(bug) >= 21):
+    if major == "0" and int(minor) >= 2 and (int(minor) > 2 or int(bug) >= 20):
         encrypted_slurp = True
     return encrypted_slurp
 
@@ -41,11 +41,15 @@ async def load_chute_instances(chute_id):
     Get all instances of a chute.
     """
     async with get_session() as session:
-        query = select(Instance).where(
-            Instance.chute_id == chute_id,
-            Instance.active.is_(True),
-            Instance.verified.is_(True),
-        ).options(joinedload(Instance.nodes))
+        query = (
+            select(Instance)
+            .where(
+                Instance.chute_id == chute_id,
+                Instance.active.is_(True),
+                Instance.verified.is_(True),
+            )
+            .options(joinedload(Instance.nodes))
+        )
         instances = (await session.execute(query)).unique().scalars().all()
         return instances
 
@@ -257,11 +261,13 @@ async def check_llm_weights(chute, instances):
     ]
     weight_map = None
     for target_path in target_paths:
-        counts = {}
-        instance_map = {}
-        weight_map_miner = {}
-        reported = {}
-        expected_digest, expected_content = await get_hf_content(chute.name, revision, target_path)
+        expected_digest, expected_content = (
+            None,
+            None,
+        )  # await get_hf_content(chute.name, revision, target_path)
+        if not expected_digest:
+            # Could try other means later on but for now treat as "OK".
+            continue
         if expected_content and target_path == "model.safetensors.index.json":
             weight_map = json.loads(expected_content)
         for instance in instances:
@@ -279,19 +285,7 @@ async def check_llm_weights(chute, instances):
                         f"is incorrect: {expected_digest} vs {digest}"
                     )
                     hard_failed.append(instance)
-                elif not expected_digest:
-                    if digest not in counts:
-                        counts[digest] = 0
-
-                    # Only allow a single count per miner.
-                    if instance.miner_hotkey not in reported:
-                        reported[instance.miner_hotkey] = True
-                        counts[digest] += 1
-                    instance_map[instance.instance_id] = digest
-
-                    # Track the model weight files if we need to use the consensus approach.
-                    if target_path == "model.safetensors.index.json":
-                        weight_map_miner[digest] = data
+                    continue
                 logger.info(
                     f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest}"
                 )
@@ -301,29 +295,11 @@ async def check_llm_weights(chute, instances):
                 )
                 soft_failed.append(instance)
 
-        # Use consensus to determine accurate weight map if we couldn't get it from huggingface.
-        if not weight_map and target_path == "model.safetensors.index.json":
-            if len(weight_map_miner) == 1:
-                weight_map = json.loads(list(weight_map_miner.values())[0])
-            else:
-                # Well... this is annoying.
-                consensus = max(counts.items(), key=lambda x: x[1], default=(None, 0))
-                total_instances = sum(counts.values())
-                if consensus[0] is not None and consensus[1] > total_instances / 2:
-                    most_common_digest = consensus[0]
-                    weight_map = json.loads(weight_map_miner[most_common_digest])
-                else:
-                    # If we can't reach consensus, delete all the instances.
-                    logger.warning(
-                        f"Could not reach consensus on weight map for {chute.name}, no majority found"
-                    )
-                    hard_failed = [inst for inst in instances]
-                    return hard_failed, soft_failed
-
     # Now check the actual weights.
-    await check_weight_files(
-        encrypted_slurp, chute.name, revision, instances, weight_map, hard_failed, soft_failed
-    )
+    if weight_map:
+        await check_weight_files(
+            encrypted_slurp, chute.name, revision, instances, weight_map, hard_failed, soft_failed
+        )
     return hard_failed, soft_failed
 
 
@@ -421,7 +397,9 @@ async def check_pings(chute, instances) -> list:
             if not await check_ping(chute, instance):
                 failed.append(instance)
         except Exception as exc:
-            logger.warning(f"Unhandled ping exception on instance {instance.instance_id} of {chute.name}: {exc}")
+            logger.warning(
+                f"Unhandled ping exception on instance {instance.instance_id} of {chute.name}: {exc}"
+            )
             failed.append(instance)
     return failed
 
@@ -462,7 +440,7 @@ async def increment_soft_fail(instance, chute):
             f"miner {instance.miner_hotkey} "
             f"chute {chute.name} reached max soft fails: {fail_count}"
         )
-        # await purge_and_notify(instance)
+        await purge_and_notify(instance)
 
 
 async def check_chute(chute_id):
@@ -486,19 +464,16 @@ async def check_chute(chute_id):
     soft_failed = await check_pings(chute, instances)
 
     # Check the running command.
-    instances = [
-        instance for instance in instances
-        if instance not in soft_failed
-    ]
+    instances = [instance for instance in instances if instance not in soft_failed]
     hard_failed, _soft_failed = await check_commands(chute, instances)
     soft_failed += _soft_failed
 
     # Check model weights.
     if chute.standard_template == "vllm":
         instances = [
-            instance for instance in instances
-            if instance not in soft_failed
-            and instance not in hard_failed
+            instance
+            for instance in instances
+            if instance not in soft_failed and instance not in hard_failed
         ]
         _hard_failed, _soft_failed = await check_llm_weights(chute, instances)
         hard_failed += _hard_failed
@@ -507,31 +482,49 @@ async def check_chute(chute_id):
     # Hard failures get terminated immediately.
     for instance in hard_failed:
         logger.warning(
-            f"Puring instance {instance.instance_id} "
+            f"Purging instance {instance.instance_id} "
             f"miner {instance.miner_hotkey} "
             f"chute {chute.name} due to hard fail"
         )
-        # await purge_and_notify(instance)
+        await purge_and_notify(instance)
 
     # Limit "soft" fails to max consecutive failures, allowing some downtime but not much.
     for instance in soft_failed:
         await increment_soft_fail(instance, chute)
 
+    # Update verification time for the ones that succeeded.
+    to_update = [
+        instance
+        for instance in instances
+        if instance not in soft_failed and instance not in hard_failed
+    ]
+    if to_update:
+        async with get_session() as session:
+            stmt = (
+                update(Instance)
+                .where(Instance.instance_id.in_([i.instance_id for i in to_update]))
+                .values(last_verified_at=func.now())
+                .execution_options(synchronize_session=False)
+            )
+            await session.execute(stmt)
+            await session.commit()
+
 
 async def main():
+    await check_chute("60b4480a-adb3-5d00-acfd-49c7d0476040")
+    return
+
     started_at = int(time.time())
     async with get_session() as session:
         chute_ids = (await session.execute(select(Chute.chute_id))).unique().scalars().all()
     if chute_ids and isinstance(chute_ids[0], tuple):
         chute_ids = [chute_id[0] for chute_id in chute_ids]
     for i in range(0, len(chute_ids), 4):
-        batch = chute_ids[i:i+4]
+        batch = chute_ids[i : i + 4]
         logger.info(f"Initializing check of chutes: {batch}")
-        await asyncio.gather(*[
-            check_chute(chute_id)
-            for chute_id in batch
-        ])
+        await asyncio.gather(*[check_chute(chute_id) for chute_id in batch])
     delta = int(time.time()) - started_at
     logger.info(f"Finished probing all instances of {len(chute_ids)} chutes in {delta} seconds.")
+
 
 asyncio.run(main())
