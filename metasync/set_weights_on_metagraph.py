@@ -14,7 +14,12 @@ from fiber.networking.models import NodeWithFernet as Node
 from fiber.chain.interface import get_substrate
 from metasync.database import engine, Base
 from metasync.config import settings
-from metasync.constants import FEATURE_WEIGHTS, SCORING_INTERVAL, NORMALIZED_COMPUTE_QUERY
+from metasync.constants import (
+    UNIQUE_CHUTE_AVERAGE_QUERY,
+    NORMALIZED_COMPUTE_QUERY,
+    SCORING_INTERVAL,
+    FEATURE_WEIGHTS,
+)
 from fiber.chain.chain_utils import query_substrate
 
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
@@ -47,22 +52,45 @@ async def _get_weights_to_set(
     - Have a decaying, normalised reward, rather than a fixed window
     """
 
-    query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
+    compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
+    unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
+
     raw_compute_values = {}
-    header = ["hotkey", "invocation_count", "unique_chute_count", "bounty_count", "compute_units"]
     async with get_session() as session:
-        result = await session.execute(query)
-        for row in result:
-            obj = dict(zip(header, row))
-            raw_compute_values[obj["hotkey"]] = obj
-            logger.info(obj)
+        compute_result = await session.execute(compute_query)
+        unique_result = await session.execute(unique_query)
+
+        # Compute units, invocation counts, and bounties.
+        for hotkey, invocation_count, bounty_count, compute_units in compute_result:
+            raw_compute_values[hotkey] = {
+                "invocation_count": invocation_count,
+                "bounty_count": bounty_count,
+                "compute_units": compute_units,
+                "unique_chute_count": 0,
+            }
+
+        # Average active unique chute counts.
+        for miner_hotkey, average_active_chutes in unique_result:
+            # Should never be possible, but just in case...
+            if miner_hotkey not in raw_compute_values:
+                raw_compute_values[miner_hotkey] = {
+                    "invocation_count": 0,
+                    "bounty_count": 0,
+                    "compute_units": 0,
+                    "unique_chute_count": 0,
+                }
+            raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
+
+    # Logging.
+    for hotkey, values in raw_compute_values.items():
+        logger.info(f"{hotkey}: {values}")
 
     # Normalize the values based on totals so they are all in the range [0.0, 1.0]
     totals = {
-        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in header[1:]
+        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
     }
     normalized_values = {
-        hotkey: {key: row[key] / totals[key] for key in header[1:]}
+        hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
         for hotkey, row in raw_compute_values.items()
     }
     # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.

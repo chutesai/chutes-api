@@ -22,6 +22,7 @@ class VLLMEngineArgs(BaseModel):
     enforce_eager: Optional[bool] = False
     num_scheduler_steps: Optional[int] = 16
     trust_remote_code: Optional[bool] = True
+    revision: Optional[str] = None
 
     @validator("tokenizer")
     def validate_hf_format(cls, v):
@@ -30,6 +31,14 @@ class VLLMEngineArgs(BaseModel):
         if re.match(r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$", v):
             return v
         raise ValueError('Model must be a valid Hugging Face repo (e.g., "org/model")')
+
+    @validator("revision")
+    def validate_revision(cls, v):
+        if v is None:
+            return v
+        if re.match(r"^[a-fA-F0-9]{40}$", v):
+            return v
+        raise ValueError("Revision must be a valid git commit hex digest")
 
 
 class VLLMChuteArgs(BaseModel):
@@ -131,6 +140,9 @@ chute = build_vllm_chute(
         {%- endif %}
         {%- if args.engine_args.num_scheduler_steps is not none %}
         num_scheduler_steps={{ args.engine_args.num_scheduler_steps }},
+        {%- endif %}
+        {%- if args.engine_args.revision is not none %}
+        revision="{{ args.engine_args.revision }}",
         {%- endif %}
     )
     {%- endif %}

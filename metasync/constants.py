@@ -2,10 +2,12 @@
 FEATURE_WEIGHTS = {
     "compute_units": 0.45,  # Total amount of compute time (compute muliplier * total time).
     "invocation_count": 0.25,  # Total number of invocations.
-    "unique_chute_count": 0.20,  # Number of unique chutes over the scoring period.
+    "unique_chute_count": 0.2,  # Average instantaneous unique chutes over the scoring period.
     "bounty_count": 0.1,  # Number of bounties received (not bounty values, just counts).
 }
+# Time slice to calculate the incentives from.
 SCORING_INTERVAL = "7 days"
+# Query to fetch raw metrics for compute_units, invocation_count, and bounty_count.
 NORMALIZED_COMPUTE_QUERY = """
 WITH computation_rates AS (
     SELECT
@@ -20,7 +22,6 @@ WITH computation_rates AS (
 SELECT
     i.miner_hotkey,
     COUNT(*) as invocation_count,
-    COUNT(DISTINCT(i.chute_id)) AS unique_chute_count,
     COUNT(CASE WHEN i.bounty > 0 THEN 1 END) AS bounty_count,
     sum(
         i.bounty +
@@ -44,4 +45,45 @@ AND i.miner_uid > 0
 AND i.completed_at IS NOT NULL
 GROUP BY i.miner_hotkey
 ORDER BY compute_units DESC;
+"""
+# Query to calculate the average number of unique chutes active at any single point in time, i.e. unique_count_count.
+UNIQUE_CHUTE_AVERAGE_QUERY = """
+WITH time_series AS (
+  SELECT
+    generate_series(
+      date_trunc('hour', now() - INTERVAL '{interval}'),
+      date_trunc('hour', now()),
+      INTERVAL '10 minutes'
+    ) AS time_point
+),
+chute_timeframes AS (
+  SELECT
+    chute_id,
+    miner_hotkey,
+    MIN(started_at) AS first_invocation,
+    MAX(started_at) AS last_invocation
+  FROM invocations
+  WHERE
+    started_at >= now() - INTERVAL '{interval}'
+    AND error_message IS NULL
+    AND completed_at IS NOT NULL
+  GROUP BY chute_id, miner_hotkey
+),
+ten_minute_active_chutes AS (
+  SELECT
+    t.time_point,
+    ct.miner_hotkey,
+    COUNT(DISTINCT ct.chute_id) AS active_chutes
+  FROM time_series t
+  LEFT JOIN chute_timeframes ct ON
+    t.time_point >= ct.first_invocation AND
+    t.time_point <= ct.last_invocation
+  GROUP BY t.time_point, ct.miner_hotkey
+)
+SELECT
+  miner_hotkey,
+  AVG(active_chutes)::integer AS avg_active_chutes
+FROM ten_minute_active_chutes
+GROUP BY miner_hotkey
+ORDER BY avg_active_chutes DESC;
 """

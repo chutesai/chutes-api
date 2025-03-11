@@ -300,6 +300,20 @@ gravalWorker:
           topologyKey: kubernetes.io/hostname
   tolerations: []
 
+watchtower:
+  replicaCount: 1
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  affinity: {}
+  tolerations: []
+
 paymentWatcher:
   image: parachutes/validator:latest
   imagePullPolicy: Always

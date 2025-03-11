@@ -33,6 +33,7 @@ class ChuteResponse(BaseModel):
     current_estimated_price: Optional[Dict[str, Any]] = None
     instances: Optional[List[MinimalInstanceResponse]] = []
     logo_id: Optional[str]
+    openrouter: Optional[bool] = False
 
     class Config:
         from_attributes = True
