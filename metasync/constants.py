@@ -1,15 +1,12 @@
 # Proportion of weights to assign to each metric.
 FEATURE_WEIGHTS = {
-    "compute_units": 0.42,  # Total amount of compute time (compute muliplier * total time).
-    "invocation_count": 0.2,  # Total number of invocations.
+    "compute_units": 0.45,  # Total amount of compute time (compute muliplier * total time).
+    "invocation_count": 0.25,  # Total number of invocations.
     "unique_chute_count": 0.2,  # Average instantaneous unique chutes over the scoring period.
-    "utilization": 0.1,  # Utilization rate based on active compute time for each instance.
-    "bounty_count": 0.08,  # Number of bounties received (not bounty values, just counts).
+    "bounty_count": 0.1,  # Number of bounties received (not bounty values, just counts).
 }
 # Time slice to calculate the incentives from.
 SCORING_INTERVAL = "7 days"
-# Minimum utilization ratio of instances to be considered for scoring (aka, are you providing real utility with your nodes or just idle compute)
-MINIMUM_UTILIZATION = 0.3
 # Query to fetch raw metrics for compute_units, invocation_count, and bounty_count.
 NORMALIZED_COMPUTE_QUERY = """
 WITH computation_rates AS (
@@ -89,45 +86,4 @@ SELECT
 FROM ten_minute_active_chutes
 GROUP BY miner_hotkey
 ORDER BY avg_active_chutes DESC;
-"""
-# Query to calculate the compute-time weighted utilization rate of your instances.
-UTILIZATION_QUERY = """
-WITH instance_metrics AS (
-  SELECT
-    miner_hotkey,
-    instance_id,
-    MAX(completed_at) - MIN(started_at) as instance_active_time,
-    SUM(completed_at - started_at) AS instance_processing_time
-  FROM invocations
-  WHERE started_at >= now() - INTERVAL '{interval}'
-  AND error_message IS NULL AND completed_at IS NOT NULL
-  GROUP BY miner_hotkey, instance_id
-),
-instance_utilization_ratios AS (
-  SELECT
-    miner_hotkey,
-    instance_id,
-    instance_active_time,
-    instance_processing_time,
-    EXTRACT(EPOCH FROM instance_processing_time) AS instance_processing_seconds,
-    CASE
-      WHEN EXTRACT(EPOCH FROM instance_active_time) > 0
-      THEN LEAST(
-        (EXTRACT(EPOCH FROM instance_processing_time) /
-         EXTRACT(EPOCH FROM instance_active_time)),
-        1.00
-      )
-      ELSE 0
-    END AS instance_utilization_ratio
-  FROM instance_metrics
-)
-SELECT
-  miner_hotkey,
-  ROUND(
-    SUM(instance_utilization_ratio * instance_processing_seconds) /
-    NULLIF(SUM(instance_processing_seconds), 0)
-  ::numeric, 2) AS utilization_ratio
-FROM instance_utilization_ratios
-GROUP BY miner_hotkey
-ORDER BY utilization_ratio DESC
 """

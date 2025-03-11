@@ -15,10 +15,8 @@ from fiber.chain.interface import get_substrate
 from metasync.database import engine, Base
 from metasync.config import settings
 from metasync.constants import (
-    UTILIZATION_QUERY,
     UNIQUE_CHUTE_AVERAGE_QUERY,
     NORMALIZED_COMPUTE_QUERY,
-    MINIMUM_UTILIZATION,
     SCORING_INTERVAL,
     FEATURE_WEIGHTS,
 )
@@ -56,13 +54,11 @@ async def _get_weights_to_set(
 
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    utilization_query = text(UTILIZATION_QUERY.format(interval=SCORING_INTERVAL))
 
     raw_compute_values = {}
     async with get_session() as session:
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
-        utilization_result = await session.execute(utilization_query)
 
         # Compute units, invocation counts, and bounties.
         for hotkey, invocation_count, bounty_count, compute_units in compute_result:
@@ -71,7 +67,6 @@ async def _get_weights_to_set(
                 "bounty_count": bounty_count,
                 "compute_units": compute_units,
                 "unique_chute_count": 0,
-                "utilization": 0,
             }
 
         # Average active unique chute counts.
@@ -79,24 +74,9 @@ async def _get_weights_to_set(
         for miner_hotkey, average_active_chutes in unique_result:
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
 
-        # Utilization/efficiency.
-        for miner_hotkey, utilization_ratio in utilization_result:
-            raw_compute_values[miner_hotkey]["utilization"] = utilization_ratio
-
     # Logging.
     for hotkey, values in raw_compute_values:
         logger.info(f"{hotkey}: {values}")
-
-    # Remove hotkeys that are extremely underutilized.
-    scorable = {}
-    for hotkey, data in raw_compute_values.items():
-        if data["utilization"] < MINIMUM_UTILIZATION:
-            logger.warning(
-                f"{hotkey} has utilization {data['utilization']} below threshold, scoring disabled."
-            )
-        else:
-            scorable[hotkey] = data
-    raw_compute_values = scorable
 
     # Normalize the values based on totals so they are all in the range [0.0, 1.0]
     totals = {
