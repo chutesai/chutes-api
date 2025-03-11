@@ -31,7 +31,7 @@ from api.constants import (
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
 from api.database import get_session
-from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired
+from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired, EmptyLLMResponse
 from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
 from api.chute.schemas import Chute, NodeSelector
 from api.user.schemas import User
@@ -336,6 +336,7 @@ async def _invoke_one(
         # All good, send back the response.
         if stream:
             last_chunk = None
+            any_chunks = False
             async for raw_chunk in response.content:
                 chunk = raw_chunk
                 if iv:
@@ -351,10 +352,16 @@ async def _invoke_one(
                     metrics["tokens"] += 1
                 if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
                     last_chunk = chunk
-
+                if b"data:" in chunk:
+                    any_chunks = True
                 yield chunk.decode()
 
             if chute.standard_template == "vllm" and plain_path in LLM_PATHS and metrics:
+                if not any_chunks:
+                    logger.warning(f"NO CHUNKS RETURNED: {chute.name} {target.instance_id=}")
+                    raise EmptyLLMResponse(
+                        f"EMPTY_STREAM {target.instance_id=} {chute.name} returned zero data chunks!"
+                    )
                 total_time = time.time() - started_at
                 prompt_tokens = metrics.get("it", 0)
                 completion_tokens = metrics.get("tokens", 0)
@@ -775,6 +782,8 @@ async def invoke(
                     error_detail = str(exc)
                 elif isinstance(exc, KeyExchangeRequired):
                     error_message = "KEY_EXCHANGE_REQUIRED"
+                elif isinstance(exc, EmptyLLMResponse):
+                    error_message = "EMPTY_STREAM"
 
                 async with get_session() as session:
                     await session.execute(
