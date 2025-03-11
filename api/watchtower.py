@@ -167,7 +167,7 @@ async def check_weight_files(
         async with aiohttp.ClientSession() as session:
             url = f"https://huggingface.co/{model}/resolve/{revision}/{path}"
             async with session.head(url) as resp:
-                content_length = resp.headers.get("Content-Length")
+                content_length = resp.headers.get("x-linked-size")
                 if content_length:
                     logger.info(f"Size of {model} -> {path}: {content_length}")
                     file_size = int(content_length)
