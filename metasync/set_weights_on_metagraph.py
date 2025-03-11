@@ -70,20 +70,27 @@ async def _get_weights_to_set(
             }
 
         # Average active unique chute counts.
-        header = ["miner_hotkey", "avg_active_chutes"]
         for miner_hotkey, average_active_chutes in unique_result:
+            # Should never be possible, but just in case...
+            if miner_hotkey not in raw_compute_values:
+                raw_compute_values[miner_hotkey] = {
+                    "invocation_count": 0,
+                    "bounty_count": 0,
+                    "compute_units": 0,
+                    "unique_chute_count": 0,
+                }
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
 
     # Logging.
-    for hotkey, values in raw_compute_values:
+    for hotkey, values in raw_compute_values.items():
         logger.info(f"{hotkey}: {values}")
 
     # Normalize the values based on totals so they are all in the range [0.0, 1.0]
     totals = {
-        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in header[1:]
+        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
     }
     normalized_values = {
-        hotkey: {key: row[key] / totals[key] for key in header[1:]}
+        hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
         for hotkey, row in raw_compute_values.items()
     }
     # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
