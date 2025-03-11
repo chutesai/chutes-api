@@ -61,27 +61,27 @@ class LeastConnManager:
             self._session = None
 
     async def get_targets(self, avoid=[], prefixes=None):
-        counts = {}
-        min_count = 10000000
         instance_ids = list(self.instances)
         now = time.time()
-        for instance_id in instance_ids:
-            if instance_id in avoid:
-                continue
-            counts[instance_id] = await settings.cm_redis_client.zcount(
-                f"conn:{instance_id}",
-                now - self.connection_expiry,
-                now,
-            )
-            # counts[instance_id] = await settings.cm_redis_client.zcard(f"conn:{instance_id}")
-            if min_count > counts[instance_id]:
-                min_count = counts[instance_id]
+
+        # Get connection counts for each instance via redis pipe.
+        pipe = settings.cm_redis_client.pipeline()
+        to_query = [instance_id for instance_id in instance_ids if instance_id not in avoid]
+        for instance_id in to_query:
+            pipe.zcount(f"conn:{instance_id}", now - self.connection_expiry, now)
+        raw_counts = await pipe.execute()
+        counts = dict(zip(to_query, raw_counts))
+        min_count = min(raw_counts) if raw_counts else 1000000
+
+        # Periodically log counts for debugging.
         if random.random() < 0.05:
             logger.info(
                 "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
             )
         if not counts:
             return []
+
+        # Randomize the ordering for instances that have the same counts.
         grouped_by_count = {}
         for instance_id, count in counts.items():
             if count not in grouped_by_count:
@@ -91,7 +91,7 @@ class LeastConnManager:
         for count in grouped_by_count:
             random.shuffle(grouped_by_count[count])
 
-        # Prefix aware routing?
+        # Prefix aware routing for LLM requests.
         if prefixes:
             likely_cached = set([])
             for size, prefix_hash in prefixes:
