@@ -10,6 +10,7 @@ import hashlib
 import orjson as json
 import traceback
 from loguru import logger
+from datetime import timedelta, datetime
 from api.config import settings
 from api.util import aes_encrypt, aes_decrypt
 from api.database import get_session
@@ -54,7 +55,7 @@ async def load_chute_instances(chute_id):
         return instances
 
 
-async def purge_and_notify(target):
+async def purge_and_notify(target, reason="miner failed watchtower probes"):
     """
     Purge an instance and send a notification with the reason.
     """
@@ -65,9 +66,9 @@ async def purge_and_notify(target):
         )
         await session.execute(
             text(
-                "UPDATE instance_audit SET deletion_reason = 'miner failed watchtower audits' WHERE instance_id = :instance_id"
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
             ),
-            {"instance_id": target.instance_id},
+            {"instance_id": target.instance_id, "reason": reason},
         )
         await session.commit()
         event_data = {
@@ -527,11 +528,39 @@ async def check_all_chutes():
     logger.info(f"Finished probing all instances of {len(chute_ids)} chutes in {delta} seconds.")
 
 
+async def purge_unverified():
+    """
+    Purge all unverified instances that have been sitting around for a while.
+    """
+    async with get_session() as session:
+        query = (
+            select(Instance)
+            .where(
+                Instance.created_at <= func.now() - timedelta(hours=2, minutes=30),
+                Instance.verified.is_(False),
+            )
+            .options(joinedload(Instance.chute))
+        )
+        total = 0
+        for instance in (await session.execute(query)).unique().scalars().all():
+            delta = int((datetime.now() - instance.created_at.replace(tzinfo=None)).total_seconds())
+            logger.warning(
+                f"Purging instance {instance.instance_id} of {instance.chute.name} which was created {instance.created_at} ({delta} seconds ago)..."
+            )
+            logger.warning(f"  {instance.verified=} {instance.active=}")
+            await purge_and_notify(
+                instance, reason="Instance failed to verify within 2.5 hours of creation"
+            )
+            total += 1
+        logger.success(f"Purged {total} total unverified+old instances.")
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
     """
     while True:
+        await purge_unverified()
         await check_all_chutes()
         await asyncio.sleep(90)
 
