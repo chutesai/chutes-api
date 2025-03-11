@@ -1,0 +1,51 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-cache-redis
+  labels:
+    {{- include "llmCacheRedis.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.llmCacheRedis.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "llmCacheRedis.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "llmCacheRedis.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.llmCacheRedis.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llmCacheRedis.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.llmCacheRedis.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: redis
+          image: "{{ .Values.llmCacheRedis.image }}"
+          imagePullPolicy: {{ .Values.llmCacheRedis.imagePullPolicy }}
+          args:
+            - redis-server
+            - --requirepass
+            - $(REDIS_PASSWORD)
+            {{- range .Values.llmCacheRedis.config.customArgs }}
+            - {{ . }}
+            {{- end }}
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+          ports:
+            - name: redis
+              containerPort: {{ .Values.llmCacheRedis.service.port }}
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.llmCacheRedis.resources | nindent 12 }}

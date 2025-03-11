@@ -44,6 +44,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "watchtower.labels" -}}
+app.kubernetes.io/name: watchtower
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "autostaker.labels" -}}
 app.kubernetes.io/name: autostaker
 redis-access: "true"

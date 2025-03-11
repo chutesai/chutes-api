@@ -1,0 +1,33 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: llm-cache-redis-network-policy
+  labels:
+    {{- include "llmCacheRedis.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "llmCacheRedis.labels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              redis-access: "true"
+      ports:
+        - protocol: TCP
+          port: {{ .Values.llmCacheRedis.service.port }}
+    {{- if .Values.datadog_enabled }}
+    - from:
+        - podSelector:
+            matchLabels:
+              agent.datadoghq.com/component: "agent"
+    {{- end }}
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

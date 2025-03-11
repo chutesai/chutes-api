@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: watchtower
+  labels:
+    {{- include "watchtower.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.watchtower.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "watchtower.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "watchtower.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.watchtower.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.watchtower.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.watchtower.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: watchtower
+          image: "{{ .Values.watchtower.image }}"
+          imagePullPolicy: {{ .Values.watchtower.imagePullPolicy }}
+          command: ["poetry", "run", "python", "api/watchtower.py"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.watchtower.resources | nindent 12 }}
