@@ -596,10 +596,34 @@ async def purge_unverified():
             logger.success(f"Purged {total} total unverified+old instances.")
 
 
+async def keep_cache_warm():
+    """
+    Keep some of the DB-heavy endpoints warm in cache so API requests are always fast.
+    """
+    from api.miner.router import get_scores, get_stats
+
+    while True:
+        try:
+            logger.info("About to warm up cache...")
+            async with get_session() as session:
+                await get_stats(miner_hotkey=None, session=session, per_chute=False, request=None)
+                logger.success("Warmed up stats endpoint, per_chute=False")
+                await get_stats(miner_hotkey=None, session=session, per_chute=True, request=None)
+                logger.success("Warmed up stats endpoint, per_chute=True")
+                await get_scores(hotkey=None, request=None)
+                logger.success("Warmed up scores endpoint")
+        except Exception as exc:
+            logger.warning(f"Error warming up cache: {exc}")
+        await asyncio.sleep(60)
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
     """
+    # Cache warmup in the background for miner stats and scores, since those are DB heavy.
+    asyncio.create_task(keep_cache_warm())
+
     while True:
         await purge_unverified()
         await check_all_chutes()

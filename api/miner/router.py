@@ -5,7 +5,7 @@ Endpoints specific to miners.
 import re
 import orjson as json
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import APIRouter, Depends, Header, status, HTTPException, Response
+from fastapi import APIRouter, Depends, Header, status, HTTPException, Response, Request
 from starlette.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.future import select
@@ -151,6 +151,7 @@ async def get_stats(
     miner_hotkey: Optional[str] = None,
     session: AsyncSession = Depends(get_db_session),
     per_chute: Optional[bool] = False,
+    request: Request = None,
 ) -> Response:
     """
     Get invocation status over different intervals.
@@ -163,9 +164,10 @@ async def get_stats(
                     data[key] = [v for v in data[key] if v["miner_hotkey"] == miner_hotkey]
         return mstats
 
-    cached = await settings.memcache.get(b"mstats")
-    if cached:
-        return _filter_by_key(json.loads(cached))
+    if request:
+        cached = await settings.memcache.get(b"mstats")
+        if cached:
+            return _filter_by_key(json.loads(cached))
 
     if miner_hotkey and not re.match(r"^[a-zA-Z0-9]{48}$", miner_hotkey):
         raise HTTPException(
@@ -182,6 +184,7 @@ async def get_stats(
     compute_query = """
     SELECT
         i.miner_hotkey,
+        COUNT(*) AS total_invocations,
         SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
     FROM invocations i
     WHERE i.started_at > NOW() - INTERVAL '{interval}'
@@ -196,6 +199,7 @@ async def get_stats(
         SELECT
             i.miner_hotkey,
             i.chute_id,
+            COUNT(*) AS total_invocations,
             SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
         FROM invocations i
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
@@ -216,12 +220,21 @@ async def get_stats(
         compute_data = []
         if per_chute:
             compute_data = [
-                {"miner_hotkey": row[0], "chute_id": row[1], "compute_units": float(row[2])}
+                {
+                    "miner_hotkey": row[0],
+                    "chute_id": row[1],
+                    "invocation_count": int(row[2]),
+                    "compute_units": float(row[3]),
+                }
                 for row in compute_result.fetchall()
             ]
         else:
             compute_data = [
-                {"miner_hotkey": row[0], "compute_units": float(row[1])}
+                {
+                    "miner_hotkey": row[0],
+                    "invocation_count": int(row[1]),
+                    "compute_units": float(row[2]),
+                }
                 for row in compute_result.fetchall()
             ]
         results[label] = {
@@ -234,11 +247,12 @@ async def get_stats(
 
 
 @router.get("/scores")
-async def get_scores(hotkey: Optional[str] = None):
-    cached = await settings.memcache.get(b"miner_scores")
+async def get_scores(hotkey: Optional[str] = None, request: Request = None):
     rv = None
-    if cached:
-        rv = json.loads(cached)
+    if request:
+        cached = await settings.memcache.get(b"miner_scores")
+        if cached:
+            rv = json.loads(cached)
     if not rv:
         rv = await get_scoring_data()
         await settings.memcache.set(b"miner_scores", json.dumps(rv), exptime=600)

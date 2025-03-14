@@ -6,7 +6,7 @@ import orjson as json
 from typing import Optional
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
-from fastapi import APIRouter, status, HTTPException, Depends
+from fastapi import APIRouter, status, HTTPException, Depends, Request
 from fastapi_cache.decorator import cache
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.gpu import SUPPORTED_GPUS, COMPUTE_UNIT_PRICE_BASIS, COMPUTE_MIN
@@ -137,14 +137,18 @@ async def return_developer_deposit(
 
 @router.get("/payments")
 async def list_payments(
-    page: Optional[int] = 0, limit: Optional[int] = 25, db: AsyncSession = Depends(get_db_session)
+    page: Optional[int] = 0,
+    limit: Optional[int] = 25,
+    db: AsyncSession = Depends(get_db_session),
+    request: Request = None,
 ):
     """
     List all payments.
     """
-    cache_key = f"payment_list:{page}:{limit}".encode()
-    if cached := await settings.memcache.get(cache_key):
-        return json.loads(cached)
+    if request:
+        cache_key = f"payment_list:{page}:{limit}".encode()
+        if cached := await settings.memcache.get(cache_key):
+            return json.loads(cached)
     query = (
         select(Payment, User)
         .join(User, Payment.user_id == User.user_id)
