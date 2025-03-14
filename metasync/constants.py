@@ -43,6 +43,12 @@ WHERE i.started_at > NOW() - INTERVAL '{interval}'
 AND i.error_message IS NULL
 AND i.miner_uid > 0
 AND i.completed_at IS NOT NULL
+AND NOT EXISTS (
+    SELECT 1
+    FROM reports
+    WHERE invocation_id = i.parent_invocation_id
+    AND confirmed_at IS NOT NULL
+)
 GROUP BY i.miner_hotkey
 ORDER BY compute_units DESC;
 """
@@ -53,37 +59,46 @@ WITH time_series AS (
     generate_series(
       date_trunc('hour', now() - INTERVAL '{interval}'),
       date_trunc('hour', now()),
-      INTERVAL '10 minutes'
+      INTERVAL '1 hour'
     ) AS time_point
 ),
-chute_timeframes AS (
-  SELECT
-    chute_id,
-    miner_hotkey,
-    MIN(started_at) AS first_invocation,
-    MAX(started_at) AS last_invocation
+-- Get all instances that had at least one successful invocation (ever) while the instance was alive.
+instances_with_success AS (
+  SELECT DISTINCT
+    instance_id
   FROM invocations
   WHERE
-    started_at >= now() - INTERVAL '{interval}'
-    AND error_message IS NULL
-    AND completed_at IS NOT NULL
-  GROUP BY chute_id, miner_hotkey
+    error_message IS NULL AND
+    completed_at IS NOT NULL
 ),
-ten_minute_active_chutes AS (
+-- For each time point, find active instances that have had successful invocations
+active_instances_per_timepoint AS (
   SELECT
-    t.time_point,
-    ct.miner_hotkey,
-    COUNT(DISTINCT ct.chute_id) AS active_chutes
-  FROM time_series t
-  LEFT JOIN chute_timeframes ct ON
-    t.time_point >= ct.first_invocation AND
-    t.time_point <= ct.last_invocation
-  GROUP BY t.time_point, ct.miner_hotkey
+    ts.time_point,
+    ia.instance_id,
+    ia.chute_id,
+    ia.miner_hotkey
+  FROM time_series ts
+  JOIN instance_audit ia ON
+    ia.verified_at <= ts.time_point AND
+    (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point)
+  JOIN instances_with_success iws ON
+    ia.instance_id = iws.instance_id
+),
+-- Count distinct chute_ids per miner per time point
+active_chutes_per_timepoint AS (
+  SELECT
+    time_point,
+    miner_hotkey,
+    COUNT(DISTINCT chute_id) AS active_chutes
+  FROM active_instances_per_timepoint
+  GROUP BY time_point, miner_hotkey
 )
+-- Calculate average active chutes per miner across all time points
 SELECT
   miner_hotkey,
   AVG(active_chutes)::integer AS avg_active_chutes
-FROM ten_minute_active_chutes
+FROM active_chutes_per_timepoint
 GROUP BY miner_hotkey
 ORDER BY avg_active_chutes DESC;
 """

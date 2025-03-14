@@ -683,7 +683,12 @@ async def remove_undeployable_chutes():
             invocation_count = row.invocation_count
             successful_miner_count = row.successful_miner_count
             audit_miner_count = row.audit_miner_count
-            bad_chutes.append((chute_id, f"chute is not broadly deployable by miners: {invocation_count=} {successful_miner_count=} {audit_miner_count=}"))
+            bad_chutes.append(
+                (
+                    chute_id,
+                    f"chute is not broadly deployable by miners: {invocation_count=} {successful_miner_count=} {audit_miner_count=}",
+                )
+            )
             logger.warning(
                 f"Detected undeployable chute {chute_id} with {invocation_count} invocations, "
                 f"{successful_miner_count} successful miners out of {audit_miner_count} total miners"
@@ -733,15 +738,17 @@ async def remove_undeployable_chutes():
             )
             SELECT COUNT(*) AS report_count FROM inserted;
             """)
-            count = (await session.execute(
-                report_query,
-                {
-                    "user_id": await chutes_user_id(),
-                    "confirmed_by": await chutes_user_id(),
-                    "chute_id": chute_id,
-                    "reason": reason,
-                },
-            )).scalar()
+            count = (
+                await session.execute(
+                    report_query,
+                    {
+                        "user_id": await chutes_user_id(),
+                        "confirmed_by": await chutes_user_id(),
+                        "chute_id": chute_id,
+                        "reason": reason,
+                    },
+                )
+            ).scalar()
             logger.success(f"Generated {count} reports for undeployable chute {chute_id}")
             await session.commit()
 
