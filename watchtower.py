@@ -31,15 +31,19 @@ SELECT * FROM (
             count(distinct(parent_invocation_id)) as invocation_count,
             count(distinct(miner_hotkey)) as successful_miner_count
         FROM
-            invocations
+            invocations i
         WHERE
-            started_at >= now() - interval '7 day'
+            started_at >= now() - interval '7 days'
             AND error_message IS NULL
             AND completed_at IS NOT NULL
+            AND NOT EXISTS(
+                SELECT 1 FROM reports r
+                WHERE r.invocation_id = i.parent_invocation_id
+            )
         GROUP BY
             chute_id
         HAVING
-            COUNT(DISTINCT(miner_hotkey)) = 1
+            COUNT(DISTINCT(miner_hotkey)) <= 2
     ),
     audit_stats AS (
         SELECT
@@ -56,13 +60,13 @@ SELECT * FROM (
             cs.chute_id, cs.invocation_count, cs.successful_miner_count
     )
     SELECT * FROM audit_stats
-    WHERE invocation_count > 0
+    WHERE invocation_count > 10
     AND (
         (successful_miner_count = 1 AND audit_miner_count >= 3)
         OR
         (successful_miner_count::float / audit_miner_count::float <= 0.1)
     )
-    AND first_verified_at <= now() - interval '15 minutes'
+    AND first_verified_at <= now() - interval '1 hour'
     ORDER BY
         audit_miner_count ASC
 ) t;
