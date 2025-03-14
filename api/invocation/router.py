@@ -51,16 +51,38 @@ class DiffusionInput(BaseModel):
         extra = "forbid"
 
 
-@router.get("/exports/{year}/{month}/{day}/{hour}.csv")
+@router.get("/exports/{year}/{month}/{day}/{hour_format}")
 async def get_export(
     year: int,
     month: int,
     day: int,
-    hour: int,
+    hour_format: str,
 ) -> Response:
     """
-    Get invocation exports for a particular hour.
+    Get invocation exports (and reports) for a particular hour.
     """
+    is_reports = False
+    if hour_format.endswith(".csv"):
+        hour_part = hour_format[:-4]
+        if hour_part.endswith("-reports"):
+            hour_str = hour_part[:-8]
+            is_reports = True
+        else:
+            hour_str = hour_part
+            is_reports = False
+        try:
+            hour = int(hour_str)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid hour format: {hour_format}",
+            )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid format: {hour_format}, must end with .csv",
+        )
+
     # Sanity check the dates.
     valid = True
     if (
@@ -85,8 +107,14 @@ async def get_export(
             detail=f"Invocations export not found {year=} {month=} {day=} {hour=}",
         )
 
+    # Construct the S3 key based on whether this is a reports request
+    if is_reports:
+        key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}-reports.csv"
+    else:
+        key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}.csv"
+
+    # Check if the file exists
     exists = False
-    key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}.csv"
     async with settings.s3_client() as s3:
         try:
             await s3.head_object(Bucket=settings.storage_bucket, Key=key)
@@ -94,12 +122,14 @@ async def get_export(
         except Exception as exc:
             if exc.response["Error"]["Code"] != "404":
                 raise
+
     if not exists:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Invocations export not found {year=} {month=} {day=} {hour=}",
         )
 
+    # Download and return the file.
     data = BytesIO()
     async with settings.s3_client() as s3:
         await s3.download_fileobj(settings.storage_bucket, key, data)
