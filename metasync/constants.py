@@ -57,7 +57,7 @@ UNIQUE_CHUTE_AVERAGE_QUERY = """
 WITH time_series AS (
   SELECT
     generate_series(
-      date_trunc('hour', now() - INTERVAL '7 days'),
+      date_trunc('hour', now() - INTERVAL '{interval}'),
       date_trunc('hour', now()),
       INTERVAL '1 hour'
     ) AS time_point
