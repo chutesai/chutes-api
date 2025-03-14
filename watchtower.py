@@ -145,7 +145,7 @@ async def do_slurp(instance, payload, encrypted_slurp):
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         enc_payload,
-        timeout=7.0,
+        timeout=15.0,
     ) as resp:
         if resp.status == 404:
             logger.warning(
@@ -458,7 +458,7 @@ async def check_ping(chute, instance):
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         payload,
-        timeout=7.0,
+        timeout=10.0,
     ) as resp:
         raw_content = await resp.read()
         pong = None
