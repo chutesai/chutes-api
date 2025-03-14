@@ -15,13 +15,58 @@ from api.config import settings
 from api.util import aes_encrypt, aes_decrypt
 from api.database import get_session
 from api.chute.schemas import Chute
-from sqlalchemy import text, update, func
+from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload
-from sqlalchemy.future import select
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
+
+
+UNDEPLOYABLE_CHUTE_QUERY = """
+SELECT * FROM (
+    WITH chute_stats AS (
+        SELECT
+            chute_id,
+            count(distinct(parent_invocation_id)) as invocation_count,
+            count(distinct(miner_hotkey)) as successful_miner_count
+        FROM
+            invocations
+        WHERE
+            started_at >= now() - interval '7 day'
+            AND error_message IS NULL
+            AND completed_at IS NOT NULL
+        GROUP BY
+            chute_id
+        HAVING
+            COUNT(DISTINCT(miner_hotkey)) = 1
+    ),
+    audit_stats AS (
+        SELECT
+            cs.chute_id,
+            cs.invocation_count,
+            cs.successful_miner_count,
+            COUNT(DISTINCT ia.miner_hotkey) AS audit_miner_count,
+            MIN(ia.verified_at) AS first_verified_at
+        FROM
+            chute_stats cs
+        LEFT JOIN
+            instance_audit ia ON cs.chute_id = ia.chute_id
+        GROUP BY
+            cs.chute_id, cs.invocation_count, cs.successful_miner_count
+    )
+    SELECT * FROM audit_stats
+    WHERE invocation_count > 0
+    AND (
+        (successful_miner_count = 1 AND audit_miner_count >= 3)
+        OR
+        (successful_miner_count::float / audit_miner_count::float <= 0.1)
+    )
+    AND first_verified_at <= now() - interval '15 minutes'
+    ORDER BY
+        audit_miner_count ASC
+) t;
+"""
 
 
 def use_encrypted_slurp(chutes_version: str) -> bool:
@@ -617,6 +662,86 @@ async def keep_cache_warm():
         await asyncio.sleep(60)
 
 
+async def remove_undeployable_chutes():
+    """
+    Remove chutes that only one miner (or tiny subnset of miners) can deploy,
+    because it's almost certainly someone trying to cheat.
+    """
+    from api.user.service import chutes_user_id
+
+    query = text(UNDEPLOYABLE_CHUTE_QUERY)
+    bad_chutes = []
+    async with get_session() as session:
+        result = await session.execute(query)
+        rows = result.fetchall()
+        for row in rows:
+            chute_id = row.chute_id
+            invocation_count = row.invocation_count
+            successful_miner_count = row.successful_miner_count
+            audit_miner_count = row.audit_miner_count
+            bad_chutes.append((chute_id, f"chute is not broadly deployable by miners: {invocation_count=} {successful_miner_count=} {audit_miner_count=}"))
+            logger.warning(
+                f"Detected undeployable chute {chute_id} with {invocation_count} invocations, "
+                f"{successful_miner_count} successful miners out of {audit_miner_count} total miners"
+            )
+            chute = (
+                (await session.execute(select(Chute).where(Chute.chute_id == chute_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
+            if chute:
+                version = chute.version
+                await session.delete(chute)
+                await settings.redis_client.publish(
+                    "miner_broadcast",
+                    json.dumps(
+                        {
+                            "reason": "chute_deleted",
+                            "data": {"chute_id": chute_id, "version": version},
+                        }
+                    ).decode(),
+                )
+        await session.commit()
+
+    # Generate the reports in separate sessions so we don't have massive transactions.
+    for chute_id, reason in bad_chutes:
+        async with get_session() as session:
+            # Generate confirmed reports for each invocation to negate the score.
+            report_query = text("""
+            WITH inserted AS (
+                INSERT INTO reports
+                (invocation_id, user_id, timestamp, confirmed_at, confirmed_by, reason)
+                SELECT
+                    parent_invocation_id,
+                    :user_id,
+                    now(),
+                    now(),
+                    :confirmed_by,
+                    :reason
+                FROM invocations i
+                WHERE chute_id = :chute_id
+                AND NOT EXISTS (
+                    SELECT 1 FROM reports r
+                    WHERE r.invocation_id = i.parent_invocation_id
+                )
+                ON CONFLICT (invocation_id) DO UPDATE SET reason = :reason
+                RETURNING invocation_id
+            )
+            SELECT COUNT(*) AS report_count FROM inserted;
+            """)
+            count = (await session.execute(
+                report_query,
+                {
+                    "user_id": await chutes_user_id(),
+                    "confirmed_by": await chutes_user_id(),
+                    "chute_id": chute_id,
+                    "reason": reason,
+                },
+            )).scalar()
+            logger.success(f"Generated {count} reports for undeployable chute {chute_id}")
+            await session.commit()
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
@@ -625,6 +750,7 @@ async def main():
     asyncio.create_task(keep_cache_warm())
 
     while True:
+        await remove_undeployable_chutes()
         await purge_unverified()
         await check_all_chutes()
         await asyncio.sleep(90)
