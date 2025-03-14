@@ -41,7 +41,7 @@ USER chutes
 RUN python3 -m venv /home/chutes/venv
 ENV PATH=/home/chutes/venv/bin:$PATH
 ADD pyproject.toml /tmp/
-RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg|aioboto3|cryptography) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/"//g' > /tmp/requirements.txt
+RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg|aioboto3|cryptography) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/ = "/==/g' | sed 's/"//g' > /tmp/requirements.txt
 # TODO: Pin the below versions
 RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr aiomcache 'transformers<4.49.0' && pip install -r /tmp/requirements.txt
 ADD --chown=chutes api /app/api

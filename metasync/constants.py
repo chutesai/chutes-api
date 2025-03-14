@@ -66,10 +66,16 @@ WITH time_series AS (
 instances_with_success AS (
   SELECT DISTINCT
     instance_id
-  FROM invocations
+  FROM invocations ii
   WHERE
-    error_message IS NULL AND
-    completed_at IS NOT NULL
+    error_message IS NULL
+    AND completed_at IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1
+        FROM reports
+        WHERE invocation_id = ii.parent_invocation_id
+        AND confirmed_at IS NOT NULL
+    )
 ),
 -- For each time point, find active instances that have had successful invocations
 active_instances_per_timepoint AS (

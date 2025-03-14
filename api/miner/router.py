@@ -175,7 +175,7 @@ async def get_stats(
         )
     bounty_query = """
     SELECT miner_hotkey, SUM(bounty) as total_bounty
-      FROM invocations
+      FROM invocations i
      WHERE started_at >= NOW() - INTERVAL '{interval}'
        AND error_message IS NULL
        AND miner_uid > 0
