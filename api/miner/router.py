@@ -179,6 +179,12 @@ async def get_stats(
      WHERE started_at >= NOW() - INTERVAL '{interval}'
        AND error_message IS NULL
        AND miner_uid > 0
+       AND NOT EXISTS (
+          SELECT 1
+          FROM reports
+          WHERE invocation_id = i.parent_invocation_id
+          AND confirmed_at IS NOT NULL
+       )
     GROUP BY miner_hotkey
     """
     compute_query = """
@@ -190,6 +196,13 @@ async def get_stats(
     WHERE i.started_at > NOW() - INTERVAL '{interval}'
     AND i.error_message IS NULL
     AND miner_uid > 0
+    AND i.completed_at IS NOT NULL
+    AND NOT EXISTS (
+        SELECT 1
+        FROM reports
+        WHERE invocation_id = i.parent_invocation_id
+        AND confirmed_at IS NOT NULL
+    )
     GROUP BY i.miner_hotkey
     HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
     ORDER BY compute_units DESC
@@ -205,6 +218,13 @@ async def get_stats(
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
         AND i.error_message IS NULL
         AND miner_uid > 0
+        AND i.completed_at IS NOT NULL
+        AND NOT EXISTS (
+            SELECT 1
+            FROM reports
+            WHERE invocation_id = i.parent_invocation_id
+            AND confirmed_at IS NOT NULL
+        )
         GROUP BY i.miner_hotkey, i.chute_id
         HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
         ORDER BY compute_units DESC

@@ -37,6 +37,14 @@ FROM invocations i
 LEFT JOIN instances inst ON i.instance_id = inst.instance_id
 INNER JOIN chutes c ON i.chute_id = c.chute_id
 WHERE i.started_at > NOW() - INTERVAL '{interval}'
+AND i.error_message IS NULL
+AND i.completed_at IS NOT NULL
+AND NOT EXISTS (
+    SELECT 1
+    FROM reports
+    WHERE invocation_id = i.parent_invocation_id
+    AND confirmed_at IS NOT NULL
+)
 GROUP BY i.chute_id"""
     )
     items = []
