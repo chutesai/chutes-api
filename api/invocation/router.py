@@ -8,6 +8,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
+import time
 import hashlib
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
@@ -20,14 +21,29 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
-from api.chute.util import invoke, get_one, get_vllm_models, count_prompt_tokens
-from api.util import rate_limit, ip_rate_limit
+from api.constants import LLM_PRICE_MULT_PER_MILLION
+from api.chute.util import (
+    invoke,
+    get_one,
+    get_vllm_models,
+    count_prompt_tokens,
+    TRACK_INVOCATION,
+    UPDATE_INVOCATION,
+    selector_hourly_price,
+)
+from api.util import rate_limit, ip_rate_limit, sse, now_str
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
+from api.invocation.cache import (
+    cached_responder,
+    append_stream,
+    purge_stream,
+    set_stream_expiration,
+)
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -368,19 +384,8 @@ async def _invoke(
                         request_body["max_tokens"] = 4096
                 except ValueError:
                     request_body["max_tokens"] = 4096
-        try:
-            request_hash = hashlib.md5(
-                request_body["model"].encode() + json.dumps(request_body)
-            ).hexdigest()
-            request_key = f"req:{request_hash}".encode()
-            if not await settings.memcache.get(request_key):
-                await settings.memcache.set(request_key, b"0")
-            count = await settings.memcache.incr(request_key)
-            if count > 1:
-                logger.info(f"SHOULD DEDUPE {request_body['model']} {request_key}: {count=}")
-        except Exception:
-            ...
 
+        # Make sure the model name is correct.
         if (requested_model := request_body.get("model")) != chute.name:
             logger.warning(
                 f"User requested model {requested_model} but chute name is: {chute.name}"
@@ -436,43 +441,184 @@ async def _invoke(
         f"targets on behalf of {current_user.username} [{origin_ip}]"
     )
 
-    # To stream, or not to stream.
-    parent_invocation_id = str(uuid.uuid4())
     include_trace = request.headers.get("X-Chutes-Trace", "").lower() == "true"
+
+    # Already cached?
+    parent_invocation_id = str(uuid.uuid4())
+    request_hash = None
+    if metrics and "ttft" in metrics:
+        raw_dump = json.dumps(request_body["json"]).decode()
+        request_hash_str = "::".join(
+            [
+                chute.chute_id,
+                selected_cord["function"],
+                raw_dump,
+            ]
+        ).encode()
+        request_hash = hashlib.sha256(request_hash_str).hexdigest()
+        started_at = time.time()
+        if (
+            "STREAM_TEST" in raw_dump
+            and (streamer := await cached_responder(request_hash, chute.name)) is not None
+        ):
+
+            async def _send_from_cached_stream():
+                invocation_id = str(uuid.uuid4())
+                if include_trace:
+                    yield sse(
+                        {
+                            "trace": {
+                                "timestamp": now_str(),
+                                "invocation_id": parent_invocation_id,
+                                "chute_id": chute.chute_id,
+                                "function": selected_cord["function"],
+                                "message": f"responding from cache, {request_hash=}",
+                            },
+                        }
+                    )
+                any_chunk = False
+                last_chunk = None
+                async for chunk in streamer:
+                    if not chunk:
+                        continue
+                    if include_trace:
+                        yield {"result": chunk}
+                    else:
+                        yield chunk
+                    if chunk.startswith(b"data: {"):
+                        if metrics.get("ttft") is None:
+                            metrics["ttft"] = time.time() - started_at
+                        last_chunk = chunk
+                    elif b"data:" in chunk:
+                        any_chunk = True
+
+                # Parse usage data.
+                total_time = time.time() - started_at
+                if last_chunk and b'"usage"' in last_chunk:
+                    try:
+                        usage_obj = json.loads(last_chunk[6:].decode())
+                        usage = usage_obj.get("usage", {})
+                        prompt_tokens = usage.get("prompt_tokens")
+                        completion_tokens = usage.get("completion_tokens")
+                        if prompt_tokens is not None and completion_tokens is not None:
+                            metrics["it"] = max(0, prompt_tokens or 0)
+                            metrics["ot"] = max(0, completion_tokens or 0)
+                            metrics["tps"] = metrics["ot"] / total_time
+                            logger.info(f"LLMCACHE: metrics for chute={chute.name}: {metrics}")
+
+                            if metrics["ot"] and not request.state.free_invocation:
+                                tokens = metrics["ot"] + metrics["it"]
+                                hourly_price = await selector_hourly_price(chute.node_selector)
+                                discount = 0.0
+                                if chute.discount and -3 < chute.discount <= 1:
+                                    discount = chute.discount
+                                balance_used = (
+                                    tokens / 1000000.0 * hourly_price * LLM_PRICE_MULT_PER_MILLION
+                                )
+                                balance_used -= balance_used * discount
+                                logger.info(
+                                    f"LLMCACHE BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
+                                )
+                                # XXX disable until fully tested.
+                                # pipeline = settings.cm_redis_client.pipeline()
+                                # key = f"balance:{current_user.user_id}:{chute.chute_id}"
+                                # pipeline.hincrbyfloat(key, "amount", balance_used)
+                                # pipeline.hincrby(key, "count", 1)
+                                # pipeline.hset(key, "timestamp", int(time.time()))
+                                # await pipeline.execute()
+                                # logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
+
+                    except Exception as exc:
+                        logger.warning(f"Error checking metrics: {exc}")
+
+                if any_chunk:
+                    # Track an invocation, just set the UID to < 0.
+                    async with get_session() as session:
+                        invocation_id = str(uuid.uuid4())
+                        result = await session.execute(
+                            TRACK_INVOCATION,
+                            {
+                                "parent_invocation_id": parent_invocation_id,
+                                "invocation_id": invocation_id,
+                                "function_name": selected_cord["function"],
+                                "chute_id": chute.chute_id,
+                                "chute_user_id": chute.user_id,
+                                "user_id": current_user.user_id,
+                                "image_id": chute.image_id,
+                                "image_user_id": chute.image.user_id,
+                                "instance_id": "00000000-0000-0000-0000-000000000000",
+                                "miner_uid": -1,
+                                "miner_hotkey": "00000000-0000-0000-0000-000000000000",
+                                "request_path": selected_cord["path"],
+                                "compute_multiplier": 0.0,
+                            },
+                        )
+                        partition_suffix = result.scalar()
+                        await session.execute(
+                            text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
+                            {
+                                "chute_id": chute.chute_id,
+                                "invocation_id": invocation_id,
+                                "response_path": None,
+                                "metrics": json.dumps(metrics).decode(),
+                            },
+                        )
+                        await session.commit()
+
+            return StreamingResponse(
+                _send_from_cached_stream(),
+                media_type="text/event-stream",
+                headers={"X-Chutes-InvocationID": parent_invocation_id},
+            )
+
     if stream or include_trace:
 
         async def _stream_response():
-            skip = False
-            async for chunk in invoke(
-                chute,
-                current_user.user_id,
-                selected_cord["path"],
-                selected_cord["function"],
-                stream,
-                args,
-                kwargs,
-                manager,
-                parent_invocation_id,
-                metrics=metrics,
-                request=request,
-                prefixes=prefix_hashes,
-            ):
-                if include_trace:
-                    yield chunk
-                    continue
-                if skip:
-                    continue
-                if chunk.startswith('data: {"result"'):
-                    yield json.loads(chunk[6:])["result"]
-                elif chunk.startswith('data: {"error"'):
-                    error = json.loads(chunk[6:])["error"]
-                    yield json.dumps(
-                        {
-                            "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            "detail": error or "No result returned from upstream",
-                        }
-                    )
-                    skip = True
+            try:
+                skip = False
+                async for chunk in invoke(
+                    chute,
+                    current_user.user_id,
+                    selected_cord["path"],
+                    selected_cord["function"],
+                    stream,
+                    args,
+                    kwargs,
+                    manager,
+                    parent_invocation_id,
+                    metrics=metrics,
+                    request=request,
+                    prefixes=prefix_hashes,
+                ):
+                    if include_trace:
+                        yield chunk
+                        continue
+                    if skip:
+                        continue
+                    if chunk.startswith('data: {"result"'):
+                        result_val = json.loads(chunk[6:])["result"]
+                        yield result_val
+                        if request_hash:
+                            await append_stream(request_hash, result_val.encode())
+                    elif chunk.startswith('data: {"error"'):
+                        error = json.loads(chunk[6:])["error"]
+                        yield json.dumps(
+                            {
+                                "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                "detail": error or "No result returned from upstream",
+                            }
+                        )
+                        skip = True
+                        if request_hash:
+                            await purge_stream(request_hash)
+                if request_hash:
+                    await append_stream(request_hash, b"[[__END__]]")
+                    await set_stream_expiration(request_hash)
+
+            except Exception:
+                if request_hash:
+                    await purge_stream(request_hash)
+                raise
 
         return StreamingResponse(
             _stream_response(),
