@@ -4,6 +4,9 @@ from loguru import logger
 from api.config import settings
 
 
+CACHE_PREFIX = "llm_sc:"
+
+
 async def stream_response(prompt_id, model):
     """
     Yield chunks from a redis stream directly instead of routing to miner.
@@ -16,7 +19,7 @@ async def stream_response(prompt_id, model):
         stream_result = None
         try:
             stream_result = await settings.llm_cache_client.xrange(
-                f"llm_stream:{prompt_id}", last_offset or "-", "+"
+                f"{CACHE_PREFIX}{prompt_id}", last_offset or "-", "+"
             )
         except Exception as exc:
             logger.warning(f"Error fetching stream result: {exc}")
@@ -45,7 +48,7 @@ async def append_stream(prompt_id, chunk):
     Add chunk data to an open redis stream.
     """
     try:
-        await settings.llm_cache_client.xadd(f"llm_stream:{prompt_id}", {"chunk": chunk})
+        await settings.llm_cache_client.xadd(f"{CACHE_PREFIX}{prompt_id}", {"chunk": chunk})
     except Exception as exc:
         logger.error(f"Error appending cache stream: {exc}")
         await purge_stream(prompt_id)
@@ -55,14 +58,14 @@ async def set_stream_expiration(prompt_id):
     """
     Set an expiration for a prompt.
     """
-    await settings.llm_cache_client.expire(f"llm_stream:{prompt_id}", 3600)
+    await settings.llm_cache_client.expire(f"{CACHE_PREFIX}{prompt_id}", 300)
 
 
 async def cached_responder(prompt_id, model) -> dict:
     """
     Send output from redis cache for duplicate outputs.
     """
-    stream_length = await settings.llm_cache_client.xlen(f"llm_stream:{prompt_id}")
+    stream_length = await settings.llm_cache_client.xlen(f"{CACHE_PREFIX}{prompt_id}")
     if stream_length > 0:
         logger.info(f"LLMCACHE: found stream for {prompt_id=} of {model=}")
         return stream_response(prompt_id, model)
@@ -74,6 +77,6 @@ async def purge_stream(prompt_id):
     Delete a stream cache.
     """
     try:
-        await settings.llm_cache_client.delete(f"llm_stream:{prompt_id}")
+        await settings.llm_cache_client.delete(f"{CACHE_PREFIX}{prompt_id}")
     except Exception as exc:
         logger.error(f"Error purging cache stream: {exc}")

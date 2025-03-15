@@ -503,6 +503,7 @@ async def _invoke(
                         if prompt_tokens is not None and completion_tokens is not None:
                             metrics["it"] = max(0, prompt_tokens or 0)
                             metrics["ot"] = max(0, completion_tokens or 0)
+                            metrics["tokens"] = metrics["ot"]
                             metrics["tps"] = metrics["ot"] / total_time
                             logger.info(f"LLMCACHE: metrics for chute={chute.name}: {metrics}")
 
@@ -519,14 +520,18 @@ async def _invoke(
                                 logger.info(
                                     f"LLMCACHE BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
                                 )
-                                # XXX disable until fully tested.
-                                # pipeline = settings.cm_redis_client.pipeline()
-                                # key = f"balance:{current_user.user_id}:{chute.chute_id}"
-                                # pipeline.hincrbyfloat(key, "amount", balance_used)
-                                # pipeline.hincrby(key, "count", 1)
-                                # pipeline.hset(key, "timestamp", int(time.time()))
-                                # await pipeline.execute()
-                                # logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
+                                await set_stream_expiration(request_hash)
+
+                                # User account balance deductions.
+                                pipeline = settings.cm_redis_client.pipeline()
+                                key = f"balance:{current_user.user_id}:{chute.chute_id}"
+                                pipeline.hincrbyfloat(key, "amount", balance_used)
+                                pipeline.hincrby(key, "count", 1)
+                                pipeline.hset(key, "timestamp", int(time.time()))
+                                await pipeline.execute()
+                                logger.info(
+                                    f"LLMCACHE Deducted (soon) ${balance_used:.12f} from {current_user.user_id=}"
+                                )
 
                     except Exception as exc:
                         logger.warning(f"Error checking metrics: {exc}")
