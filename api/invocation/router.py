@@ -446,7 +446,13 @@ async def _invoke(
     # Already cached?
     parent_invocation_id = str(uuid.uuid4())
     request_hash = None
-    if not request.headers.get("X-Disable-Cache") and metrics and "ttft" in metrics:
+    if (
+        current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
+        and not chute.openrouter
+        and not request.headers.get("X-Disable-Cache")
+        and metrics
+        and "ttft" in metrics
+    ):
         raw_dump = json.dumps(request_body["json"]).decode()
         request_hash_str = "::".join(
             [
