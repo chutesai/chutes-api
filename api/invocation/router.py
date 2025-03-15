@@ -446,7 +446,7 @@ async def _invoke(
     # Already cached?
     parent_invocation_id = str(uuid.uuid4())
     request_hash = None
-    if metrics and "ttft" in metrics:
+    if not request.headers.get("X-Disable-Cache") and metrics and "ttft" in metrics:
         raw_dump = json.dumps(request_body["json"]).decode()
         request_hash_str = "::".join(
             [
@@ -457,10 +457,7 @@ async def _invoke(
         ).encode()
         request_hash = hashlib.sha256(request_hash_str).hexdigest()
         started_at = time.time()
-        if (
-            "STREAM_TEST" in raw_dump
-            and (streamer := await cached_responder(request_hash, chute.name)) is not None
-        ):
+        if (streamer := await cached_responder(request_hash, chute.name)) is not None:
 
             async def _send_from_cached_stream():
                 invocation_id = str(uuid.uuid4())

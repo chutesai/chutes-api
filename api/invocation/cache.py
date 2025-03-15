@@ -58,7 +58,7 @@ async def set_stream_expiration(prompt_id):
     """
     Set an expiration for a prompt.
     """
-    await settings.llm_cache_client.expire(f"{CACHE_PREFIX}{prompt_id}", 300)
+    await settings.llm_cache_client.expire(f"{CACHE_PREFIX}{prompt_id}", 1800)
 
 
 async def cached_responder(prompt_id, model) -> dict:
