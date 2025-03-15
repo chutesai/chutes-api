@@ -22,6 +22,7 @@ from api.constants import (
     COLDKEY_HEADER,
     NONCE_HEADER,
     SIGNATURE_HEADER,
+    AUTHORIZATION_HEADER,
 )
 from api.permissions import Permissioning
 from api.config import settings
@@ -30,6 +31,7 @@ from api.api_key.response import APIKeyCreationResponse
 from api.user.util import validate_the_username, generate_payment_address
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
+from scalecodec.utils.ss58 import is_valid_ss58_address
 from sqlalchemy import select
 
 router = APIRouter()
@@ -353,6 +355,59 @@ async def fingerprint_login(
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Missing or invalid fingerprint provided.",
+    )
+
+
+@router.post("/change_bt_auth", response_model=SelfResponse)
+async def change_bt_auth(
+    request: Request,
+    fingerprint: str = Header(alias=AUTHORIZATION_HEADER),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Change the bittensor hotkey/coldkey associated with an account via fingerprint auth.
+    """
+    body = await request.json()
+    fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
+    user = (
+        await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
+    ).scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid fingerprint provided.",
+        )
+    coldkey = body.get("coldkey")
+    hotkey = body.get("hotkey")
+    changed = False
+    error_message = None
+    if coldkey:
+        if is_valid_ss58_address(coldkey):
+            user.coldkey = coldkey
+            changed = True
+        else:
+            error_message = f"Invalid coldkey: {coldkey}"
+    if hotkey:
+        if is_valid_ss58_address(hotkey):
+            existing = (
+                await db.execute(select(User).where(User.hotkey == hotkey))
+            ).scalar_one_or_none()
+            if existing:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Hotkey already associated with another user: {hotkey}",
+                )
+            user.hotkey = hotkey
+            changed = True
+        else:
+            error_message = f"Invalid hotkey: {hotkey}"
+    if changed:
+        await db.commit()
+        await db.refresh(user)
+        return user
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=error_message or "Invalid request, please provide a coldkey and/or hotkey",
     )
 
 

@@ -26,8 +26,23 @@ from api.permissions import Permissioning
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding
+from scalecodec.utils.ss58 import is_valid_ss58_address, ss58_decode
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
+
+
+def is_valid_bittensor_address(address):
+    """
+    Check if an ss58 appears to be valid or not.
+    """
+    try:
+        if not is_valid_ss58_address(address):
+            return False
+        decoded = ss58_decode(address)
+        prefix = decoded[0]
+        return prefix == 42
+    except Exception:
+        return False
 
 
 def now_str():
