@@ -362,6 +362,25 @@ usageTracker:
   affinity: {}
   tolerations: []
 
+reqHashDns:
+  enabled: true
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: NodePort
+    nodePort: 31053
+    port: 5303
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
 metasync:
   replicaCount: 1
   image: parachutes/metasync:latest

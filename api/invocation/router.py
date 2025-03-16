@@ -9,7 +9,6 @@ import orjson as json
 import csv
 import uuid
 import time
-import hashlib
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -442,18 +441,20 @@ async def _invoke(
     )
 
     include_trace = request.headers.get("X-Chutes-Trace", "").lower() == "true"
-
-    # Already cached?
     parent_invocation_id = str(uuid.uuid4())
     request_hash = None
+
+    # Track unique requests.
+    body_target = request_body
     if (
-        current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
-        and not chute.openrouter
-        and not request.headers.get("X-Disable-Cache")
-        and metrics
-        and "ttft" in metrics
+        chute.standard_template in ("vllm", "tei")
+        or selected_cord.get("passthrough", False)
+        and "json" in request_body
     ):
-        raw_dump = json.dumps(request_body["json"]).decode()
+        body_target = request_body["json"]
+    _request_hash = None
+    try:
+        raw_dump = json.dumps(body_target).decode()
         request_hash_str = "::".join(
             [
                 chute.chute_id,
@@ -461,7 +462,33 @@ async def _invoke(
                 raw_dump,
             ]
         ).encode()
-        request_hash = hashlib.sha256(request_hash_str).hexdigest()
+        _request_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, request_hash_str)).replace("-", "")
+        req_key = f"req:{_request_hash}".encode()
+        value = await settings.memcache.get(req_key)
+        if value is None:
+            await settings.memcache.set(req_key, b"0")
+        count = await settings.memcache.incr(req_key, 1)
+        if count > 1:
+            logger.info(f"Duplicate prompt received: {chute.name} {_request_hash} {count=}")
+    except Exception as exc:
+        logger.warning(f"Error updating request hash tracking: {exc}")
+
+    # Handle cacheable requests.
+    enable_cache = request.headers.get("X-Enable-Cache")
+    request_hash = None
+    if (
+        (
+            enable_cache
+            or (
+                current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
+                and not chute.openrouter
+                and not request.headers.get("X-Disable-Cache")
+            )
+        )
+        and metrics
+        and "ttft" in metrics
+    ):
+        request_hash = _request_hash
         started_at = time.time()
         if (streamer := await cached_responder(request_hash, chute.name)) is not None:
 
