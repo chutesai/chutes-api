@@ -455,21 +455,45 @@ async def _invoke(
     _request_hash = None
     try:
         raw_dump = json.dumps(body_target).decode()
+        prompt_dump = None
+        if "messages" in body_target:
+            try:
+                prompt_dump = "::".join(
+                    [f"{m['role']}: {m['content']}" for m in body_target["messages"]]
+                )
+            except Exception as exc:
+                logger.warning(f"Error generating prompt key for dupe tracking: {exc}")
+        elif "prompt" in body_target and isinstance(body_target, str):
+            prompt_dump = body_target["prompt"]
         request_hash_str = "::".join(
             [
-                chute.chute_id,
-                selected_cord["function"],
+                chute.name,
+                request.url.path,
                 raw_dump,
             ]
         ).encode()
         _request_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, request_hash_str)).replace("-", "")
-        req_key = f"req:{_request_hash}".encode()
-        value = await settings.memcache.get(req_key)
-        if value is None:
-            await settings.memcache.set(req_key, b"0")
-        count = await settings.memcache.incr(req_key, 1)
-        if count > 1:
-            logger.info(f"Duplicate prompt received: {chute.name} {_request_hash} {count=}")
+        _prompt_hash = None
+        if prompt_dump:
+            prompt_hash_str = "::".join(
+                [
+                    chute.name,
+                    request.url.path,
+                    prompt_dump,
+                ]
+            ).encode()
+            _prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
+
+        for _hash in (_request_hash, _prompt_hash):
+            if not _hash:
+                continue
+            req_key = f"req:{_hash}".encode()
+            value = await settings.memcache.get(req_key)
+            if value is None:
+                await settings.memcache.set(req_key, b"0")
+            count = await settings.memcache.incr(req_key, 1)
+            if count > 1 and _hash == _request_hash:
+                logger.info(f"Duplicate prompt received: {chute.name} {_hash} {count=}")
     except Exception as exc:
         logger.warning(f"Error updating request hash tracking: {exc}")
 
