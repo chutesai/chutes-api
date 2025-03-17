@@ -19,6 +19,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import Optional
 from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector, ChuteUpdateArgs
+from api.chute.codecheck import is_bad_code
 from api.chute.templates import (
     VLLMChuteArgs,
     VLLMEngineArgs,
@@ -44,7 +45,7 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, rate_limit
+from api.util import ensure_is_developer, rate_limit, limit_deployments
 from api.permissions import Permissioning
 from api.guesser import guesser
 
@@ -459,6 +460,14 @@ async def deploy_chute(
     Standard deploy from the CDK.
     """
     await ensure_is_developer(db, current_user)
+    await limit_deployments(db, current_user)
+    if current_user.user_id != await chutes_user_id():
+        bad, response = await is_bad_code(chute_args.code)
+        if bad:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=json.dumps(response),
+            )
     return await _deploy_chute(chute_args, db, current_user)
 
 
@@ -510,6 +519,7 @@ async def easy_deploy_vllm_chute(
     Easy/templated vLLM deployment.
     """
     await ensure_is_developer(db, current_user)
+    await limit_deployments(db, current_user)
 
     # Make sure we can download the model, set max model length.
     if not args.engine_args:
@@ -631,6 +641,8 @@ async def easy_deploy_diffusion_chute(
     Easy/templated diffusion deployment.
     """
     await ensure_is_developer(db, current_user)
+    await limit_deployments(db, current_user)
+
     image = await _find_latest_image(db, "diffusion")
     image = f"chutes/{image.name}:{image.tag}"
     code, chute = build_diffusion_code(args, current_user.username, image)
@@ -667,6 +679,8 @@ async def easy_deploy_tei_chute(
     Easy/templated text-embeddings-inference deployment.
     """
     await ensure_is_developer(db, current_user)
+    await limit_deployments(db, current_user)
+
     image = await _find_latest_image(db, "tei")
     image = f"chutes/{image.name}:{image.tag}"
     code, chute = build_tei_code(args, current_user.username, image)

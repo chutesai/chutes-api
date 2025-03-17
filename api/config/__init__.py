@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     # Consecutive failure count that triggers instance deletion.
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
+    # API key for checking code.
+    codecheck_key: Optional[str] = os.getenv("CODECHECK_KEY")
+
     # Rate limits.
     rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 30))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
