@@ -37,6 +37,8 @@ spec:
             {{- range .Values.llmCacheRedis.config.customArgs }}
             - {{ . }}
             {{- end }}
+            - "--save"
+            - ""
           env:
             - name: REDIS_PASSWORD
               valueFrom:

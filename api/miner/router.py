@@ -178,7 +178,7 @@ async def get_stats(
       FROM invocations i
      WHERE started_at >= NOW() - INTERVAL '{interval}'
        AND error_message IS NULL
-       AND miner_uid > 0
+       AND miner_uid >= 0
        AND NOT EXISTS (
           SELECT 1
           FROM reports
@@ -195,7 +195,7 @@ async def get_stats(
     FROM invocations i
     WHERE i.started_at > NOW() - INTERVAL '{interval}'
     AND i.error_message IS NULL
-    AND miner_uid > 0
+    AND miner_uid >= 0
     AND i.completed_at IS NOT NULL
     AND NOT EXISTS (
         SELECT 1
@@ -217,7 +217,7 @@ async def get_stats(
         FROM invocations i
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
         AND i.error_message IS NULL
-        AND miner_uid > 0
+        AND miner_uid >= 0
         AND i.completed_at IS NOT NULL
         AND NOT EXISTS (
             SELECT 1

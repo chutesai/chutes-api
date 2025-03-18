@@ -7,7 +7,7 @@ import asyncio
 import aiohttp
 import random
 import hashlib
-import orjson as json
+import json
 import traceback
 from loguru import logger
 from datetime import timedelta, datetime
@@ -21,6 +21,7 @@ import api.database.orms  # noqa
 import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
+from api.chute.codecheck import is_bad_code
 
 
 UNDEPLOYABLE_CHUTE_QUERY = """
@@ -36,6 +37,7 @@ SELECT * FROM (
             started_at >= now() - interval '7 days'
             AND error_message IS NULL
             AND completed_at IS NOT NULL
+            AND chute_user_id != 'dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f'
             AND NOT EXISTS(
                 SELECT 1 FROM reports r
                 WHERE r.invocation_id = i.parent_invocation_id
@@ -129,16 +131,16 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
                 "miner_hotkey": target.miner_hotkey,
             },
         }
-        await settings.redis_client.publish("events", json.dumps(event_data).decode())
+        await settings.redis_client.publish("events", json.dumps(event_data))
         event_data["filter_recipients"] = [target.miner_hotkey]
-        await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+        await settings.redis_client.publish("miner_broadcast", json.dumps(event_data))
 
 
 async def do_slurp(instance, payload, encrypted_slurp):
     """
     Slurp a remote file.
     """
-    enc_payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
     iv = enc_payload[:32]
     path = aes_encrypt("/_slurp", instance.symmetric_key, hex_encode=True)
     async with miner_client.post(
@@ -449,7 +451,7 @@ async def check_ping(chute, instance):
     payload = {"foo": expected}
     iv = None
     if use_encryption_v2(chute.chutes_version):
-        payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+        payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
         iv = payload[:32]
     path = "_ping"
     if use_encrypted_path(chute.chutes_version):
@@ -666,12 +668,55 @@ async def keep_cache_warm():
         await asyncio.sleep(60)
 
 
+async def generate_confirmed_reports(chute_id, reason):
+    """
+    When a chute is confirmed bad, generate reports for it.
+    """
+    from api.user.service import chutes_user_id
+
+    async with get_session() as session:
+        report_query = text("""
+        WITH inserted AS (
+            INSERT INTO reports
+            (invocation_id, user_id, timestamp, confirmed_at, confirmed_by, reason)
+            SELECT
+                parent_invocation_id,
+                :user_id,
+                now(),
+                now(),
+                :confirmed_by,
+                :reason
+            FROM invocations i
+            WHERE chute_id = :chute_id
+            AND NOT EXISTS (
+                SELECT 1 FROM reports r
+                WHERE r.invocation_id = i.parent_invocation_id
+            )
+            ON CONFLICT (invocation_id) DO NOTHING
+            RETURNING invocation_id
+        )
+        SELECT COUNT(*) AS report_count FROM inserted;
+        """)
+        count = (
+            await session.execute(
+                report_query,
+                {
+                    "user_id": await chutes_user_id(),
+                    "confirmed_by": await chutes_user_id(),
+                    "chute_id": chute_id,
+                    "reason": reason,
+                },
+            )
+        ).scalar()
+        logger.success(f"Generated {count} reports for chute {chute_id}")
+        await session.commit()
+
+
 async def remove_undeployable_chutes():
     """
     Remove chutes that only one miner (or tiny subnset of miners) can deploy,
     because it's almost certainly someone trying to cheat.
     """
-    from api.user.service import chutes_user_id
 
     query = text(UNDEPLOYABLE_CHUTE_QUERY)
     bad_chutes = []
@@ -708,49 +753,67 @@ async def remove_undeployable_chutes():
                             "reason": "chute_deleted",
                             "data": {"chute_id": chute_id, "version": version},
                         }
-                    ).decode(),
+                    ),
                 )
         await session.commit()
 
     # Generate the reports in separate sessions so we don't have massive transactions.
     for chute_id, reason in bad_chutes:
-        async with get_session() as session:
-            # Generate confirmed reports for each invocation to negate the score.
-            report_query = text("""
-            WITH inserted AS (
-                INSERT INTO reports
-                (invocation_id, user_id, timestamp, confirmed_at, confirmed_by, reason)
-                SELECT
-                    parent_invocation_id,
-                    :user_id,
-                    now(),
-                    now(),
-                    :confirmed_by,
-                    :reason
-                FROM invocations i
-                WHERE chute_id = :chute_id
-                AND NOT EXISTS (
-                    SELECT 1 FROM reports r
-                    WHERE r.invocation_id = i.parent_invocation_id
+        await generate_confirmed_reports(chute_id, reason)
+
+
+async def remove_bad_chutes():
+    """
+    Remove malicious/bad chutes via AI analysis of code.
+    """
+    from api.user.service import chutes_user_id
+
+    async with get_session() as session:
+        chutes = (
+            (await session.execute(select(Chute).where(Chute.user_id != await chutes_user_id())))
+            .unique()
+            .scalars()
+            .all()
+        )
+    tasks = [is_bad_code(chute.code) for chute in chutes]
+    results = await asyncio.gather(*tasks)
+    for idx in range(len(chutes)):
+        chute = chutes[idx]
+        bad, reason = results[idx]
+        if bad:
+            logger.error(
+                "\n".join(
+                    [
+                        f"Chute contains problematic code: {chute.chute_id=} {chute.name=} {chute.user_id=}",
+                        json.dumps(reason, indent=2),
+                        "Code:",
+                        chute.code,
+                    ]
                 )
-                ON CONFLICT (invocation_id) DO UPDATE SET reason = :reason
-                RETURNING invocation_id
             )
-            SELECT COUNT(*) AS report_count FROM inserted;
-            """)
-            count = (
-                await session.execute(
-                    report_query,
-                    {
-                        "user_id": await chutes_user_id(),
-                        "confirmed_by": await chutes_user_id(),
-                        "chute_id": chute_id,
-                        "reason": reason,
-                    },
+            # Delete it automatically.
+            async with get_session() as session:
+                chute = (
+                    (await session.execute(select(Chute).where(Chute.chute_id == chute.chute_id)))
+                    .unique()
+                    .scalar_one_or_none()
                 )
-            ).scalar()
-            logger.success(f"Generated {count} reports for undeployable chute {chute_id}")
-            await session.commit()
+                version = chute.version
+                await session.delete(chute)
+                await settings.redis_client.publish(
+                    "miner_broadcast",
+                    json.dumps(
+                        {
+                            "reason": "chute_deleted",
+                            "data": {"chute_id": chute.chute_id, "version": version},
+                        }
+                    ),
+                )
+                await session.commit()
+            reason = f"Chute contains code identified by DeepSeek-R1 as likely cheating: {json.dumps(reason)}"
+            await generate_confirmed_reports(chute.chute_id, reason)
+        else:
+            logger.success(f"Chute seems fine: {chute.chute_id=} {chute.name=}")
 
 
 async def main():
@@ -760,11 +823,16 @@ async def main():
     # Cache warmup in the background for miner stats and scores, since those are DB heavy.
     asyncio.create_task(keep_cache_warm())
 
+    index = 0
     while True:
-        await remove_undeployable_chutes()
+        ### Only enabled in clean-up mode.
+        # await remove_bad_chutes()
+        if index % 10 == 0:
+            await remove_undeployable_chutes()
         await purge_unverified()
         await check_all_chutes()
         await asyncio.sleep(90)
+        index += 1
 
 
 asyncio.run(main())

@@ -34,6 +34,8 @@ spec:
             - redis-server
             - --requirepass
             - $(REDIS_PASSWORD)
+            - "--save"
+            - ""
             {{- range .Values.cmRedis.config.customArgs }}
             - {{ . }}
             {{- end }}

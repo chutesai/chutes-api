@@ -7,7 +7,7 @@ account_settings:
 
 squad_enabled: true
 
-chutes_version: 0.2.21
+chutes_version: 0.2.23
 
 consecutive_failure_limit: 7
 
@@ -358,6 +358,25 @@ usageTracker:
     limits:
       cpu: "1"
       memory: "2Gi"
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+
+reqHashDns:
+  enabled: true
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+  service:
+    type: NodePort
+    nodePort: 31053
+    port: 5303
   nodeSelector: {}
   affinity: {}
   tolerations: []

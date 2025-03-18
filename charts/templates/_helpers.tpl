@@ -28,6 +28,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "reqHashDns.labels" -}}
+app.kubernetes.io/name: req-hash-dns
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 redis-access: "true"
@@ -103,6 +109,11 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: CODECHECK_KEY
+  valueFrom:
+    secretKeyRef:
+      name: codecheck-key
+      key: key
 - name: IP_CHECK_SALT
   valueFrom:
     secretKeyRef:

@@ -70,6 +70,7 @@ instances_with_success AS (
   WHERE
     error_message IS NULL
     AND completed_at IS NOT NULL
+    AND miner_uid >= 0
     AND NOT EXISTS (
         SELECT 1
         FROM reports

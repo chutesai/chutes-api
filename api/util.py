@@ -17,7 +17,7 @@ from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
 from fastapi import status, HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.future import select
 from api.config import settings
 from api.payment.schemas import Payment
@@ -177,6 +177,33 @@ async def ensure_is_developer(session, user):
             f"to your developer deposit address: {user.developer_payment_address}"
         ),
     )
+
+
+async def limit_deployments(session, user, maximum: int = 3):
+    """
+    Limit how many chutes a user can create/update per day.
+    """
+    from api.chute.schemas import Chute
+    from api.user.service import chutes_user_id
+
+    if user.user_id == await chutes_user_id() or user.validator_hotkey or user.subnet_owner_hotkey:
+        return
+
+    query = select(Chute).where(
+        and_(
+            or_(
+                Chute.created_at >= func.now() - datetime.timedelta(days=1),
+                Chute.updated_at >= func.now() - datetime.timedelta(days=1),
+            ),
+            Chute.user_id == user.user_id,
+        )
+    )
+    chutes = (await session.execute(query)).unique().scalars().all()
+    if len(chutes) >= maximum:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"You many only update/create {maximum} chutes per 24 hours.",
+        )
 
 
 async def rate_limit(chute_id, user, requests, window):

@@ -1168,13 +1168,13 @@ files = [
 
 [[package]]
 name = "chutes"
-version = "0.2.21"
+version = "0.2.24"
 description = "Chutes development kit and CLI."
 optional = false
 python-versions = "*"
 groups = ["main"]
 files = [
-    {file = "chutes-0.2.21-py3-none-any.whl", hash = "sha256:e4808362a45444a6f95ebe786b9dc71e6e1a89f66ac2707f94cdfb3c32e3d34b"},
+    {file = "chutes-0.2.24-py3-none-any.whl", hash = "sha256:18f3441ad89c6e703fa73ecdda47613e75ac696d486f669cb71f2efcf30f334e"},
 ]
 
 [package.dependencies]
@@ -1536,6 +1536,18 @@ groups = ["dev"]
 files = [
     {file = "decorator-5.1.1-py3-none-any.whl", hash = "sha256:b8c3f85900b9dc423225913c5aace94729fe1fa9763b38939a95226f02d37186"},
     {file = "decorator-5.1.1.tar.gz", hash = "sha256:637996211036b6385ef91435e4fae22989472f9d571faba8927ba8253acbc330"},
+]
+
+[[package]]
+name = "dnslib"
+version = "0.9.26"
+description = "Simple library to encode/decode DNS wire-format packets"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "dnslib-0.9.26-py3-none-any.whl", hash = "sha256:e68719e633d761747c7e91bd241019ef5a2b61a63f56025939e144c841a70e0d"},
+    {file = "dnslib-0.9.26.tar.gz", hash = "sha256:be56857534390b2fbd02935270019bacc5e6b411d156cb3921ac55a7fb51f1a8"},
 ]
 
 [[package]]
@@ -5776,4 +5788,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "<3.13,>=3.9"
-content-hash = "48503a1db90781f14ea334577f84bfa96cd612177be9efdff20dff09685ccf3e"
+content-hash = "fd408d4eefbabc9cbfca7f6a8a36c57ea698662a59cfd277ee9001d3dd4ff888"

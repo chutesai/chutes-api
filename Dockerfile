@@ -1,7 +1,7 @@
 FROM quay.io/buildah/stable:v1.37.3 AS base
 
 # Setup the various configurations/requirements for buildah.
-RUN dnf install -y iputils procps vim jq postgresql netcat
+RUN dnf install -y iputils procps vim jq postgresql netcat bind-utils
 RUN touch /etc/subgid /etc/subuid \
   && chmod g=u /etc/subgid /etc/subuid /etc/passwd \
   && echo build:10000:65536 > /etc/subuid \
@@ -69,6 +69,7 @@ ADD --chown=chutes failed_chute_cleanup.py /app/failed_chute_cleanup.py
 ADD --chown=chutes metasync /app/metasync
 ADD --chown=chutes tokenizer /app/tokenizer
 ADD --chown=chutes watchtower.py /app/watchtower.py
+ADD --chown=chutes request_hash_dns.py /app/request_hash_dns.py
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
