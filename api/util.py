@@ -186,7 +186,7 @@ async def limit_deployments(session, user, maximum: int = 3):
     from api.chute.schemas import Chute
     from api.user.service import chutes_user_id
 
-    if user.user_id == await chutes_user_id():
+    if user.user_id == await chutes_user_id() or user.validator_hotkey or user.subnet_owner_hotkey:
         return
 
     query = select(Chute).where(

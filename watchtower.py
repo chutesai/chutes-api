@@ -792,7 +792,11 @@ async def remove_bad_chutes():
             )
             # Delete it automatically.
             async with get_session() as session:
-                chute = (await session.execute(select(Chute).where(Chute.chute_id == chute.chute_id))).unique().scalar_one_or_none()
+                chute = (
+                    (await session.execute(select(Chute).where(Chute.chute_id == chute.chute_id)))
+                    .unique()
+                    .scalar_one_or_none()
+                )
                 version = chute.version
                 await session.delete(chute)
                 await settings.redis_client.publish(
