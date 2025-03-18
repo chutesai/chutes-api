@@ -37,6 +37,7 @@ SELECT * FROM (
             started_at >= now() - interval '7 days'
             AND error_message IS NULL
             AND completed_at IS NOT NULL
+            AND chute_user_id != 'dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f'
             AND NOT EXISTS(
                 SELECT 1 FROM reports r
                 WHERE r.invocation_id = i.parent_invocation_id
@@ -822,13 +823,16 @@ async def main():
     # Cache warmup in the background for miner stats and scores, since those are DB heavy.
     asyncio.create_task(keep_cache_warm())
 
+    index = 0
     while True:
         ### Only enabled in clean-up mode.
         # await remove_bad_chutes()
-        await remove_undeployable_chutes()
+        if index % 10 == 0:
+            await remove_undeployable_chutes()
         await purge_unverified()
         await check_all_chutes()
         await asyncio.sleep(90)
+        index += 1
 
 
 asyncio.run(main())
