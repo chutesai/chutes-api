@@ -78,6 +78,11 @@ instances_with_success AS (
         AND confirmed_at IS NOT NULL
     )
 ),
+-- Get all unique miner_hotkeys from instance_audit
+all_miners AS (
+  SELECT DISTINCT miner_hotkey
+  FROM instance_audit
+),
 -- For each time point, find active instances that have had successful invocations
 active_instances_per_timepoint AS (
   SELECT
@@ -100,12 +105,31 @@ active_chutes_per_timepoint AS (
     COUNT(DISTINCT chute_id) AS active_chutes
   FROM active_instances_per_timepoint
   GROUP BY time_point, miner_hotkey
+),
+-- Create a cross join of all time points with all miners
+all_timepoints_for_all_miners AS (
+  SELECT
+    ts.time_point,
+    am.miner_hotkey
+  FROM time_series ts
+  CROSS JOIN all_miners am
+),
+-- Join with active_chutes to get complete dataset with zeros
+complete_dataset AS (
+  SELECT
+    atm.miner_hotkey,
+    atm.time_point,
+    COALESCE(acpt.active_chutes, 0) AS active_chutes
+  FROM all_timepoints_for_all_miners atm
+  LEFT JOIN active_chutes_per_timepoint acpt ON
+    atm.time_point = acpt.time_point AND
+    atm.miner_hotkey = acpt.miner_hotkey
 )
 -- Calculate average active chutes per miner across all time points
 SELECT
   miner_hotkey,
   AVG(active_chutes)::integer AS avg_active_chutes
-FROM active_chutes_per_timepoint
+FROM complete_dataset
 GROUP BY miner_hotkey
 ORDER BY avg_active_chutes DESC;
 """
