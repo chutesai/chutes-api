@@ -198,7 +198,7 @@ async def limit_deployments(session, user, maximum: int = 3):
             Chute.user_id == user.user_id,
         )
     )
-    chutes = (await session.execute(query)).unique().scalars.all()
+    chutes = (await session.execute(query)).unique().scalars().all()
     if len(chutes) >= maximum:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
