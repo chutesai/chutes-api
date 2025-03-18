@@ -463,10 +463,13 @@ async def deploy_chute(
     await limit_deployments(db, current_user)
     if current_user.user_id != await chutes_user_id():
         bad, response = await is_bad_code(chute_args.code)
+        logger.warning(
+            f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
+        )
         if bad:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=json.dumps(response),
+                detail=json.dumps(response).encode(),
             )
     return await _deploy_chute(chute_args, db, current_user)
 
