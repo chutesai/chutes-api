@@ -864,6 +864,7 @@ async def main():
         # await remove_bad_chutes()
         if index % 10 == 0:
             await remove_undeployable_chutes()
+            await report_short_lived_chutes()
         await purge_unverified()
         await check_all_chutes()
         await asyncio.sleep(90)
