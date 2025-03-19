@@ -63,3 +63,21 @@ class Image(Base):
         if not isinstance(tag, str) or not re.match(r"^[a-z0-9][a-z0-9_\.\/-]{1,32}$", tag, re.I):
             raise ValueError(f"Invalid image tag: {tag}")
         return tag
+
+
+class ImageHistory(Base):
+    __tablename__ = "image_history"
+    entry_id = Column(String, primary_key=True)
+    image_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    name = Column(String, nullable=False)
+    tag = Column(String, nullable=False)
+    readme = Column(String, nullable=True, default="")
+    logo_id = Column(String)
+    public = Column(Boolean, default=False)
+    status = Column(String, default="pending build")
+    created_at = Column(DateTime)
+    deleted_at = Column(DateTime)
+    chutes_version = Column(String, nullable=True)
+    build_started_at = Column(DateTime(timezone=True))
+    build_completed_at = Column(DateTime(timezone=True))

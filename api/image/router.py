@@ -25,7 +25,7 @@ from api.config import settings
 from api.image.response import ImageResponse
 from api.image.util import get_image_by_id_or_name
 from api.pagination import PaginatedResponse
-from api.util import ensure_is_developer
+from api.util import ensure_is_developer, limit_images
 
 router = APIRouter()
 
@@ -169,6 +169,7 @@ async def create_image(
             detail="Cannot make images for users other than yourself!",
         )
     await ensure_is_developer(db, current_user)
+    await limit_images(db, current_user)
 
     image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{username}/{name}:{tag}"))
     query = select(

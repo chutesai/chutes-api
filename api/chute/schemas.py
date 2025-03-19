@@ -275,3 +275,32 @@ class Chute(Base):
     @property
     def supported_gpus(self) -> List[str]:
         return NodeSelector(**self.node_selector).supported_gpus
+
+
+class ChuteHistory(Base):
+    __tablename__ = "chute_history"
+    entry_id = Column(String, primary_key=True)
+    chute_id = Column(String, nullable=False)
+    user_id = Column(String, nullable=False)
+    version = Column(String, nullable=False)
+    name = Column(String)
+    tagline = Column(String, default="")
+    readme = Column(String, default="")
+    tool_description = Column(String, nullable=True)
+    image_id = Column(String, nullable=False)
+    logo_id = Column(String)
+    public = Column(Boolean, default=False)
+    standard_template = Column(String)
+    cords = Column(JSONB, nullable=False)
+    node_selector = Column(JSONB, nullable=False)
+    slug = Column(String)
+    code = Column(String, nullable=False)
+    filename = Column(String, nullable=False)
+    ref_str = Column(String, nullable=False)
+    version = Column(String)
+    chutes_version = Column(String, nullable=True)
+    openrouter = Column(Boolean, default=False)
+    discount = Column(Float, nullable=True, default=0.0)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now())
+    deleted_at = Column(DateTime, server_default=func.now())

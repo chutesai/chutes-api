@@ -74,6 +74,17 @@ SELECT * FROM (
 ) t;
 """
 
+# Short lived chutes (probably just to get bounties).
+SHORT_LIVED_CHUTES = """
+SELECT instance_audit.chute_id AS chute_id, EXTRACT(EPOCH FROM MAX(instance_audit.deleted_at) - MIN(instance_audit.created_at)) AS lifetime
+FROM instance_audit
+LEFT OUTER JOIN chutes ON instance_audit.chute_id = chutes.chute_id
+WHERE chutes.name IS NULL 
+AND deleted_at >= now() - interval '7 days'
+GROUP BY instance_audit.chute_id
+HAVING EXTRACT(EPOCH FROM MAX(instance_audit.deleted_at) - MIN(instance_audit.created_at)) <= 86400
+"""
+
 
 def use_encrypted_slurp(chutes_version: str) -> bool:
     """
@@ -756,6 +767,30 @@ async def remove_undeployable_chutes():
                     ),
                 )
         await session.commit()
+
+    # Generate the reports in separate sessions so we don't have massive transactions.
+    for chute_id, reason in bad_chutes:
+        await generate_confirmed_reports(chute_id, reason)
+
+
+async def report_short_lived_chutes():
+    """
+    Generate reports for chutes that only existed for a short time, likely from scummy miners to get bounties.
+    """
+    query = text(SHORT_LIVED_CHUTES)
+    bad_chutes = []
+    async with get_session() as session:
+        result = await session.execute(query)
+        rows = result.fetchall()
+        for row in rows:
+            chute_id = row.chute_id
+            lifetime = row.lifetime
+            bad_chutes.append(
+                (chute_id, f"chute was very short lived: {lifetime=}, likely bounty scam")
+            )
+            logger.warning(
+                f"Detected short-lived chute {chute_id} likely part of bounty scam: {lifetime=}"
+            )
 
     # Generate the reports in separate sessions so we don't have massive transactions.
     for chute_id, reason in bad_chutes:

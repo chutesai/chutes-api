@@ -179,31 +179,47 @@ async def ensure_is_developer(session, user):
     )
 
 
-async def limit_deployments(session, user, maximum: int = 3):
+async def _limit_dev_activity(session, user, maximum, clazz):
     """
     Limit how many chutes a user can create/update per day.
     """
-    from api.chute.schemas import Chute
     from api.user.service import chutes_user_id
 
     if user.user_id == await chutes_user_id() or user.validator_hotkey or user.subnet_owner_hotkey:
         return
 
-    query = select(Chute).where(
+    query = select(clazz).where(
         and_(
             or_(
-                Chute.created_at >= func.now() - datetime.timedelta(days=1),
-                Chute.updated_at >= func.now() - datetime.timedelta(days=1),
+                clazz.created_at >= func.now() - datetime.timedelta(days=1),
+                clazz.updated_at >= func.now() - datetime.timedelta(days=1),
+                clazz.deleted_at >= func.now() - datetime.timedelta(days=1),
             ),
-            Chute.user_id == user.user_id,
+            clazz.user_id == user.user_id,
         )
     )
-    chutes = (await session.execute(query)).unique().scalars().all()
-    if len(chutes) >= maximum:
+    items = (await session.execute(query)).unique().scalars().all()
+    if len(items) >= maximum:
+        object_type = str(clazz.__name__).lower().replace("History", "")
+        logger.warning(
+            f"CHUTERATE: {user.user_id=} has exceeded dev limit: {maximum=} for {object_type}"
+        )
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"You many only update/create {maximum} chutes per 24 hours.",
+            detail=f"You many only update/create {maximum} {object_type}s per 24 hours.",
         )
+
+
+async def limit_deployments(session, user, maximum: int = 6):
+    from api.chute.schemas import ChuteHistory
+
+    await _limit_dev_activity(session, user, maximum, ChuteHistory)
+
+
+async def limit_images(session, user, maximum: int = 3):
+    from api.image.schemas import ImageHistory
+
+    await _limit_dev_activity(session, user, maximum, ImageHistory)
 
 
 async def rate_limit(chute_id, user, requests, window):
