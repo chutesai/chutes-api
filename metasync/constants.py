@@ -135,69 +135,14 @@ ORDER BY avg_active_chutes DESC;
 """
 
 # Unique chute history.
-UNIQUE_CHUTE_HISTORY_QUERY = f"""
-WITH time_series AS (
-  SELECT
-    generate_series(
-      date_trunc('hour', now() - INTERVAL '{SCORING_INTERVAL}'),
-      date_trunc('hour', now()),
-      INTERVAL '1 hour'
-    ) AS time_point
-),
-instances_with_success AS (
-  SELECT DISTINCT
-    instance_id
-  FROM invocations ii
-  WHERE
-    error_message IS NULL
-    AND completed_at IS NOT NULL
-    AND miner_hotkey = :hotkey
-    AND NOT EXISTS (
-        SELECT 1
-        FROM reports
-        WHERE invocation_id = ii.parent_invocation_id
-        AND confirmed_at IS NOT NULL
+UNIQUE_CHUTE_HISTORY_QUERY = (
+    UNIQUE_CHUTE_AVERAGE_QUERY.replace(
+        "SELECT miner_hotkey, AVG", "SELECT miner_hotkey, time_point, AVG"
     )
-),
-active_instances_per_timepoint AS (
-  SELECT
-    ts.time_point,
-    ia.instance_id,
-    ia.chute_id,
-    ia.miner_hotkey
-  FROM time_series ts
-  JOIN instance_audit ia ON
-    ia.verified_at <= ts.time_point AND
-    (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point) AND
-    ia.miner_hotkey = :hotkey
-  JOIN instances_with_success iws ON
-    ia.instance_id = iws.instance_id
-),
-active_chutes_per_timepoint AS (
-  SELECT
-    time_point,
-    miner_hotkey,
-    COUNT(DISTINCT chute_id) AS active_chutes
-  FROM active_instances_per_timepoint
-  GROUP BY time_point, miner_hotkey
-),
-all_timepoints_for_miner AS (
-  SELECT
-    ts.time_point,
-    :hotkey AS miner_hotkey
-  FROM time_series ts
-),
-complete_dataset AS (
-  SELECT
-    atm.miner_hotkey,
-    atm.time_point,
-    COALESCE(acpt.active_chutes, 0) AS active_chutes
-  FROM all_timepoints_for_miner atm
-  LEFT JOIN active_chutes_per_timepoint acpt ON
-    atm.time_point = acpt.time_point AND
-    atm.miner_hotkey = acpt.miner_hotkey
+    .replace("GROUP BY miner_hotkey", "GROUP BY miner_hotkey, time_point")
+    .replace("ORDER BY avg_active_chutes DESC", "ORDER BY miner_hotkey ASC, time_point DESC")
+    .replace(
+        "FROM complete_dataset",
+        "FROM complete_dataset WHERE miner_hotkey IN (SELECT hotkey FROM metagraph_nodes WHERE netuid = 64)",
+    )
 )
-SELECT time_point, active_chutes
-FROM complete_dataset
-ORDER BY time_point DESC;
-"""

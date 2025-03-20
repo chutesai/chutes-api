@@ -20,11 +20,10 @@ MetagraphNode = create_metagraph_node_class(Base)
 logger = get_logger(__name__)
 
 
-async def sync_and_save_metagraph(redis_client):
+async def sync_and_save_metagraph(substrate, redis_client):
     """
     Load the metagraph for our subnet and persist it to the database.
     """
-    substrate = get_substrate(subtensor_address=settings.subtensor)
     nodes = get_nodes_for_netuid(substrate, settings.netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")
@@ -69,16 +68,19 @@ async def main():
         await conn.run_sync(Base.metadata.create_all)
 
     redis_client = redis.Redis.from_url(settings.redis_url)
+    substrate = get_substrate(subtensor_address=settings.subtensor)
     while True:
         logger.info("Attempting to resync metagraph...")
         try:
-            await asyncio.wait_for(sync_and_save_metagraph(redis_client), 30)
+            await asyncio.wait_for(sync_and_save_metagraph(substrate, redis_client), 30)
         except asyncio.TimeoutError:
             logger.error("Metagraph sync timed out!")
+            substrate = get_substrate(subtensor_address=settings.subtensor)
         except Exception as exc:
             logger.error(
                 f"Unhandled exception raised while syncing metagraph: {exc}\n{traceback.format_exc()}"
             )
+            substrate = get_substrate(subtensor_address=settings.subtensor)
         await asyncio.sleep(60)
 
 

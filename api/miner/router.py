@@ -23,7 +23,7 @@ from api.user.service import get_current_user
 from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
-from api.metasync import get_scoring_data, get_unique_chute_history, get_miner_by_hotkey
+from api.metasync import get_scoring_data, get_miner_by_hotkey
 
 router = APIRouter()
 
@@ -294,13 +294,11 @@ async def unique_chute_history(hotkey: str, request: Request = None):
                 )
         await settings.memcache.set(f"miner_exists:{hotkey}".encode(), b"1", exptime=7200)
 
-    rv = None
     cache_key = f"uqhist:{hotkey}".encode()
-    if request:
-        cached = await settings.memcache.get(cache_key)
-        if cached:
-            rv = json.loads(cached)
-    if not rv:
-        rv = await get_unique_chute_history(hotkey)
-        await settings.memcache.set(cache_key, json.dumps(rv), exptime=7200)
-    return rv
+    cached = await settings.memcache.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Miner {hotkey} not found in unique history cache (yet)",
+    )

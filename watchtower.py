@@ -683,38 +683,25 @@ async def keep_miner_chute_history_warm():
     """
     Continuously update the miner unique chute count endpoint.
     """
-    from api.metasync import MetagraphNode
-    from api.miner.router import unique_chute_history
+    from api.metasync import get_unique_chute_history
 
     while True:
+        logger.info("Attempting to warm up unique chute history...")
+        history = None
+        started_at = time.time()
         try:
-            started_at = time.time()
-            async with get_session(readonly=True) as session:
-                miners = (
-                    (
-                        await session.execute(
-                            select(MetagraphNode).where(
-                                MetagraphNode.incentive > 0, MetagraphNode.netuid == settings.netuid
-                            )
-                        )
-                    )
-                    .unique()
-                    .scalars()
-                    .all()
-                )
+            history = await get_unique_chute_history()
+            for hotkey, values in history.items():
+                cache_key = f"uqhist:{hotkey}".encode()
+                await settings.memcache.set(cache_key, json.dumps(values))
         except Exception:
+            await asyncio.sleep(60)
             continue
-        for miner in miners:
-            logger.info(f"Warming up unique chute history for miner {miner.hotkey}")
-            try:
-                await unique_chute_history(miner.hotkey)
-            except Exception as exc:
-                logger.error(
-                    f"Error warming up miner unique chute history: {miner.hotkey} -> {exc}"
-                )
         delta = time.time() - started_at
-        if delta <= 900:
-            await asyncio.sleep(1800 - delta)
+        logger.success(
+            f"Successfully warmed up unique chute history for {len(history)} hotkeys in {int(delta)} seconds."
+        )
+        await asyncio.sleep(300)
 
 
 async def generate_confirmed_reports(chute_id, reason):
