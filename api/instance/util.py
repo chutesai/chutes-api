@@ -47,6 +47,7 @@ class LeastConnManager:
         self.lock = asyncio.Lock()
         self._session = None
         self._last_cleanup = time.time()
+        self.mean_count = None
 
     async def initialize(self):
         if self._session is None:
@@ -71,7 +72,9 @@ class LeastConnManager:
             pipe.zcount(f"conn:{instance_id}", now - self.connection_expiry, now)
         raw_counts = await pipe.execute()
         counts = dict(zip(to_query, raw_counts))
-        min_count = min(raw_counts) if raw_counts else 1000000
+        min_count = min(raw_counts) if raw_counts else 1
+        if not avoid:
+            self.mean_count = int(sum(raw_counts) / (len(self.instances) or 1))
 
         # Periodically log counts for debugging.
         if random.random() < 0.05:

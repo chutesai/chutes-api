@@ -153,6 +153,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     username = name_match.group(1) or current_user.username
     chute_name = name_match.group(2)
     chute_id_or_name = chute_id_or_name.lstrip("/")
+    chute_user = await chutes_user_id()
     query = query.where(
         or_(
             and_(
@@ -168,8 +169,17 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
                 Chute.name == chute_name,
             ),
             Chute.chute_id == chute_id_or_name,
+            and_(
+                Chute.name == chute_id_or_name,
+                Chute.public.is_(True),
+            ),
+            and_(
+                Chute.name == chute_name,
+                Chute.public.is_(True),
+            ),
         )
-    )
+    ).order_by((Chute.user_id == chute_user).desc())
+
     result = await db.execute(query)
     return result.scalar_one_or_none()
 
@@ -235,6 +245,7 @@ async def _invoke_one(
     target: Instance,
     metrics: dict = {},
     prefixes: list = None,
+    manager: LeastConnManager = None,
 ):
     """
     Try invoking a chute/cord with a single instance.
@@ -405,6 +416,8 @@ async def _invoke_one(
                 metrics["it"] = max(0, prompt_tokens or 0)
                 metrics["ot"] = max(0, completion_tokens or 0)
                 metrics["tps"] = metrics["ot"] / total_time
+                if manager and manager.mean_count is not None:
+                    metrics["mc"] = manager.mean_count
                 logger.info(
                     f"Metrics for chute={chute.name} miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                 )
@@ -501,6 +514,8 @@ async def _invoke_one(
                     metrics["tps"] = completion_tokens / total_time
                     metrics["it"] = prompt_tokens
                     metrics["ot"] = completion_tokens
+                    if manager and manager.mean_count is not None:
+                        metrics["mc"] = manager.mean_count
                     logger.info(
                         f"Metrics for [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
                     )
@@ -632,7 +647,7 @@ async def invoke(
                 )
                 response_data = []
                 async for data in _invoke_one(
-                    chute, path, stream, args, kwargs, target, metrics, prefixes
+                    chute, path, stream, args, kwargs, target, metrics, prefixes, manager
                 ):
                     yield sse({"result": data})
                     if request_path:
@@ -709,14 +724,15 @@ async def invoke(
                                         f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
                                     )
 
-                            # Sanity check and default pricing if not a standard template.
                             default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
                             default_balance_used -= default_balance_used * discount
-                            if balance_used and balance_used > default_balance_used:
-                                logger.info(
-                                    f"BALANCE: Balance per token/step exceeded default calculation for {chute.name}: {balance_used=} vs {default_balance_used=} {discount=}"
-                                )
-                                balance_used = default_balance_used
+
+                            # if balance_used and balance_used > default_balance_used:
+                            #    logger.info(
+                            #        f"BALANCE: Balance per token/step exceeded default calculation for {chute.name}: {balance_used=} vs {default_balance_used=} {discount=}"
+                            #    )
+                            #    balance_used = default_balance_used
+
                             if balance_used is None:
                                 balance_used = default_balance_used
                                 logger.info(
