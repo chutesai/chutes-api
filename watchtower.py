@@ -693,8 +693,9 @@ async def keep_miner_chute_history_warm():
             history = await get_unique_chute_history()
             for hotkey, values in history.items():
                 cache_key = f"uqhist:{hotkey}".encode()
-                await settings.memcache.set(cache_key, json.dumps(values))
-        except Exception:
+                await settings.memcache.set(cache_key, json.dumps(values).encode())
+        except Exception as exc:
+            logger.error(f"Error warming up unique chute history: {exc}")
             await asyncio.sleep(60)
             continue
         delta = time.time() - started_at

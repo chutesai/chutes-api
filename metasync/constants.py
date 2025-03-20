@@ -126,9 +126,7 @@ complete_dataset AS (
     atm.miner_hotkey = acpt.miner_hotkey
 )
 -- Calculate average active chutes per miner across all time points
-SELECT
-  miner_hotkey,
-  AVG(active_chutes)::integer AS avg_active_chutes
+SELECT miner_hotkey, AVG(active_chutes)::integer AS avg_active_chutes
 FROM complete_dataset
 GROUP BY miner_hotkey
 ORDER BY avg_active_chutes DESC;
@@ -137,7 +135,7 @@ ORDER BY avg_active_chutes DESC;
 # Unique chute history.
 UNIQUE_CHUTE_HISTORY_QUERY = (
     UNIQUE_CHUTE_AVERAGE_QUERY.replace(
-        "SELECT miner_hotkey, AVG", "SELECT miner_hotkey, time_point, AVG"
+        "SELECT miner_hotkey, AVG", "SELECT miner_hotkey, time_point::text, AVG"
     )
     .replace("GROUP BY miner_hotkey", "GROUP BY miner_hotkey, time_point")
     .replace("ORDER BY avg_active_chutes DESC", "ORDER BY miner_hotkey ASC, time_point DESC")
