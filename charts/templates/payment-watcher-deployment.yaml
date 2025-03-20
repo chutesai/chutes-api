@@ -41,6 +41,8 @@ spec:
               value: {{ .Values.paymentWatcher.subtensor }}
             - name: PAYMENT_RECOVERY_BLOCKS
               value: "{{ .Values.paymentWatcher.recovery_blocks }}"
+            - name: DEVELOPER_DEPOSIT
+              value: "{{ .Values.account_settings.developer_deposit }}"
           ports:
             - name: http
               containerPort: {{ .Values.paymentWatcher.service.targetPort }}

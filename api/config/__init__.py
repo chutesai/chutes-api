@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     sqlalchemy: str = os.getenv(
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
     )
+    postgres_ro: Optional[str] = os.getenv("POSTGRESQL_RO")
+
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "REPLACEME")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "REPLACEME")
     aws_endpoint_url: Optional[str] = os.getenv("AWS_ENDPOINT_URL", "http://minio:9000")

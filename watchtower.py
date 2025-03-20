@@ -679,6 +679,44 @@ async def keep_cache_warm():
         await asyncio.sleep(60)
 
 
+async def keep_miner_chute_history_warm():
+    """
+    Continuously update the miner unique chute count endpoint.
+    """
+    from api.metasync import MetagraphNode
+    from api.miner.router import unique_chute_history
+
+    while True:
+        try:
+            started_at = time.time()
+            async with get_session(readonly=True) as session:
+                miners = (
+                    (
+                        await session.execute(
+                            select(MetagraphNode).where(
+                                MetagraphNode.incentive > 0, MetagraphNode.netuid == settings.netuid
+                            )
+                        )
+                    )
+                    .unique()
+                    .scalars()
+                    .all()
+                )
+        except Exception:
+            continue
+        for miner in miners:
+            logger.info(f"Warming up unique chute history for miner {miner.hotkey}")
+            try:
+                await unique_chute_history(miner.hotkey)
+            except Exception as exc:
+                logger.error(
+                    f"Error warming up miner unique chute history: {miner.hotkey} -> {exc}"
+                )
+        delta = time.time() - started_at
+        if delta <= 900:
+            await asyncio.sleep(1800 - delta)
+
+
 async def generate_confirmed_reports(chute_id, reason):
     """
     When a chute is confirmed bad, generate reports for it.
@@ -857,6 +895,7 @@ async def main():
     """
     # Cache warmup in the background for miner stats and scores, since those are DB heavy.
     asyncio.create_task(keep_cache_warm())
+    asyncio.create_task(keep_miner_chute_history_warm())
 
     index = 0
     while True:

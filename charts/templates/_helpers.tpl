@@ -161,6 +161,11 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       name: postgres-secret
       key: url
+- name: POSTGRESQL_RO
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: readonly_url
 - name: REDIS_URL
   valueFrom:
     secretKeyRef:

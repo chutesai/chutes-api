@@ -3,7 +3,7 @@ account_settings:
     threshold: 100.00
     bonus: 25.00
   all_accounts_free: false
-  developer_deposit: 250.00
+  developer_deposit: 5000.00
 
 squad_enabled: true
 

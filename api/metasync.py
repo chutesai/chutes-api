@@ -6,6 +6,7 @@ from metasync.constants import (
     SCORING_INTERVAL,
     NORMALIZED_COMPUTE_QUERY,
     UNIQUE_CHUTE_AVERAGE_QUERY,
+    UNIQUE_CHUTE_HISTORY_QUERY,
 )
 from sqlalchemy import select, text
 
@@ -71,3 +72,13 @@ async def get_scoring_data():
         "normalized": normalized_values,
         "final_scores": final_scores,
     }
+
+
+async def get_unique_chute_history(hotkey: str):
+    query = text(UNIQUE_CHUTE_HISTORY_QUERY)
+    values = []
+    async with get_session(readonly=True) as session:
+        result = await session.execute(query, {"hotkey": hotkey})
+        for timepoint, count in result:
+            values.append({"time": timepoint, "count": count})
+    return values
