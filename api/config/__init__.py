@@ -139,7 +139,7 @@ class Settings(BaseSettings):
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.23")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.28")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))

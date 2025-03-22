@@ -137,7 +137,7 @@ async def _validate_username(db, username):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         ) from e
-    existing_user = await db.execute(select(User).where(User.username == username))
+    existing_user = await db.execute(select(User).where(User.username.ilike(username)))
     if existing_user.first() is not None:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -159,6 +159,21 @@ def _registration_response(user, fingerprint):
         developer_payment_address=user.developer_payment_address,
         fingerprint=fingerprint,
     )
+
+
+@router.get("/name_check")
+async def check_username(username: str, db: AsyncSession = Depends(get_db_session)):
+    """
+    Check if a username is valid and available.
+    """
+    try:
+        validate_the_username(username)
+    except ValueError:
+        return {"valid": False, "available": False}
+    existing_user = await db.execute(select(User).where(User.username.ilike(username)))
+    if existing_user.first() is not None:
+        return {"valid": True, "available": False}
+    return {"valid": True, "available": True}
 
 
 # NOTE: Allow registertation without a hotkey and coldkey, for normal plebs?

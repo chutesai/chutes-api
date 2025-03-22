@@ -28,6 +28,7 @@ class Payment(Base):
     purpose = Column(String, default="credits")
     source_address = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    refunded = Column(Boolean, default=False)
 
     __table_args__ = (
         Index(

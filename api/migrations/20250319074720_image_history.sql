@@ -85,8 +85,7 @@ BEGIN
         chutes_version,
         build_started_at,
         build_completed_at,
-        created_at,
-        updated_at
+        created_at
     ) VALUES (
         gen_random_uuid()::text,
         NEW.image_id,
@@ -100,8 +99,7 @@ BEGIN
         NEW.chutes_version,
         NEW.build_started_at,
         NEW.build_completed_at,
-        NEW.created_at,
-        NOW()
+        NEW.created_at
     );
     RETURN NEW;
 END;

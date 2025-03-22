@@ -66,6 +66,35 @@ class DiffusionInput(BaseModel):
         extra = "forbid"
 
 
+@cache(expire=600)
+@router.get("/usage")
+async def get_usage():
+    """
+    Get aggregated usage data, which is the amount of revenue
+    we would be receiving if no usage was free.
+    """
+    query = text(
+        "SELECT chute_id, DATE(bucket) as date, sum(amount) as usd_amount, sum(count) as invocation_count "
+        "from usage_data "
+        "where bucket >= now() - interval '11 days' "
+        "group by chute_id, date "
+        "order by date desc, usd_amount desc"
+    )
+    async with get_session(readonly=True) as session:
+        result = await session.execute(query)
+        rv = []
+        for chute_id, date, usd_amount, invocation_count in result:
+            rv.append(
+                {
+                    "chute_id": chute_id,
+                    "date": date,
+                    "usd_amount": usd_amount,
+                    "invocation_count": invocation_count,
+                }
+            )
+        return rv
+
+
 @router.get("/exports/{year}/{month}/{day}/{hour_format}")
 async def get_export(
     year: int,

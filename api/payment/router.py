@@ -179,6 +179,8 @@ async def list_payments(
                 transactions_link=f"https://taostats.io/account/{user.payment_address}/transactions",
             )
         )
+        if payment.refunded:
+            results[-1]["refunded"] = True
     response = {
         "total": total,
         "page": page,

@@ -171,7 +171,7 @@ async def create_image(
     await ensure_is_developer(db, current_user)
     await limit_images(db, current_user)
 
-    image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{username}/{name}:{tag}"))
+    image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{username.lower()}/{name}:{tag}"))
     query = select(
         exists().where(
             or_(

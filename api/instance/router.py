@@ -50,6 +50,9 @@ async def create_instance(
 
     # Validate the hostname.
     if not await is_valid_host(instance_args.host):
+        logger.warning(
+            f"INSTANCEFAIL: Attempt to post bad host: {instance_args.host} from {hotkey=}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid instance host: {instance_args.host}",
@@ -74,6 +77,9 @@ async def create_instance(
     # Verify the GPUs are suitable.
     gpu_count = chute.node_selector.get("gpu_count", 1)
     if len(instance_args.node_ids) != gpu_count:
+        logger.warning(
+            f"INSTANCEFAIL: Attempt to post incorrect GPU count: {len(instance_args.node_ids)} vs {gpu_count} from {hotkey=}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
@@ -88,6 +94,9 @@ async def create_instance(
             )
         gpu_type = node.name
         if not node.is_suitable(chute):
+            logger.warning(
+                f"INSTANCEFAIL: attempt to post incompatible GPUs: {node.name} for {chute.node_selector}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Node {node_id} is not compatible with chute node selector!",
