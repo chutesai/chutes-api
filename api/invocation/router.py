@@ -796,6 +796,9 @@ async def hostname_invocation(
     # Mega LLM/diffusion request handler.
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
         payload = await request.json()
+        # MistralAI gated this model for some reason.......
+        if payload.get("model") == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
+            payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
         model = payload.get("model")
         chute = None
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"

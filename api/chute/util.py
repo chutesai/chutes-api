@@ -357,9 +357,10 @@ async def _invoke_one(
                     and plain_path in LLM_PATHS
                     and chunk.startswith(b"data: {")
                     and b'"content":""' not in chunk
+                    and b'"content": ""' not in chunk
                 ):
                     if metrics["ttft"] is None:
-                        metrics["ttft"] = time.time() - started_at
+                        metrics["ttft"] = round(time.time() - started_at, 3)
                     metrics["tokens"] += 1
                 if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
                     last_chunk = chunk
@@ -393,34 +394,34 @@ async def _invoke_one(
                         claimed_prompt_tokens = usage.get("prompt_tokens")
 
                         # Sanity check on prompt token counts.
-                        if claimed_prompt_tokens > prompt_tokens * 1.5:
+                        if claimed_prompt_tokens > prompt_tokens * 6:
                             logger.warning(
                                 f"Prompt tokens exceeded expectations [stream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens}"
                             )
-                            # else:
+                        else:
                             prompt_tokens = min(claimed_prompt_tokens, prompt_tokens)
 
                         # Sanity check on completion token counts.
                         claimed_completion_tokens = usage.get("completion_tokens")
                         if claimed_completion_tokens is not None:
                             # Some chutes do multi-token prediction, but even so let's make sure people don't do shenanigans.
-                            if claimed_completion_tokens > completion_tokens * 4:
+                            if claimed_completion_tokens > completion_tokens * 6:
                                 logger.warning(
                                     f"Completion tokens exceeded expectations [stream]: {claimed_completion_tokens=} vs estimated={completion_tokens}"
                                 )
-                                # else:
+                            else:
                                 completion_tokens = claimed_completion_tokens
                     except Exception as exc:
                         logger.warning(f"Error checking metrics: {exc}")
 
                 metrics["it"] = max(0, prompt_tokens or 0)
                 metrics["ot"] = max(0, completion_tokens or 0)
-                metrics["tps"] = metrics["ot"] / total_time
+                metrics["ctps"] = round((metrics["it"] + metrics["ot"]) / total_time, 3)
+                metrics["tps"] = round(metrics["ot"] / total_time, 3)
+                metrics["tt"] = round(total_time, 3)
                 if manager and manager.mean_count is not None:
                     metrics["mc"] = manager.mean_count
-                logger.info(
-                    f"Metrics for chute={chute.name} miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
-                )
+                logger.info(f"Metrics for chute={chute.name} {metrics}")
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 await track_prefix_hashes(prefixes, target.instance_id)
         else:
@@ -511,14 +512,14 @@ async def _invoke_one(
 
                     # Track metrics using either sane claimed usage metrics or estimates.
                     metrics["tokens"] = completion_tokens
-                    metrics["tps"] = completion_tokens / total_time
                     metrics["it"] = prompt_tokens
                     metrics["ot"] = completion_tokens
+                    metrics["ctps"] = round((metrics["it"] + metrics["ot"]) / total_time, 3)
+                    metrics["tps"] = round(metrics["ot"] / total_time, 3)
+                    metrics["tt"] = round(total_time, 3)
                     if manager and manager.mean_count is not None:
                         metrics["mc"] = manager.mean_count
-                    logger.info(
-                        f"Metrics for [{chute.name}] miner={target.miner_hotkey} instance={target.instance_id}: {metrics}"
-                    )
+                    logger.info(f"Metrics for {chute.name}: {metrics}")
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                     await track_prefix_hashes(prefixes, target.instance_id)
             elif (

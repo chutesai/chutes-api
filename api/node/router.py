@@ -144,6 +144,12 @@ async def create_nodes(
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
     nodes_args = args.nodes
 
+    if len(nodes_args) > 10:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Limit is 10 GPUs per server.",
+        )
+
     # Check if any of the nodes are already in inventory.
     node_uuids = [node.uuid for node in args.nodes]
     existing = (
