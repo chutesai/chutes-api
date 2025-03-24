@@ -9,6 +9,119 @@ from api.database import get_session
 from api.config import settings
 from sqlalchemy import text
 
+TOKEN_METRICS_QUERY = """
+CREATE TABLE vllm_metrics AS WITH min_date AS (
+  SELECT MIN(DATE(started_at)) AS min_date
+  FROM invocations
+  JOIN chutes ON invocations.chute_id = chutes.chute_id
+  WHERE chutes.standard_template = 'vllm'
+  AND metrics->>'it' IS NOT NULL
+),
+date_series AS (
+  SELECT generate_series(
+    (SELECT min_date FROM min_date),
+    DATE_TRUNC('day', NOW()),
+    '1 day'::interval
+  )::date AS date
+),
+all_chutes AS (
+  SELECT chute_id, name
+  FROM chutes
+  WHERE standard_template = 'vllm'
+),
+chute_dates AS (
+  SELECT c.chute_id, c.name, d.date
+  FROM all_chutes c
+  CROSS JOIN date_series d
+),
+metrics_data AS (
+  SELECT
+    chutes.chute_id,
+    chutes.name,
+    DATE(started_at) AS date,
+    COUNT(*) AS total_requests,
+    SUM((metrics->>'it')::int) AS total_input_tokens,
+    SUM((metrics->>'ot')::int) AS total_output_tokens,
+    AVG(
+      CASE
+        WHEN extract(epoch from completed_at - started_at) = 0 THEN 0
+        ELSE (metrics->>'ot')::int / extract(epoch from completed_at - started_at)
+      END 
+    ) AS average_tps
+  FROM invocations
+  JOIN chutes ON invocations.chute_id = chutes.chute_id
+  WHERE chutes.standard_template = 'vllm'
+  AND metrics->>'it' IS NOT NULL
+  AND completed_at IS NOT NULL
+  AND error_message IS NULL
+  GROUP BY chutes.chute_id, chutes.name, DATE(started_at)
+)
+SELECT
+  cd.chute_id,
+  cd.name,
+  cd.date,
+  COALESCE(md.total_requests, 0) AS total_requests,
+  COALESCE(md.total_input_tokens, 0) AS total_input_tokens,
+  COALESCE(md.total_output_tokens, 0) AS total_output_tokens,
+  COALESCE(md.average_tps, 0) AS average_tps
+FROM chute_dates cd
+LEFT JOIN metrics_data md ON cd.chute_id = md.chute_id AND cd.date = md.date
+ORDER BY cd.date DESC, cd.name;
+"""
+
+DIFFUSION_METRICS_QUERY = """
+CREATE TABLE diffusion_metrics AS WITH min_date AS (
+  SELECT MIN(DATE(started_at)) AS min_date
+  FROM invocations
+  JOIN chutes ON invocations.chute_id = chutes.chute_id
+  WHERE chutes.standard_template = 'diffusion'
+  AND metrics->>'steps' IS NOT NULL
+),
+date_series AS (
+  SELECT generate_series(
+    (SELECT min_date FROM min_date),
+    DATE_TRUNC('day', NOW()),
+    '1 day'::interval
+  )::date AS date
+),
+all_chutes AS (
+  SELECT chute_id, name
+  FROM chutes
+  WHERE standard_template = 'diffusion'
+),
+chute_dates AS (
+  SELECT c.chute_id, c.name, d.date
+  FROM all_chutes c
+  CROSS JOIN date_series d
+),
+metrics_data AS (
+  SELECT
+    chutes.chute_id,
+    chutes.name,
+    DATE(started_at) AS date,
+    SUM((metrics->>'steps')::float)::int AS total_steps,
+    COUNT(*) AS total_requests,
+    AVG((metrics->>'sps')::float) AS average_sps
+  FROM invocations
+  JOIN chutes ON invocations.chute_id = chutes.chute_id
+  WHERE chutes.standard_template = 'diffusion'
+  AND metrics->>'steps' IS NOT NULL
+  AND error_message IS NULL
+  AND completed_at IS NOT NULL
+  GROUP BY chutes.chute_id, chutes.name, DATE(started_at)
+)
+SELECT
+  cd.chute_id,
+  cd.name,
+  cd.date,
+  COALESCE(md.total_steps, 0) AS total_steps,
+  COALESCE(md.total_requests, 0) AS total_requests,
+  COALESCE(md.average_sps, 0) AS average_sps
+FROM chute_dates cd
+LEFT JOIN metrics_data md ON cd.chute_id = md.chute_id AND cd.date = md.date
+ORDER BY cd.date DESC, cd.name;
+"""
+
 
 async def gather_metrics(interval: str = "1 hour"):
     """
@@ -86,3 +199,14 @@ def get_prompt_prefix_hashes(payload: dict) -> list:
         hashes.append((size, hashlib.md5(prompt[:size].encode()).hexdigest()))
         size *= 2
     return hashes[::-1]
+
+
+async def generate_invocation_history_metrics():
+    """
+    Generate all vllm/diffusion metrics through time.
+    """
+    async with get_session() as session:
+        await session.execute(text("DROP TABLE IF EXISTS vllm_metrics"))
+        await session.execute(text("DROP TABLE IF EXISTS diffusion_metrics"))
+        await session.execute(text(TOKEN_METRICS_QUERY))
+        await session.execute(text(DIFFUSION_METRICS_QUERY))

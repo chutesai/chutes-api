@@ -15,6 +15,7 @@ from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
+from api.logo.schemas import Logo
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import (
@@ -94,6 +95,36 @@ async def me(
     Get a detailed response for the current user.
     """
     return current_user
+
+
+@router.get("/set_logo", response_model=SelfResponse)
+async def set_logo(
+    logo_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Get a detailed response for the current user.
+    """
+    logo = (
+        (await db.execute(select(Logo).where(Logo.logo_id == logo_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not logo:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Logo not found: {logo_id}"
+        )
+    # Reload user.
+    user = (
+        (await db.execute(select(User).where(User.user_id == current_user.user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    user.logo_id = logo_id
+    await db.commit()
+    await db.refresh(user)
+    return user
 
 
 @router.get("/link_validator", response_model=SelfResponse)

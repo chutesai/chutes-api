@@ -132,6 +132,9 @@ class Settings(BaseSettings):
     # API key for checking code.
     codecheck_key: Optional[str] = os.getenv("CODECHECK_KEY")
 
+    # Logos CDN hostname.
+    logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
+
     # Rate limits.
     rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 30))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))

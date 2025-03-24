@@ -9,6 +9,7 @@ from api.user.response import UserResponse
 from api.image.response import ImageResponse
 from api.instance.response import MinimalInstanceResponse
 from api.chute.schemas import Cord
+from api.config import settings
 
 
 class ChuteResponse(BaseModel):
@@ -41,7 +42,7 @@ class ChuteResponse(BaseModel):
     @computed_field
     @property
     def logo(self) -> Optional[str]:
-        return f"/logos/{self.logo_id}.webp" if self.logo_id else None
+        return f"{settings.logo_cdn}/logos/{self.logo_id}.webp" if self.logo_id else None
 
     @computed_field
     @property

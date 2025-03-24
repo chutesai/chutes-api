@@ -6,6 +6,7 @@ from pydantic import BaseModel, computed_field
 from datetime import datetime
 from typing import Optional
 from api.user.response import UserResponse
+from api.config import settings
 
 
 class ImageResponse(BaseModel):
@@ -27,4 +28,4 @@ class ImageResponse(BaseModel):
     @computed_field
     @property
     def logo(self) -> Optional[str]:
-        return f"/logos/{self.logo_id}.webp" if self.logo_id else None
+        return f"{settings.logo_cdn}logos/{self.logo_id}.webp" if self.logo_id else None

@@ -2,9 +2,9 @@
 ORM definitions for users.
 """
 
-from typing import Self
+from typing import Self, Optional
 from pydantic import BaseModel
-from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInteger
+from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInteger, ForeignKey
 from sqlalchemy.orm import relationship, validates
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
@@ -20,10 +20,12 @@ from api.permissions import Permissioning, Role
 class UserRequest(BaseModel):
     username: str
     coldkey: str
+    logo_id: Optional[str] = None
 
 
 class AdminUserRequest(BaseModel):
     username: str
+    logo_id: Optional[str] = None
 
 
 class User(Base):
@@ -79,6 +81,9 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Logo/avatar.
+    logo_id = Column(String, ForeignKey("logos.logo_id", ondelete="SET NULL"), nullable=True)
 
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")

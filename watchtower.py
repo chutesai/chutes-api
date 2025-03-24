@@ -22,7 +22,17 @@ import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
+from api.invocation.util import generate_invocation_history_metrics
 
+
+PAST_DAY_METRICS_QUERY = """
+UPDATE chutes
+SET invocation_count = (
+    SELECT COUNT(distinct(parent_invocation_id))
+    FROM invocations
+    WHERE invocations.chute_id = chutes.chute_id and started_at >= now() - interval '1 days'
+);
+"""
 
 UNDEPLOYABLE_CHUTE_QUERY = """
 SELECT * FROM (
@@ -877,6 +887,19 @@ async def remove_bad_chutes():
             logger.success(f"Chute seems fine: {chute.chute_id=} {chute.name=}")
 
 
+async def update_past_day_metrics():
+    """
+    Update the past day invocation counts for sorting.
+    """
+    try:
+        logger.info("Updating past day metrics...")
+        async with get_session() as session:
+            await session.execute(text(PAST_DAY_METRICS_QUERY))
+        logger.success("Updated past day invocation metric on chutes.")
+    except Exception as exc:
+        logger.error(f"Error updating past day invocation metrics on chutes: {exc}")
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
@@ -892,6 +915,14 @@ async def main():
         if index % 10 == 0:
             await remove_undeployable_chutes()
             await report_short_lived_chutes()
+        if index % 50 == 0:
+            await update_past_day_metrics()
+            try:
+                logger.info("Generating invocation history metrics...")
+                await generate_invocation_history_metrics()
+                logger.info("Finished generating invocation history metrics!")
+            except Exception as exc:
+                logger.warning(f"Error re-generating invocation history metrics: {exc}")
         await purge_unverified()
         await check_all_chutes()
         await asyncio.sleep(90)

@@ -95,6 +95,22 @@ async def get_usage():
         return rv
 
 
+@router.get("/stats/llm")
+async def get_llm_stats():
+    async with get_session(readonly=True) as session:
+        result = await session.execute(text("SELECT * FROM vllm_metrics"))
+        rows = result.mappings().all()
+        return [dict(row) for row in rows]
+
+
+@router.get("/stats/diffusion")
+async def get_diffusion_stats():
+    async with get_session(readonly=True) as session:
+        result = await session.execute(text("SELECT * FROM diffusion_metrics"))
+        rows = result.mappings().all()
+        return [dict(row) for row in rows]
+
+
 @router.get("/exports/{year}/{month}/{day}/{hour_format}")
 async def get_export(
     year: int,
