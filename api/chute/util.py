@@ -26,7 +26,6 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
 from api.constants import (
-    ENCRYPTED_HEADER,
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
@@ -255,38 +254,8 @@ async def _invoke_one(
     response = None
     payload = {"args": args, "kwargs": kwargs}
 
-    # Legacy chutes/encryption V1.
     iv = None
-    legacy_encrypted = False
-    if not use_encryption_v2(target.chutes_version):
-        if settings.graval_url and random.random() <= 0.1:
-            device_dicts = [node.graval_dict() for node in target.nodes]
-            target_index = random.randint(0, len(device_dicts) - 1)
-            target_device = device_dicts[target_index]
-            seed = target.nodes[0].seed
-            async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
-                try:
-                    async with graval_session.post(
-                        f"{settings.graval_url}/encrypt",
-                        json={
-                            "payload": {
-                                "args": args,
-                                "kwargs": kwargs,
-                            },
-                            "device_info": target_device,
-                            "device_id": target_index,
-                            "seed": seed,
-                        },
-                        timeout=3.0,
-                    ) as resp:
-                        payload = await resp.json()
-                        legacy_encrypted = True
-                except Exception as exc:
-                    logger.error(
-                        f"Error encrypting payload: {str(exc)}, sending plain text\n{traceback.format_exc()}"
-                    )
-    else:
-        # Using encryption V2, make sure we have a key.
+    if use_encryption_v2(target.chutes_version):
         if not target.symmetric_key:
             raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
         payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
@@ -307,11 +276,9 @@ async def _invoke_one(
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
         if iv:
             headers["X-Chutes-Serialized"] = "true"
-        if legacy_encrypted:
-            headers.update({ENCRYPTED_HEADER: "true"})
         iv_hex = iv.hex() if iv else None
         logger.debug(
-            f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {legacy_encrypted=} {iv_hex=}"
+            f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {iv_hex=}"
         )
         started_at = time.time()
         response = await session.post(

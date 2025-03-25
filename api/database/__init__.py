@@ -63,17 +63,22 @@ async def get_session(readonly=False) -> AsyncGenerator[AsyncSession, None]:
             await session.close()
 
 
-async def get_db_session(readonly=False):
-    session_maker = SessionLocalRead if readonly else SessionLocal
-    async with session_maker() as session:
+async def get_db_session():
+    async with SessionLocal() as session:
         try:
             yield session
-            if not readonly:
-                await session.commit()
+            await session.commit()
         except Exception:
-            if not readonly:
-                await session.rollback()
+            await session.rollback()
             raise
+        finally:
+            await session.close()
+
+
+async def get_db_ro_session():
+    async with SessionLocalRead() as session:
+        try:
+            yield session
         finally:
             await session.close()
 
