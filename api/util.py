@@ -183,9 +183,12 @@ async def _limit_dev_activity(session, user, maximum, clazz):
     """
     Limit how many chutes a user can create/update per day.
     """
-    from api.user.service import chutes_user_id
 
-    if user.user_id == await chutes_user_id() or user.validator_hotkey or user.subnet_owner_hotkey:
+    if (
+        user.username in ("chutes", "rayonlabs")
+        or user.validator_hotkey
+        or user.subnet_owner_hotkey
+    ):
         return
 
     query = select(clazz).where(

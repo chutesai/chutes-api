@@ -647,13 +647,12 @@ async def invoke(
                     except Exception as exc:
                         logger.warning(f"Error clearing consecutive failures: {exc}")
 
-                    # Calculate the credits used and deduct from user's balance.
-                    # For LLMs and Diffusion chutes, we use custom per token/image step pricing, otherwise
-                    # it's just based on time used.
+                    # Calculate the credits used and deduct from user's balance asynchronously.
+                    # For LLMs and Diffusion chutes, we use custom per token/image step pricing,
+                    # otherwise it's just based on time used.
                     compute_units = result.scalar_one_or_none()
+                    balance_used = 0.0
                     if compute_units and not request.state.free_invocation:
-                        balance_used = None
-
                         # Track any discounts.
                         discount = 0.0
                         # A negative discount just makes the chute more than our typical pricing,
@@ -695,46 +694,23 @@ async def invoke(
                             default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
                             default_balance_used -= default_balance_used * discount
 
-                            # if balance_used and balance_used > default_balance_used:
-                            #    logger.info(
-                            #        f"BALANCE: Balance per token/step exceeded default calculation for {chute.name}: {balance_used=} vs {default_balance_used=} {discount=}"
-                            #    )
-                            #    balance_used = default_balance_used
-
                             if balance_used is None:
                                 balance_used = default_balance_used
                                 logger.info(
                                     f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
                                 )
 
-                            # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
-                            pipeline = settings.cm_redis_client.pipeline()
-                            key = f"balance:{user_id}:{chute.chute_id}"
-                            pipeline.hincrbyfloat(key, "amount", balance_used)
-                            pipeline.hincrby(key, "count", 1)
-                            pipeline.hset(key, "timestamp", int(time.time()))
-                            await pipeline.execute()
-                            logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
+                    # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
+                    pipeline = settings.cm_redis_client.pipeline()
+                    key = f"balance:{user_id}:{chute.chute_id}"
+                    pipeline.hincrbyfloat(key, "amount", balance_used)
+                    pipeline.hincrby(key, "count", 1)
+                    pipeline.hset(key, "timestamp", int(time.time()))
+                    await pipeline.execute()
+                    if balance_used > 0:
+                        logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
 
-                            # XXX this is what NOT to do, because it causes deadlocks.
-                            # result = await session.execute(
-                            #    update(User)
-                            #    .where(User.user_id == user_id)
-                            #    .where(
-                            #        User.permissions_bitmask.op("&")(
-                            #            Permissioning.free_account.bitmask
-                            #        )
-                            #        == 0
-                            #    )
-                            #    .values(balance=User.balance - balance_used)
-                            #    .returning(User.balance)
-                            # )
-                            # new_balance = result.scalar_one_or_none()
-                            # if new_balance is not None:
-                            #    logger.info(
-                            #        f"Deducted ${balance_used:.12f} from {user_id=}, new balance = ${new_balance:.12f}"
-                            #    )
-                        await session.commit()
+                    await session.commit()
 
                 yield sse(
                     {

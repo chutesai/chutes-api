@@ -202,7 +202,7 @@ async def list_chutes(
         "items": [item.model_dump() for item in responses],
         "cord_refs": cord_refs,
     }
-    await settings.memcache.set(cache_key, json.dumps(result), exptime=300)
+    await settings.memcache.set(cache_key, json.dumps(result), exptime=60)
     return result
 
 

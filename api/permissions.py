@@ -35,6 +35,10 @@ class Permissioning:
         bitmask=1 << 5,
         description="No rate limits.",
     )
+    billing_admin = Role(
+        bitmask=1 << 6,
+        description="Billing admin.",
+    )
 
     @classmethod
     def enabled(cls, user, role):

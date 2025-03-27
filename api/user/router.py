@@ -42,6 +42,11 @@ class FingerprintChange(BaseModel):
     fingerprint: str
 
 
+class BalanceRequest(BaseModel):
+    user_id: str
+    amount: float
+
+
 async def _link_hotkey(
     hotkey: str,
     signature: str,
@@ -84,6 +89,32 @@ async def _link_hotkey(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid hotkey or signature.",
     )
+
+
+@router.post("/fiat_balance_change")
+async def fiat_balance_change(
+    balance_req: BalanceRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    user = (
+        (await db.execute(select(User).where(User.user_id == balance_req.user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user.user_id}"
+        )
+    user.balance += balance_req.amount
+    await db.commit()
+    await db.refresh(user)
+    return {"new_balance": user.balance}
 
 
 @router.get("/me", response_model=SelfResponse)
