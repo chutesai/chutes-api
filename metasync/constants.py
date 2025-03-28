@@ -41,7 +41,7 @@ FROM invocations i
 LEFT JOIN computation_rates r ON i.chute_id = r.chute_id
 WHERE i.started_at > NOW() - INTERVAL '{interval}'
 AND i.error_message IS NULL
-AND i.miner_uid > 0
+AND i.miner_uid >= 0
 AND i.completed_at IS NOT NULL
 AND NOT EXISTS (
     SELECT 1
