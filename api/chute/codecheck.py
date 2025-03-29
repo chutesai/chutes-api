@@ -1,9 +1,13 @@
+import re
 import aiohttp
 import json
 import backoff
 from enum import Enum
 from pydantic import BaseModel
 from api.config import settings
+
+
+JSON_RE = re.compile(r"\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{(?:[^{}]|(?:\{[^{}]*\}))*\}))*\}))*\}")
 
 
 class FinalResult(Enum):
@@ -15,6 +19,19 @@ class ChuteEval(BaseModel):
     reasoning: str
     ban_reasons: list[str]
     final_result: FinalResult
+
+
+def extract_response_json(text):
+    """
+    Fallback method to extract the response JSON (since guided output seems broken with MTP).
+    """
+    matches = JSON_RE.findall(text)
+    for potential_json in matches:
+        try:
+            return json.loads(potential_json)
+        except json.JSONDecodeError:
+            continue
+    return None
 
 
 @backoff.on_exception(
@@ -73,7 +90,12 @@ Remember, your task is to read the code above, then evaluate it based on the fol
             },
         ) as resp:
             body = await resp.json()
-            result = json.loads(body["choices"][0]["message"]["content"])
-            if result["final_result"] == "ban":
+            response_content = body["choices"][0]["message"]["content"]
+            result = None
+            try:
+                result = json.loads(response_content)
+            except Exception:
+                result = extract_response_json(response_content)
+            if result and result.get("final_result") == "ban":
                 return True, result
             return False, None

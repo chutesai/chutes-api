@@ -109,6 +109,7 @@ async def return_developer_deposit(
     query = (
         select(Payment)
         .where(Payment.user_id == current_user.user_id)
+        .where(Payment.purpose == "developer")
         .order_by(desc(Payment.created_at))
         .limit(1)
     )
