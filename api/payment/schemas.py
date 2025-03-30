@@ -13,7 +13,7 @@ from sqlalchemy import (
     Double,
     Index,
 )
-from api.database import Base
+from api.database import Base, generate_uuid
 
 
 class Payment(Base):
@@ -64,3 +64,12 @@ class UsageData(Base):
     chute_id = Column(String, primary_key=True)
     amount = Column(Double, nullable=False)
     count = Column(BigInteger, nullable=False)
+
+
+class AdminBalanceChange(Base):
+    __tablename__ = "admin_balance_changes"
+    event_id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.user_id"))
+    amount = Column(Double, nullable=False)
+    reason = Column(String, nullable=False)
+    timestamp = Column(DateTime)

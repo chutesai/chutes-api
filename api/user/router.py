@@ -2,6 +2,7 @@
 User routes.
 """
 
+import uuid
 import time
 import secrets
 import hashlib
@@ -15,6 +16,7 @@ from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
+from api.payment.schemas import AdminBalanceChange
 from api.logo.schemas import Logo
 from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,6 +47,7 @@ class FingerprintChange(BaseModel):
 class BalanceRequest(BaseModel):
     user_id: str
     amount: float
+    reason: str
 
 
 async def _link_hotkey(
@@ -91,8 +94,8 @@ async def _link_hotkey(
     )
 
 
-@router.post("/fiat_balance_change")
-async def fiat_balance_change(
+@router.post("/admin_balance_change")
+async def admin_balance_change(
     balance_req: BalanceRequest,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
@@ -112,6 +115,14 @@ async def fiat_balance_change(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user.user_id}"
         )
     user.balance += balance_req.amount
+    event_data = AdminBalanceChange(
+        event_id=str(uuid.uuid4()),
+        user_id=user.user_id,
+        amount=balance_req.amount,
+        reason=balance_req.reason,
+        timestamp=func.now(),
+    )
+    db.add(event_data)
     await db.commit()
     await db.refresh(user)
     return {"new_balance": user.balance}
