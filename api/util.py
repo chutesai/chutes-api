@@ -191,13 +191,15 @@ async def _limit_dev_activity(session, user, maximum, clazz):
     ):
         return
 
+    timestamp_filters = [
+        clazz.created_at >= func.now() - datetime.timedelta(days=1),
+        clazz.deleted_at >= func.now() - datetime.timedelta(days=1),
+    ]
+    if hasattr(clazz, "updated_at"):
+        timestamp_filters.append(clazz.updated_at >= func.now() - datetime.timedelta(days=1))
     query = select(clazz).where(
         and_(
-            or_(
-                clazz.created_at >= func.now() - datetime.timedelta(days=1),
-                clazz.updated_at >= func.now() - datetime.timedelta(days=1),
-                clazz.deleted_at >= func.now() - datetime.timedelta(days=1),
-            ),
+            or_(*timestamp_filters),
             clazz.user_id == user.user_id,
         )
     )

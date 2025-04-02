@@ -20,7 +20,7 @@ WITH computation_rates AS (
     GROUP BY chute_id
 )
 SELECT
-    i.miner_hotkey,
+    mn.hotkey,
     COUNT(*) as invocation_count,
     COUNT(CASE WHEN i.bounty > 0 THEN 1 END) AS bounty_count,
     sum(
@@ -38,6 +38,7 @@ SELECT
         END
     ) AS compute_units
 FROM invocations i
+JOIN metagraph_nodes mn ON i.miner_hotkey = mn.hotkey AND i.miner_uid = mn.node_id AND mn.netuid = 64
 LEFT JOIN computation_rates r ON i.chute_id = r.chute_id
 WHERE i.started_at > NOW() - INTERVAL '{interval}'
 AND i.error_message IS NULL
@@ -49,7 +50,7 @@ AND NOT EXISTS (
     WHERE invocation_id = i.parent_invocation_id
     AND confirmed_at IS NOT NULL
 )
-GROUP BY i.miner_hotkey
+GROUP BY mn.hotkey
 ORDER BY compute_units DESC;
 """
 # Query to calculate the average number of unique chutes active at any single point in time, i.e. unique_count_count.
@@ -80,8 +81,10 @@ instances_with_success AS (
 ),
 -- Get all unique miner_hotkeys from instance_audit
 all_miners AS (
-  SELECT DISTINCT miner_hotkey
-  FROM instance_audit
+  SELECT DISTINCT ia.miner_uid, ia.miner_hotkey
+  FROM instance_audit ia
+  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey AND ia.miner_uid = mn.node_id
+  WHERE mn.netuid = 64 AND mn.node_id >= 0
 ),
 -- For each time point, find active instances that have had successful invocations
 active_instances_per_timepoint AS (
@@ -94,8 +97,10 @@ active_instances_per_timepoint AS (
   JOIN instance_audit ia ON
     ia.verified_at <= ts.time_point AND
     (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point)
+  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey AND ia.miner_uid = mn.node_id
   JOIN instances_with_success iws ON
     ia.instance_id = iws.instance_id
+  WHERE mn.netuid = 64 AND mn.node_id >= 0
 ),
 -- Count distinct chute_ids per miner per time point
 active_chutes_per_timepoint AS (

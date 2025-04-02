@@ -317,6 +317,7 @@ async def _invoke(
         current_user.balance <= 0
         and is_paid_account
         and (not chute.discount or chute.discount < 1.0)
+        and not request.state.free_invocation
     ):
         logger.warning(
             f"Payment required: attempted invocation of {chute.name} from user {current_user.username} [{origin_ip}] with no balance"

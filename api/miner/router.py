@@ -107,6 +107,7 @@ async def get_full_inventory(
     JOIN instance_nodes ON nodes.uuid = instance_nodes.node_id
     JOIN instances ON instance_nodes.instance_id = instances.instance_id
     JOIN chutes ON instances.chute_id = chutes.chute_id
+    JOIN metagraph_nodes on instances.miner_hotkey = metagraph_nodes.hotkey AND instances.miner_uid = metagraph_nodes.node_id AND metagraph_nodes.netuid = 64
     WHERE nodes.miner_hotkey = '{hotkey}'
     """
     )
@@ -176,6 +177,7 @@ async def get_stats(
     bounty_query = """
     SELECT miner_hotkey, SUM(bounty) as total_bounty
       FROM invocations i
+      JOIN metagraph_nodes mn on i.miner_hotkey = mn.hotkey AND i.miner_uid = mn.node_id AND mn.netuid = 64
      WHERE started_at >= NOW() - INTERVAL '{interval}'
        AND error_message IS NULL
        AND miner_uid >= 0
@@ -193,6 +195,7 @@ async def get_stats(
         COUNT(*) AS total_invocations,
         SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
     FROM invocations i
+    JOIN metagraph_nodes mn on i.miner_hotkey = mn.hotkey AND i.miner_uid = mn.node_id AND mn.netuid = 64
     WHERE i.started_at > NOW() - INTERVAL '{interval}'
     AND i.error_message IS NULL
     AND miner_uid >= 0
@@ -215,6 +218,7 @@ async def get_stats(
             COUNT(*) AS total_invocations,
             SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
         FROM invocations i
+        JOIN metagraph_nodes mn on i.miner_hotkey = mn.hotkey AND i.miner_uid = mn.node_id AND mn.netuid = 64
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
         AND i.error_message IS NULL
         AND miner_uid >= 0
