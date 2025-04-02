@@ -23,7 +23,7 @@ from api.user.service import get_current_user
 from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
-from api.metasync import get_scoring_data, get_miner_by_hotkey
+from api.metasync import get_scoring_data, get_miner_by_hotkey, MetagraphNode
 
 router = APIRouter()
 
@@ -306,3 +306,20 @@ async def unique_chute_history(hotkey: str, request: Request = None):
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Miner {hotkey} not found in unique history cache (yet)",
     )
+
+
+@router.get("/metagraph")
+async def get_metagraph():
+    async with get_session(readonly=True) as session:
+        return (
+            (
+                await session.execute(
+                    select(MetagraphNode).where(
+                        MetagraphNode.netuid == settings.netuid, MetagraphNode.node_id >= 0
+                    )
+                )
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
