@@ -83,7 +83,7 @@ instances_with_success AS (
 all_miners AS (
   SELECT DISTINCT ia.miner_uid, ia.miner_hotkey
   FROM instance_audit ia
-  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey AND ia.miner_uid = mn.node_id
+  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey AND ia.miner_uid = mn.node_id::text
   WHERE mn.netuid = 64 AND mn.node_id >= 0
 ),
 -- For each time point, find active instances that have had successful invocations
@@ -97,7 +97,7 @@ active_instances_per_timepoint AS (
   JOIN instance_audit ia ON
     ia.verified_at <= ts.time_point AND
     (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point)
-  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey AND ia.miner_uid = mn.node_id
+  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey AND ia.miner_uid = mn.node_id::text
   JOIN instances_with_success iws ON
     ia.instance_id = iws.instance_id
   WHERE mn.netuid = 64 AND mn.node_id >= 0

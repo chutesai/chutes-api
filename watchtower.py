@@ -95,6 +95,62 @@ GROUP BY instance_audit.chute_id
 HAVING EXTRACT(EPOCH FROM MAX(instance_audit.deleted_at) - MIN(instance_audit.created_at)) <= 86400
 """
 
+# Disproportionate invocations on new chutes.
+DISPROPORTIONATE_CHUTES = """
+WITH new_chutes AS (
+    SELECT chute_id
+    FROM chutes
+    WHERE created_at >= NOW() - INTERVAL '2 days'
+      AND created_at <= NOW() - INTERVAL '6 hours'
+),
+stats AS (
+    SELECT
+        i.chute_id,
+        i.miner_hotkey,
+        COUNT(*) AS total_count
+    FROM invocations i
+    INNER JOIN new_chutes nc ON i.chute_id = nc.chute_id
+    WHERE i.started_at >= NOW() - INTERVAL '1 day'
+    AND i.completed_at IS NOT NULL
+    AND i.error_message IS NULL
+    GROUP BY i.chute_id, i.miner_hotkey
+),
+chute_totals AS (
+    SELECT
+        chute_id,
+        SUM(total_count) AS total_invocations_per_chute,
+        COUNT(DISTINCT miner_hotkey) AS unique_hotkeys
+    FROM stats
+    GROUP BY chute_id
+),
+chute_ratios AS (
+    SELECT
+        s.chute_id,
+        s.miner_hotkey,
+        s.total_count,
+        c.total_invocations_per_chute,
+        c.unique_hotkeys,
+        CASE
+            WHEN c.total_invocations_per_chute = 0 THEN 0
+            ELSE s.total_count::FLOAT / c.total_invocations_per_chute
+        END AS invocation_ratio
+    FROM stats s
+    INNER JOIN chute_totals c ON s.chute_id = c.chute_id
+    WHERE s.total_count > 10
+)
+SELECT
+    cr.chute_id,
+    cr.miner_hotkey,
+    cr.total_count,
+    cr.total_invocations_per_chute,
+    cr.unique_hotkeys,
+    cr.invocation_ratio
+FROM chute_ratios cr
+WHERE cr.total_count >= 100
+AND cr.invocation_ratio >= 0.7
+ORDER BY cr.invocation_ratio DESC;
+"""
+
 
 def use_encrypted_slurp(chutes_version: str) -> bool:
     """
@@ -915,6 +971,56 @@ async def generate_invocation_history_metrics_loop():
         except Exception as exc:
             logger.error(f"Error updating global historical metrics tables: {exc}")
             await asyncio.sleep(300)
+
+
+async def remote_disproportionate_new_chutes():
+    """
+    Remove chutes that are new and have disproportionate requests to one miner.
+    """
+    query = text(DISPROPORTIONATE_CHUTES)
+    bad_chutes = []
+    async with get_session() as session:
+        result = await session.execute(query)
+        rows = result.fetchall()
+        for row in rows:
+            chute_id = row.chute_id
+            miner_hotkey = row.miner_hotkey
+            miner_count = row.total_count
+            total_count = row.total_invocations_per_chute
+            unique_hotkeys = row.unique_hotkeys
+            invocation_ratio = row.invocation_ratio
+            bad_chutes.append(
+                (
+                    chute_id,
+                    f"chute is new and has disproportionate requests to a single miner: {miner_hotkey=} {miner_count=} {total_count=} {unique_hotkeys=} {invocation_ratio=}",
+                )
+            )
+            logger.warning(
+                f"Detected disproportionate invocations on chute {chute_id} going to single miner: "
+                f"{miner_hotkey=} {miner_count=} {total_count=} {unique_hotkeys=} {invocation_ratio=}"
+            )
+            chute = (
+                (await session.execute(select(Chute).where(Chute.chute_id == chute_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
+            if chute:
+                version = chute.version
+                await session.delete(chute)
+                await settings.redis_client.publish(
+                    "miner_broadcast",
+                    json.dumps(
+                        {
+                            "reason": "chute_deleted",
+                            "data": {"chute_id": chute_id, "version": version},
+                        }
+                    ),
+                )
+        await session.commit()
+
+    # Generate the reports in separate sessions so we don't have massive transactions.
+    for chute_id, reason in bad_chutes:
+        await generate_confirmed_reports(chute_id, reason)
 
 
 async def main():

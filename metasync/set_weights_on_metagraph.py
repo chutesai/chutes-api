@@ -14,13 +14,13 @@ from fiber.networking.models import NodeWithFernet as Node
 from fiber.chain.interface import get_substrate
 from metasync.database import engine, Base
 from metasync.config import settings
+from fiber.chain.chain_utils import query_substrate
 from metasync.constants import (
     UNIQUE_CHUTE_AVERAGE_QUERY,
     NORMALIZED_COMPUTE_QUERY,
     SCORING_INTERVAL,
     FEATURE_WEIGHTS,
 )
-from fiber.chain.chain_utils import query_substrate
 
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
 logger = get_logger(__name__)
@@ -57,6 +57,11 @@ async def _get_weights_to_set(
 
     raw_compute_values = {}
     async with get_session() as session:
+        metagraph_nodes = await session.execute(
+            text("SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = 64 AND node_id >= 0")
+        )
+        hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
+
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
 
@@ -93,11 +98,37 @@ async def _get_weights_to_set(
         hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
         for hotkey, row in raw_compute_values.items()
     }
+
     # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
-    final_scores = {
+    pre_final_scores = {
         hotkey: sum(norm_value * FEATURE_WEIGHTS[key] for key, norm_value in metrics.items())
         for hotkey, metrics in normalized_values.items()
     }
+
+    # Apply exponential punishment on multi-key miners.
+    sorted_hotkeys = sorted(
+        pre_final_scores.keys(), key=lambda h: pre_final_scores[h], reverse=True
+    )
+    coldkey_counts = {}
+    penalized_scores = {}
+    penalty_exponent = 1.6
+    for hotkey in sorted_hotkeys:
+        coldkey = hot_cold_map[hotkey]
+        coldkey_counts.setdefault(coldkey, 0)
+        penalty = coldkey_counts[coldkey] ** penalty_exponent
+        penalized_scores[hotkey] = pre_final_scores[hotkey] / (1 + penalty)
+        coldkey_counts[coldkey] += 1
+    final_scores = {key: score**1.07 for key, score in penalized_scores.items()}
+    sorted_hotkeys = sorted(final_scores.keys(), key=lambda h: final_scores[h], reverse=True)
+    for hotkey in sorted_hotkeys:
+        coldkey_count = coldkey_counts[hot_cold_map[hotkey]]
+        delta = pre_final_scores[hotkey] - penalized_scores[hotkey]
+        if not delta:
+            logger.info(f"{hotkey} ({coldkey_count=}): {final_scores[hotkey]}")
+        else:
+            logger.info(
+                f"{hotkey} ({coldkey_count=}): {final_scores[hotkey]} with multi-uid punishment {delta / pre_final_scores[hotkey]:0.4f}"
+            )
 
     # Final weights per node.
     node_ids = []
