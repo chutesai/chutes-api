@@ -58,7 +58,7 @@ UNIQUE_CHUTE_AVERAGE_QUERY = """
 WITH time_series AS (
   SELECT
     generate_series(
-      date_trunc('hour', now() - INTERVAL '{interval}'),
+      date_trunc('hour', now() - INTERVAL '7 days'),
       date_trunc('hour', now()),
       INTERVAL '1 hour'
     ) AS time_point
@@ -102,14 +102,24 @@ active_instances_per_timepoint AS (
     ia.instance_id = iws.instance_id
   WHERE mn.netuid = 64 AND mn.node_id >= 0
 ),
--- Count distinct chute_ids per miner per time point
+-- Calculate GPU-weighted chute count per miner per time point
 active_chutes_per_timepoint AS (
   SELECT
-    time_point,
-    miner_hotkey,
-    COUNT(DISTINCT chute_id) AS active_chutes
-  FROM active_instances_per_timepoint
-  GROUP BY time_point, miner_hotkey
+    aipt.time_point,
+    aipt.miner_hotkey,
+    SUM(COALESCE((c.node_selector->>'gpu_count')::integer, 1)) AS gpu_weighted_chutes
+  FROM (
+    -- Get distinct chute_ids per time point and miner
+    SELECT DISTINCT
+      time_point,
+      miner_hotkey,
+      chute_id
+    FROM active_instances_per_timepoint
+  ) aipt
+  -- Join with chutes table to get the node_selector field
+  JOIN chutes c ON
+    aipt.chute_id = c.chute_id
+  GROUP BY aipt.time_point, aipt.miner_hotkey
 ),
 -- Create a cross join of all time points with all miners
 all_timepoints_for_all_miners AS (
@@ -124,17 +134,17 @@ complete_dataset AS (
   SELECT
     atm.miner_hotkey,
     atm.time_point,
-    COALESCE(acpt.active_chutes, 0) AS active_chutes
+    COALESCE(acpt.gpu_weighted_chutes, 0) AS gpu_weighted_chutes
   FROM all_timepoints_for_all_miners atm
   LEFT JOIN active_chutes_per_timepoint acpt ON
     atm.time_point = acpt.time_point AND
     atm.miner_hotkey = acpt.miner_hotkey
 )
--- Calculate average active chutes per miner across all time points
-SELECT miner_hotkey, AVG(active_chutes)::integer AS avg_active_chutes
+-- Calculate average GPU-weighted chutes per miner across all time points
+SELECT miner_hotkey, AVG(gpu_weighted_chutes)::integer AS avg_gpu_weighted_chutes
 FROM complete_dataset
 GROUP BY miner_hotkey
-ORDER BY avg_active_chutes DESC;
+ORDER BY avg_gpu_weighted_chutes DESC;
 """
 
 # Unique chute history.
@@ -143,7 +153,7 @@ UNIQUE_CHUTE_HISTORY_QUERY = (
         "SELECT miner_hotkey, AVG", "SELECT miner_hotkey, time_point::text, AVG"
     )
     .replace("GROUP BY miner_hotkey", "GROUP BY miner_hotkey, time_point")
-    .replace("ORDER BY avg_active_chutes DESC", "ORDER BY miner_hotkey ASC, time_point DESC")
+    .replace("ORDER BY avg_gpu_weighted_chutes DESC", "ORDER BY miner_hotkey ASC, time_point DESC")
     .replace(
         "FROM complete_dataset",
         "FROM complete_dataset WHERE miner_hotkey IN (SELECT hotkey FROM metagraph_nodes WHERE netuid = 64)",
