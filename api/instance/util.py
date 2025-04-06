@@ -95,7 +95,7 @@ class LeastConnManager:
             random.shuffle(grouped_by_count[count])
 
         # Prefix aware routing for LLM requests.
-        if prefixes:
+        if prefixes and random.random() <= 0.75:
             likely_cached = set([])
             for size, prefix_hash in prefixes:
                 try:
