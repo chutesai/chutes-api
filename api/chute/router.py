@@ -206,6 +206,23 @@ async def list_chutes(
     return result
 
 
+@router.get("/gpu_count_history")
+async def get_gpu_count_history():
+    async with get_session(readonly=True) as session:
+        results = (
+            (
+                await session.execute(
+                    text(
+                        "select chute_id, max((node_selector->>'gpu_count')::int) AS gpu_count from chute_history group by chute_id"
+                    )
+                )
+            )
+            .unique()
+            .all()
+        )
+        return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
+
+
 @cache(expire=60)
 @router.get("/code/{chute_id}")
 async def get_chute_code(
@@ -838,20 +855,3 @@ async def update_common_attributes(
     await db.commit()
     await db.refresh(chute)
     return chute
-
-
-@router.get("/gpu_count_history")
-async def get_gpu_count_history():
-    async with get_session(readonly=True) as session:
-        results = (
-            (
-                await session.execute(
-                    text(
-                        "select chute_id, max((node_selector->>'gpu_count')::int) AS gpu_count from chute_history group by chute_id"
-                    )
-                )
-            )
-            .unique()
-            .all()
-        )
-        return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
