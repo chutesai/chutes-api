@@ -847,11 +847,11 @@ async def get_gpu_count_history():
             (
                 await session.execute(
                     text(
-                        "select chute_id, version, max((node_selector->>'gpu_count')::int) AS gpu_count from chute_history group by chute_id, version"
+                        "select chute_id, max((node_selector->>'gpu_count')::int) AS gpu_count from chute_history group by chute_id"
                     )
                 )
             )
             .unique()
             .all()
         )
-        return [dict(zip(["chute_id", "version", "gpu_count"], row)) for row in results]
+        return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
