@@ -174,3 +174,54 @@ UNIQUE_CHUTE_HISTORY_QUERY = (
         "FROM complete_dataset WHERE miner_hotkey IN (SELECT hotkey FROM metagraph_nodes WHERE netuid = 64)",
     )
 )
+
+# Utilization ratio for busiest chutes.
+UTILIZATION_RATIO_QUERY = """
+WITH instance_spans AS (
+  SELECT
+    miner_hotkey, instance_id,
+    MAX(completed_at) - MIN(started_at) as total_active_time,
+    SUM(completed_at - started_at) AS total_processing_time
+  FROM invocations
+  WHERE started_at >= now() - INTERVAL '7 days'
+  AND error_message IS NULL AND completed_at IS NOT NULL
+  GROUP BY miner_hotkey, instance_id
+),
+instance_metrics AS (
+  SELECT
+    miner_hotkey, instance_id,
+    EXTRACT(EPOCH FROM total_active_time) AS total_active_seconds,
+    EXTRACT(EPOCH FROM total_processing_time) AS total_processing_seconds,
+    CASE
+      WHEN EXTRACT(EPOCH FROM total_active_time) > 0
+      THEN ROUND(
+        (EXTRACT(EPOCH FROM total_processing_time) /
+         EXTRACT(EPOCH FROM total_active_time))::numeric,
+        2
+      )
+      ELSE 0
+    END AS busy_ratio
+  FROM instance_spans
+  JOIN metagraph_nodes mn ON instance_spans.miner_hotkey = mn.hotkey
+),
+ranked_instances AS (
+  SELECT
+    miner_hotkey, instance_id,
+    total_active_seconds, total_processing_seconds, busy_ratio,
+    ROW_NUMBER() OVER (PARTITION BY miner_hotkey ORDER BY busy_ratio DESC) AS rank
+  FROM instance_metrics WHERE total_active_seconds >= 3600
+),
+top_instances AS (
+  SELECT
+    miner_hotkey, instance_id,
+    total_active_seconds, total_processing_seconds, busy_ratio
+  FROM ranked_instances
+  WHERE rank <= 3
+)
+SELECT
+  miner_hotkey,
+  ROUND(AVG(busy_ratio)::numeric, 4) AS avg_top_busy_ratio
+FROM top_instances
+GROUP BY miner_hotkey
+ORDER BY avg_top_busy_ratio DESC;
+"""

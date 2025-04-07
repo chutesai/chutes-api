@@ -24,6 +24,7 @@ from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 from api.metasync import get_scoring_data, get_miner_by_hotkey, MetagraphNode
+from metasync.constants import UTILIZATION_RATIO_QUERY
 
 router = APIRouter()
 
@@ -323,3 +324,25 @@ async def get_metagraph():
             .scalars()
             .all()
         )
+
+
+@router.get("/utilization")
+async def get_utilization(hotkey: Optional[str] = None, request: Request = None):
+    cache_key = "utilscore".encode()
+    result = None
+    if request:
+        cached = await settings.memcache.get(cache_key)
+        if cached:
+            result = json.loads(cached)
+    if not result:
+        async with get_session(readonly=True) as session:
+            result = {
+                hotkey: float(utilization)
+                for hotkey, utilization in (await session.execute(text(UTILIZATION_RATIO_QUERY)))
+                .unique()
+                .all()
+            }
+            await settings.memcache.set(cache_key, json.dumps(result))
+    if hotkey:
+        return {hotkey: result.get(hotkey)}
+    return result
