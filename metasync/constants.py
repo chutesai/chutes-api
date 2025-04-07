@@ -79,7 +79,7 @@ instances_with_success AS (
         AND confirmed_at IS NOT NULL
     )
 ),
--- Get all unique miner_hotkeys from instance_audit
+-- Get all unique miner_hotkeys from instance_audit relevant to the network
 all_miners AS (
   SELECT DISTINCT ia.miner_uid, ia.miner_hotkey
   FROM instance_audit ia
@@ -102,12 +102,27 @@ active_instances_per_timepoint AS (
     ia.instance_id = iws.instance_id
   WHERE mn.netuid = 64 AND mn.node_id >= 0
 ),
--- Calculate GPU-weighted chute count per miner per time point
+-- Pre-calculate the maximum historical GPU count for each chute from chute_history
+chute_max_gpu_history AS (
+  SELECT
+    ch.chute_id,
+    -- Find the maximum gpu_count recorded in history for this chute
+    -- Ensure the value extracted is actually a number before casting
+    MAX(CASE
+          WHEN jsonb_typeof(ch.node_selector->'gpu_count') = 'number'
+          THEN (ch.node_selector->>'gpu_count')::integer
+          ELSE NULL -- Ignore non-numeric values
+        END) AS max_gpu_count
+  FROM chute_history ch
+  WHERE ch.node_selector ? 'gpu_count'
+  GROUP BY ch.chute_id
+),
+-- Calculate GPU-weighted chute count per miner per time point using historical max GPU count
 active_chutes_per_timepoint AS (
   SELECT
     aipt.time_point,
     aipt.miner_hotkey,
-    SUM(COALESCE((c.node_selector->>'gpu_count')::integer, 1)) AS gpu_weighted_chutes
+    SUM(COALESCE(cmgh.max_gpu_count, 1)) AS gpu_weighted_chutes
   FROM (
     -- Get distinct chute_ids per time point and miner
     SELECT DISTINCT
@@ -116,9 +131,9 @@ active_chutes_per_timepoint AS (
       chute_id
     FROM active_instances_per_timepoint
   ) aipt
-  -- Join with chutes table to get the node_selector field
-  JOIN chutes c ON
-    aipt.chute_id = c.chute_id
+  -- LEFT JOIN with the pre-calculated max GPU count per chute from history
+  LEFT JOIN chute_max_gpu_history cmgh ON
+    aipt.chute_id = cmgh.chute_id
   GROUP BY aipt.time_point, aipt.miner_hotkey
 ),
 -- Create a cross join of all time points with all miners
