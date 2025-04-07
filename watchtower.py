@@ -602,7 +602,7 @@ async def increment_soft_fail(instance, chute):
     if not await settings.memcache.get(fail_key):
         await settings.memcache.set(fail_key, b"0", exptime=3600)
     fail_count = await settings.memcache.incr(fail_key)
-    if fail_count >= 3:
+    if fail_count >= 2:
         logger.warning(
             f"Instance {instance.instance_id} "
             f"miner {instance.miner_hotkey} "
@@ -688,8 +688,8 @@ async def check_all_chutes():
     if chute_ids and isinstance(chute_ids[0], tuple):
         chute_ids = [chute_id[0] for chute_id in chute_ids]
     chute_ids = list(sorted(chute_ids))
-    for i in range(0, len(chute_ids), 4):
-        batch = chute_ids[i : i + 4]
+    for i in range(0, len(chute_ids), 8):
+        batch = chute_ids[i : i + 8]
         logger.info(f"Initializing check of chutes: {batch}")
         await asyncio.gather(*[check_chute(chute_id) for chute_id in batch])
     delta = int(time.time()) - started_at
