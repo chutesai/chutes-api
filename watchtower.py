@@ -973,7 +973,7 @@ async def generate_invocation_history_metrics_loop():
             await asyncio.sleep(300)
 
 
-async def remote_disproportionate_new_chutes():
+async def remove_disproportionate_new_chutes():
     """
     Remove chutes that are new and have disproportionate requests to one miner.
     """
