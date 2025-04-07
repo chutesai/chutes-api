@@ -13,7 +13,7 @@ from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
-from sqlalchemy import or_, exists, func
+from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -37,7 +37,7 @@ from api.image.schemas import Image
 from api.image.util import get_image_by_id_or_name
 
 # XXX from api.instance.util import discover_chute_targets
-from api.database import get_db_session
+from api.database import get_db_session, get_session
 from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
@@ -838,3 +838,20 @@ async def update_common_attributes(
     await db.commit()
     await db.refresh(chute)
     return chute
+
+
+@router.get("/gpu_count_history")
+async def get_gpu_count_history():
+    async with get_session(readonly=True) as session:
+        results = (
+            (
+                await session.execute(
+                    text(
+                        "select chute_id, max((node_selector->>'gpu_count')::int) AS gpu_count from chute_history group by chute_id"
+                    )
+                )
+            )
+            .unique()
+            .all()
+        )
+        return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
