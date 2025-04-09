@@ -499,6 +499,8 @@ async def _invoke(
     ):
         body_target = request_body["json"]
     _request_hash = None
+    user_dupe_count = 0
+    total_dupe_count = 0
     try:
         raw_dump = json.dumps(body_target).decode()
         prompt_dump = None
@@ -538,13 +540,46 @@ async def _invoke(
             if value is None:
                 await settings.memcache.set(req_key, b"0")
             count = await settings.memcache.incr(req_key, 1)
+            await settings.memcache.touch(req_key, exptime=60 * 60 * 3)
             if count > 1 and _hash == _request_hash:
                 logger.info(f"Duplicate prompt received: {chute.name} {_hash} {count=}")
+                total_dupe_count = count
+
+                # Check for user specific spam.
+                ureq_key = f"userreq:{current_user.user_id}{_hash}".encode()
+                value = await settings.memcache.get(ureq_key)
+                if value is None:
+                    await settings.memcache.set(ureq_key, b"0")
+                user_dupe_count = await settings.memcache.incr(ureq_key, 1)
+                await settings.memcache.touch(ureq_key, 60 * 60 * 3)
+
     except Exception as exc:
         logger.warning(f"Error updating request hash tracking: {exc}")
 
     # Handle cacheable requests.
-    enable_cache = request.headers.get("X-Enable-Cache")
+    enable_cache = request.headers.get("X-Enable-Cache", "false").lower() in ("1", "true", "yes")
+    if total_dupe_count >= 1500:
+        logger.warning(f"REQSPAM: {total_dupe_count=} for {_request_hash=} on {chute.name=}")
+        # enable_cache = True
+
+    # And user spam.
+    if user_dupe_count >= 1000 and current_user.user_id not in [
+        "8930c58d-00f6-57d3-bc62-156eb8b73026",
+        "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f",
+        "376536e8-674b-5e6f-b36e-c9168f0bf4a7",
+        "b6bb1347-6ea5-556f-8b23-50b124f3ffc8",
+        "5682c3e0-3635-58f7-b7f5-694962450dfc",
+        "2104acf4-999e-5452-84f1-de82de35a7e7",
+        "18c244ab-8a2e-5767-ae0e-5d20b50d05b5",
+    ]:
+        logger.warning(
+            f"USERSPAM: {current_user.username} sent {user_dupe_count} requests for {chute.name}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Stop spamming please.",
+        )
+
     request_hash = None
     if (
         (

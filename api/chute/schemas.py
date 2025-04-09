@@ -254,7 +254,7 @@ class Chute(Base):
             public_path = cord.public_api_path
             if public_path:
                 if not isinstance(public_path, str) or not re.match(
-                    r"^(/[a-z][a-z0-9_]*)+$", public_path, re.I
+                    r"^(/[a-z][a-z0-9_-]*)+$", public_path, re.I
                 ):
                     raise ValueError(f"Invalid cord public path: {public_path}")
                 if cord.public_api_method not in ("GET", "POST"):

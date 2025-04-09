@@ -382,27 +382,35 @@ async def _deploy_chute(
         chute.chutes_version = image.chutes_version
         chute.updated_at = func.now()
     else:
-        chute = Chute(
-            chute_id=str(
-                uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}")
-            ),
-            image_id=image.image_id,
-            user_id=current_user.user_id,
-            name=chute_args.name,
-            tagline=chute_args.tagline,
-            readme=chute_args.readme,
-            tool_description=chute_args.tool_description,
-            logo_id=chute_args.logo_id if chute_args.logo_id else None,
-            code=chute_args.code,
-            filename=chute_args.filename,
-            ref_str=chute_args.ref_str,
-            version=version,
-            public=chute_args.public,
-            cords=chute_args.cords,
-            node_selector=chute_args.node_selector,
-            standard_template=chute_args.standard_template,
-            chutes_version=image.chutes_version,
-        )
+        try:
+            chute = Chute(
+                chute_id=str(
+                    uuid.uuid5(
+                        uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}"
+                    )
+                ),
+                image_id=image.image_id,
+                user_id=current_user.user_id,
+                name=chute_args.name,
+                tagline=chute_args.tagline,
+                readme=chute_args.readme,
+                tool_description=chute_args.tool_description,
+                logo_id=chute_args.logo_id if chute_args.logo_id else None,
+                code=chute_args.code,
+                filename=chute_args.filename,
+                ref_str=chute_args.ref_str,
+                version=version,
+                public=chute_args.public,
+                cords=chute_args.cords,
+                node_selector=chute_args.node_selector,
+                standard_template=chute_args.standard_template,
+                chutes_version=image.chutes_version,
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Validation failure: {exc}",
+            )
 
         # Generate a unique slug (subdomain).
         chute.slug = re.sub(
@@ -486,7 +494,7 @@ async def deploy_chute(
         if bad:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=json.dumps(response).encode(),
+                detail=json.dumps(response).decode(),
             )
     return await _deploy_chute(chute_args, db, current_user)
 

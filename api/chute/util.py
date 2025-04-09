@@ -871,7 +871,7 @@ async def get_vllm_models(request: Request):
     """
     Get the combined /v1/models return value for chutes that are public and belong to chutes user.
     """
-    cached = await settings.redis_client.get("vllm_models")
+    cached = await settings.redis_client.get("vllm_model_list")
     if cached:
         return json.loads(cached)
 
@@ -884,9 +884,7 @@ async def get_vllm_models(request: Request):
     )
     async def _get_models_data(chute):
         nonlocal request
-        cached = await settings.redis_client.get(
-            f"vllm_model_info:{chute.chute_id}:{chute.version}"
-        )
+        cached = await settings.redis_client.get(f"vllm_model_inf:{chute.chute_id}:{chute.version}")
         if cached:
             return json.loads(cached)
         async with get_session() as session:
@@ -913,7 +911,8 @@ async def get_vllm_models(request: Request):
             if chunk.startswith('data: {"result"'):
                 result = json.loads(chunk[6:])["result"]
         await settings.redis_client.set(
-            f"vllm_model_info:{chute.chute_id}:{chute.version}", json.dumps(result), ex=3600
+            f"vllm_model_inf:{chute.chute_id}:{chute.version}",
+            json.dumps(result),
         )
         return result
 
@@ -942,7 +941,7 @@ async def get_vllm_models(request: Request):
             logger.info(f"Trying to add to vllm models data: {info}")
             data = info["json"]["data"][0]
             model_data["data"].append(data)
-    await settings.redis_client.set("vllm_models", json.dumps(model_data), ex=300)
+    await settings.redis_client.set("vllm_model_list", json.dumps(model_data), ex=300)
     return model_data
 
 

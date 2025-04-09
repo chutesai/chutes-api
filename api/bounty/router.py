@@ -6,6 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy import text, select
+from sqlalchemy.orm import selectinload
 from api.chute.schemas import Chute
 from api.chute.response import ChuteResponse
 from api.database import get_session
@@ -35,6 +36,7 @@ async def list_bounties(
             .select_from(
                 Chute.__table__.join(text("bounties"), text("bounties.chute_id = chutes.chute_id"))
             )
+            .options(selectinload(Chute.instances))
             .order_by(text("bounties.bounty DESC"))
         )
         results = await session.execute(query)
