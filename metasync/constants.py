@@ -58,7 +58,7 @@ UNIQUE_CHUTE_AVERAGE_QUERY = """
 WITH time_series AS (
   SELECT
     generate_series(
-      date_trunc('hour', now() - INTERVAL '7 days'),
+      date_trunc('hour', now() - INTERVAL '{interval}'),
       date_trunc('hour', now()),
       INTERVAL '1 hour'
     ) AS time_point
@@ -176,6 +176,7 @@ UNIQUE_CHUTE_HISTORY_QUERY = (
 )
 
 # Utilization ratio for busiest chutes.
+UTILIZATION_THRESHOLD = 0.02
 UTILIZATION_RATIO_QUERY = """
 WITH instance_spans AS (
   SELECT
@@ -183,7 +184,7 @@ WITH instance_spans AS (
     MAX(completed_at) - MIN(started_at) as total_active_time,
     SUM(completed_at - started_at) AS total_processing_time
   FROM invocations
-  WHERE started_at >= now() - INTERVAL '7 days'
+  WHERE started_at >= now() - INTERVAL '{interval}'
   AND error_message IS NULL AND completed_at IS NOT NULL
   GROUP BY miner_hotkey, instance_id
 ),
@@ -220,8 +221,9 @@ top_instances AS (
 )
 SELECT
   miner_hotkey,
-  ROUND(AVG(busy_ratio)::numeric, 4) AS avg_top_busy_ratio
-FROM top_instances
+  ROUND(AVG(busy_ratio)::numeric, 6) AS avg_top_busy_ratio
+FROM top_instances ti
+JOIN metagraph_nodes mn ON mn.hotkey = ti.miner_hotkey AND mn.netuid = 64
 GROUP BY miner_hotkey
 ORDER BY avg_top_busy_ratio DESC;
 """

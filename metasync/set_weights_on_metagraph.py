@@ -18,8 +18,10 @@ from fiber.chain.chain_utils import query_substrate
 from metasync.constants import (
     UNIQUE_CHUTE_AVERAGE_QUERY,
     NORMALIZED_COMPUTE_QUERY,
+    UTILIZATION_RATIO_QUERY,
     SCORING_INTERVAL,
     FEATURE_WEIGHTS,
+    UTILIZATION_THRESHOLD,
 )
 
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
@@ -54,6 +56,7 @@ async def _get_weights_to_set(
 
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
+    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval=SCORING_INTERVAL))
 
     raw_compute_values = {}
     async with get_session() as session:
@@ -65,9 +68,16 @@ async def _get_weights_to_set(
 
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
+        utilization_result = await session.execute(utilization_query)
+
+        # Get the set of miners with less than useless utilization.
+        utilization = {hotkey: float(utilization) for hotkey, utilization in utilization_result}
 
         # Compute units, invocation counts, and bounties.
         for hotkey, invocation_count, bounty_count, compute_units in compute_result:
+            if (ut := utilization.get(hotkey, 0.0)) < UTILIZATION_THRESHOLD:
+                logger.warning(f"Miner {hotkey} has utilization ratio {ut}, zero score...")
+                continue
             raw_compute_values[hotkey] = {
                 "invocation_count": invocation_count,
                 "bounty_count": bounty_count,
@@ -77,14 +87,8 @@ async def _get_weights_to_set(
 
         # Average active unique chute counts.
         for miner_hotkey, average_active_chutes in unique_result:
-            # Should never be possible, but just in case...
             if miner_hotkey not in raw_compute_values:
-                raw_compute_values[miner_hotkey] = {
-                    "invocation_count": 0,
-                    "bounty_count": 0,
-                    "compute_units": 0,
-                    "unique_chute_count": 0,
-                }
+                continue
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
 
     # Logging.
