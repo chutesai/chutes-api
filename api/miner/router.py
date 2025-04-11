@@ -24,7 +24,7 @@ from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 from api.metasync import get_scoring_data, get_miner_by_hotkey, MetagraphNode
-from metasync.constants import UTILIZATION_RATIO_QUERY, SCORING_INTERVAL
+from metasync.constants import UTILIZATION_RATIO_QUERY
 
 router = APIRouter()
 
@@ -278,6 +278,11 @@ async def get_scores(hotkey: Optional[str] = None, request: Request = None):
         cached = await settings.memcache.get(b"miner_scores")
         if cached:
             rv = json.loads(cached)
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Waiting for cache to populate.",
+            )
     if not rv:
         rv = await get_scoring_data()
         await settings.memcache.set(b"miner_scores", json.dumps(rv), exptime=600)
@@ -339,9 +344,7 @@ async def get_utilization(hotkey: Optional[str] = None, request: Request = None)
             result = {
                 hotkey: float(utilization)
                 for hotkey, utilization in (
-                    await session.execute(
-                        text(UTILIZATION_RATIO_QUERY.format(interval=SCORING_INTERVAL))
-                    )
+                    await session.execute(text(UTILIZATION_RATIO_QUERY.format(interval="8 hours")))
                 )
                 .unique()
                 .all()
