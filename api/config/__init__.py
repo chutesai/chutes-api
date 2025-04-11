@@ -136,9 +136,9 @@ class Settings(BaseSettings):
     logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
 
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 20))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 30))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
-    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 60))
+    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 90))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.

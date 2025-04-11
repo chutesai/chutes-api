@@ -425,7 +425,6 @@ async def _invoke(
                 "min_p",
                 "top_p",
                 "top_k",
-                "response_format",
             ]:
                 request_body.pop(param, None)
             if (max_tokens := request_body.get("max_tokens")) is not None:
