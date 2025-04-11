@@ -412,7 +412,12 @@ async def _invoke(
 
         # SGLang chute we use for R1 uses the default overlap scheduler which does not support
         # these penalty params, and sampling params are causing crashes.
-        if chute.name in ("deepseek-ai/DeepSeek-R1", "deepseek-ai/DeepSeek-V3"):
+        if chute.name in (
+            "deepseek-ai/DeepSeek-R1",
+            "deepseek-ai/DeepSeek-V3",
+            "deepseek-ai/DeepSeek-V3-0324",
+            "deepseek-ai/DeepSeek-R1-Zero",
+        ):
             for param in [
                 "frequency_penalty",
                 "presence_penalty",
@@ -420,6 +425,7 @@ async def _invoke(
                 "min_p",
                 "top_p",
                 "top_k",
+                "response_format",
             ]:
                 request_body.pop(param, None)
             if (max_tokens := request_body.get("max_tokens")) is not None:
@@ -448,7 +454,7 @@ async def _invoke(
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
     async with get_session() as db:
-        manager = await get_chute_target_manager(db, chute.chute_id, max_wait=60)
+        manager = await get_chute_target_manager(db, chute.chute_id, max_wait=10)
     if not manager or not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(

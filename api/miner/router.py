@@ -24,7 +24,7 @@ from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 from api.metasync import get_scoring_data, get_miner_by_hotkey, MetagraphNode
-from metasync.constants import UTILIZATION_RATIO_QUERY
+from metasync.constants import UTILIZATION_RATIO_QUERY, SCORING_INTERVAL
 
 router = APIRouter()
 
@@ -338,7 +338,11 @@ async def get_utilization(hotkey: Optional[str] = None, request: Request = None)
         async with get_session(readonly=True) as session:
             result = {
                 hotkey: float(utilization)
-                for hotkey, utilization in (await session.execute(text(UTILIZATION_RATIO_QUERY)))
+                for hotkey, utilization in (
+                    await session.execute(
+                        text(UTILIZATION_RATIO_QUERY.format(interval=SCORING_INTERVAL))
+                    )
+                )
                 .unique()
                 .all()
             }

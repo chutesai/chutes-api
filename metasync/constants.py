@@ -102,27 +102,23 @@ active_instances_per_timepoint AS (
     ia.instance_id = iws.instance_id
   WHERE mn.netuid = 64 AND mn.node_id >= 0
 ),
--- Pre-calculate the maximum historical GPU count for each chute from chute_history
-chute_max_gpu_history AS (
-  SELECT
-    ch.chute_id,
-    -- Find the maximum gpu_count recorded in history for this chute
-    -- Ensure the value extracted is actually a number before casting
-    MAX(CASE
-          WHEN jsonb_typeof(ch.node_selector->'gpu_count') = 'number'
-          THEN (ch.node_selector->>'gpu_count')::integer
-          ELSE NULL -- Ignore non-numeric values
-        END) AS max_gpu_count
+-- Pre-calculate the most recent GPU count for each chute from chute_history
+chute_latest_gpu_history AS (
+  SELECT DISTINCT ON (ch.chute_id) -- Get only the latest record per chute_id
+      ch.chute_id,
+      (ch.node_selector->>'gpu_count')::integer AS latest_gpu_count
   FROM chute_history ch
   WHERE ch.node_selector ? 'gpu_count'
-  GROUP BY ch.chute_id
+    AND jsonb_typeof(ch.node_selector->'gpu_count') = 'number'
+  ORDER BY ch.chute_id, ch.created_at DESC
 ),
 -- Calculate GPU-weighted chute count per miner per time point using historical max GPU count
 active_chutes_per_timepoint AS (
   SELECT
     aipt.time_point,
     aipt.miner_hotkey,
-    SUM(COALESCE(cmgh.max_gpu_count, 1)) AS gpu_weighted_chutes
+    -- Sum the latest_gpu_count, defaulting to 1 if no valid history exists for the chute
+    SUM(COALESCE(clgh.latest_gpu_count, 1)) AS gpu_weighted_chutes
   FROM (
     -- Get distinct chute_ids per time point and miner
     SELECT DISTINCT
@@ -131,9 +127,9 @@ active_chutes_per_timepoint AS (
       chute_id
     FROM active_instances_per_timepoint
   ) aipt
-  -- LEFT JOIN with the pre-calculated max GPU count per chute from history
-  LEFT JOIN chute_max_gpu_history cmgh ON
-    aipt.chute_id = cmgh.chute_id
+  -- LEFT JOIN with the pre-calculated *latest* GPU count per chute from history
+  LEFT JOIN chute_latest_gpu_history clgh ON -- Join with the new CTE
+    aipt.chute_id = clgh.chute_id
   GROUP BY aipt.time_point, aipt.miner_hotkey
 ),
 -- Create a cross join of all time points with all miners
