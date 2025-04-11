@@ -208,18 +208,19 @@ async def list_chutes(
 
 @router.get("/gpu_count_history")
 async def get_gpu_count_history():
+    query = """
+        SELECT DISTINCT ON (chute_id)
+            chute_id,
+            (node_selector->>'gpu_count')::integer AS gpu_count
+        FROM chute_history
+        WHERE
+            node_selector ? 'gpu_count'
+            AND jsonb_typeof(node_selector->'gpu_count') = 'number'
+        ORDER BY
+            chute_id, created_at DESC
+    """
     async with get_session(readonly=True) as session:
-        results = (
-            (
-                await session.execute(
-                    text(
-                        "select chute_id, max((node_selector->>'gpu_count')::int) AS gpu_count from chute_history group by chute_id"
-                    )
-                )
-            )
-            .unique()
-            .all()
-        )
+        results = (await session.execute(text(query))).unique().all()
         return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
 
 
