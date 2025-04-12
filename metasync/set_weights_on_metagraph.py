@@ -56,7 +56,7 @@ async def _get_weights_to_set(
 
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval=SCORING_INTERVAL))
+    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
 
     raw_compute_values = {}
     async with get_session() as session:
