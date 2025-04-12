@@ -33,7 +33,7 @@ async def get_miner_by_hotkey(hotkey, db):
 async def get_scoring_data():
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval=SCORING_INTERVAL))
+    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
     raw_compute_values = {}
     async with get_session() as session:
         compute_result = await session.execute(compute_query)
