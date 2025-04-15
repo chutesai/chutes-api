@@ -36,6 +36,10 @@ async def get_scoring_data():
     utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
     raw_compute_values = {}
     async with get_session() as session:
+        metagraph_nodes = await session.execute(
+            text("SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = 64 AND node_id >= 0")
+        )
+        hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
         utilization_result = await session.execute(utilization_query)
@@ -65,10 +69,29 @@ async def get_scoring_data():
         hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
         for hotkey, row in raw_compute_values.items()
     }
-    final_scores = {
+    pre_final_scores = {
         hotkey: sum(norm_value * FEATURE_WEIGHTS[key] for key, norm_value in metrics.items())
         for hotkey, metrics in normalized_values.items()
     }
+
+    # Punish multi-uid miners.
+    sorted_hotkeys = sorted(
+        pre_final_scores.keys(), key=lambda h: pre_final_scores[h], reverse=True
+    )
+    penalized_scores = {}
+    coldkey_used = set()
+    for hotkey in sorted_hotkeys:
+        coldkey = hot_cold_map[hotkey]
+        if coldkey in coldkey_used:
+            penalized_scores[hotkey] = 0.0
+        else:
+            penalized_scores[hotkey] = pre_final_scores[hotkey]
+        coldkey_used.add(coldkey)
+
+    # Normalize final scores by sum of penalized scores, just to make the incentive value match nicely.
+    total = sum([val for hk, val in penalized_scores.items()])
+    final_scores = {key: score / total for key, score in penalized_scores.items() if score > 0}
+
     return {
         "raw_values": raw_compute_values,
         "totals": totals,

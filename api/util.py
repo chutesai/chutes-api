@@ -88,7 +88,10 @@ def get_signing_message(
     elif payload_hash:
         return f"{hotkey}:{nonce}:{payload_hash}"
     else:
-        raise ValueError("Either payload_str or purpose must be provided")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Either payload_str or purpose must be provided",
+        )
 
 
 def is_invalid_ip(ip: IPv4Address | IPv6Address) -> bool:
