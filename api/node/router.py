@@ -179,6 +179,7 @@ async def create_nodes(
             f"{node.node_id} (used {node.count} times recently)" for node in hopping_nodes
         ]
         error_message = "Detected GPU hotkey hopping for nodes: " + ", ".join(nodes_details)
+        logger.error(f"GPUHOPPER: {error_message} {hotkey=}")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=error_message,
