@@ -6,6 +6,7 @@ import uuid
 import time
 import secrets
 import hashlib
+from loguru import logger
 from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel
@@ -256,6 +257,7 @@ async def check_username(username: str, db: AsyncSession = Depends(get_db_sessio
 )
 async def register(
     user_args: UserRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(raise_not_found=False)),
     hotkey: str = Header(..., description="The hotkey of the user", alias=HOTKEY_HEADER),
@@ -263,6 +265,18 @@ async def register(
     """
     Register a user.
     """
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+    attempts = await settings.redis_client.get(f"user_signup:{actual_ip}")
+    if attempts and int(attempts) > 3:
+        logger.warning(
+            f"Attempted multiple registrations from the same IP: {actual_ip} {attempts=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too may registration requests.",
+        )
+
     if current_user:
         # NOTE: Change when we allow register without a hotkey
         raise HTTPException(
@@ -287,6 +301,10 @@ async def register(
     db.add(user)
     await db.commit()
     await db.refresh(user)
+
+    await settings.redis_client.incr(f"user_signup:{actual_ip}")
+    await settings.redis_client.expire(f"user_signup:{actual_ip}", 24 * 60 * 60)
+
     return _registration_response(user, fingerprint)
 
 
@@ -296,12 +314,19 @@ async def register(
 )
 async def admin_create_user(
     user_args: AdminUserRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
     """
     Create a new user manually from an admin account, no bittensor stuff necessary.
     """
+    actual_ip = (
+        request.headers.get("CF-Connecting-IP", request.headers.get("X-Forwarded-For"))
+        or request.client.host
+    )
+    actual_ip = actual_ip.split(",")[0]
+    logger.info(f"USERCREATION: {actual_ip} username={user_args.username}")
     if not current_user.has_role(Permissioning.create_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

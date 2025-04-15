@@ -214,12 +214,24 @@ top_instances AS (
     total_active_seconds, total_processing_seconds, busy_ratio
   FROM ranked_instances
   WHERE rank <= 3
+),
+instance_counts AS (
+  SELECT
+    miner_hotkey,
+    COUNT(*) AS instance_count
+  FROM top_instances
+  GROUP BY miner_hotkey
 )
 SELECT
-  miner_hotkey,
-  ROUND(AVG(busy_ratio)::numeric, 6) AS avg_top_busy_ratio
-FROM top_instances ti
-JOIN metagraph_nodes mn ON mn.hotkey = ti.miner_hotkey AND mn.netuid = 64
-GROUP BY miner_hotkey
-ORDER BY avg_top_busy_ratio DESC;
+  mn.hotkey AS miner_hotkey,
+  CASE
+    WHEN ic.instance_count >= 3 THEN ROUND(MIN(ti.busy_ratio)::numeric, 6)
+    ELSE 0
+  END AS min_top_busy_ratio
+FROM metagraph_nodes mn
+LEFT JOIN top_instances ti ON mn.hotkey = ti.miner_hotkey
+LEFT JOIN instance_counts ic ON mn.hotkey = ic.miner_hotkey
+WHERE mn.netuid = 64
+GROUP BY mn.hotkey, ic.instance_count
+ORDER BY min_top_busy_ratio DESC;
 """
