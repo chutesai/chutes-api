@@ -353,3 +353,70 @@ async def get_utilization(hotkey: Optional[str] = None, request: Request = None)
     if hotkey:
         return {hotkey: result.get(hotkey)}
     return result
+
+
+@router.get("/utilization_instances")
+async def get_utilization_instances(hotkey: Optional[str] = None, request: Request = None):
+    query = """WITH instance_spans AS (
+  SELECT
+    miner_hotkey, instance_id, chute_id,
+    MAX(completed_at) - MIN(started_at) as total_active_time,
+    SUM(completed_at - started_at) AS total_processing_time
+  FROM invocations
+  WHERE started_at >= now() - INTERVAL '8 hours'
+  AND error_message IS NULL AND completed_at IS NOT NULL
+  GROUP BY miner_hotkey, instance_id, chute_id
+),
+instance_metrics AS (
+  SELECT
+    miner_hotkey, instance_id, chute_id,
+    EXTRACT(EPOCH FROM total_active_time) AS total_active_seconds,
+    EXTRACT(EPOCH FROM total_processing_time) AS total_processing_seconds,
+    CASE
+      WHEN EXTRACT(EPOCH FROM total_active_time) > 0
+      THEN ROUND(
+        (EXTRACT(EPOCH FROM total_processing_time) /
+         EXTRACT(EPOCH FROM total_active_time))::numeric,
+        2
+      )
+      ELSE 0
+    END AS busy_ratio
+  FROM instance_spans
+  JOIN metagraph_nodes mn ON instance_spans.miner_hotkey = mn.hotkey
+),
+ranked_instances AS (
+  SELECT
+    miner_hotkey, instance_id, chute_id,
+    total_active_seconds, total_processing_seconds, busy_ratio,
+    ROW_NUMBER() OVER (PARTITION BY miner_hotkey ORDER BY busy_ratio DESC) AS rank
+  FROM instance_metrics WHERE total_active_seconds >= 3600
+),
+top_instances AS (
+  SELECT
+    miner_hotkey, instance_id, chute_id,
+    total_active_seconds, total_processing_seconds, busy_ratio
+  FROM ranked_instances
+  WHERE rank <= 3
+)
+SELECT * FROM top_instances ORDER BY miner_hotkey ASC;
+"""
+    cache_key = "utilinst".encode()
+    result = None
+    if request:
+        cached = await settings.memcache.get(cache_key)
+        if cached:
+            result = json.loads(cached)
+    if not result:
+        async with get_session(readonly=True) as session:
+            result = {}
+            raw_results = await session.execute(text(query))
+            for hotkey, instance_id, chute_id, _, __, busy_ratio in raw_results:
+                if hotkey not in result:
+                    result[hotkey] = []
+                result[hotkey].append(
+                    {"instance_id": instance_id, "ratio": float(busy_ratio), "chute_id": chute_id}
+                )
+                await settings.memcache.set(cache_key, json.dumps(result))
+    if hotkey:
+        return {hotkey: result.get(hotkey)}
+    return result
