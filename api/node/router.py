@@ -162,6 +162,28 @@ async def create_nodes(
             detail=f"Nodes already exist in inventory, please contact chutes team to resolve: {nodes}",
         )
 
+    # GPU hoppers...
+    query = """
+        SELECT node_id, count(*) AS count
+        FROM node_history
+        WHERE
+            created_at >= NOW() - INTERVAL '24 hours'
+            AND node_id = ANY(:node_uuids)
+        GROUP BY node_id
+        HAVING COUNT(*) > 2
+        ORDER BY count DESC;
+    """
+    hopping_nodes = (await db.execute(text(query), {"node_uuids": node_uuids})).all()
+    if hopping_nodes:
+        nodes_details = [
+            f"{node.node_id} (used {node.count} times recently)" for node in hopping_nodes
+        ]
+        error_message = "Detected GPU hotkey hopping for nodes: " + ", ".join(nodes_details)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=error_message,
+        )
+
     # Random seed.
     seed = random.randint(1, 2**63 - 1)
     nodes = []
