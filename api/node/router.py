@@ -164,13 +164,13 @@ async def create_nodes(
 
     # GPU hoppers...
     query = """
-        SELECT node_id, count(*) AS count
+        SELECT node_id, COUNT(DISTINCT(miner_hotkey)) AS miner_count, count(*) AS count
         FROM node_history
         WHERE
             created_at >= NOW() - INTERVAL '24 hours'
             AND node_id = ANY(:node_uuids)
         GROUP BY node_id
-        HAVING COUNT(*) > 2
+        HAVING COUNT(*) > 2 AND COUNT(DISTINCT(miner_hotkey)) >= 2
         ORDER BY count DESC;
     """
     hopping_nodes = (await db.execute(text(query), {"node_uuids": node_uuids})).all()
