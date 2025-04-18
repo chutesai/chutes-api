@@ -352,6 +352,7 @@ async def _invoke(
         and current_user.user_id != "2104acf4-999e-5452-84f1-de82de35a7e7"
         and not request.state.squad_request
         and not override
+        and origin_ip != "2a06:98c0:3600::103"
     ):
         await ip_rate_limit(
             current_user, origin_ip, settings.ip_rate_limit_count, settings.ip_rate_limit_window

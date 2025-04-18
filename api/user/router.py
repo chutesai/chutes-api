@@ -116,8 +116,9 @@ async def admin_balance_change(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user.user_id}"
         )
     user.balance += balance_req.amount
+    event_id = str(uuid.uuid4())
     event_data = AdminBalanceChange(
-        event_id=str(uuid.uuid4()),
+        event_id=event_id,
         user_id=user.user_id,
         amount=balance_req.amount,
         reason=balance_req.reason,
@@ -126,7 +127,7 @@ async def admin_balance_change(
     db.add(event_data)
     await db.commit()
     await db.refresh(user)
-    return {"new_balance": user.balance}
+    return {"new_balance": user.balance, "event_id": event_id}
 
 
 @router.get("/me", response_model=SelfResponse)

@@ -285,7 +285,7 @@ async def get_scores(hotkey: Optional[str] = None, request: Request = None):
             )
     if not rv:
         rv = await get_scoring_data()
-        await settings.memcache.set(b"miner_scores", json.dumps(rv), exptime=600)
+        await settings.memcache.set(b"miner_scores", json.dumps(rv))
     if hotkey:
         for key in rv:
             if key != "totals":
