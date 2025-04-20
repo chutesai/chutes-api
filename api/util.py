@@ -218,13 +218,13 @@ async def _limit_dev_activity(session, user, maximum, clazz):
         )
 
 
-async def limit_deployments(session, user, maximum: int = 6):
+async def limit_deployments(session, user, maximum: int = 9):
     from api.chute.schemas import ChuteHistory
 
     await _limit_dev_activity(session, user, maximum, ChuteHistory)
 
 
-async def limit_images(session, user, maximum: int = 3):
+async def limit_images(session, user, maximum: int = 12):
     from api.image.schemas import ImageHistory
 
     await _limit_dev_activity(session, user, maximum, ImageHistory)
