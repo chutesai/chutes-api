@@ -248,6 +248,18 @@ async def get_chute_code(
     return Response(content=chute.code, media_type="text/plain")
 
 
+@router.get("/utilization")
+async def get_chute_utilization():
+    """
+    Get chute utilization data.
+    """
+    async with get_session(readonly=True) as session:
+        results = await session.execute(text("SELECT * FROM chute_utilization"))
+        rows = results.mappings().all()
+        utilization_data = [dict(row) for row in rows]
+        return utilization_data
+
+
 @cache(expire=60)
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(

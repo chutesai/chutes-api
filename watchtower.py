@@ -22,6 +22,7 @@ import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
+from api.chute.util import update_chute_utilization
 from api.invocation.util import generate_invocation_history_metrics
 
 
@@ -1043,13 +1044,14 @@ async def main():
     while True:
         ### Only enabled in clean-up mode.
         # await remove_bad_chutes()
-        if index % 10 == 0:
-            ### Only enabled in clean-up mode.
-            # await remove_undeployable_chutes()
-            await report_short_lived_chutes()
+        # if index % 10 == 0:
+        #     await remove_undeployable_chutes()
+        #     await report_short_lived_chutes()
         await purge_unverified()
         await check_all_chutes()
-        await asyncio.sleep(90)
+        await update_chute_utilization()
+        await asyncio.sleep(30)
+
         index += 1
 
 
