@@ -671,7 +671,7 @@ async def _invoke(
                                 pipeline.hset(key, "timestamp", int(time.time()))
                                 await pipeline.execute()
                                 logger.info(
-                                    f"LLMCACHE Deducted (soon) ${balance_used:.12f} from {current_user.user_id=}"
+                                    f"LLMCACHE Deducted (soon) ${balance_used:.12f} from {current_user.user_id=} for {chute.chute_id=} {chute.name}"
                                 )
 
                     except Exception as exc:

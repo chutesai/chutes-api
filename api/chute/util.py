@@ -749,10 +749,10 @@ async def invoke(
                                         f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
                                     )
 
-                            default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600
+                            default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600.0
                             default_balance_used -= default_balance_used * discount
 
-                            if balance_used is None:
+                            if not balance_used:
                                 balance_used = default_balance_used
                                 logger.info(
                                     f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
@@ -765,8 +765,10 @@ async def invoke(
                     pipeline.hincrby(key, "count", 1)
                     pipeline.hset(key, "timestamp", int(time.time()))
                     await pipeline.execute()
-                    if balance_used > 0:
-                        logger.info(f"Deducted (soon) ${balance_used:.12f} from {user_id=}")
+                    if balance_used:
+                        logger.info(
+                            f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"
+                        )
 
                     await session.commit()
 
