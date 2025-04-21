@@ -396,7 +396,7 @@ top_instances AS (
     miner_hotkey, instance_id, chute_id,
     total_active_seconds, total_processing_seconds, busy_ratio
   FROM ranked_instances
-  WHERE rank <= 3
+  WHERE rank <= 6
 )
 SELECT * FROM top_instances ORDER BY miner_hotkey ASC;
 """
