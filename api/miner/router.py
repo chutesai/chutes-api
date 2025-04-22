@@ -10,7 +10,7 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.future import select
 from sqlalchemy.orm import class_mapper
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from pydantic.fields import ComputedFieldInfo
 import api.database.orms  # noqa
 from api.user.schemas import User
@@ -119,10 +119,12 @@ async def get_full_inventory(
 @router.get("/metrics/")
 async def metrics(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    interval: Literal["past_hour", "past_day"] | None = None,
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
     async def _stream():
-        async for metric in gather_metrics():
+        interval = "1 day" if interval == "past_day" else "1 hour"
+        async for metric in gather_metrics(interval):
             yield f"data: {json.dumps(metric).decode()}\n\n"
 
     return StreamingResponse(_stream())
