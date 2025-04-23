@@ -48,6 +48,9 @@ async def create_instance(
     if chute.rolling_update:
         limit = chute.rolling_update.permitted.get(hotkey, 0)
         if not limit:
+            logger.warning(
+                f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
+            )
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
@@ -78,6 +81,9 @@ async def create_instance(
                 .first()
             )
             if count_result["total_count"] >= UNDERUTILIZED_CAP or count_result.hotkey_count:
+                logger.warning(
+                    f"SCALELOCK: chute {chute_id=} {chute.name} is currently capped: {count_result}"
+                )
                 raise HTTPException(
                     status_code=status.HTTP_423_LOCKED,
                     detail=f"Chute {chute_id} is underutilized and either at capacity or you already have an instance.",
