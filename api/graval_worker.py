@@ -746,6 +746,15 @@ async def handle_rolling_update(chute_id: str, version: str):
             logger.info(f"No instances to update? {chute_id=}")
             return
 
+    # Calculate sleep per instance so we finish within 45 minutes.
+    max_duration = 60 * 45
+    sleep_per_instance = int(max_duration / len(chute.instance))
+    if not sleep_per_instance:
+        sleep_per_instance = 1
+
+    # Cap sleep time per instance to 2 minutes.
+    sleep_per_instance = min(120, sleep_per_instance)
+
     # Iterate through instances slowly to avoid crashing the entire chute.
     logger.info(
         f"Triggering update for {len(chute.instances)} instances of {chute.chute_id=} {chute.name=}"
@@ -800,7 +809,7 @@ async def handle_rolling_update(chute_id: str, version: str):
             )
 
         # Wait before notifying the next miner.
-        await asyncio.sleep(180)
+        await asyncio.sleep(sleep_per_instance)
 
     # Once finished, clean up all instances still bound to the old version.
     async with get_session() as session:
@@ -822,23 +831,24 @@ async def handle_rolling_update(chute_id: str, version: str):
             .unique()
             .scalar_one_or_none()
         )
-        if chute:
-            for instance in chute.instances:
-                if instance.version != version:
-                    await session.delete(instance)
-                    event_data = {
-                        "reason": "instance_deleted",
-                        "message": f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
-                        "data": {
-                            "chute_id": instance.chute_id,
-                            "instance_id": instance.instance_id,
-                            "miner_hotkey": instance.miner_hotkey,
-                        },
-                        "filter_recipients": [instance.miner_hotkey],
-                    }
-                    asyncio.create_task(
-                        settings.redis_client.publish(
-                            "miner_broadcast", json.dumps(event_data).decode()
-                        )
+        if not chute:
+            return
+        for instance in chute.instances:
+            if instance.version != version:
+                await session.delete(instance)
+                event_data = {
+                    "reason": "instance_deleted",
+                    "message": f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
+                    "data": {
+                        "chute_id": instance.chute_id,
+                        "instance_id": instance.instance_id,
+                        "miner_hotkey": instance.miner_hotkey,
+                    },
+                    "filter_recipients": [instance.miner_hotkey],
+                }
+                asyncio.create_task(
+                    settings.redis_client.publish(
+                        "miner_broadcast", json.dumps(event_data).decode()
                     )
+                )
         await session.delete(rolling_update)

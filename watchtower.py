@@ -991,7 +991,7 @@ async def rolling_update_cleanup():
                     (
                         await session.execute(
                             select(RollingUpdate).where(
-                                RollingUpdate.started_at <= func.now() - timedelta(hours=2)
+                                RollingUpdate.started_at <= func.now() - timedelta(hours=1)
                             )
                         )
                     )
@@ -1010,16 +1010,17 @@ async def rolling_update_cleanup():
                 .scalar_one_or_none()
             )
             for chute in chutes:
-                if not chute.rolling_update:
-                    for instance in chute.instances:
-                        if instance.version != chute.version:
-                            await purge_and_notify(
-                                instance,
-                                reason=(
-                                    f"{instance.instance_id=} of {instance.miner_hotkey=} "
-                                    f"has an old version: {instance.version=} vs {chute.version=}"
-                                ),
-                            )
+                if chute.rolling_update:
+                    continue
+                for instance in chute.instances:
+                    if instance.version != chute.version:
+                        await purge_and_notify(
+                            instance,
+                            reason=(
+                                f"{instance.instance_id=} of {instance.miner_hotkey=} "
+                                f"has an old version: {instance.version=} vs {chute.version=}"
+                            ),
+                        )
 
         except Exception as exc:
             logger.error(f"Error cleaning up rolling updates: {exc}")
