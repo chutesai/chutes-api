@@ -14,9 +14,9 @@ from datetime import timedelta, datetime
 from api.config import settings
 from api.util import aes_encrypt, aes_decrypt
 from api.database import get_session
-from api.chute.schemas import Chute
+from api.chute.schemas import Chute, RollingUpdate
 from sqlalchemy import text, update, func, select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
@@ -625,8 +625,9 @@ async def check_chute(chute_id):
         if not chute:
             logger.warning(f"Chute not found: {chute_id=}")
             return
-    if chute.name == "stablediffusionapi-realistic-vision-v61":
-        return
+        if chute.rolling_update:
+            logger.waring(f"Chute has a rolling update in progress: {chute_id=}")
+            return
 
     # Ping test.
     instances = await load_chute_instances(chute.chute_id)
@@ -978,6 +979,52 @@ async def generate_invocation_history_metrics_loop():
             await asyncio.sleep(300)
 
 
+async def rolling_update_cleanup():
+    """
+    Continuously clean up any stale rolling updates.
+    """
+    while True:
+        try:
+            logger.info("Checking for rolling update cleanup...")
+            async with get_session() as session:
+                old_updates = (
+                    (
+                        await session.execute(
+                            select(RollingUpdate).where(
+                                RollingUpdate.started_at <= func.now() - timedelta(hours=2)
+                            )
+                        )
+                    )
+                    .unique()
+                    .scalars()
+                    .all()
+                )
+                for update in old_updates:
+                    await session.delete(update)
+            await session.commit()
+
+            # Clean up old versions.
+            chutes = (
+                (await session.execute(select(Chute).options(selectinload(Chute.instances))))
+                .unique()
+                .scalar_one_or_none()
+            )
+            for chute in chutes:
+                if not chute.rolling_update:
+                    for instance in chute.instances:
+                        if instance.version != chute.version:
+                            await purge_and_notify(
+                                instance,
+                                reason=(
+                                    f"{instance.instance_id=} of {instance.miner_hotkey=} "
+                                    f"has an old version: {instance.version=} vs {chute.version=}"
+                                ),
+                            )
+
+        except Exception as exc:
+            logger.error(f"Error cleaning up rolling updates: {exc}")
+
+
 async def remove_disproportionate_new_chutes():
     """
     Remove chutes that are new and have disproportionate requests to one miner.
@@ -1039,6 +1086,9 @@ async def main():
     # Metrics.
     asyncio.create_task(update_past_day_metrics())
     asyncio.create_task(generate_invocation_history_metrics_loop())
+
+    # Rolling update cleanup.
+    asyncio.create_task(rolling_update_cleanup())
 
     index = 0
     while True:
