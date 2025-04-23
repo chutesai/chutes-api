@@ -1000,30 +1000,41 @@ async def rolling_update_cleanup():
                     .all()
                 )
                 for update in old_updates:
+                    logger.warning(
+                        f"Found old/stale rolling update: {update.chute_id=} {update.started_at=}"
+                    )
                     await session.delete(update)
-            await session.commit()
+                if old_updates:
+                    await session.commit()
 
-            # Clean up old versions.
-            chutes = (
-                (await session.execute(select(Chute).options(selectinload(Chute.instances))))
-                .unique()
-                .scalar_one_or_none()
-            )
-            for chute in chutes:
-                if chute.rolling_update:
-                    continue
-                for instance in chute.instances:
-                    if instance.version != chute.version:
-                        await purge_and_notify(
-                            instance,
-                            reason=(
-                                f"{instance.instance_id=} of {instance.miner_hotkey=} "
-                                f"has an old version: {instance.version=} vs {chute.version=}"
-                            ),
-                        )
+                # Clean up old versions.
+                chutes = (
+                    (await session.execute(select(Chute).options(selectinload(Chute.instances))))
+                    .unique()
+                    .scalars()
+                    .all()
+                )
+                for chute in chutes:
+                    if chute.rolling_update:
+                        continue
+                    for instance in chute.instances:
+                        if instance.version and instance.version != chute.version:
+                            logger.warning(
+                                f"Would be deleting {instance.instance_id=} of {instance.miner_hotkey=} since {instance.version=} != {chute.version}"
+                            )
+
+                            # await purge_and_notify(
+                            #     instance,
+                            #     reason=(
+                            #         f"{instance.instance_id=} of {instance.miner_hotkey=} "
+                            #         f"has an old version: {instance.version=} vs {chute.version=}"
+                            #     ),
+                            # )
 
         except Exception as exc:
             logger.error(f"Error cleaning up rolling updates: {exc}")
+
+        await asyncio.sleep(60)
 
 
 async def remove_disproportionate_new_chutes():
