@@ -187,7 +187,7 @@ async def list_chutes(
     result = await db.execute(query)
     responses = []
     cord_refs = {}
-    for item in result.scalars().all():
+    for item in result.unique().scalars().all():
         chute_response = ChuteResponse.from_orm(item)
         cord_defs = json.dumps(item.cords).decode()
         if item.standard_template == "vllm":
@@ -366,13 +366,17 @@ async def _deploy_chute(
         )
     version = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{image.image_id}:{chute_args.code}"))
     chute = (
-        await db.execute(
-            select(Chute)
-            .where(Chute.name.ilike(chute_args.name))
-            .where(Chute.user_id == current_user.user_id)
-            .options(selectinload(Chute.instances))
+        (
+            await db.execute(
+                select(Chute)
+                .where(Chute.name.ilike(chute_args.name))
+                .where(Chute.user_id == current_user.user_id)
+                .options(selectinload(Chute.instances))
+            )
         )
-    ).scalar_one_or_none()
+        .unique()
+        .scalar_one_or_none()
+    )
     if chute and chute.version == version and chute.public == chute_args.public:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -822,7 +826,7 @@ async def invoke_(
         .where(Chute.chute_id == chute_id)
     )
     result = await db.execute(query)
-    chute = result.scalar_one_or_none()
+    chute = result.unique().scalar_one_or_none()
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
