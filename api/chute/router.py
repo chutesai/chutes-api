@@ -273,7 +273,7 @@ async def get_chute_utilization():
             )
             SELECT * FROM chute_utilization
             JOIN chute_details
-            ON instance_counts.chute_id = chute_utilization.chute_id;
+            ON chute_details.chute_id = chute_utilization.chute_id;
         """)
         results = await session.execute(query)
         rows = results.mappings().all()

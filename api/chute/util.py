@@ -238,7 +238,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     ).order_by((Chute.user_id == chute_user).desc())
 
     result = await db.execute(query)
-    return result.scalar_one_or_none()
+    return result.unique().scalar_one_or_none()
 
 
 @alru_cache(maxsize=100)
