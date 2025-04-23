@@ -51,7 +51,7 @@ async def create_instance(
         chute.rolling_update.permitted[hotkey] -= 1
 
     # Limit underutilized chutes.
-    lock_id = f"instance_lock:{chute_id}"
+    lock_id = uuid.uuid5(uuid.NAMESPACE_OID, f"instance_lock:{chute_id}").int & 0x7FFFFFFFFFFFFFFF
     try:
         await db.execute(text("SET lock_timeout = '30s'"))
         await db.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
