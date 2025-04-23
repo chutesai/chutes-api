@@ -46,6 +46,7 @@ class Instance(Base):
     host = Column(String, nullable=False)
     port = Column(Integer, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
+    version = Column(String, nullable=False)
     miner_uid = Column(Integer, nullable=False)
     miner_hotkey = Column(String, nullable=False)
     miner_coldkey = Column(String, nullable=False)

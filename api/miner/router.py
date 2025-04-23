@@ -136,10 +136,14 @@ async def get_chute(
 ):
     async with get_session() as db:
         chute = (
-            await db.execute(
-                select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+            (
+                await db.execute(
+                    select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+                )
             )
-        ).scalar_one_or_none()
+            .unique()
+            .scalar_one_or_none()
+        )
         if not chute:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
