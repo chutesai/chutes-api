@@ -191,6 +191,7 @@ async def _limit_dev_activity(session, user, maximum, clazz):
         user.username in ("chutes", "rayonlabs")
         or user.validator_hotkey
         or user.subnet_owner_hotkey
+        or user.user_id == "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4"
     ):
         return
 

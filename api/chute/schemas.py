@@ -183,6 +183,7 @@ class Chute(Base):
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
     logo = relationship("Logo", back_populates="chutes", lazy="joined")
+    rolling_update = relationship("RollingUpdate", back_populates="chute", lazy="joined")
     instances = relationship(
         "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
@@ -304,3 +305,14 @@ class ChuteHistory(Base):
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now())
     deleted_at = Column(DateTime, server_default=func.now())
+
+
+class RollingUpdate(Base):
+    __tablename__ = "rolling_updates"
+    chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
+    old_version = Column(String, nullable=False)
+    new_version = Column(String, nullable=False)
+    started_at = Column(DateTime, server_default=func.now())
+    permitted = Column(JSONB, nullable=False)
+
+    chute = relationship("Chute", back_populates="instances")

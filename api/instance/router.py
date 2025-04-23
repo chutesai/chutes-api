@@ -40,6 +40,16 @@ async def create_instance(
             detail=f"Chute {chute_id} not found",
         )
 
+    # Rolling update handling.
+    if chute.rolling_update:
+        limit = chute.rolling_update.permitted.get(hotkey, 0)
+        if not limit:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
+            )
+        chute.rolling_update.permitted[hotkey] -= 1
+
     # Limit underutilized chutes.
     lock_id = f"instance_lock:{chute_id}"
     try:
@@ -93,6 +103,7 @@ async def create_instance(
             host=instance_args.host,
             port=instance_args.port,
             chute_id=chute_id,
+            version=chute.version,
             miner_uid=miner.node_id,
             miner_hotkey=hotkey,
             miner_coldkey=miner.coldkey,

@@ -18,7 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from typing import Optional
-from api.chute.schemas import Chute, ChuteArgs, InvocationArgs, NodeSelector, ChuteUpdateArgs
+from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
+from api.chute.schemas import (
+    Chute,
+    ChuteArgs,
+    InvocationArgs,
+    NodeSelector,
+    ChuteUpdateArgs,
+    RollingUpdate,
+)
 from api.chute.codecheck import is_bad_code
 from api.chute.templates import (
     VLLMChuteArgs,
@@ -48,6 +56,7 @@ from api.constants import (
 from api.util import ensure_is_developer, rate_limit, limit_deployments
 from api.permissions import Permissioning
 from api.guesser import guesser
+from api.graval_worker import handle_rolling_update
 
 router = APIRouter()
 
@@ -254,9 +263,31 @@ async def get_chute_utilization():
     Get chute utilization data.
     """
     async with get_session(readonly=True) as session:
-        results = await session.execute(text("SELECT * FROM chute_utilization"))
+        query = text("""
+            WITH chute_details AS (
+              SELECT
+                chute_id,
+                (SELECT COUNT(*) FROM instances WHERE instances.chute_id = chutes.chute_id) AS live_instance_count,
+                EXISTS(SELECT FROM rolling_updates WHERE chute_id = chutes.chute_id) AS update_in_progress
+              FROM chutes
+            )
+            SELECT * FROM chute_utilization
+            JOIN chute_details
+            ON instance_counts.chute_id = chute_utilization.chute_id;
+        """)
+        results = await session.execute(query)
         rows = results.mappings().all()
         utilization_data = [dict(row) for row in rows]
+        for item in utilization_data:
+            item["instance_count"] = item.pop("live_instance_count")
+            if (
+                item["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD
+                and not item["total_rate_limit_errors"]
+                and item["instance_count"] >= UNDERUTILIZED_CAP
+            ):
+                item["scalable"] = False
+            else:
+                item["scalable"] = True
         return utilization_data
 
 
@@ -375,9 +406,26 @@ async def _deploy_chute(
 
     old_version = None
     if chute:
-        # Make sure we delete the old instances.
-        for instance in chute.instances:
-            await db.delete(instance)
+        # Create a rolling update object so we can gracefully restart/recreate.
+        permitted = {}
+        for inst in chute.instances:
+            if inst.miner_hotkey not in permitted:
+                permitted[inst.miner_hotkey] = 0
+            permitted[inst.miner_hotkey] += 1
+        await db.execute(
+            text(
+                "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
+                {"chute_id": chute.chute_id},
+            )
+        )
+        rolling_update = RollingUpdate(
+            chute_id=chute.chute_id,
+            old_version=chute.version,
+            new_version=version,
+            permitted=permitted,
+        )
+        await db.add(rolling_update)
+
         old_version = chute.version
         chute.image_id = image.image_id
         chute.tagline = chute_args.tagline
@@ -459,19 +507,7 @@ async def _deploy_chute(
     await db.refresh(chute)
 
     if old_version:
-        await settings.redis_client.publish(
-            "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "chute_updated",
-                    "data": {
-                        "chute_id": chute.chute_id,
-                        "version": chute.version,
-                        "old_version": old_version,
-                    },
-                }
-            ).decode(),
-        )
+        await handle_rolling_update.kiq(chute.chute_id)
     else:
         await settings.redis_client.publish(
             "miner_broadcast",
