@@ -33,7 +33,11 @@ async def create_instance(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
-    chute = (await db.execute(select(Chute).where(Chute.chute_id == chute_id))).scalar_one_or_none()
+    chute = (
+        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

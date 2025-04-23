@@ -309,10 +309,12 @@ class ChuteHistory(Base):
 
 class RollingUpdate(Base):
     __tablename__ = "rolling_updates"
-    chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
+    chute_id = Column(
+        String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
     old_version = Column(String, nullable=False)
     new_version = Column(String, nullable=False)
     started_at = Column(DateTime, server_default=func.now())
     permitted = Column(JSONB, nullable=False)
 
-    chute = relationship("Chute", back_populates="instances")
+    chute = relationship("Chute", back_populates="rolling_update")
