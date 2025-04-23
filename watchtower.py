@@ -1087,6 +1087,18 @@ async def remove_disproportionate_new_chutes():
         await generate_confirmed_reports(chute_id, reason)
 
 
+async def update_chute_utilization_loop():
+    """
+    Continuously update chute utilization.
+    """
+    while True:
+        try:
+            await update_chute_utilization()
+        except Exception as exc:
+            logger.error(f"Unhandled exception updating chute utilization: {exc}")
+        await asyncio.sleep(60)
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
@@ -1102,6 +1114,9 @@ async def main():
     # Rolling update cleanup.
     asyncio.create_task(rolling_update_cleanup())
 
+    # Chute utilization.
+    asyncio.create_task(update_chute_utilization_loop())
+
     index = 0
     while True:
         ### Only enabled in clean-up mode.
@@ -1111,7 +1126,6 @@ async def main():
         #     await report_short_lived_chutes()
         await purge_unverified()
         await check_all_chutes()
-        await update_chute_utilization()
         await asyncio.sleep(30)
 
         index += 1
