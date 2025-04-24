@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from api.database import get_db_session, generate_uuid
 from api.config import settings
-from api.constants import HOTKEY_HEADER
+from api.constants import HOTKEY_HEADER, EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute
 from api.instance.schemas import InstanceArgs, Instance, instance_nodes, ActivateArgs
@@ -33,80 +33,129 @@ async def create_instance(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
-    chute = (await db.execute(select(Chute).where(Chute.chute_id == chute_id))).scalar_one_or_none()
+    chute = (
+        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chute {chute_id} not found",
         )
 
-    # Load the miner.
-    miner = await get_miner_by_hotkey(hotkey, db)
-    if not miner:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Did not find miner with {hotkey=}",
-        )
-
-    # Validate the hostname.
-    if not await is_valid_host(instance_args.host):
-        logger.warning(
-            f"INSTANCEFAIL: Attempt to post bad host: {instance_args.host} from {hotkey=}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid instance host: {instance_args.host}",
-        )
-
-    # Instantiate the instance.
-    instance = Instance(
-        instance_id=generate_uuid(),
-        host=instance_args.host,
-        port=instance_args.port,
-        chute_id=chute_id,
-        miner_uid=miner.node_id,
-        miner_hotkey=hotkey,
-        miner_coldkey=miner.coldkey,
-        region="n/a",
-        active=False,
-        verified=False,
-        chutes_version=chute.chutes_version,
-    )
-    db.add(instance)
-
-    # Verify the GPUs are suitable.
-    gpu_count = chute.node_selector.get("gpu_count", 1)
-    if len(instance_args.node_ids) != gpu_count:
-        logger.warning(
-            f"INSTANCEFAIL: Attempt to post incorrect GPU count: {len(instance_args.node_ids)} vs {gpu_count} from {hotkey=}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
-        )
-    gpu_type = None
-    for node_id in instance_args.node_ids:
-        node = await get_node_by_id(node_id, db, hotkey)
-        if not node:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Node {node_id} not found",
-            )
-        gpu_type = node.name
-        if not node.is_suitable(chute):
+    # Rolling update handling.
+    if chute.rolling_update:
+        limit = chute.rolling_update.permitted.get(hotkey, 0)
+        if not limit:
             logger.warning(
-                f"INSTANCEFAIL: attempt to post incompatible GPUs: {node.name} for {chute.node_selector}"
+                f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
+            )
+        chute.rolling_update.permitted[hotkey] -= 1
+
+    # Limit underutilized chutes.
+    lock_id = uuid.uuid5(uuid.NAMESPACE_OID, f"instance_lock:{chute_id}").int & 0x7FFFFFFFFFFFFFFF
+    try:
+        await db.execute(text("SET lock_timeout = '30s'"))
+        await db.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
+        query = text("SELECT * FROM chute_utilization WHERE chute_id = :chute_id")
+        results = await db.execute(query, {"chute_id": chute_id})
+        utilization = results.mappings().first()
+        if (
+            utilization
+            and utilization["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD
+            and not utilization["total_rate_limit_errors"]
+        ):
+            query = text(
+                "SELECT COUNT(*) AS total_count, "
+                "COUNT(CASE WHEN miner_hotkey = :hotkey THEN 1 ELSE NULL END) AS hotkey_count "
+                "FROM instances WHERE chute_id = :chute_id"
+            )
+            count_result = (
+                (await db.execute(query, {"chute_id": chute_id, "hotkey": hotkey}))
+                .mappings()
+                .first()
+            )
+            if count_result["total_count"] >= UNDERUTILIZED_CAP or count_result.hotkey_count:
+                logger.warning(
+                    f"SCALELOCK: chute {chute_id=} {chute.name} is currently capped: {count_result}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_423_LOCKED,
+                    detail=f"Chute {chute_id} is underutilized and either at capacity or you already have an instance.",
+                )
+
+        # Load the miner.
+        miner = await get_miner_by_hotkey(hotkey, db)
+        if not miner:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Did not find miner with {hotkey=}",
+            )
+
+        # Validate the hostname.
+        if not await is_valid_host(instance_args.host):
+            logger.warning(
+                f"INSTANCEFAIL: Attempt to post bad host: {instance_args.host} from {hotkey=}"
             )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Node {node_id} is not compatible with chute node selector!",
+                detail=f"Invalid instance host: {instance_args.host}",
             )
-        await db.execute(
-            instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
-        )
 
-    # Persist, which will raise a unique constraint error when the node is already allocated.
-    try:
+        # Instantiate the instance.
+        instance = Instance(
+            instance_id=generate_uuid(),
+            host=instance_args.host,
+            port=instance_args.port,
+            chute_id=chute_id,
+            version=chute.version,
+            miner_uid=miner.node_id,
+            miner_hotkey=hotkey,
+            miner_coldkey=miner.coldkey,
+            region="n/a",
+            active=False,
+            verified=False,
+            chutes_version=chute.chutes_version,
+        )
+        db.add(instance)
+
+        # Verify the GPUs are suitable.
+        gpu_count = chute.node_selector.get("gpu_count", 1)
+        if len(instance_args.node_ids) != gpu_count:
+            logger.warning(
+                f"INSTANCEFAIL: Attempt to post incorrect GPU count: {len(instance_args.node_ids)} vs {gpu_count} from {hotkey=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
+            )
+        gpu_type = None
+        for node_id in instance_args.node_ids:
+            node = await get_node_by_id(node_id, db, hotkey)
+            if not node:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Node {node_id} not found",
+                )
+            gpu_type = node.name
+            if not node.is_suitable(chute):
+                logger.warning(
+                    f"INSTANCEFAIL: attempt to post incompatible GPUs: {node.name} for {chute.node_selector}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Node {node_id} is not compatible with chute node selector!",
+                )
+            await db.execute(
+                instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
+            )
+
+        # Persist, which will raise a unique constraint error when the node is already allocated.
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -119,6 +168,8 @@ async def create_instance(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Unknown database integrity error",
         )
+    finally:
+        await db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})
     await db.refresh(instance)
 
     # Broadcast the event.

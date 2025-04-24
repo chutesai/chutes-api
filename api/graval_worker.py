@@ -27,11 +27,12 @@ from api.util import (
 )
 from api.database import get_session
 from api.node.schemas import Node
+from api.chute.schemas import Chute, RollingUpdate
 from api.instance.schemas import Instance
 from api.fs_challenge.schemas import FSChallenge
 from sqlalchemy import update, func, and_, not_
 from sqlalchemy.future import select
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 import api.database.orms  # noqa
@@ -718,3 +719,136 @@ async def verify_instance(instance_id: str):
         except Exception as exc:
             logger.warning(f"Error broadcasting instance event: {exc}")
         await settings.redis_client.delete(f"verify:lock:{instance_id}")
+
+
+@broker.task
+async def handle_rolling_update(chute_id: str, version: str):
+    """
+    Handle a rolling update event.
+    """
+    logger.info(f"Received rolling update task for {chute_id=}")
+    async with get_session() as session:
+        chute = (
+            (
+                await session.execute(
+                    select(Chute)
+                    .where(Chute.chute_id == chute_id)
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not chute:
+            logger.warning(f"Chute no longer found? {chute_id=}")
+            return
+        if not chute.instances:
+            logger.info(f"No instances to update? {chute_id=}")
+            return
+
+    # Calculate sleep per instance so we finish within 45 minutes.
+    max_duration = 60 * 45
+    sleep_per_instance = int(max_duration / len(chute.instance))
+    if not sleep_per_instance:
+        sleep_per_instance = 1
+
+    # Cap sleep time per instance to 2 minutes.
+    sleep_per_instance = min(120, sleep_per_instance)
+
+    # Iterate through instances slowly to avoid crashing the entire chute.
+    logger.info(
+        f"Triggering update for {len(chute.instances)} instances of {chute.chute_id=} {chute.name=}"
+    )
+    for inst in chute.instances:
+        # Make sure this rolling update is still valid, and the instance still exists.
+        async with get_session() as session:
+            instance = (
+                (
+                    await session.execute(
+                        select(Instance).where(Instance.instance_id == inst.instance_id)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            rolling_update = (
+                (
+                    await session.execute(
+                        select(RollingUpdate).where(RollingUpdate.chute_id == chute_id)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not instance:
+                logger.warning(
+                    f"Instance {inst.instance_id} no longer exists, skipping rolling update of {chute_id=} {version=}"
+                )
+                continue
+            if not rolling_update or rolling_update.new_version != version:
+                logger.warning(f"Rolling update is now defunct {chute_id=} {version=}")
+                return
+
+        # Send the event.
+        try:
+            event_data = {
+                "reason": "rolling_update",
+                "data": {
+                    "instance_id": instance.instance_id,
+                    "miner_hotkey": instance.miner_hotkey,
+                    "old_version": rolling_update.old_version,
+                    "new_version": rolling_update.new_version,
+                },
+                "filter_recipients": [instance.miner_hotkey],
+            }
+            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+        except Exception:
+            # Allow exceptions here since the miner can also check.
+            logger.warning(
+                f"Error notifying miner {instance.miner_hotkey} about rolling update of {instance.instance_id=} for {chute.name=}"
+            )
+
+        # Wait before notifying the next miner.
+        await asyncio.sleep(sleep_per_instance)
+
+    # Once finished, clean up all instances still bound to the old version.
+    async with get_session() as session:
+        rolling_update = (
+            (await session.execute(select(RollingUpdate).where(RollingUpdate.chute_id == chute_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not rolling_update or rolling_update.new_version != version:
+            return
+        chute = (
+            (
+                await session.execute(
+                    select(Chute)
+                    .where(Chute.chute_id == chute_id)
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not chute:
+            return
+        for instance in chute.instances:
+            if instance.version != version:
+                await session.delete(instance)
+                event_data = {
+                    "reason": "instance_deleted",
+                    "message": f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
+                    "data": {
+                        "chute_id": instance.chute_id,
+                        "instance_id": instance.instance_id,
+                        "miner_hotkey": instance.miner_hotkey,
+                    },
+                    "filter_recipients": [instance.miner_hotkey],
+                }
+                asyncio.create_task(
+                    settings.redis_client.publish(
+                        "miner_broadcast", json.dumps(event_data).decode()
+                    )
+                )
+        await session.delete(rolling_update)

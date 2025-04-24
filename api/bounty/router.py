@@ -41,6 +41,6 @@ async def list_bounties(
         )
         results = await session.execute(query)
         bounties = []
-        for chute, bounty, last_increased_at in results.all():
+        for chute, bounty, last_increased_at in results.unique().all():
             bounties.append(Bounty(bounty=bounty, last_increased_at=last_increased_at, chute=chute))
         return bounties

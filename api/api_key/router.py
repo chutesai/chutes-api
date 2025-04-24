@@ -97,8 +97,8 @@ async def create_api_key(
     """
     Create a new API key.
     """
-    api_key, one_time_secret = APIKey.create(current_user.user_id, key_args)
     try:
+        api_key, one_time_secret = APIKey.create(current_user.user_id, key_args)
         db.add(api_key)
         await db.commit()
         await db.refresh(api_key)

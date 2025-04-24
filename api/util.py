@@ -191,6 +191,7 @@ async def _limit_dev_activity(session, user, maximum, clazz):
         user.username in ("chutes", "rayonlabs")
         or user.validator_hotkey
         or user.subnet_owner_hotkey
+        or user.user_id == "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4"
     ):
         return
 
@@ -218,13 +219,13 @@ async def _limit_dev_activity(session, user, maximum, clazz):
         )
 
 
-async def limit_deployments(session, user, maximum: int = 6):
+async def limit_deployments(session, user, maximum: int = 9):
     from api.chute.schemas import ChuteHistory
 
     await _limit_dev_activity(session, user, maximum, ChuteHistory)
 
 
-async def limit_images(session, user, maximum: int = 3):
+async def limit_images(session, user, maximum: int = 12):
     from api.image.schemas import ImageHistory
 
     await _limit_dev_activity(session, user, maximum, ImageHistory)

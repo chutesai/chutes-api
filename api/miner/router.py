@@ -138,10 +138,14 @@ async def get_chute(
 ):
     async with get_session() as db:
         chute = (
-            await db.execute(
-                select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+            (
+                await db.execute(
+                    select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+                )
             )
-        ).scalar_one_or_none()
+            .unique()
+            .scalar_one_or_none()
+        )
         if not chute:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -398,7 +402,7 @@ top_instances AS (
     miner_hotkey, instance_id, chute_id,
     total_active_seconds, total_processing_seconds, busy_ratio
   FROM ranked_instances
-  WHERE rank <= 3
+  WHERE rank <= 6
 )
 SELECT * FROM top_instances ORDER BY miner_hotkey ASC;
 """
