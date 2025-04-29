@@ -53,7 +53,7 @@ AND NOT EXISTS (
 GROUP BY mn.hotkey
 ORDER BY compute_units DESC;
 """
-# Query to calculate the average number of unique chutes active at any single point in time, i.e. unique_count_count.
+# Query to calculate the average number of unique chutes active at any single point in time, i.e. unique_chute_count.
 UNIQUE_CHUTE_AVERAGE_QUERY = """
 WITH time_series AS (
   SELECT
