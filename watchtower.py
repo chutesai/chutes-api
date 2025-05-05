@@ -24,6 +24,10 @@ from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
 from api.chute.util import update_chute_utilization
 from api.invocation.util import generate_invocation_history_metrics
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.primitives import hashes, padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 
 PAST_DAY_METRICS_QUERY = """
@@ -1161,6 +1165,40 @@ async def procs_check():
                     )
         logger.info("Finished proc check loop...")
         await asyncio.sleep(10)
+
+
+def derive_key(key, sk, ss):
+    """
+    Derive the AES key.
+    """
+    stored_bytes = sk
+    user_bytes = key
+    combined_secret = stored_bytes + user_bytes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(), length=32, salt=ss, iterations=100000, backend=default_backend()
+    )
+    key = kdf.derive(combined_secret)
+    return key
+
+
+def load_envdump(encrypted_data, key):
+    """
+    Decrypt data that was encrypted from the envcheck chute code.
+    """
+    actual_key = derive_key(key, settings.envcheck_key, settings.envcheck_salt)
+    raw_data = base64.b64decode(encrypted_data)
+    iv = raw_data[:16]
+    encrypted_data = raw_data[16:]
+    cipher = Cipher(
+        algorithms.AES(actual_key),
+        modes.CBC(iv),
+        backend=default_backend(),
+    )
+    decryptor = cipher.decryptor()
+    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    unpadder = padding.PKCS7(128).unpadder()
+    data = unpadder.update(padded_data) + unpadder.finalize()
+    return json.loads(data.decode())
 
 
 async def main():

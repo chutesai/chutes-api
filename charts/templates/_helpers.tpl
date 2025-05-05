@@ -109,6 +109,16 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: ENVCHECK_KEY
+  valueFrom:
+    secretKeyRef:
+      name: envdump
+      key: key
+- name: ENVCHECK_SALT
+  valueFrom:
+    secretKeyRef:
+      name: envdump
+      key: salt
 - name: CODECHECK_KEY
   valueFrom:
     secretKeyRef:

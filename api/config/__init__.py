@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     # API key for checking code.
     codecheck_key: Optional[str] = os.getenv("CODECHECK_KEY")
 
+    # Chutes decryption key bit.
+    envcheck_key: Optional[str] = os.getenv("ENVCHECK_KEY")
+    envcheck_salt: Optional[str] = os.getenv("ENVCHECK_SALT")
+
     # Logos CDN hostname.
     logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
 
@@ -142,7 +146,7 @@ class Settings(BaseSettings):
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.39")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.40")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))
