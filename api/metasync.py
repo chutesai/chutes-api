@@ -35,6 +35,7 @@ async def get_scoring_data():
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
     utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
     raw_compute_values = {}
+    highest_unique = 0
     async with get_session() as session:
         metagraph_nodes = await session.execute(
             text("SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = 64 AND node_id >= 0")
@@ -62,13 +63,27 @@ async def get_scoring_data():
             if miner_hotkey not in raw_compute_values:
                 continue
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
+            if average_active_chutes > highest_unique:
+                highest_unique = average_active_chutes
     totals = {
         key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
     }
-    normalized_values = {
-        hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
-        for hotkey, row in raw_compute_values.items()
-    }
+
+    normalized_values = {}
+    for key in FEATURE_WEIGHTS:
+        for hotkey, row in raw_compute_values.items():
+            if hotkey not in normalized_values:
+                normalized_values[hotkey] = {}
+            if key == "unique_chute_count":
+                normalized_values[hotkey][key] = (row[key] / highest_unique) ** 3.0
+            else:
+                normalized_values[hotkey][key] = row[key] / totals[key]
+
+    # Re-normalize unique to [0, 1]
+    unique_sum = sum([val["unique_chute_count"] for val in normalized_values.values()])
+    for hotkey in normalized_values:
+        normalized_values[hotkey]["unique_chute_count"] /= unique_sum
+
     pre_final_scores = {
         hotkey: sum(norm_value * FEATURE_WEIGHTS[key] for key, norm_value in metrics.items())
         for hotkey, metrics in normalized_values.items()
