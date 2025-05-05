@@ -731,6 +731,7 @@ async def keep_cache_warm():
     Keep some of the DB-heavy endpoints warm in cache so API requests are always fast.
     """
     from api.miner.router import get_scores, get_stats, get_utilization, get_utilization_instances
+    from api.invocation.router import get_usage
 
     while True:
         try:
@@ -746,6 +747,8 @@ async def keep_cache_warm():
             logger.success("Warmed up utilization score endpoint")
             await get_utilization_instances(hotkey=None, request=None)
             logger.success("Warmed up utilization per instance endpoint")
+            await get_usage()
+            logger.success("Warmed up usage metrics")
         except Exception as exc:
             logger.warning(f"Error warming up cache: {exc}")
         await asyncio.sleep(60)

@@ -794,6 +794,7 @@ async def handle_rolling_update(chute_id: str, version: str):
             event_data = {
                 "reason": "rolling_update",
                 "data": {
+                    "chute_id": chute_id,
                     "instance_id": instance.instance_id,
                     "miner_hotkey": instance.miner_hotkey,
                     "old_version": rolling_update.old_version,

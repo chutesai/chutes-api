@@ -2,6 +2,7 @@
 Invocations router.
 """
 
+import re
 import base64
 import pickle
 import gzip
@@ -66,13 +67,16 @@ class DiffusionInput(BaseModel):
         extra = "forbid"
 
 
-@cache(expire=600)
 @router.get("/usage")
-async def get_usage():
+async def get_usage(request: Request):
     """
     Get aggregated usage data, which is the amount of revenue
     we would be receiving if no usage was free.
     """
+    cache_key = b"invocation_usage_data"
+    if request:
+        if cached := await settings.memcache.get(cache_key):
+            return json.loads(cached)
     query = text(
         "SELECT chute_id, DATE(bucket) as date, sum(amount) as usd_amount, sum(count) as invocation_count "
         "from usage_data "
@@ -80,7 +84,7 @@ async def get_usage():
         "group by chute_id, date "
         "order by date desc, usd_amount desc"
     )
-    async with get_session(readonly=True) as session:
+    async with get_session() as session:
         result = await session.execute(query)
         rv = []
         for chute_id, date, usd_amount, invocation_count in result:
@@ -88,10 +92,11 @@ async def get_usage():
                 {
                     "chute_id": chute_id,
                     "date": date,
-                    "usd_amount": usd_amount,
-                    "invocation_count": invocation_count,
+                    "usd_amount": float(usd_amount),
+                    "invocation_count": int(invocation_count),
                 }
             )
+        await settings.memcache.set(cache_key, json.dumps(rv))
         return rv
 
 
@@ -567,6 +572,42 @@ async def _invoke(
     if total_dupe_count >= 1500:
         logger.warning(f"REQSPAM: {total_dupe_count=} for {_request_hash=} on {chute.name=}")
         # enable_cache = True
+
+    # Bot spam?
+    if (
+        chute.name.startswith("deepseek-ai/DeepSeek")
+        and request.url.path.lstrip("/").startswith("v1/chat")
+        and (request.headers.get("user-agent") or "").startswith("python-requests")
+    ):
+        messages = body_target.get("messages")
+        if len(messages) == 1 and messages[0].get("role") == "user":
+            if (
+                body_target.get("stream", None) is False
+                and body_target.get("max_tokens", 0) == 1024
+                and body_target.get("temperature", 0.0) == 0.7
+            ):
+                first_message = messages[0].get("content", "")
+                if (
+                    len(first_message) / len(bytes(first_message, "utf-8")) <= 0.5
+                    and len(first_message) <= 50
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Stop spamming please.",
+                    )
+
+    # More bot spam.
+    if request.url.path.lstrip("/").startswith("v1/chat") and (
+        request.headers.get("user-agent") or ""
+    ).startswith(("Python/3.", "pythopn-requests")):
+        messages = body_target.get("messages")
+        if len(messages) == 1 and messages[0].get("role") == "user":
+            if len(json.dumps(body_target)) <= 250:
+                if re.match(r"^[0-9]+[^0-9][0-9]+$", messages[0].get("content") or ""):
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="Stop spamming please.",
+                    )
 
     # And user spam.
     if user_dupe_count >= 1000 and current_user.user_id not in [
