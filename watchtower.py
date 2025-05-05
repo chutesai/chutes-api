@@ -1102,6 +1102,67 @@ async def update_chute_utilization_loop():
         await asyncio.sleep(60)
 
 
+async def procs_check():
+    """
+    Check processes.
+    """
+    while True:
+        async with get_session() as session:
+            instances = (
+                (
+                    await session.execute(
+                        select(Instance)
+                        .where(
+                            Instance.verified.is_(True),
+                            Instance.active.is_(True),
+                            Instance.chutes_version == "0.2.30",
+                        )
+                        .options(joinedload(Instance.nodes), joinedload(Instance.chute))
+                    )
+                )
+                .unique()
+                .scalars()
+                .all()
+            )
+            for instance in instances:
+                skip_key = f"procskip:{instance.instance_id}".encode()
+                if await settings.memcache.get(skip_key):
+                    await settings.memcache.touch(skip_key, exptime=60 * 60 * 24 * 2)
+                    continue
+                path = aes_encrypt("/_procs", instance.symmetric_key, hex_encode=True)
+                try:
+                    async with miner_client.get(
+                        instance.miner_hotkey,
+                        f"http://{instance.host}:{instance.port}/{path}",
+                        purpose="chutes",
+                        timeout=15.0,
+                    ) as resp:
+                        data = await resp.json()
+                        env = data.get("1", {}).get("environ", {})
+                        cmdline = data.get("1", {}).get("cmdline", [])
+                        reason = None
+                        if not env or "CHUTES_EXECUTION_CONTEXT" not in env:
+                            reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
+                        elif len(cmdline) <= 5 or cmdline[1] != "/home/chutes/.local/bin/chutes":
+                            reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
+                        if reason:
+                            logger.warning(reason)
+                            await purge_and_notify(
+                                instance, reason="miner failed watchtower probes"
+                            )
+                        else:
+                            logger.success(
+                                f"Passed proc check: {instance.instance_id=} {instance.chute_id=} {instance.miner_hotkey=}"
+                            )
+                            await settings.memcache.set(skip_key, b"y")
+                except Exception as exc:
+                    logger.warning(
+                        f"Couldn't check procs, must be bad? {exc}\n{traceback.format_exc()}"
+                    )
+        logger.info("Finished proc check loop...")
+        await asyncio.sleep(10)
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
@@ -1119,6 +1180,9 @@ async def main():
 
     # Chute utilization.
     asyncio.create_task(update_chute_utilization_loop())
+
+    # Secondary process check.
+    asyncio.create_task(procs_check())
 
     index = 0
     while True:

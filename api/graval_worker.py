@@ -748,7 +748,7 @@ async def handle_rolling_update(chute_id: str, version: str):
 
     # Calculate sleep per instance so we finish within 45 minutes.
     max_duration = 60 * 45
-    sleep_per_instance = int(max_duration / len(chute.instance))
+    sleep_per_instance = int(max_duration / len(chute.instances))
     if not sleep_per_instance:
         sleep_per_instance = 1
 
@@ -803,6 +803,9 @@ async def handle_rolling_update(chute_id: str, version: str):
                 "filter_recipients": [instance.miner_hotkey],
             }
             await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+            logger.success(
+                f"Sent a notification to instance {instance.instance_id} of miner {instance.miner_hotkey}"
+            )
         except Exception:
             # Allow exceptions here since the miner can also check.
             logger.warning(
@@ -851,5 +854,8 @@ async def handle_rolling_update(chute_id: str, version: str):
                     settings.redis_client.publish(
                         "miner_broadcast", json.dumps(event_data).decode()
                     )
+                )
+                logger.warning(
+                    f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"
                 )
         await session.delete(rolling_update)

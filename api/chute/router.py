@@ -329,6 +329,12 @@ async def delete_chute(
         )
     chute_id = chute.chute_id
     version = chute.version
+    await db.execute(
+        text(
+            "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
+        ),
+        {"chute_id": chute.chute_id},
+    )
     await db.delete(chute)
     await db.commit()
 
@@ -419,8 +425,8 @@ async def _deploy_chute(
         await db.execute(
             text(
                 "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
-                {"chute_id": chute.chute_id},
-            )
+            ),
+            {"chute_id": chute.chute_id},
         )
         rolling_update = RollingUpdate(
             chute_id=chute.chute_id,
@@ -428,7 +434,7 @@ async def _deploy_chute(
             new_version=version,
             permitted=permitted,
         )
-        await db.add(rolling_update)
+        db.add(rolling_update)
 
         old_version = chute.version
         chute.image_id = image.image_id
@@ -511,7 +517,7 @@ async def _deploy_chute(
     await db.refresh(chute)
 
     if old_version:
-        await handle_rolling_update.kiq(chute.chute_id)
+        await handle_rolling_update.kiq(chute.chute_id, chute.version)
     else:
         await settings.redis_client.publish(
             "miner_broadcast",

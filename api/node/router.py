@@ -24,6 +24,7 @@ from api.challenge.schemas import Challenge
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.constants import HOTKEY_HEADER
+from api.metasync import get_miner_by_hotkey
 
 router = APIRouter()
 
@@ -141,6 +142,14 @@ async def create_nodes(
     """
     Add nodes/GPUs to inventory.
     """
+    mgnode = await get_miner_by_hotkey(hotkey, db)
+    if mgnode.blacklist_reason:
+        logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}",
+        )
+
     # If we got here, the authorization succeeded, meaning it's from a registered hotkey.
     nodes_args = args.nodes
 

@@ -33,6 +33,14 @@ async def create_instance(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
+    mgnode = await get_miner_by_hotkey(hotkey, db)
+    if mgnode.blacklist_reason:
+        logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}",
+        )
+
     chute = (
         (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
         .unique()
@@ -195,7 +203,7 @@ async def create_instance(
     return instance
 
 
-@router.get("/get_token")
+@router.get("/token_check")
 async def get_token(request: Request):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
     return {"token": str(uuid.uuid5(uuid.NAMESPACE_OID, f"{origin_ip}:{settings.ip_check_salt}"))}

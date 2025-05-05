@@ -183,7 +183,9 @@ class Chute(Base):
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
     logo = relationship("Logo", back_populates="chutes", lazy="joined")
-    rolling_update = relationship("RollingUpdate", back_populates="chute", lazy="joined")
+    rolling_update = relationship(
+        "RollingUpdate", back_populates="chute", lazy="joined", uselist=False
+    )
     instances = relationship(
         "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
@@ -317,4 +319,4 @@ class RollingUpdate(Base):
     started_at = Column(DateTime, server_default=func.now())
     permitted = Column(JSONB, nullable=False)
 
-    chute = relationship("Chute", back_populates="rolling_update")
+    chute = relationship("Chute", back_populates="rolling_update", uselist=False)
