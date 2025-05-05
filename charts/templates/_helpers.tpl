@@ -112,12 +112,12 @@ app.kubernetes.io/name: registry-proxy
 - name: ENVCHECK_KEY
   valueFrom:
     secretKeyRef:
-      name: envdump
+      name: envcheck
       key: key
 - name: ENVCHECK_SALT
   valueFrom:
     secretKeyRef:
-      name: envdump
+      name: envcheck
       key: salt
 - name: CODECHECK_KEY
   valueFrom:
