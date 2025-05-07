@@ -57,8 +57,8 @@ async def _get_weights_to_set(
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
     utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
-
     raw_compute_values = {}
+    highest_unique = 0.0
     async with get_session() as session:
         # Metagraph query if we enable multi-uid punishments.
         metagraph_nodes = await session.execute(
@@ -90,6 +90,8 @@ async def _get_weights_to_set(
             if miner_hotkey not in raw_compute_values:
                 continue
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
+            if average_active_chutes > highest_unique:
+                highest_unique = average_active_chutes
 
     # Logging.
     for hotkey, values in raw_compute_values.items():
@@ -99,10 +101,29 @@ async def _get_weights_to_set(
     totals = {
         key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
     }
-    normalized_values = {
-        hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
-        for hotkey, row in raw_compute_values.items()
-    }
+    normalized_values = {}
+    mean_unique_score = totals["unique_chute_count"] / (len(raw_compute_values) or 1)
+    for key in FEATURE_WEIGHTS:
+        for hotkey, row in raw_compute_values.items():
+            if hotkey not in normalized_values:
+                normalized_values[hotkey] = {}
+            if key == "unique_chute_count":
+                if row[key] >= mean_unique_score:
+                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 1.2
+                else:
+                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 2.0
+            else:
+                normalized_values[hotkey][key] = row[key] / totals[key]
+
+    # Re-normalize unique to [0, 1]
+    unique_sum = sum([val["unique_chute_count"] for val in normalized_values.values()])
+    old_unique_sum = sum([val["unique_chute_count"] for val in raw_compute_values.values()])
+    for hotkey in normalized_values:
+        normalized_values[hotkey]["unique_chute_count"] /= unique_sum
+        old_value = raw_compute_values[hotkey]["unique_chute_count"] / old_unique_sum
+        logger.info(
+            f"Normalized, exponential unique score {hotkey} = {normalized_values[hotkey]['unique_chute_count']}, vs default: {old_value}"
+        )
 
     # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
     pre_final_scores = {
