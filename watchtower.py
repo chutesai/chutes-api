@@ -13,7 +13,6 @@ from loguru import logger
 from collections import defaultdict
 from datetime import timedelta, datetime
 from api.config import settings
-from api.gpu import COMPUTE_MULTIPLIER
 from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.util import aes_encrypt, aes_decrypt
 from api.database import get_session
@@ -1265,34 +1264,44 @@ async def _scale_down():
                     )
                     logger.info(unlucky_reason)
 
-                # If each miner only has one, go by the most expensive GPU.
-                if not unlucky_instance:
-                    instance_multipliers = {
-                        instance.instance_id: {
-                            "mult": COMPUTE_MULTIPLIER[instance.nodes[0].gpu_identifier],
-                            "inst": instance,
-                        }
-                        for instance in chute.instances
-                    }
-                    max_multiplier = max([val["mult"] for val in instance_multipliers.values()])
-                    min_multiplier = min([val["mult"] for val in instance_multipliers.values()])
-                    if (
-                        min([val["mult"] for val in instance_multipliers.values()])
-                        != max_multiplier
-                    ):
-                        most_expensive = [
-                            val["inst"]
-                            for _, val in instance_multipliers.items()
-                            if val["mult"] == max_multiplier
-                        ]
-                        unlucky_instance = random.choice(most_expensive)
-                        unlucky_reason = (
-                            "Selected an unlucky instance via most expensive GPU: "
-                            f"{chute.chute_id=} {unlucky_instance.instance_id=} "
-                            f"{unlucky_instance.miner_hotkey=} {unlucky_instance.nodes[0].gpu_identifier=} "
-                            f"{min_multiplier=} vs {max_multiplier=}"
-                        )
-                        logger.info(unlucky_reason)
+                ###################################################################################
+                #  XXX: This could be enabled - select the most expensive GPU to kick             #
+                #  each interval... The reason it is not enabled, currently, is because           #
+                #  the most expensive GPUs have the most diversity of chutes they are             #
+                #  capable of running, so kicking out the more expensive GPUs could actually      #
+                #  be counterproductive and incentivize people adding cheaper GPUs, which we      #
+                #  want to avoid. Can revisit over time if it's worth doing so, but unlikely      #
+                #  as we are moving towards confidential compute which requires hopper/blackwell. #
+                ###################################################################################
+
+                ## If each miner only has one, go by the most expensive GPU.
+                # if not unlucky_instance:
+                #    instance_multipliers = {
+                #        instance.instance_id: {
+                #            "mult": COMPUTE_MULTIPLIER[instance.nodes[0].gpu_identifier],
+                #            "inst": instance,
+                #        }
+                #        for instance in chute.instances
+                #    }
+                #    max_multiplier = max([val["mult"] for val in instance_multipliers.values()])
+                #    min_multiplier = min([val["mult"] for val in instance_multipliers.values()])
+                #    if (
+                #        min([val["mult"] for val in instance_multipliers.values()])
+                #        != max_multiplier
+                #    ):
+                #        most_expensive = [
+                #            val["inst"]
+                #            for _, val in instance_multipliers.items()
+                #            if val["mult"] == max_multiplier
+                #        ]
+                #        unlucky_instance = random.choice(most_expensive)
+                #        unlucky_reason = (
+                #            "Selected an unlucky instance via most expensive GPU: "
+                #            f"{chute.chute_id=} {unlucky_instance.instance_id=} "
+                #            f"{unlucky_instance.miner_hotkey=} {unlucky_instance.nodes[0].gpu_identifier=} "
+                #            f"{min_multiplier=} vs {max_multiplier=}"
+                #        )
+                #        logger.info(unlucky_reason)
 
                 # Random for now, but will be maxing geographical distribution once mechanism is in place.
                 if not unlucky_instance:
