@@ -70,12 +70,16 @@ async def get_scoring_data():
     }
 
     normalized_values = {}
+    mean_unique_score = totals["unique_chute_count"] / (len(raw_compute_values) or 1)
     for key in FEATURE_WEIGHTS:
         for hotkey, row in raw_compute_values.items():
             if hotkey not in normalized_values:
                 normalized_values[hotkey] = {}
             if key == "unique_chute_count":
-                normalized_values[hotkey][key] = (row[key] / highest_unique) ** 3.0
+                if row[key] >= mean_unique_score:
+                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 1.2
+                else:
+                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 2.0
             else:
                 normalized_values[hotkey][key] = row[key] / totals[key]
 
