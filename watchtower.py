@@ -1275,6 +1275,7 @@ async def _scale_down():
                         for instance in chute.instances
                     }
                     max_multiplier = max([val["mult"] for val in instance_multipliers.values()])
+                    min_multiplier = min([val["mult"] for val in instance_multipliers.values()])
                     if (
                         min([val["mult"] for val in instance_multipliers.values()])
                         != max_multiplier
@@ -1288,7 +1289,8 @@ async def _scale_down():
                         unlucky_reason = (
                             "Selected an unlucky instance via most expensive GPU: "
                             f"{chute.chute_id=} {unlucky_instance.instance_id=} "
-                            f"{unlucky_instance.miner_hotkey=} {unlucky_instance.nodes[0].gpu_identifier=}"
+                            f"{unlucky_instance.miner_hotkey=} {unlucky_instance.nodes[0].gpu_identifier=} "
+                            f"{min_multiplier=} vs {max_multiplier=}"
                         )
                         logger.info(unlucky_reason)
 
