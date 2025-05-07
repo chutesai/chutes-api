@@ -11,7 +11,7 @@ import json
 import traceback
 from loguru import logger
 from collections import defaultdict
-from datetime import timedelta, datetime
+from datetime import timedelta, datetime, timezone
 from api.config import settings
 from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.util import aes_encrypt, aes_decrypt
@@ -753,7 +753,7 @@ async def keep_cache_warm():
             logger.success("Warmed up utilization score endpoint")
             await get_utilization_instances(hotkey=None, request=None)
             logger.success("Warmed up utilization per instance endpoint")
-            await get_usage()
+            await get_usage(request=None)
             logger.success("Warmed up usage metrics")
         except Exception as exc:
             logger.warning(f"Error warming up cache: {exc}")
@@ -1305,22 +1305,29 @@ async def _scale_down():
 
                 # Random for now, but will be maxing geographical distribution once mechanism is in place.
                 if not unlucky_instance:
-                    unlucky_instance = random.choice(instances)
-                    unlucky_reason = (
-                        f"Selected an unlucky instance at random: {chute.chute_id=} "
-                        f"{unlucky_instance.instance_id=} {unlucky_instance.miner_hotkey=}"
-                    )
-                    logger.info(unlucky_reason)
+                    established = [
+                        instance
+                        for instance in instances
+                        if datetime.now(timezone.utc) - instance.created_at >= timedelta(hours=1)
+                    ]
+                    if established:
+                        unlucky_instance = random.choice(established)
+                        unlucky_reason = (
+                            f"Selected an unlucky instance at random: {chute.chute_id=} "
+                            f"{unlucky_instance.instance_id=} {unlucky_instance.miner_hotkey=}"
+                        )
+                        logger.info(unlucky_reason)
 
                 # Purge the unlucky one.
-                await purge_and_notify(unlucky_instance, reason=unlucky_reason)
-                instances_removed += 1
+                if unlucky_instance:
+                    await purge_and_notify(unlucky_instance, reason=unlucky_reason)
+                    instances_removed += 1
             else:
                 logger.info(f"No need to downsize {chute_id}, count={len(instances)}")
     return instances_removed
 
 
-def scale_down():
+async def scale_down():
     """
     Continuous scale down loop.
     """
