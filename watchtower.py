@@ -208,7 +208,7 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
         await session.commit()
         event_data = {
             "reason": "instance_deleted",
-            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} failed watchtower checks.",
+            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
             "data": {
                 "chute_id": target.chute_id,
                 "instance_id": target.instance_id,
