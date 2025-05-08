@@ -8,13 +8,14 @@ CREATE TABLE bounties (
 
 -- function to increase bounties (with rate limits and caps)
 CREATE OR REPLACE FUNCTION increase_bounty(target_chute_id TEXT)
-RETURNS TABLE(bounty INTEGER, last_increased_at TIMESTAMP) AS $$
-DECLARE
-    current_bounty INTEGER;
-    increased_at TIMESTAMP;
+RETURNS TABLE(bounty INTEGER, last_increased_at TIMESTAMP, was_increased BOOLEAN) AS $$
 BEGIN
     RETURN QUERY
-    with updated AS (
+    WITH
+    current_record AS (
+        SELECT bounties.bounty AS old_bounty FROM bounties WHERE chute_id = target_chute_id
+    ),
+    updated AS (
         INSERT INTO bounties (chute_id, bounty, previous_bounty, last_increased_at)
         VALUES (target_chute_id, 100, 100, CURRENT_TIMESTAMP)
         ON CONFLICT (chute_id) DO UPDATE
@@ -33,7 +34,16 @@ BEGIN
             END
         RETURNING bounties.bounty, bounties.last_increased_at
     )
-    SELECT * FROM updated;
+    SELECT
+        u.bounty,
+        u.last_increased_at,
+        CASE
+            WHEN c.old_bounty IS NULL THEN TRUE
+            WHEN u.bounty <> c.old_bounty THEN TRUE
+            ELSE FALSE
+        END AS was_increased
+    FROM updated u
+    LEFT JOIN current_record c ON TRUE;
 END;
 $$ LANGUAGE plpgsql;
 

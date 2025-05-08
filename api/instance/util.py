@@ -202,53 +202,45 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
     """
     instances = await load_chute_targets(chute_id, nonce=0)
     started_at = time.time()
-    if max_wait > 0:
-        try:
-            current_bounty = 0
-            while not instances and time.time() - started_at < max_wait:
-                async with get_session() as bounty_session:
-                    result = await bounty_session.execute(
-                        text("SELECT * FROM increase_bounty(:chute_id)"),
-                        {"chute_id": chute_id},
-                    )
-                    bounty, last_increased_at = result.one()
-                    await bounty_session.commit()
-                if bounty != current_bounty:
-                    logger.info(f"Bounty for {chute_id=} is now {bounty}")
-                    current_bounty = bounty
-                    if not await settings.memcache.get(
-                        f"bounty_broadcast:{chute_id}:{bounty}".encode()
-                    ):
-                        await settings.memcache.set(
-                            f"bounty_broadcast:{chute_id}:{bounty}".encode(), b"1", exptime=60
-                        )
-                        await settings.redis_client.publish(
-                            "miner_broadcast",
-                            json.dumps(
-                                {
-                                    "reason": "bounty_change",
-                                    "data": {"chute_id": chute_id, "bounty": bounty},
-                                }
-                            ).decode(),
-                        )
-                        await settings.redis_client.publish(
-                            "events",
-                            json.dumps(
-                                {
-                                    "reason": "bounty_change",
-                                    "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
-                                    "data": {
-                                        "chute_id": chute_id,
-                                        "bounty": bounty,
-                                    },
-                                }
-                            ).decode(),
-                        )
-                await asyncio.sleep(1)
-                instances = await load_chute_targets(chute_id, nonce=time.time())
-        except asyncio.CancelledError:
-            logger.warning("Target discovery cancelled")
-            return []
+    while not instances:
+        # Increase the bounty.
+        async with get_session() as bounty_session:
+            result = await bounty_session.execute(
+                text("SELECT * FROM increase_bounty(:chute_id)"),
+                {"chute_id": chute_id},
+            )
+            bounty, last_increased_at, was_increased = result.one()
+            await bounty_session.commit()
+
+        # Broadcast unique bounty events.
+        if was_increased:
+            logger.info(f"Bounty for {chute_id=} is now {bounty}")
+            await settings.redis_client.publish(
+                "miner_broadcast",
+                json.dumps(
+                    {
+                        "reason": "bounty_change",
+                        "data": {"chute_id": chute_id, "bounty": bounty},
+                    }
+                ).decode(),
+            )
+            await settings.redis_client.publish(
+                "events",
+                json.dumps(
+                    {
+                        "reason": "bounty_change",
+                        "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
+                        "data": {
+                            "chute_id": chute_id,
+                            "bounty": bounty,
+                        },
+                    }
+                ).decode(),
+            )
+        if not max_wait or time.time() - started_at >= max_wait:
+            break
+        await asyncio.sleep(1.0)
+        instances = await load_chute_targets(chute_id, nonce=time.time())
     if not instances:
         return None
     if chute_id not in MANAGERS:

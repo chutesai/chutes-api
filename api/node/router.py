@@ -174,15 +174,25 @@ async def create_nodes(
     # GPU hoppers...
     query = """
         SELECT node_id, COUNT(DISTINCT(miner_hotkey)) AS miner_count, count(*) AS count
-        FROM node_history
-        WHERE
-            created_at >= NOW() - INTERVAL '24 hours'
-            AND node_id = ANY(:node_uuids)
+        FROM (
+            SELECT
+                node_id,
+                miner_hotkey,
+                created_at,
+                ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY created_at DESC) as row_num
+            FROM node_history
+            WHERE
+                created_at >= NOW() - INTERVAL '24 hours'
+                AND node_id = ANY(:node_uuids)
+        ) filtered_history
+        WHERE NOT (miner_hotkey = :hotkey AND row_num = 1)
         GROUP BY node_id
         HAVING COUNT(*) > 2 AND COUNT(DISTINCT(miner_hotkey)) >= 2
         ORDER BY count DESC;
     """
-    hopping_nodes = (await db.execute(text(query), {"node_uuids": node_uuids})).all()
+    hopping_nodes = (
+        await db.execute(text(query), {"node_uuids": node_uuids, "hotkey": hotkey})
+    ).all()
     if hopping_nodes:
         nodes_details = [
             f"{node.node_id} (used {node.count} times recently)" for node in hopping_nodes
