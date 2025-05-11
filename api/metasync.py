@@ -7,8 +7,6 @@ from metasync.constants import (
     NORMALIZED_COMPUTE_QUERY,
     UNIQUE_CHUTE_AVERAGE_QUERY,
     UNIQUE_CHUTE_HISTORY_QUERY,
-    UTILIZATION_RATIO_QUERY,
-    UTILIZATION_THRESHOLD,
 )
 from sqlalchemy import select, text
 
@@ -33,7 +31,6 @@ async def get_miner_by_hotkey(hotkey, db):
 async def get_scoring_data():
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
     raw_compute_values = {}
     highest_unique = 0
     async with get_session() as session:
@@ -43,19 +40,14 @@ async def get_scoring_data():
         hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
-        utilization_result = await session.execute(utilization_query)
-        utilization = {hotkey: float(utilization) for hotkey, utilization in utilization_result}
         for hotkey, invocation_count, bounty_count, compute_units in compute_result:
             if not hotkey:
-                continue
-            if (ut := utilization.get(hotkey, 0.0)) < UTILIZATION_THRESHOLD:
                 continue
             raw_compute_values[hotkey] = {
                 "invocation_count": invocation_count,
                 "bounty_count": bounty_count,
                 "compute_units": compute_units,
                 "unique_chute_count": 0,
-                "utilization": ut,
             }
         for miner_hotkey, average_active_chutes in unique_result:
             if not miner_hotkey:

@@ -52,6 +52,81 @@ async def create_instance(
             detail=f"Chute {chute_id} not found",
         )
 
+    # Prevent miners from create instances of chutes they constantly rotate/spam.
+    query = text("""
+    WITH lifetimes AS (
+        SELECT
+            miner_hotkey,
+            COUNT(*) AS instance_count,
+            AVG(EXTRACT(EPOCH FROM deleted_at - created_at)) AS avg_lifetime
+        FROM
+            instance_audit
+        WHERE
+            chute_id = :chute_id
+            AND version = :version
+            AND verified_at IS NOT NULL
+            AND created_at >= NOW() - INTERVAL '1 day'
+            AND NOT EXISTS (
+                SELECT 1
+                FROM chutes
+                WHERE chutes.chute_id = :chute_id
+                AND updated_at >= NOW() - INTERVAL '4 hours'
+            )
+        GROUP BY
+            miner_hotkey
+    ),
+    instance_counts AS (
+        SELECT miner_hotkey, count(*)
+        FROM instances
+        WHERE verified is true
+        GROUP BY miner_hotkey
+    ),
+    metrics AS (
+        SELECT
+            AVG(instance_count) AS avg_count,
+            AVG(avg_lifetime) AS avg_lifetime
+        FROM
+            lifetimes
+    )
+    SELECT EXISTS (
+        SELECT 1
+        FROM
+            lifetimes l, metrics m, instance_counts c
+        WHERE
+            l.miner_hotkey = :hotkey
+            AND c.count <= 3
+            AND l.instance_count >= m.avg_count
+            AND l.instance_count >= 3
+            AND l.avg_lifetime < m.avg_lifetime
+            AND l.avg_lifetime < EXTRACT(EPOCH FROM INTERVAL '4 hours')
+            AND (
+                SELECT COUNT(*)
+                FROM instance_audit
+                WHERE miner_hotkey = :hotkey
+                AND deletion_reason = 'miner initialized'
+                AND created_at >= NOW() - INTERVAL '1 day'
+                AND verified_at IS NOT NULL
+            ) > (
+                SELECT COUNT(*)
+                FROM instance_audit
+                WHERE miner_hotkey = :hotkey
+                AND deletion_reason != 'miner initialized'
+                AND created_at >= NOW() - INTERVAL '1 day'
+                AND verified_at IS NOT NULL
+            )
+    ) AS is_banned
+    """)
+    result = await db.execute(
+        query, {"chute_id": chute_id, "version": chute.version, "hotkey": hotkey}
+    )
+    is_spammy = result.scalar()
+    if is_spammy:
+        logger.warning(f"THRASHER: {hotkey=} has abnormal instance lifetimes for {chute_id=}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Your hotkey is spamming {chute_id=} with low average lifetime.",
+        )
+
     # Rolling update handling.
     if chute.rolling_update:
         limit = chute.rolling_update.permitted.get(hotkey, 0)
