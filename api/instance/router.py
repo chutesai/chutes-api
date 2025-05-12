@@ -76,7 +76,7 @@ async def create_instance(
             miner_hotkey
     ),
     instance_counts AS (
-        SELECT miner_hotkey, count(*)
+        SELECT miner_hotkey, count(*) AS count
         FROM instances
         WHERE verified is true
         GROUP BY miner_hotkey
@@ -95,6 +95,7 @@ async def create_instance(
         WHERE
             l.miner_hotkey = :hotkey
             AND c.count <= 3
+            AND c.miner_hotkey = :hotkey
             AND l.instance_count >= m.avg_count
             AND l.instance_count >= 3
             AND l.avg_lifetime < m.avg_lifetime
