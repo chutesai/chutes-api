@@ -6,11 +6,9 @@ update the actual database with usage data, deduct user balance.
 import time
 import asyncio
 import api.database.orms  # noqa
-from sqlalchemy import func, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy import select, text, bindparam, String
 from loguru import logger
 from api.user.schemas import User
-from api.payment.schemas import UsageData
 from api.config import settings
 from api.permissions import Permissioning
 from api.database import get_session
@@ -50,27 +48,31 @@ async def process_balance_changes():
 
             # The usage data is tracked at hour granularity.
             hour_bucket = (timestamp // 3600) * 3600
-            hour_bucket_dt = func.to_timestamp(hour_bucket)
 
-            ## Track the summary info.
-            stmt = (
-                pg_insert(UsageData)
-                .values(
-                    user_id=user_id,
-                    chute_id=chute_id,
-                    bucket=hour_bucket_dt,
-                    amount=amount,
-                    count=count,
-                )
-                .on_conflict_do_update(
-                    index_elements=["user_id", "chute_id", "bucket"],
-                    set_={
-                        "amount": UsageData.amount + amount,
-                        "count": UsageData.count + count,
-                    },
-                )
+            # Upsert the data.
+            logger.info(
+                f"Updating usage data for {user_id=} {chute_id=} {hour_bucket=} {amount=} {count=}"
             )
-            await session.execute(stmt)
+            stmt = text("""
+                INSERT INTO usage_data (user_id, bucket, chute_id, amount, count)
+                SELECT :user_id, to_timestamp(:hour_bucket), :chute_id, :amount, :count
+                WHERE EXISTS (SELECT 1 FROM users WHERE user_id = :user_id)
+                ON CONFLICT (user_id, chute_id, bucket)
+                DO UPDATE SET amount = (usage_data.amount + :amount), count = (usage_data.count + :count)
+            """).bindparams(
+                bindparam("user_id", type_=String),
+                bindparam("chute_id", type_=String),
+            )
+            await session.execute(
+                stmt,
+                {
+                    "user_id": user_id,
+                    "hour_bucket": hour_bucket,
+                    "chute_id": chute_id,
+                    "amount": amount,
+                    "count": count,
+                },
+            )
 
         # Update user balances
         for user_id, amount in user_totals.items():
