@@ -96,19 +96,19 @@ async def build_and_push_image(image):
 
     async def _capture_logs(stream, name):
         log_method = logger.info if name == "stdout" else logger.warning
-        with open(f"{name}.log", "w") as outfile:
-            while True:
-                line = await stream.readline()
-                if line:
-                    decoded_line = line.decode().strip()
-                    log_method(f"[build {short_tag}]: {decoded_line}")
+        while True:
+            line = await stream.readline()
+            if line:
+                decoded_line = line.decode().strip()
+                log_method(f"[build {short_tag}]: {decoded_line}")
+                with open("build.log", "a+") as outfile:
                     outfile.write(decoded_line.strip() + "\n")
-                    await settings.redis_client.xadd(
-                        f"forge:{image.image_id}:stream",
-                        {"data": json.dumps({"log_type": name, "log": decoded_line}).decode()},
-                    )
-                else:
-                    break
+                await settings.redis_client.xadd(
+                    f"forge:{image.image_id}:stream",
+                    {"data": json.dumps({"log_type": name, "log": decoded_line}).decode()},
+                )
+            else:
+                break
 
     # Build.
     try:
@@ -499,15 +499,10 @@ async def forge(image_id: str):
             os.chdir(starting_dir)
 
         # Upload logs.
-        log_paths = []
-        if os.path.exists(log_path := os.path.join(build_dir, "stdout.log")):
-            log_paths.append(log_path)
-        if os.path.exists(log_path := os.path.join(build_dir, "sterror.log")):
-            log_paths.append(log_path)
-        for path in log_paths:
-            destination = f"forge/{image.user_id}/{image.image_id}.{os.path.basename(path)}"
+        if os.path.exists(log_path := os.path.join(build_dir, "build.log")):
+            destination = f"forge/{image.user_id}/{image.image_id}.log"
             async with settings.s3_client() as s3:
-                await s3.upload_file(path, settings.storage_bucket, destination)
+                await s3.upload_file(log_path, settings.storage_bucket, destination)
 
     # Cache a sampling of filesystem challenges.
     await generate_fs_challenges(image_id)

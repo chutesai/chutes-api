@@ -8,7 +8,7 @@ import time
 import asyncio
 import orjson as json
 from loguru import logger
-from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile, Response
 from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy import and_, or_, exists, func, delete
@@ -144,6 +144,76 @@ async def delete_image(
     return {"image_id": image_id, "deleted": True}
 
 
+@router.get("/{image_id}/logs")
+async def stream_build_logs(
+    image_id: str,
+    offset: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    image = await get_image_by_id_or_name(image_id, db, current_user)
+    if not image:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Image not found, or does not belong to you",
+        )
+
+    # Images already built?
+    if image.status.startswith(("built and pushed", "error:")):
+        async with settings.s3_client() as s3:
+            log_path = f"forge/{image.user_id}/{image.image_id}.log"
+            async with settings.s3_client() as s3:
+                data = io.BytesIO()
+                await s3.download_fileobj(settings.storage_bucket, log_path, data)
+                headers = {
+                    "Content-Disposition": f'inline; filename="{image_id}.log"',
+                    "Content-Type": "text/plain; charset=utf-8",
+                }
+                return Response(
+                    content=data.getvalue(),
+                    headers=headers,
+                )
+
+    # Stream the logs in real-time.
+    async def _stream():
+        nonlocal offset, image_id
+        started_at = time.time()
+        last_offset = offset
+        while True:
+            stream_result = None
+            try:
+                stream_result = await settings.redis_client.xrange(
+                    f"forge:{image_id}:stream", last_offset or "-", "+"
+                )
+            except Exception as exc:
+                logger.error(f"Error fetching stream result: {exc}")
+                yield f"data: ERROR: {exc}"
+                return
+            if not stream_result:
+                yield "."
+                await asyncio.sleep(1.0)
+                continue
+            for offset, data in stream_result:
+                last_offset = offset.decode()
+                parts = last_offset.split("-")
+                last_offset = parts[0] + "-" + str(int(parts[1]) + 1)
+                if data[b"data"] == b"DONE":
+                    await settings.redis_client.delete(f"forge:{image_id}:stream")
+                    yield "DONE\n"
+                    break
+                sse_data = json.dumps(
+                    {"log": data[b"data"].decode(), "offset": last_offset}
+                ).decode()
+                yield f"data: {sse_data}\n"
+        delta = time.time() - started_at
+        logger.success(
+            "\N{HAMMER AND WRENCH} "
+            + f"finished building image {image_id} in {round(delta, 5)} seconds"
+        )
+
+    return StreamingResponse(_stream())
+
+
 @router.post("/", status_code=status.HTTP_202_ACCEPTED)
 async def create_image(
     wait: bool = Form(...),
@@ -234,37 +304,10 @@ async def create_image(
     await settings.redis_client.delete(f"forge:{image_id}:stream")
 
     # Stream logs for clients who set the "wait" flag.
-    async def _stream():
-        started_at = time.time()
-        last_offset = None
-        while True:
-            stream_result = None
-            try:
-                stream_result = await settings.redis_client.xrange(
-                    f"forge:{image_id}:stream", last_offset or "-", "+"
-                )
-            except Exception as exc:
-                logger.error(f"Error fetching stream result: {exc}")
-                yield f"data: ERROR: {exc}"
-                return
-            if not stream_result:
-                await asyncio.sleep(1.0)
-                continue
-            for offset, data in stream_result:
-                last_offset = offset.decode()
-                parts = last_offset.split("-")
-                last_offset = parts[0] + "-" + str(int(parts[1]) + 1)
-                if data[b"data"] == b"DONE":
-                    await settings.redis_client.delete(f"forge:{image_id}:stream")
-                    yield "DONE\n"
-                    break
-                yield f"data: {data[b'data'].decode()}\n\n"
-        delta = time.time() - started_at
-        logger.success(
-            "\N{HAMMER AND WRENCH} "
-            + f"finished building image {image_id} in {round(delta, 5)} seconds"
-        )
+    async def _stream_redirect_for_old_chutes():
+        yield f'data: {"redirect": /images/{image_id}/stream -- log streaming is now a separate endpoint, please update chutes library"}\n'
 
     if wait:
-        return StreamingResponse(_stream())
+        return StreamingResponse(_stream_redirect_for_old_chutes())
+
     return image
