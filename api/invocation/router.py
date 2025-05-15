@@ -571,10 +571,6 @@ async def _invoke(
         logger.warning(
             f"USERSPAM: {current_user.username} sent {user_dupe_count} requests for {chute.name}"
         )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Stop spamming please.",
-        )
 
     if stream or include_trace:
 
@@ -721,4 +717,13 @@ async def hostname_invocation(
                 )
             request.state.chute_id = chute.chute_id
             request.state.auth_object_id = chute.chute_id
+
+    # Model disabled temporarily?
+    if await settings.redis_client.get(f"model_disabled:{request.state.chute_id}"):
+        logger.warning(f"MODEL DISABLED: {request.state.chute_id}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="model is under maintenance",
+        )
+
     return await _invoke(request, current_user)

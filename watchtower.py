@@ -1113,23 +1113,21 @@ async def procs_check():
     """
     while True:
         async with get_session() as session:
-            instances = (
-                (
-                    await session.execute(
-                        select(Instance)
-                        .where(
-                            Instance.verified.is_(True),
-                            Instance.active.is_(True),
-                            Instance.chutes_version == "0.2.30",
-                        )
-                        .options(joinedload(Instance.nodes), joinedload(Instance.chute))
-                    )
+            query = (
+                select(Instance)
+                .where(
+                    Instance.verified.is_(True),
+                    Instance.active.is_(True),
                 )
-                .unique()
-                .scalars()
-                .all()
+                .options(selectinload(Instance.nodes), selectinload(Instance.chute))
             )
-            for instance in instances:
+            batch_size = 10
+            async for row in await session.stream(query.execution_options(yield_per=batch_size)):
+                instance = row[0]
+                if not instance.chutes_version or not re.match(
+                    r"^0\.2\.[3-9][0-9]$", instance.chutes_version
+                ):
+                    continue
                 skip_key = f"procskip:{instance.instance_id}".encode()
                 if await settings.memcache.get(skip_key):
                     await settings.memcache.touch(skip_key, exptime=60 * 60 * 24 * 2)
@@ -1146,7 +1144,7 @@ async def procs_check():
                         env = data.get("1", {}).get("environ", {})
                         cmdline = data.get("1", {}).get("cmdline", [])
                         reason = None
-                        if not env or "CHUTES_EXECUTION_CONTEXT" not in env:
+                        if not cmdline and (not env or "CHUTES_EXECUTION_CONTEXT" not in env):
                             reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
                         elif len(cmdline) <= 5 or cmdline[1] != "/home/chutes/.local/bin/chutes":
                             reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"

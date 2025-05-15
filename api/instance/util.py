@@ -84,9 +84,17 @@ class LeastConnManager:
         if not counts:
             return []
 
+        # Too many connections?
+        if min_count >= 15:
+            logger.warning(f"Instances overwhelmed: {min_count=}, pausing requests...")
+            return []
+
         # Randomize the ordering for instances that have the same counts.
         grouped_by_count = {}
         for instance_id, count in counts.items():
+            if count >= 15:
+                logger.warning(f"Too many connections to {instance_id=} at the moment, skipping...")
+                continue
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
             if instance := self.instances.get(instance_id):

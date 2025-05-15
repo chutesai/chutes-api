@@ -370,8 +370,10 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
         payload,
         timeout=12.0,
     ) as resp:
-        # Good so far, now let's verify we can actually use the key.
-        resp.raise_for_status()
+        if resp.status != 404:
+            resp.raise_for_status()
+
+        # Make sure the encryption/decryption flow works properly.
         expected = str(uuid.uuid4())
         payload = aes_encrypt(json.dumps({"hello": expected}), instance.symmetric_key)
         iv = bytes.fromhex(payload[:32])
@@ -663,18 +665,14 @@ async def verify_instance(instance_id: str):
         # Device info challenges.
         path = get_actual_path(instance, "_device_challenge")
         url = f"http://{instance.host}:{instance.port}/{path}"
-        futures = []
         for _ in range(settings.device_info_challenge_count):
-            futures.append(check_device_info_challenge(instance.nodes, url=url, purpose="chutes"))
-            if len(futures) == 3:
-                if not all(await asyncio.gather(*futures)):
-                    error_message = f"{instance_id=} failed one or more device info challenges"
-                    logger.warning(error_message)
-                    instance.verification_error = error_message
-                    await session.commit()
-                    await settings.redis_client.delete(f"verify:lock:{instance_id}")
-                    return
-                futures = []
+            if not await check_device_info_challenge(instance.nodes, url=url, purpose="chutes"):
+                error_message = f"{instance_id=} failed one or more device info challenges"
+                logger.warning(error_message)
+                instance.verification_error = error_message
+                await session.commit()
+                await settings.redis_client.delete(f"verify:lock:{instance_id}")
+                return
 
         # Looks good!
         logger.success(f"Instance {instance_id=} has passed verification!")
