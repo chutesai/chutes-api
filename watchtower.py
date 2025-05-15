@@ -8,6 +8,7 @@ import aiohttp
 import random
 import hashlib
 import json
+import secrets
 import traceback
 from loguru import logger
 from collections import defaultdict
@@ -635,8 +636,59 @@ async def check_chute(chute_id):
             logger.warning(f"Chute has a rolling update in progress: {chute_id=}")
             return
 
-    # Ping test.
+    # Updated environment/code checks.
     instances = await load_chute_instances(chute.chute_id)
+    if re.match(r"^[0-9]+\.(2\.(39|4[0-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""):
+        signatures = {instance.instance_id: None for instance in instances}
+        salt = str(uuid.uuid4())
+        for instance in instances:
+            try:
+                signature = await get_env_sig(instance, salt)
+                logger.info(
+                    f"Loaded environment signature for {instance.instance_id=}: {signature=}"
+                )
+
+                # Load env dump, if possible.
+                if re.match(
+                    r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
+                ):
+                    dump = await get_env_dump(instance)
+                    try:
+                        process = dump[1] if isinstance(dump, list) else dump["process"]
+                        assert process["pid"] == 1
+                        command_line = re.sub(
+                            r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
+                        )
+                        expected = " ".join(
+                            [
+                                "python",
+                                "/home/chutes/.local/bin/chutes",
+                                "run",
+                                chute.ref_str,
+                                "--port",
+                                "8000",
+                                "--graval-seed",
+                                str(instance.nodes[0].seed),
+                                "--miner-ss58",
+                                instance.miner_hotkey,
+                                "--validator-ss58",
+                                settings.validator_ss58,
+                            ]
+                        ).strip()
+                        assert command_line == expected
+                        logger.success(
+                            f"Validated expected runtime command from env dump: {expected}"
+                        )
+                    except Exception:
+                        logger.error("Invalid response from env dump, missing or invalid process!")
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to retrieve env signature or dump from {instance.instance_id=}: {exc}\n{traceback.format_exc()}"
+                )
+        if len(set(signatures.values())) > 1:
+            logger.error(f"Multiple signatures found: {signatures=}")
+
+    # Ping test.
     soft_failed = await check_pings(chute, instances)
 
     # Check the running command.
@@ -1338,26 +1390,30 @@ async def scale_down():
         await asyncio.sleep(60 * 60)
 
 
-def derive_key(key, sk, ss):
+def derive_key(key):
     """
     Derive the AES key.
     """
-    stored_bytes = sk
+    stored_bytes = bytes.fromhex(settings.envcheck_key)
     user_bytes = key
     combined_secret = stored_bytes + user_bytes
     kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(), length=32, salt=ss, iterations=100000, backend=default_backend()
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=bytes.fromhex(settings.envcheck_salt),
+        iterations=100000,
+        backend=default_backend(),
     )
     key = kdf.derive(combined_secret)
     return key
 
 
-def load_envdump(encrypted_data, key):
+def load_envdump(encrypted_b64, key):
     """
     Decrypt data that was encrypted from the envcheck chute code.
     """
-    actual_key = derive_key(key, settings.envcheck_key, settings.envcheck_salt)
-    raw_data = base64.b64decode(encrypted_data)
+    actual_key = derive_key(key)
+    raw_data = base64.b64decode(encrypted_b64)
     iv = raw_data[:16]
     encrypted_data = raw_data[16:]
     cipher = Cipher(
@@ -1365,11 +1421,46 @@ def load_envdump(encrypted_data, key):
         modes.CBC(iv),
         backend=default_backend(),
     )
-    decryptor = cipher.decryptor()
-    padded_data = decryptor.update(encrypted_data) + decryptor.finalize()
     unpadder = padding.PKCS7(128).unpadder()
-    data = unpadder.update(padded_data) + unpadder.finalize()
-    return json.loads(data.decode())
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
+    return json.loads(unpadded_data.decode())
+
+
+async def get_env_dump(instance):
+    """
+    Load the environment dump from remote instance.
+    """
+    key = secrets.token_bytes(16)
+    payload = {"key": key.hex()}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_env_dump", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        enc_payload,
+        timeout=15.0,
+    ) as resp:
+        resp.raise_for_status()
+        return load_envdump(await resp.text(), key)
+
+
+async def get_env_sig(instance, salt):
+    """
+    Load the environment signature from the remote instance.
+    """
+    payload = {"salt": salt}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_env_sig", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        enc_payload,
+        timeout=15.0,
+    ) as resp:
+        resp.raise_for_status()
+        return await resp.text()
 
 
 async def main():

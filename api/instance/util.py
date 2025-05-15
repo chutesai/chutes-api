@@ -212,13 +212,23 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
     started_at = time.time()
     while not instances:
         # Increase the bounty.
+        bounty, last_increased_at, was_increased = None, None, False
         async with get_session() as bounty_session:
-            result = await bounty_session.execute(
-                text("SELECT * FROM increase_bounty(:chute_id)"),
+            update_result = await bounty_session.execute(
+                text("SELECT 1 FROM rolling_updates WHERE chute_id = :chute_id"),
                 {"chute_id": chute_id},
             )
-            bounty, last_increased_at, was_increased = result.one()
-            await bounty_session.commit()
+            if update_result.first() is not None:
+                logger.warning(
+                    f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
+                )
+            else:
+                result = await bounty_session.execute(
+                    text("SELECT * FROM increase_bounty(:chute_id)"),
+                    {"chute_id": chute_id},
+                )
+                bounty, last_increased_at, was_increased = result.one()
+                await bounty_session.commit()
 
         # Broadcast unique bounty events.
         if was_increased:

@@ -146,7 +146,15 @@ async def create_instance(
     try:
         await db.execute(text("SET lock_timeout = '30s'"))
         await db.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
-        query = text("SELECT * FROM chute_utilization WHERE chute_id = :chute_id")
+        query = text(
+            "SELECT * FROM chute_utilization "
+            "WHERE chute_id = :chute_id "
+            "AND NOT EXISTS ("
+            "  SELECT FROM chutes "
+            "  WHERE chute_id = :chute_id "
+            "  AND updated_at >= now() - INTERVAL '1 hour' "
+            ")"
+        )
         results = await db.execute(query, {"chute_id": chute_id})
         utilization = results.mappings().first()
         if (

@@ -215,6 +215,15 @@ async def list_chutes(
     return result
 
 
+@router.get("/rolling_updates")
+async def list_rolling_updates():
+    async with get_session() as session:
+        result = await session.execute(text("SELECT * FROM rolling_updates"))
+        columns = result.keys()
+        rows = result.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+
+
 @router.get("/gpu_count_history")
 async def get_gpu_count_history():
     query = """
