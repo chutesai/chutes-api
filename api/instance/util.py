@@ -77,22 +77,23 @@ class LeastConnManager:
             self.mean_count = int(sum(raw_counts) / (len(self.instances) or 1))
 
         # Periodically log counts for debugging.
-        if random.random() < 0.05:
+        if random.random() < 0.05 and self.instances:
+            chute_id = list(self.instances.values())[0].chute_id
             logger.info(
-                "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
+                f"Instance counts for {chute_id=}: {min_count=} mean_count={self.mean_count} instance_count={len(self.instances)}"
             )
         if not counts:
             return []
 
         # Too many connections?
-        if min_count >= 15:
+        if min_count >= 25:
             logger.warning(f"Instances overwhelmed: {min_count=}, pausing requests...")
             return []
 
         # Randomize the ordering for instances that have the same counts.
         grouped_by_count = {}
         for instance_id, count in counts.items():
-            if count >= 15:
+            if count >= 25:
                 logger.warning(f"Too many connections to {instance_id=} at the moment, skipping...")
                 continue
             if count not in grouped_by_count:
@@ -103,7 +104,7 @@ class LeastConnManager:
             random.shuffle(grouped_by_count[count])
 
         # Prefix aware routing for LLM requests.
-        if prefixes and random.random() <= 0.75:
+        if prefixes and random.random() <= 0.75 and False:
             likely_cached = set([])
             for size, prefix_hash in prefixes:
                 try:
@@ -131,9 +132,6 @@ class LeastConnManager:
                     if abs(counts[instance_id] - min_count) <= 3
                 ]
                 if routable:
-                    logger.info(
-                        f"Performing prefix aware routing: {len(routable)} potentially cached instances"
-                    )
                     result = sorted(
                         [
                             self.instances[instance_id]

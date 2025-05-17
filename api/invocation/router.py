@@ -421,13 +421,6 @@ async def _invoke(
                 "top_k",
             ]:
                 request_body.pop(param, None)
-            if (max_tokens := request_body.get("max_tokens")) is not None:
-                try:
-                    max_tokens = int(request_body["max_tokens"])
-                    if max_tokens > 4096:
-                        request_body["max_tokens"] = 4096
-                except ValueError:
-                    request_body["max_tokens"] = 4096
 
         # Make sure the model name is correct.
         if (requested_model := request_body.get("model")) != chute.name:
@@ -540,7 +533,6 @@ async def _invoke(
             count = await settings.memcache.incr(req_key, 1)
             await settings.memcache.touch(req_key, exptime=60 * 60 * 3)
             if count > 1 and _hash == request_hash:
-                logger.info(f"Duplicate prompt received: {chute.name} {_hash} {count=}")
                 total_dupe_count = count
 
                 # Check for user specific spam.
@@ -559,18 +551,29 @@ async def _invoke(
         logger.warning(f"REQSPAM: {total_dupe_count=} for {request_hash=} on {chute.name=}")
 
     # And user spam.
-    if user_dupe_count >= 1000 and current_user.user_id not in [
-        "8930c58d-00f6-57d3-bc62-156eb8b73026",
-        "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f",
-        "376536e8-674b-5e6f-b36e-c9168f0bf4a7",
-        "b6bb1347-6ea5-556f-8b23-50b124f3ffc8",
-        "5682c3e0-3635-58f7-b7f5-694962450dfc",
-        "2104acf4-999e-5452-84f1-de82de35a7e7",
-        "18c244ab-8a2e-5767-ae0e-5d20b50d05b5",
-    ]:
+    if (
+        user_dupe_count >= 1000
+        and not current_user.has_role(Permissioning.unlimited)
+        and current_user.user_id
+        not in [
+            "8930c58d-00f6-57d3-bc62-156eb8b73026",
+            "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f",
+            "376536e8-674b-5e6f-b36e-c9168f0bf4a7",
+            "b6bb1347-6ea5-556f-8b23-50b124f3ffc8",
+            "5682c3e0-3635-58f7-b7f5-694962450dfc",
+            "2104acf4-999e-5452-84f1-de82de35a7e7",
+            "18c244ab-8a2e-5767-ae0e-5d20b50d05b5",
+            "90fd1e31-84c9-5bc4-b628-ccc1e5dc75e6",
+        ]
+    ):
         logger.warning(
             f"USERSPAM: {current_user.username} sent {user_dupe_count} requests for {chute.name}"
         )
+        if user_dupe_count > 5000:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Stop spamming this prompt, please...",
+            )
 
     if stream or include_trace:
 

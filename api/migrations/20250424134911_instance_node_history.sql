@@ -29,7 +29,8 @@ BEGIN
   WHERE instance_id = NEW.instance_id;
   IF v_miner_hotkey IS NOT NULL THEN
     INSERT INTO instance_node_history (instance_id, node_id, miner_hotkey)
-    VALUES (NEW.instance_id, NEW.node_id, v_miner_hotkey);
+    VALUES (NEW.instance_id, NEW.node_id, v_miner_hotkey)
+    ON CONFLICT (instance_id, node_id) DO NOTHING;
   END IF;
   RETURN NEW;
 END;

@@ -4,6 +4,7 @@ Routes for instances.
 
 import uuid
 import orjson as json
+import traceback
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text
@@ -228,12 +229,22 @@ async def create_instance(
             )
         gpu_type = None
         for node_id in instance_args.node_ids:
+            # Make sure the node is in the miner's inventory.
             node = await get_node_by_id(node_id, db, hotkey)
             if not node:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Node {node_id} not found",
                 )
+
+            # Already associated with an instance?
+            if node.instance:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"GPU {node_id} is already assigned to an instance: {instance.instance_id=} {instance.host=} {instance.port=} {instance.chute_id=}",
+                )
+
+            # Valid GPU for this chute?
             gpu_type = node.name
             if not node.is_suitable(chute):
                 logger.warning(
@@ -243,6 +254,8 @@ async def create_instance(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Node {node_id} is not compatible with chute node selector!",
                 )
+
+            # Create the association record.
             await db.execute(
                 instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
             )
@@ -250,15 +263,17 @@ async def create_instance(
         # Persist, which will raise a unique constraint error when the node is already allocated.
         await db.commit()
     except IntegrityError as exc:
+        detail = f"INTEGRITYERROR {hotkey=}: {exc}\n{traceback.format_exc()}"
+        logger.error(detail)
         await db.rollback()
-        if "uq_instance_node" in str(exc):
+        if "uq_inode" in str(exc):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Node {node_id} is already provisioned to another instance",
+                detail=f"One or more nodes already provisioned to an instance: {detail=}",
             )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unknown database integrity error",
+            detail=f"Unhandled DB integrity error: {detail}",
         )
     finally:
         await db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})

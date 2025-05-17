@@ -334,10 +334,6 @@ async def _invoke_one(
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
         if iv:
             headers["X-Chutes-Serialized"] = "true"
-        iv_hex = iv.hex() if iv else None
-        logger.debug(
-            f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {iv_hex=}"
-        )
         started_at = time.time()
         response = await session.post(
             f"http://{target.host}:{target.port}/{path}",
