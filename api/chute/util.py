@@ -384,10 +384,26 @@ async def _invoke_one(
                     if metrics["ttft"] is None:
                         metrics["ttft"] = round(time.time() - started_at, 3)
                     metrics["tokens"] += 1
+
+                if (
+                    chute.standard_template == "vllm"
+                    and last_chunk is None
+                    and chunk.startswith(
+                        b'data: {"error": {"object": "error", "message": "input_ids cannot be empty."'
+                    )
+                ):
+                    logger.warning(
+                        f"SGLang failure: {chute.chute_id=} {target.instance_id=} {chunk=}"
+                    )
+                    raise Exception(
+                        "SGLang backend failure, input_ids null error response produced."
+                    )
+
                 if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
                     last_chunk = chunk
                 if b"data:" in chunk:
                     any_chunks = True
+
                 yield chunk.decode()
 
             if chute.standard_template == "vllm" and plain_path in LLM_PATHS and metrics:
@@ -456,6 +472,15 @@ async def _invoke_one(
                 response_data = json.loads(body_bytes)
                 if "json" in response_data:
                     plaintext = aes_decrypt(response_data["json"], target.symmetric_key, iv)
+                    if chute.standard_template == "vllm" and plaintext.startswith(
+                        b'{"object":"error","message":"input_ids cannot be empty."'
+                    ):
+                        logger.warning(
+                            f"Non-stream failed here: {chute.chute_id=} {target.instance_id=} {plaintext=}"
+                        )
+                        raise Exception(
+                            "SGLang backend failure, input_ids null error response produced."
+                        )
                     try:
                         data = {"content_type": "application/json", "json": json.loads(plaintext)}
                     except Exception as exc2:
@@ -672,6 +697,13 @@ async def invoke(
                 async for data in _invoke_one(
                     chute, path, stream, args, kwargs, target, metrics, prefixes, manager
                 ):
+                    try:
+                        if "input_ids cannot be empty" in str(data):
+                            logger.warning(
+                                f"Failed here: {chute.chute_id=} {target.instance_id=} {data=}"
+                            )
+                    except Exception:
+                        ...
                     yield sse({"result": data})
                     if request_path:
                         response_data.append(data)
