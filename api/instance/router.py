@@ -5,6 +5,7 @@ Routes for instances.
 import uuid
 import orjson as json
 import traceback
+from typing import Optional
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text
@@ -302,10 +303,17 @@ async def create_instance(
     return instance
 
 
+async def calc_token(origin_ip, extra_salt: Optional[str] = None):
+    target_string = f"{origin_ip}:{settings.ip_check_salt}"
+    if extra_salt:
+        target_string = f"{target_string}:{extra_salt}"
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, target_string))
+
+
 @router.get("/token_check")
-async def get_token(request: Request):
+async def get_token(salt: Optional[str] = None, request: Optional[Request] = None):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
-    return {"token": str(uuid.uuid5(uuid.NAMESPACE_OID, f"{origin_ip}:{settings.ip_check_salt}"))}
+    return {"token": calc_token(origin_ip, salt)}
 
 
 @router.patch("/{chute_id}/{instance_id}")

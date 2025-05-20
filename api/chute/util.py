@@ -211,6 +211,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     chute_name = name_match.group(2)
     chute_id_or_name = chute_id_or_name.lstrip("/")
     chute_user = await chutes_user_id()
+    user_sort_id = current_user.user_id if current_user else chute_user
     query = query.where(
         or_(
             and_(
@@ -235,7 +236,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
                 Chute.public.is_(True),
             ),
         )
-    ).order_by((Chute.user_id == chute_user).desc())
+    ).order_by((Chute.user_id == user_sort_id).desc())
 
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
