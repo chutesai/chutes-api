@@ -1,42 +1,47 @@
+{{- range $i := until (int .Values.cmRedis.shard_count) }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: cm-redis
+  name: cm-redis-{{ $i }}
   labels:
-    {{- include "cmRedis.labels" . | nindent 4 }}
+    {{- include "cmRedis.labels" $ | nindent 4 }}
+    shard: "{{ $i }}"
 spec:
-  replicas: {{ .Values.cmRedis.replicaCount }}
+  replicas: 1
   selector:
     matchLabels:
-      {{- include "cmRedis.labels" . | nindent 6 }}
+      {{- include "cmRedis.labels" $ | nindent 6 }}
+      shard: "{{ $i }}"
   template:
     metadata:
       labels:
-        {{- include "cmRedis.labels" . | nindent 8 }}
+        {{- include "cmRedis.labels" $ | nindent 8 }}
+        shard: "{{ $i }}"
     spec:
-      {{- with .Values.cmRedis.nodeSelector }}
+      {{- with $.Values.cmRedis.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.cmRedis.affinity }}
+      {{- with $.Values.cmRedis.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.cmRedis.tolerations }}
+      {{- with $.Values.cmRedis.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: redis
-          image: "{{ .Values.cmRedis.image }}"
-          imagePullPolicy: {{ .Values.cmRedis.imagePullPolicy }}
+          image: "{{ $.Values.cmRedis.image }}"
+          imagePullPolicy: {{ $.Values.cmRedis.imagePullPolicy }}
           args:
             - redis-server
             - --requirepass
             - $(REDIS_PASSWORD)
             - "--save"
             - ""
-            {{- range .Values.cmRedis.config.customArgs }}
+            {{- range $.Values.cmRedis.config.customArgs }}
             - {{ . }}
             {{- end }}
           env:
@@ -45,9 +50,12 @@ spec:
                 secretKeyRef:
                   name: redis-secret
                   key: password
+            - name: SHARD_ID
+              value: "{{ $i }}"
           ports:
             - name: redis
-              containerPort: {{ .Values.cmRedis.service.port }}
+              containerPort: {{ $.Values.cmRedis.service.port }}
               protocol: TCP
           resources:
-            {{- toYaml .Values.cmRedis.resources | nindent 12 }}
+            {{- toYaml $.Values.cmRedis.resources | nindent 12 }}
+{{- end }}

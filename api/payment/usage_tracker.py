@@ -16,7 +16,7 @@ from api.database import get_session
 
 async def process_balance_changes():
     current_time = int(time.time())
-    redis = settings.cm_redis_client
+    redis = settings.redis_client
 
     # Fetch all pending payment data in redis.
     keys_to_process = []

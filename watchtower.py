@@ -15,7 +15,7 @@ from collections import defaultdict
 from datetime import timedelta, datetime, timezone
 from api.config import settings
 from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
-from api.util import aes_encrypt, aes_decrypt
+from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
 from sqlalchemy import text, update, func, select
@@ -27,10 +27,6 @@ from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
 from api.chute.util import update_chute_utilization
 from api.invocation.util import generate_invocation_history_metrics
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes, padding
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-from cryptography.hazmat.backends import default_backend
 
 
 PAST_DAY_METRICS_QUERY = """
@@ -1390,44 +1386,6 @@ async def scale_down():
         await asyncio.sleep(60 * 60)
 
 
-def derive_key(key):
-    """
-    Derive the AES key.
-    """
-    stored_bytes = bytes.fromhex(settings.envcheck_key)
-    user_bytes = key
-    combined_secret = stored_bytes + user_bytes
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=bytes.fromhex(settings.envcheck_salt),
-        iterations=100000,
-        backend=default_backend(),
-    )
-    key = kdf.derive(combined_secret)
-    return key
-
-
-def load_envdump(encrypted_b64, key):
-    """
-    Decrypt data that was encrypted from the envcheck chute code.
-    """
-    actual_key = derive_key(key)
-    raw_data = base64.b64decode(encrypted_b64)
-    iv = raw_data[:16]
-    encrypted_data = raw_data[16:]
-    cipher = Cipher(
-        algorithms.AES(actual_key),
-        modes.CBC(iv),
-        backend=default_backend(),
-    )
-    unpadder = padding.PKCS7(128).unpadder()
-    decryptor = cipher.decryptor()
-    decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
-    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
-    return json.loads(unpadded_data.decode())
-
-
 async def get_env_dump(instance):
     """
     Load the environment dump from remote instance.
@@ -1443,7 +1401,7 @@ async def get_env_dump(instance):
         timeout=15.0,
     ) as resp:
         resp.raise_for_status()
-        return load_envdump(await resp.text(), key)
+        return json.loads(decrypt_envdump_cipher(await resp.text(), key))
 
 
 async def get_env_sig(instance, salt):

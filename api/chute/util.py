@@ -242,7 +242,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     return result.unique().scalar_one_or_none()
 
 
-@alru_cache(maxsize=100)
+@alru_cache(maxsize=100, ttl=30)
 async def chute_id_by_slug(slug: str):
     """
     Check if a chute exists with the specified slug (which is a subdomain for standard apps).
@@ -255,7 +255,7 @@ async def chute_id_by_slug(slug: str):
     return None
 
 
-@alru_cache(maxsize=100)
+@alru_cache(maxsize=100, ttl=30)
 async def get_one(name_or_id: str):
     """
     Load a chute by it's name or ID.
@@ -788,12 +788,16 @@ async def invoke(
                                 )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
-                    pipeline = settings.cm_redis_client.pipeline()
-                    key = f"balance:{user_id}:{chute.chute_id}"
-                    pipeline.hincrbyfloat(key, "amount", balance_used)
-                    pipeline.hincrby(key, "count", 1)
-                    pipeline.hset(key, "timestamp", int(time.time()))
-                    await pipeline.execute()
+                    try:
+                        pipeline = settings.redis_client.pipeline()
+                        key = f"balance:{user_id}:{chute.chute_id}"
+                        pipeline.hincrbyfloat(key, "amount", balance_used)
+                        pipeline.hincrby(key, "count", 1)
+                        pipeline.hset(key, "timestamp", int(time.time()))
+                        await pipeline.execute()
+                    except Exception as exc:
+                        logger.error(f"Error updating usage pipeline: {exc}")
+
                     if balance_used:
                         logger.info(
                             f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"

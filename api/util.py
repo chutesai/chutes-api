@@ -25,7 +25,8 @@ from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives import padding, hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from scalecodec.utils.ss58 import is_valid_ss58_address, ss58_decode
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
@@ -381,3 +382,41 @@ def should_slurp_code(chutes_version: str):
     if int(minor) >= 2 and int(bug) >= 20 or int(minor) > 2:
         return True
     return False
+
+
+def derive_envdump_key(key):
+    """
+    Derive the AES key from the envdump mechanism of chutes lib.
+    """
+    stored_bytes = bytes.fromhex(settings.envcheck_key)
+    user_bytes = key
+    combined_secret = stored_bytes + user_bytes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=bytes.fromhex(settings.envcheck_salt),
+        iterations=100000,
+        backend=default_backend(),
+    )
+    key = kdf.derive(combined_secret)
+    return key
+
+
+def decrypt_envdump_cipher(encrypted_b64, key):
+    """
+    Decrypt data that was encrypted from the envcheck chute code.
+    """
+    actual_key = derive_envdump_key(key)
+    raw_data = base64.b64decode(encrypted_b64)
+    iv = raw_data[:16]
+    encrypted_data = raw_data[16:]
+    cipher = Cipher(
+        algorithms.AES(actual_key),
+        modes.CBC(iv),
+        backend=default_backend(),
+    )
+    unpadder = padding.PKCS7(128).unpadder()
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
+    return unpadded_data

@@ -74,11 +74,14 @@ class Settings(BaseSettings):
     redis_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     )
-    cm_redis_client: redis.Redis = redis.Redis.from_url(
-        os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
-            "@redis.chutes.svc.cluster.local", "@cm-redis.chutes.svc.cluster.local"
+    cm_redis_client: list[redis.Redis] = [
+        redis.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
+                "@redis.chutes.svc.cluster.local", f"@cm-redis-{idx}.chutes.svc.cluster.local"
+            )
         )
-    )
+        for idx in range(int(os.getenv("CM_REDIS_SHARD_COUNT", "0")))
+    ]
     llm_cache_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
             "@redis.chutes.svc.cluster.local", "@llm-cache-redis.chutes.svc.cluster.local"
@@ -139,8 +142,11 @@ class Settings(BaseSettings):
     # Logos CDN hostname.
     logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
 
+    # Base domain.
+    base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
+
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 20))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
     ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 60))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))

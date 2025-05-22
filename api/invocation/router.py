@@ -336,7 +336,7 @@ async def _invoke(
         if not chute.openrouter:
             limit *= 2
         if is_paid_account:
-            limit *= 3
+            limit *= 2
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.

@@ -460,6 +460,7 @@ async def _deploy_chute(
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
         )
         chute.chutes_version = image.chutes_version
+        chute.cords = chute_args.cords
         chute.updated_at = func.now()
     else:
         try:

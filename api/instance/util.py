@@ -41,7 +41,11 @@ MANAGERS = {}
 
 
 class LeastConnManager:
-    def __init__(self, instances: list[Instance], connection_expiry: int = 600):
+    def __init__(self, chute_id: str, instances: list[Instance], connection_expiry: int = 600):
+        self.chute_id = chute_id
+        self.redis_client = settings.cm_redis_client[
+            uuid.UUID(chute_id).int % len(settings.cm_redis_client)
+        ]
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.lock = asyncio.Lock()
@@ -66,7 +70,7 @@ class LeastConnManager:
         now = time.time()
 
         # Get connection counts for each instance via redis pipe.
-        pipe = settings.cm_redis_client.pipeline()
+        pipe = self.redis_client.pipeline()
         to_query = [instance_id for instance_id in instance_ids if instance_id not in avoid]
         for instance_id in to_query:
             pipe.zcount(f"conn:{instance_id}", now - self.connection_expiry, now)
@@ -78,9 +82,8 @@ class LeastConnManager:
 
         # Periodically log counts for debugging.
         if random.random() < 0.05 and self.instances:
-            chute_id = list(self.instances.values())[0].chute_id
             logger.info(
-                f"Instance counts for {chute_id=}: {min_count=} mean_count={self.mean_count} instance_count={len(self.instances)}"
+                f"Instance counts for {self.chute_id=}: {min_count=} mean_count={self.mean_count} instance_count={len(self.instances)}"
             )
         if not counts:
             return []
@@ -104,7 +107,7 @@ class LeastConnManager:
             random.shuffle(grouped_by_count[count])
 
         # Prefix aware routing for LLM requests.
-        if prefixes and random.random() <= 0.75 and False:
+        if prefixes and random.random() <= 0.75:
             likely_cached = set([])
             for size, prefix_hash in prefixes:
                 try:
@@ -170,17 +173,18 @@ class LeastConnManager:
             yield None
             return
         instance = targets[0]
-        await settings.cm_redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
-        await settings.cm_redis_client.expire(
-            f"conn:{instance.instance_id}", self.connection_expiry
-        )
+        try:
+            await self.redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
+            await self.redis_client.expire(f"conn:{instance.instance_id}", self.connection_expiry)
+        except Exception as exc:
+            logger.warning(f"Error tracking connection counts: {exc}")
         try:
             yield instance
-        except Exception:
-            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
-            raise
         finally:
-            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            try:
+                await self.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            except Exception as exc:
+                logger.warning(f"Error cleaning up connection counts: {exc}")
 
     async def clean_up_expired_connections(self):
         now = time.time()
@@ -188,7 +192,7 @@ class LeastConnManager:
             return
         for instance_id in self.instances:
             try:
-                removed_count = await settings.cm_redis_client.zremrangebyscore(
+                removed_count = await self.redis_client.zremrangebyscore(
                     f"conn:{instance_id}",
                     0,
                     now - self.connection_expiry,
@@ -260,7 +264,7 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
     if not instances:
         return None
     if chute_id not in MANAGERS:
-        MANAGERS[chute_id] = LeastConnManager(instances=instances)
+        MANAGERS[chute_id] = LeastConnManager(chute_id=chute_id, instances=instances)
         async with MANAGERS[chute_id].lock:
             await MANAGERS[chute_id].initialize()
     async with MANAGERS[chute_id].lock:
