@@ -10,10 +10,12 @@ import random
 import hashlib
 import traceback
 import re
+import time
 import base64
 import backoff
 import secrets
 import orjson as json
+from async_lru import alru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
@@ -24,7 +26,9 @@ from api.util import (
     use_encryption_v2,
     use_encrypted_path,
     should_slurp_code,
+    decrypt_envdump_cipher,
 )
+from api.gpu import SUPPORTED_GPUS
 from api.database import get_session
 from api.node.schemas import Node
 from api.chute.schemas import Chute, RollingUpdate
@@ -80,20 +84,89 @@ def get_actual_path(instance, path):
     interval=10,
     max_tries=7,
 )
-async def verify_device_info_challenge(devices, challenge, response):
+async def verify_device_info_challenge(devices, challenge, response, with_chutes: bool = False):
     """
     Verify a device info challenge.
     """
     async with aiohttp.ClientSession(raise_for_status=True) as session:
+        url = (
+            f"https://chutes-graval-device-challenge.{settings.base_domain}/verify_device_hash"
+            if with_chutes
+            else f"{settings.graval_url}/verify_device_challenge"
+        )
+        headers = {}
+        if with_chutes:
+            headers["Authorization"] = settings.codecheck_key
         async with session.post(
-            f"{settings.graval_url}/verify_device_challenge",
+            url,
             json={
                 "devices": devices,
                 "challenge": challenge,
                 "response": response,
             },
+            headers=headers,
         ) as resp:
             return (await resp.json())["result"]
+
+
+async def get_encryption_settings(
+    node,
+    path,
+    data,
+    with_chutes: bool = True,
+    cuda: bool = True,
+    seed: int = None,
+    iterations: int = None,
+):
+    """
+    Determine the chute to use for encryption with validator infra fallback/option.
+    """
+    # Determine which chute to call, if we are using chutes rather than a validator GPU.
+    memory = SUPPORTED_GPUS.get(node.gpu_identifier, {}).get("memory", 140)
+    suffix = "large" if memory > 48 else "small"
+    suffix = f"cuda-{suffix}" if cuda else f"opencl-{suffix}"
+    slug = f"chutes-graval-{suffix}"
+
+    # Double check this chute is available.
+    if slug not in await available_verification_chutes():
+        with_chutes = False
+
+    # Encrypt the payload.
+    url = (
+        f"{settings.graval_url}/{path}"
+        if not with_chutes
+        else f"https://{slug}.{settings.base_domain}/{path}"
+    )
+    headers = {}
+    if with_chutes:
+        headers["Authorization"] = settings.codecheck_key
+    payload = {
+        "device_info": node.graval_dict(),
+        "seed": seed if seed is not None else random.randint(0, 999999999999),
+    }
+    if not cuda:
+        payload["iterations"] = iterations or 1
+    if path == "encrypt":
+        if with_chutes:
+            payload.update(
+                {
+                    "key": secrets.token_bytes(16).hex(),
+                    "text": data if isinstance(data, str) else json.dumps(data).decode(),
+                }
+            )
+        else:
+            payload.update(
+                {
+                    "payload": data if isinstance(data, str) else json.dumps(data).decode(),
+                }
+            )
+    else:
+        if with_chutes:
+            payload.update({"data": data})
+        else:
+            payload.update({"payload": data})
+
+    return url, payload, headers, with_chutes
 
 
 @backoff.on_exception(
@@ -103,56 +176,103 @@ async def verify_device_info_challenge(devices, challenge, response):
     interval=10,
     max_tries=7,
 )
-async def generate_cipher(node):
+async def graval_encrypt(
+    node, payload, with_chutes=True, cuda=True, seed: int = None, iterations: int = None
+):
+    """
+    Encrypt data via the GraVal PoW mechanism.
+    """
+    url, data, headers, chute = await get_encryption_settings(
+        node, with_chutes=with_chutes, cuda=cuda, seed=seed, iterations=iterations
+    )
+    async with aiohttp.ClientSession(raise_for_status=True) as session:
+        async with session.post(url, json=data, headers=headers) as resp:
+            logger.success(f"Generated ciphertext for {node.uuid} via {url=}")
+            if chute:
+                data = await resp.json()
+                return decrypt_envdump_cipher(data["cipher"], data["key"])
+            return await resp.text()
+
+
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=10,
+    max_tries=7,
+)
+async def graval_decrypt(
+    node, payload, with_chutes=True, cuda=True, iterations: int = None, seed: int = None
+):
+    """
+    Decrypt data via the GraVal PoW mechanism.
+    """
+    url, data, headers, chute = await get_encryption_settings(
+        node, payload, with_chutes=with_chutes, cuda=cuda, seed=seed, iterations=iterations
+    )
+    async with aiohttp.ClientSession(raise_for_status=True) as session:
+        async with session.post(url, json=data, headers=headers) as resp:
+            logger.success(f"Decrypted ciphertext from node {node.uuid} via {url=}")
+            if chute:
+                text = (await resp.json())["plaintext"]
+                return decrypt_envdump_cipher(text, data["key"])
+            return await resp.text()
+
+
+async def generate_cipher(node, with_chutes=True, cuda=True, iterations: int = None):
     """
     Encrypt some data on the validator side and see if the miner can decrypt it.
     """
     plaintext = f"decrypt me please: {uuid.uuid4()}"
-    async with aiohttp.ClientSession(raise_for_status=True) as session:
-        async with session.post(
-            f"{settings.graval_url}/encrypt",
-            json={
-                "payload": {
-                    "plaintext": plaintext,
-                },
-                "device_info": node.graval_dict(),
-                "device_id": node.device_index,
-                "seed": node.seed,
-            },
-        ) as resp:
-            data = (await resp.json())["plaintext"]
-            logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {data=}")
-            return plaintext, CipherChallenge(
-                ciphertext=data["ciphertext"],
-                iv=data["iv"],
-                length=data["length"],
-                device_id=node.device_index,
-                seed=node.seed,
-            )
+    cipher = await graval_encrypt(
+        node, plaintext, with_chutes=with_chutes, cuda=cuda, seed=node.seed, iterations=iterations
+    )
+    logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {cipher=}")
+    return plaintext, cipher
 
 
-async def check_encryption_challenge(
-    node: Node, challenge: CipherChallenge, plaintext: str
-) -> bool:
+async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str) -> bool:
     """
     Send a single device decryption challenge.
     """
     url = f"http://{node.verification_host}:{node.verification_port}/challenge/decrypt"
+    graval_config = SUPPORTED_GPUS[node.gpu_identifier]["graval"]
+    payload = {
+        "ciphertext": ciphertext,
+        "seed": node.seed,
+        "iterations": graval_config["iterations"],
+        "device_index": node.device_index,
+    }
+
+    # Send the request and verify the response.
     error_message = None
     try:
+        started_at = time.time()
         async with miner_client.post(
-            node.miner_hotkey, url, payload=challenge.dict(), timeout=12.0
+            node.miner_hotkey,
+            url,
+            payload=payload,
+            timeout=int(graval_config["estimate"] * 1.12),
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
             else:
                 response_text = (await response.json())["plaintext"]
-                assert response_text == plaintext, (
-                    f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
-                )
+                if response_text != plaintext:
+                    error_message = (
+                        f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
+                    )
+                else:
+                    delta = time.time() - started_at
+                    if not graval_config["timeout"] * 0.88 < delta < graval_config["timeout"] * 1.12:
+                        error_message = (
+                            f"GraVal decryption challenge completed in {int(delta)} seconds, "
+                            "but estimate is {graval_config['estimate']} seconds"
+                        )
     except Exception as exc:
-        logger.error(traceback.format_exc())
-        error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc}"
+        error_message = f"Unhandled exception performing miner decryption challenge: {exc=}\n{traceback.format_exc()}"
+
+    # Store the reason for the verification error, upon failure.
     if error_message:
         logger.error(error_message)
         async with get_session() as session:
@@ -163,11 +283,12 @@ async def check_encryption_challenge(
             )
         await session.commit()
         return False
+
     return True
 
 
 async def check_device_info_challenge(
-    nodes: List[Node], url: str = None, purpose: str = "graval"
+    nodes: List[Node], url: str = None, purpose: str = "graval", verify_with_chutes: bool = False
 ) -> bool:
     """
     Send a single device info challenge.
@@ -192,6 +313,7 @@ async def check_device_info_challenge(
                     [node.graval_dict() for node in nodes],
                     challenge,
                     response,
+                    verify_with_chutes=verify_with_chutes,
                 )
     except Exception as exc:
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc} {traceback.format_exc()}"
@@ -209,9 +331,9 @@ async def check_device_info_challenge(
 
 
 @broker.task
-async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
+async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]:
     """
-    Validate a single node.
+    Validate GPUs.
     """
     nodes = None
     async with get_session() as session:
@@ -225,12 +347,12 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             return False, "nodes not found"
 
     # Generate ciphertexts for each GPU.
-    challenges = await asyncio.gather(*[generate_cipher(node) for node in nodes])
+    challenges = await asyncio.gather(*[generate_cipher(node, cuda=cuda) for node in nodes])
 
     # See if they decrypt properly.
     successes = await asyncio.gather(
         *[
-            check_encryption_challenge(nodes[idx], challenges[idx][1], challenges[idx][0])
+            check_encryption_challenge(nodes[idx], challenges[idx][0], challenges[idx][1])
             for idx in range(len(uuids))
         ]
     )
@@ -299,7 +421,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     seed = instance.nodes[0].seed
     expected = str(uuid.uuid4())
     payload = None
-    logger.info(f"Trying to encrypt: {expected} via {settings.graval_url}/encrypt")
+    logger.info(f"Trying to encrypt: {expected}")
     async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
         async with graval_session.post(
             f"{settings.graval_url}/encrypt",
@@ -597,6 +719,28 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
     return passed == len(challenges)
 
 
+@alru_cache(maxsize=1, ttl=600)
+async def available_verification_chutes():
+    """
+    Find chutes enabling device challenges and/or graval PoW challenges.
+    """
+    options = [
+        "chutes-graval-device-challenge",
+        "chutes-graval-cuda-large",
+        "chutes-graval-cuda-small",
+        "chutes-graval-opencl-large",
+        "chutes-graval-opencl-small",
+    ]
+    available = {key: False for key in options}
+    async with get_session() as session:
+        query = select(Chute).where(Chute.slug.in_(options))
+        result = (await session.execute(query)).unique().scalars()
+        for chute in result:
+            available[chute.slug] = True
+            logger.success(f"Enabling chutes-based challenges for {chute.slug=}")
+    return available
+
+
 @broker.task
 async def verify_instance(instance_id: str):
     """
@@ -665,14 +809,33 @@ async def verify_instance(instance_id: str):
         # Device info challenges.
         path = get_actual_path(instance, "_device_challenge")
         url = f"http://{instance.host}:{instance.port}/{path}"
-        for _ in range(settings.device_info_challenge_count):
-            if not await check_device_info_challenge(instance.nodes, url=url, purpose="chutes"):
+
+        # Use chutes itself for verification, if not the verification chutes, thereby federating validation.
+        chutes_based = await available_verification_chutes()
+        verify_with_chutes = False
+        if (
+            not instance.chute.slug.startswith(("chutes-graval-", "chutes-device-challenge"))
+            and "chutes-graval-device-challenge" in chutes_based
+        ):
+            verify_with_chutes = True
+            logger.success(
+                f"Using chutes-based device challenge verification API for {instance.chute.slug=}"
+            )
+
+        for idx in range(settings.device_info_challenge_count):
+            if not await check_device_info_challenge(
+                instance.nodes, url=url, purpose="chutes", verify_with_chutes=verify_with_chutes
+            ):
                 error_message = f"{instance_id=} failed one or more device info challenges"
                 logger.warning(error_message)
                 instance.verification_error = error_message
                 await session.commit()
                 await settings.redis_client.delete(f"verify:lock:{instance_id}")
                 return
+            else:
+                logger.success(
+                    f"{instance_id=} passed device info challenge {idx + 1} of {settings.device_info_challenge_count}"
+                )
 
         # Looks good!
         logger.success(f"Instance {instance_id=} has passed verification!")

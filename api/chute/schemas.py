@@ -9,7 +9,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey, BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE, COMPUTE_UNIT_PRICE_BASIS
+from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
 from api.fmv.fetcher import get_fetcher
 from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional, Dict, Any
@@ -45,30 +45,23 @@ class NodeSelector(BaseModel):
     @validator("include")
     def include_supported_gpus(cls, gpus):
         """
-        Simple validation for including specific GPUs in the filter.  We're currently
-        only allowing high availability and likely-to-be-selected GPUs in this list.
+        Simple validation for including specific GPUs in the filter.
         """
         if not gpus:
             return gpus
-        if not set(map(lambda s: s.lower(), gpus)) & ALLOWED_INCLUDE:
-            raise ValueError(
-                f"include must allow for at least one of the following GPUs: {list(ALLOWED_INCLUDE)}"
-            )
+        if extra := set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
+            raise ValueError(f"Invalid GPU identifiers `include`: {extra}")
         return gpus
 
     @validator("exclude")
     def validate_exclude(cls, gpus):
         """
-        Make sure people don't try to be sneaky with the exclude flag to XOR
-        the list of allowed GPUs.
+        Simpe validation for excluding specific GPUs.
         """
         if not gpus:
             return gpus
-        remaining = set(SUPPORTED_GPUS) - set(gpus)
-        if not remaining & ALLOWED_INCLUDE:
-            raise ValueError(
-                f"exclude must allow for at least one the following GPUs: {list(ALLOWED_INCLUDE)}"
-            )
+        if extra := set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
+            raise ValueError(f"Invalid GPU identifiers `exclude`: {extra}")
         return gpus
 
     @computed_field
