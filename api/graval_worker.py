@@ -147,17 +147,11 @@ async def get_encryption_settings(
     if not cuda:
         payload["iterations"] = iterations or 1
     if path == "encrypt":
+        payload.update({"payload": data if isinstance(data, str) else json.dumps(data).decode()})
         if with_chutes:
             payload.update(
                 {
                     "key": secrets.token_bytes(16).hex(),
-                    "text": data if isinstance(data, str) else json.dumps(data).decode(),
-                }
-            )
-        else:
-            payload.update(
-                {
-                    "payload": data if isinstance(data, str) else json.dumps(data).decode(),
                 }
             )
     else:
@@ -183,14 +177,26 @@ async def graval_encrypt(
     Encrypt data via the GraVal PoW mechanism.
     """
     url, data, headers, chute = await get_encryption_settings(
-        node, with_chutes=with_chutes, cuda=cuda, seed=seed, iterations=iterations
+        node,
+        "encrypt",
+        payload,
+        with_chutes=with_chutes,
+        cuda=cuda,
+        seed=seed,
+        iterations=iterations,
     )
+    logger.info(f"Using {url=} for graval with data={json.dumps(data).decode()}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(url, json=data, headers=headers) as resp:
             logger.success(f"Generated ciphertext for {node.uuid} via {url=}")
             if chute:
-                data = await resp.json()
-                return decrypt_envdump_cipher(data["cipher"], data["key"])
+                body = await resp.json()
+                result = json.loads(
+                    decrypt_envdump_cipher(body["cipher"], bytes.fromhex(data["key"]))
+                )
+                return base64.b64encode(
+                    bytes.fromhex(result["iv"]) + bytes.fromhex(result["ciphertext"])
+                ).decode()
             return await resp.text()
 
 
@@ -208,7 +214,13 @@ async def graval_decrypt(
     Decrypt data via the GraVal PoW mechanism.
     """
     url, data, headers, chute = await get_encryption_settings(
-        node, payload, with_chutes=with_chutes, cuda=cuda, seed=seed, iterations=iterations
+        node,
+        "decrypt",
+        payload,
+        with_chutes=with_chutes,
+        cuda=cuda,
+        seed=seed,
+        iterations=iterations,
     )
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(url, json=data, headers=headers) as resp:
@@ -264,7 +276,11 @@ async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str
                     )
                 else:
                     delta = time.time() - started_at
-                    if not graval_config["timeout"] * 0.88 < delta < graval_config["timeout"] * 1.12:
+                    if (
+                        not graval_config["timeout"] * 0.88
+                        < delta
+                        < graval_config["timeout"] * 1.12
+                    ):
                         error_message = (
                             f"GraVal decryption challenge completed in {int(delta)} seconds, "
                             "but estimate is {graval_config['estimate']} seconds"
@@ -415,29 +431,33 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     if not settings.graval_url:
         logger.info("GraVal disabled, skipping _verify_instance_graval...")
         return True
-    device_dicts = [node.graval_dict() for node in instance.nodes]
-    target_index = random.randint(0, len(device_dicts) - 1)
-    target_device = device_dicts[target_index]
-    seed = instance.nodes[0].seed
-    expected = str(uuid.uuid4())
-    payload = None
-    logger.info(f"Trying to encrypt: {expected}")
-    async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
-        async with graval_session.post(
-            f"{settings.graval_url}/encrypt",
-            json={
-                "payload": {
-                    "hello": expected,
-                },
-                "device_info": target_device,
-                "device_id": target_index,
-                "seed": seed,
-            },
-            timeout=30.0,
-        ) as resp:
-            payload = await resp.json()
 
-    logger.info(f"Sending encrypted payload to _ping endpoint for graval verification: {payload}")
+    # Generate a ciphertext for a random GPU on the instance.
+    target_index = random.choice(list(range(len(instance.nodes))))
+    target_node = instance.nodes[target_index]
+    expected = str(uuid.uuid4())
+    ciphertext = await graval_encrypt(
+        target_node,
+        expected,
+        with_chutes=True,
+        cuda=True,
+        seed=target_node.seed,
+    )
+
+    # Format the payload to accomodate the old mechanism.
+    bytes_ = base64.b64decode(ciphertext)
+    iv = bytes_[:16]
+    cipher = bytes_[16:]
+    payload = {
+        "hello": {
+            "ciphertext": base64.b64encode(cipher).decode(),
+            "iv": iv.hex(),
+            "length": len(cipher),
+            "device_id": target_index,
+            "seed": target_node.seed,
+        },
+    }
+    logger.info(f"Sending encrypted payload to _ping endpoint for graval verification: {payload=}")
     path = get_actual_path(instance, "_ping")
     async with miner_client.post(
         instance.miner_hotkey,
