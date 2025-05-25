@@ -85,19 +85,23 @@ def get_actual_path(instance, path):
     interval=10,
     max_tries=7,
 )
-async def verify_device_info_challenge(devices, challenge, response, with_chutes: bool = False):
+async def verify_device_info_challenge(
+    devices, challenge, response, with_chutes: bool = False, opencl: bool = False
+):
     """
     Verify a device info challenge.
     """
+    url = f"https://chutes-graval-device-challenge.{settings.base_domain}/verify_device_hash"
+    headers = {}
+    if not with_chutes:
+        if opencl:
+            url = f"{settings.opencl_graval_url}/verify_device_challenge"
+        else:
+            url = f"{settings.graval_url}/verify_device_challenge"
+    else:
+        headers["Authorization"] = settings.codecheck_key
+
     async with aiohttp.ClientSession(raise_for_status=True) as session:
-        url = (
-            f"https://chutes-graval-device-challenge.{settings.base_domain}/verify_device_hash"
-            if with_chutes
-            else f"{settings.graval_url}/verify_device_challenge"
-        )
-        headers = {}
-        if with_chutes:
-            headers["Authorization"] = settings.codecheck_key
         async with session.post(
             url,
             json={
@@ -232,13 +236,19 @@ async def graval_decrypt(
             return await resp.text()
 
 
-async def generate_cipher(node, with_chutes=True, cuda=True, iterations: int = None):
+async def generate_cipher(node):
     """
     Encrypt some data on the validator side and see if the miner can decrypt it.
     """
     plaintext = f"decrypt me please: {uuid.uuid4()}"
+    graval_config = SUPPORTED_GPUS[node.gpu_identifier]["graval"]
     cipher = await graval_encrypt(
-        node, plaintext, with_chutes=with_chutes, cuda=cuda, seed=node.seed, iterations=iterations
+        node,
+        plaintext,
+        with_chutes=False,
+        cuda=False,
+        seed=node.seed,
+        iterations=graval_config["iterations"],
     )
     logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {cipher=}")
     return plaintext, cipher
@@ -248,7 +258,7 @@ async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str
     """
     Send a single device decryption challenge.
     """
-    url = f"http://{node.verification_host}:{node.verification_port}/challenge/decrypt"
+    url = f"http://{node.verification_host}:{node.verification_port}/decrypt"
     graval_config = SUPPORTED_GPUS[node.gpu_identifier]["graval"]
     payload = {
         "ciphertext": ciphertext,
@@ -305,13 +315,17 @@ async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str
 
 
 async def check_device_info_challenge(
-    nodes: List[Node], url: str = None, purpose: str = "graval", verify_with_chutes: bool = False
+    nodes: List[Node],
+    url: str = None,
+    purpose: str = "graval",
+    verify_with_chutes: bool = False,
+    opencl: bool = False,
 ) -> bool:
     """
     Send a single device info challenge.
     """
     if not url:
-        url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/challenge/info"
+        url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/info"
     error_message = None
     try:
         challenge = generate_device_info_challenge(len(nodes))
@@ -331,6 +345,7 @@ async def check_device_info_challenge(
                     challenge,
                     response,
                     verify_with_chutes=verify_with_chutes,
+                    opencl=opencl,
                 )
     except Exception as exc:
         error_message = f"Failed to perform decryption challenge: [unhandled exception] {exc} {traceback.format_exc()}"
@@ -363,8 +378,15 @@ async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
 
-    # Generate ciphertexts for each GPU.
-    challenges = await asyncio.gather(*[generate_cipher(node, cuda=cuda) for node in nodes])
+    # Fast pass, do simple device info challenges.
+    for _ in range(settings.device_info_challenge_count):
+        if not await check_device_info_challenge(nodes, opencl=True):
+            error_message = "one or more device info challenges failed"
+            logger.warning(error_message)
+            return False, error_message
+
+    # Generate ciphertexts for each GPU for PoVW
+    challenges = await asyncio.gather(*[generate_cipher(node) for node in nodes])
 
     # See if they decrypt properly.
     successes = await asyncio.gather(
@@ -381,12 +403,7 @@ async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]
         f"All encryption checks [count={len(successes)}] passed successfully, trying device challenges..."
     )
 
-    for _ in range(settings.device_info_challenge_count):
-        if not await check_device_info_challenge(nodes):
-            error_message = "one or more device info challenges failed"
-            logger.warning(error_message)
-            return False, error_message
-
+    # Looks good!
     logger.success(f"Nodes {uuids} passed all preliminary node validation challenges!")
     async with get_session() as session:
         await session.execute(
