@@ -39,6 +39,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
+from watchtower import get_env_dump, get_expected_command
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 
@@ -457,6 +458,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
             "seed": target_node.seed,
         },
     }
+
     logger.info(f"Sending encrypted payload to _ping endpoint for graval verification: {payload=}")
     path = get_actual_path(instance, "_ping")
     async with miner_client.post(
@@ -484,28 +486,32 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
     """
     Create a new symmetric key and send it over to the miner via GraVal encryption.
     """
-    # Encrypt that key with GraVal so it can only be decrypted by one of the miner GPUs.
-    device_dicts = [node.graval_dict() for node in instance.nodes]
-    target_index = random.randint(0, len(device_dicts) - 1)
-    target_device = device_dicts[target_index]
-    seed = instance.nodes[0].seed
-    payload = None
-    async with aiohttp.ClientSession(raise_for_status=True) as graval_session:
-        async with graval_session.post(
-            f"{settings.graval_url}/encrypt",
-            json={
-                "payload": {
-                    "symmetric_key": instance.symmetric_key,
-                },
-                "device_info": target_device,
-                "device_id": target_index,
-                "seed": seed,
-            },
-            timeout=60.0,
-        ) as resp:
-            payload = await resp.json()
+    # Generate a ciphertext for a random GPU on the instance.
+    target_index = random.choice(list(range(len(instance.nodes))))
+    target_node = instance.nodes[target_index]
+    ciphertext = await graval_encrypt(
+        target_node,
+        instance.symmetric_key,
+        with_chutes=True,
+        cuda=True,
+        seed=target_node.seed,
+    )
 
-    # Now we can send that over to the miner's /_exchange endpoint.
+    # Format the payload to accomodate the old mechanism.
+    bytes_ = base64.b64decode(ciphertext)
+    iv = bytes_[:16]
+    cipher = bytes_[16:]
+    payload = {
+        "symmetric_key": {
+            "ciphertext": base64.b64encode(cipher).decode(),
+            "iv": iv.hex(),
+            "length": len(cipher),
+            "device_id": target_index,
+            "seed": target_node.seed,
+        },
+    }
+
+    # Send the encrypted symmetric key over to the instance.
     async with miner_client.post(
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/_exchange",
@@ -578,6 +584,34 @@ async def _verify_filesystem_challenge(instance: Instance, challenge: FSChalleng
         return True
 
 
+async def check_envdump_command(instance):
+    """
+    Check the running command via chutes envdump, for supported chutes versions.
+    """
+    chute = instance.chute
+    if not re.match(
+        r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
+    ):
+        logger.warning(
+            f"Unable to check envdump command line for {chute.chutes_version=} {chute.chute_id=}"
+        )
+        return True
+
+    # Load the dump.
+    dump = await get_env_dump(instance)
+    process = dump[1] if isinstance(dump, list) else dump["process"]
+    assert process["pid"] == 1
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"]))
+    if command_line != get_expected_command(instance, instance.chute):
+        logger.error(
+            f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} running invalid process: {command_line}"
+        )
+        return False
+    logger.success(
+        f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} code validation success: {command_line=}"
+    )
+
+
 @backoff.on_exception(
     backoff.constant,
     Exception,
@@ -589,6 +623,10 @@ async def check_live_code(instance: Instance) -> bool:
     """
     Check the running command.
     """
+    if not await check_envdump_code(instance):
+        return False
+
+    # Filesystem version.
     payload = {"path": "/proc/1/cmdline"}
     payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
     iv = payload[:32]
@@ -608,24 +646,8 @@ async def check_live_code(instance: Instance) -> bool:
             .replace("\x00", " ")
             .strip()
         )
-        command_line = re.sub(r"python3(\.[0-9]+)", "python3", command_line)
-        expected = " ".join(
-            [
-                "/opt/python/bin/python3",
-                "/home/chutes/.local/bin/chutes",
-                "run",
-                instance.chute.ref_str,
-                "--port",
-                "8000",
-                "--graval-seed",
-                str(instance.nodes[0].seed),
-                "--miner-ss58",
-                instance.miner_hotkey,
-                "--validator-ss58",
-                settings.validator_ss58,
-            ]
-        )
-        if command_line != expected:
+        command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
+        if command_line != get_expected_command(instance, chute):
             logger.error(
                 f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"
             )
