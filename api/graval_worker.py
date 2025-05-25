@@ -100,7 +100,7 @@ async def verify_device_info_challenge(
             url = f"{settings.graval_url}/verify_device_challenge"
     else:
         headers["Authorization"] = settings.codecheck_key
-
+    logger.info(f"Verifying device info challenge hash with {url=}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(
             url,
@@ -137,11 +137,12 @@ async def get_encryption_settings(
         with_chutes = False
 
     # Encrypt the payload.
-    url = (
-        f"{settings.graval_url}/{path}"
-        if not with_chutes
-        else f"https://{slug}.{settings.base_domain}/{path}"
-    )
+    url = f"https://{slug}.{settings.base_domain}/{path}"
+    if not with_chutes:
+        if cuda:
+            url = f"{settings.graval_url}/{path}"
+        else:
+            url = f"{settings.opencl_graval_url}/{path}"
     headers = {}
     if with_chutes:
         headers["Authorization"] = settings.codecheck_key
@@ -254,7 +255,9 @@ async def generate_cipher(node):
     return plaintext, cipher
 
 
-async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str) -> bool:
+async def check_encryption_challenge(
+    node: Node, plaintext: str, ciphertext: str, timeout: int = None
+) -> bool:
     """
     Send a single device decryption challenge.
     """
@@ -275,7 +278,7 @@ async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str
             node.miner_hotkey,
             url,
             payload=payload,
-            timeout=int(graval_config["estimate"] * 1.12),
+            timeout=timeout or int(graval_config["estimate"] * 1.12),
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
@@ -285,16 +288,16 @@ async def check_encryption_challenge(node: Node, plaintext: str, ciphertext: str
                     error_message = (
                         f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
                     )
-                else:
+                elif timeout is None:
                     delta = time.time() - started_at
                     if (
-                        not graval_config["timeout"] * 0.88
+                        not graval_config["estimate"] * 0.88
                         < delta
-                        < graval_config["timeout"] * 1.12
+                        < graval_config["estimate"] * 1.12
                     ):
                         error_message = (
                             f"GraVal decryption challenge completed in {int(delta)} seconds, "
-                            "but estimate is {graval_config['estimate']} seconds"
+                            f"but estimate is {graval_config['estimate']} seconds"
                         )
     except Exception as exc:
         error_message = f"Unhandled exception performing miner decryption challenge: {exc=}\n{traceback.format_exc()}"
@@ -318,7 +321,7 @@ async def check_device_info_challenge(
     nodes: List[Node],
     url: str = None,
     purpose: str = "graval",
-    verify_with_chutes: bool = False,
+    with_chutes: bool = False,
     opencl: bool = False,
 ) -> bool:
     """
@@ -344,7 +347,7 @@ async def check_device_info_challenge(
                     [node.graval_dict() for node in nodes],
                     challenge,
                     response,
-                    verify_with_chutes=verify_with_chutes,
+                    with_chutes=with_chutes,
                     opencl=opencl,
                 )
     except Exception as exc:
@@ -388,23 +391,31 @@ async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]
     # Generate ciphertexts for each GPU for PoVW
     challenges = await asyncio.gather(*[generate_cipher(node) for node in nodes])
 
-    # See if they decrypt properly.
-    successes = await asyncio.gather(
-        *[
-            check_encryption_challenge(nodes[idx], challenges[idx][0], challenges[idx][1])
-            for idx in range(len(uuids))
-        ]
-    )
-    if not all(successes):
+    # See if they decrypt properly - send one challenge first, which triggers the graval
+    # init for all GPUs, then if/when that passes we can call the decryption endpoint
+    # for all other GPUs concurrently and it will be virtually instant.
+    if not await check_encryption_challenge(nodes[0], challenges[0][0], challenges[0][1]):
         error_message = "one or more decryption challenges failed"
         logger.warning(error_message)
         return False, error_message
-    logger.success(
-        f"All encryption checks [count={len(successes)}] passed successfully, trying device challenges..."
-    )
+    if len(nodes) > 1:
+        successes = await asyncio.gather(
+            *[
+                check_encryption_challenge(
+                    nodes[idx], challenges[idx][0], challenges[idx][1], timeout=3.0
+                )
+                for idx in range(1, len(nodes))
+            ]
+        )
+        if not all(successes):
+            error_message = "one or more decryption challenges failed"
+            logger.warning(error_message)
+            return False, error_message
 
-    # Looks good!
-    logger.success(f"Nodes {uuids} passed all preliminary node validation challenges!")
+    # Validation success.
+    logger.success(
+        f"Successfully performed GraVal PoVW decryption challenges on {len(nodes)} devices."
+    )
     async with get_session() as session:
         await session.execute(
             update(Node)
@@ -413,7 +424,7 @@ async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]
         )
 
     # Notify the miner.
-    async def _verify_one(gpu_id):
+    async def _notify_one(gpu_id):
         try:
             event_data = {
                 "reason": "gpu_verified",
@@ -430,8 +441,7 @@ async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]
                 f"Error notifying miner that GPU is verified: {exc}\n{traceback.format_exc()}"
             )
 
-    await asyncio.gather(*[_verify_one(gpu_id) for gpu_id in uuids])
-
+    await asyncio.gather(*[_notify_one(gpu_id) for gpu_id in uuids])
     return True, None
 
 
