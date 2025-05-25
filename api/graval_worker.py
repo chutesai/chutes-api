@@ -623,7 +623,7 @@ async def check_live_code(instance: Instance) -> bool:
     """
     Check the running command.
     """
-    if not await check_envdump_code(instance):
+    if not await check_envdump_command(instance):
         return False
 
     # Filesystem version.
@@ -647,7 +647,8 @@ async def check_live_code(instance: Instance) -> bool:
             .strip()
         )
         command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
-        if command_line != get_expected_command(instance, chute):
+        expected = get_expected_command(instance, instance.chute)
+        if command_line != expected:
             logger.error(
                 f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"
             )

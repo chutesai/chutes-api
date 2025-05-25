@@ -340,7 +340,9 @@ async def check_weight_files(
             "end_byte": end_byte,
         }
         try:
+            started_at = time.time()
             data = await do_slurp(instance, payload, encrypted_slurp)
+            duration = time.time() - started_at
             if data is None:
                 hard_failed.append(instance)
                 continue
@@ -355,8 +357,13 @@ async def check_weight_files(
                 incorrect.append(instance)
             else:
                 logger.success(
-                    f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest}"
+                    f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest} {duration=}"
                 )
+                if duration > 5.0:
+                    logger.warning(
+                        f"Duration to fetch model weight map exceeded expected duration: {duration=}"
+                    )
+                    soft_failed.append(instance)
         except Exception as exc:
             logger.warning(
                 f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
@@ -428,7 +435,9 @@ async def check_llm_weights(chute, instances):
             nice_name = chute.name.replace("/", "--")
             payload = {"path": f"/cache/hub/models--{nice_name}/snapshots/{revision}/{target_path}"}
             try:
+                started_at = time.time()
                 data = await do_slurp(instance, payload, encrypted_slurp)
+                duration = time.time() - started_at
                 if data is None:
                     hard_failed.append(instance)
                     continue
@@ -443,8 +452,13 @@ async def check_llm_weights(chute, instances):
                     )
                     incorrect.append(instance)
                 logger.info(
-                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest}"
+                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest} {duration=}"
                 )
+                if duration > 7.0:
+                    logger.warning(
+                        f"Duration to fetch model weight map exceeded expected duration: {duration=}"
+                    )
+                    soft_failed.append(instance)
             except Exception as exc:
                 logger.warning(
                     f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
