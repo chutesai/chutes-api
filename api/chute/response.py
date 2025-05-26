@@ -35,6 +35,7 @@ class ChuteResponse(BaseModel):
     instances: Optional[List[MinimalInstanceResponse]] = []
     logo_id: Optional[str]
     openrouter: Optional[bool] = False
+    chutes_version: Optional[str] = None
 
     class Config:
         from_attributes = True
