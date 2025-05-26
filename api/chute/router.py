@@ -395,7 +395,7 @@ async def _deploy_chute(
             detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
 
-    # Prevent h200 usage for now.
+    # Limit h200 and b200 usage.
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
@@ -408,12 +408,14 @@ async def _deploy_chute(
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not allowed to require h200 at this time.",
+                detail="You are not allowed to require > 80gb VRAM per GPU at this time.",
             )
         if not chute_args.node_selector.exclude:
             chute_args.node_selector.exclude = []
         if "h200" not in chute_args.node_selector.exclude:
             chute_args.node_selector.exclude.append("h200")
+        if "b200" not in chute_args.node_selector.exclude:
+            chute_args.node_selector.exclude.append("b200")
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -511,13 +513,12 @@ async def _deploy_chute(
 
         db.add(chute)
 
-    # Limit h200 access for now.
-    if (chute.node_selector or {}).get("supported_gpus", []) == [
-        "h200"
-    ] and chute.user_id != await chutes_user_id():
+    # Limit h/b 200 access for now.
+    supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
+    if not (supported_gpus - set(["b200", "h200"])) and chute.user_id != await chutes_user_id():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to require h200 at this time.",
+            detail="You are not allowed to require h200 or b200 at this time.",
         )
 
     await db.commit()
@@ -784,7 +785,7 @@ async def easy_deploy_tei_chute(
             min_vram_gb_per_gpu=16,
         )
     if not node_selector.include and not node_selector.exclude:
-        node_selector.exclude = ["h200", "h100", "h100_sxm"]
+        node_selector.exclude = ["h200", "b200", "h100", "h100_sxm", "h100_nvl", "h800"]
     chute_args = ChuteArgs(
         name=args.model,
         image=image,
