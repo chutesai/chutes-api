@@ -197,6 +197,7 @@ async def _limit_dev_activity(session, user, maximum, clazz):
             "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
             "5260fc63-dbf0-5e76-ae76-811f87fe1e19",
             "7bbd5ffa-b696-5e3a-b4cc-b8aff6854c41",
+            "5bf8a979-ea71-54bf-8644-26a3411a3b58",
         )
     ):
         return
