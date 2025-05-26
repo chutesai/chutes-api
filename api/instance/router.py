@@ -228,6 +228,7 @@ async def create_instance(
                 detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
             )
         gpu_type = None
+        node_hosts = set()
         for node_id in instance_args.node_ids:
             # Make sure the node is in the miner's inventory.
             node = await get_node_by_id(node_id, db, hotkey)
@@ -236,6 +237,7 @@ async def create_instance(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Node {node_id} not found",
                 )
+            node_hosts.add(node.verification_host)
 
             # Already associated with an instance?
             if node.instance:
@@ -258,6 +260,13 @@ async def create_instance(
             # Create the association record.
             await db.execute(
                 instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
+            )
+
+        # The hostname used in verifying the node must match the hostname of the instance.
+        if len(node_hosts) > 1 or list(node_hosts)[0].lower() != instance.host.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}",
             )
 
         # Persist, which will raise a unique constraint error when the node is already allocated.
