@@ -54,7 +54,7 @@ async def refund_deposit(user_id: str, destination: str):
         )
         balance = 0.0
         if result:
-            balance = result.value["data"]["free"]
+            balance = result["data"]["free"]
         if not balance:
             message = f"Wallet {user.developer_payment_address} does not have any free balance!"
             logger.warning(message)
