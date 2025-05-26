@@ -88,20 +88,26 @@ async def get_usage(request: Request):
         return rv
 
 
+async def _cached_get_metrics(table, cache_key):
+    if cached := await settings.memcache.get(cache_key):
+        return json.loads(gzip.decompress(base64.b64decode(cached)))
+    async with get_session() as session:
+        result = await session.execute(text(f"SELECT * FROM {table}"))
+        rows = result.mappings().all()
+        rv = [dict(row) for row in rows]
+        cache_value = base64.b64encode(gzip.compress(json.dumps(rv)))
+        await settings.memcache.set(cache_key, cache_value, exptime=1800)
+        return rv
+
+
 @router.get("/stats/llm")
 async def get_llm_stats():
-    async with get_session(readonly=True) as session:
-        result = await session.execute(text("SELECT * FROM vllm_metrics"))
-        rows = result.mappings().all()
-        return [dict(row) for row in rows]
+    return await _cached_get_metrics("vllm_metrics", b"llm_stats")
 
 
 @router.get("/stats/diffusion")
 async def get_diffusion_stats():
-    async with get_session(readonly=True) as session:
-        result = await session.execute(text("SELECT * FROM diffusion_metrics"))
-        rows = result.mappings().all()
-        return [dict(row) for row in rows]
+    return await _cached_get_metrics("diffusion_metrics", b"diff_stats")
 
 
 @router.get("/exports/{year}/{month}/{day}/{hour_format}")
