@@ -19,6 +19,7 @@ from async_lru import alru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
+from ipaddress import ip_address
 from api.config import settings
 from api.util import (
     aes_encrypt,
@@ -27,6 +28,8 @@ from api.util import (
     use_encrypted_path,
     should_slurp_code,
     decrypt_envdump_cipher,
+    get_resolved_ips,
+    generate_ip_token,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_session
@@ -173,7 +176,7 @@ async def get_encryption_settings(
     backoff.constant,
     Exception,
     jitter=None,
-    interval=10,
+    interval=3,
     max_tries=7,
 )
 async def graval_encrypt(
@@ -191,9 +194,9 @@ async def graval_encrypt(
         seed=seed,
         iterations=iterations,
     )
-    logger.info(f"Using {url=} for graval with data={json.dumps(data).decode()}")
+    logger.info(f"Using {url=} for graval encryption")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
-        async with session.post(url, json=data, headers=headers) as resp:
+        async with session.post(url, json=data, headers=headers, timeout=300) as resp:
             logger.success(f"Generated ciphertext for {node.uuid} via {url=}")
             if chute:
                 body = await resp.json()
@@ -228,6 +231,7 @@ async def graval_decrypt(
         seed=seed,
         iterations=iterations,
     )
+    logger.info(f"Using {url=} for graval decryption")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(url, json=data, headers=headers) as resp:
             logger.success(f"Decrypted ciphertext from node {node.uuid} via {url=}")
@@ -365,6 +369,62 @@ async def check_device_info_challenge(
     return True
 
 
+async def verify_outbound_ip(nodes):
+    """
+    Check if the advertised IP matches the outbound IP (via remote token fetch).
+    """
+    addrs = []
+    if len(set([f"{n.verification_host}:{n.verification_port}" for n in nodes])) > 1:
+        error_message = "Multiple host/port pairs for a single server."
+    else:
+        addrs = []
+        try:
+            ip_address(nodes[0].verification_host)
+            addrs = [nodes[0].verification_host]
+        except ValueError:
+            try:
+                addrs = await asyncio.wait_for(get_resolved_ips(nodes[0].verification_host), 5.0)
+            except ValueError:
+                error_message = f"Could not resolve IP addresses for {nodes[0].verification_host}"
+        if not addrs:
+            error_message = "Unable to determine IP address for {nodes[0].verification_host}"
+        url = f"http://{nodes[0].verification_host}:{nodes[0].verification_port}/remote_token"
+        salt = secrets.token_hex(16)
+        token_url = f"https://api.{settings.base_domain}/instances/token_check?salt={salt}"
+        try:
+            async with miner_client.post(
+                nodes[0].miner_hotkey,
+                url,
+                payload={"token_url": token_url},
+                timeout=15.0,
+            ) as response:
+                if response.status != 200:
+                    error_message = (
+                        f"Unable to fetch remote IP check token: {await response.text()}"
+                    )
+                token = await response.text()
+                expected = [generate_ip_token(i, extra_salt=salt) for i in addrs]
+                if any([e == token for e in expected]):
+                    logger.success(f"Verified {nodes[0].verification_host} remote IP token check.")
+                    return True
+                error_message = (
+                    f"Failed IP token check, expected one of {expected} but received {token}"
+                )
+        except Exception as exc:
+            error_message = f"Unhandled exception fetching remote IP check token: {exc=}"
+    if error_message:
+        logger.warning(f"Failed outbound IP check: {error_message=}")
+        async with get_session() as session:
+            await session.execute(
+                update(Node)
+                .where(Node.uuid.in_([node.uuid for node in nodes]))
+                .values({"verification_error": error_message})
+            )
+            await session.commit()
+            return False
+    return True
+
+
 @broker.task
 async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]:
     """
@@ -380,6 +440,10 @@ async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]
         ):
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
+
+    # Check if the advertised IP matches outbound IP.
+    if not await verify_outbound_ip(nodes):
+        return False, "Outbound IP address does not match advertised IP address"
 
     # Fast pass, do simple device info challenges.
     for _ in range(settings.device_info_challenge_count):

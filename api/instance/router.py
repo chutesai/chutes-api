@@ -20,7 +20,7 @@ from api.instance.util import get_instance_by_chute_and_id
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
-from api.util import is_valid_host
+from api.util import is_valid_host, generate_ip_token
 from api.graval_worker import verify_instance
 
 router = APIRouter()
@@ -302,17 +302,10 @@ async def create_instance(
     return instance
 
 
-def calc_token(origin_ip, extra_salt: str = None):
-    target_string = f"{origin_ip}:{settings.ip_check_salt}"
-    if extra_salt:
-        target_string = f"{target_string}:{extra_salt}"
-    return str(uuid.uuid5(uuid.NAMESPACE_OID, target_string))
-
-
 @router.get("/token_check")
 async def get_token(salt: str = None, request: Request = None):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
-    return {"token": calc_token(origin_ip, extra_salt=salt)}
+    return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
 
 
 @router.patch("/{chute_id}/{instance_id}")

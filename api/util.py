@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import random
 import string
+import uuid
 import time
 import secrets
 import orjson as json
@@ -420,3 +421,10 @@ def decrypt_envdump_cipher(encrypted_b64, key):
     decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
     unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
     return unpadded_data
+
+
+def generate_ip_token(origin_ip, extra_salt: str = None):
+    target_string = f"{origin_ip}:{settings.ip_check_salt}"
+    if extra_salt:
+        target_string = f"{target_string}:{extra_salt}"
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, target_string))
