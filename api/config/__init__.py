@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 100.0))
     developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "250.0"))
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "128"))
-    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "50"))
+    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     graval_url: str = os.getenv("GRAVAL_URL", "")
 
@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.42")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.46")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))

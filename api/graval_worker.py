@@ -138,7 +138,6 @@ async def get_encryption_settings(
     # Double check this chute is available.
     if slug not in await available_verification_chutes():
         with_chutes = False
-    with_chutes = False
 
     # Encrypt the payload.
     url = f"https://{slug}.{settings.base_domain}/{path}"
@@ -702,6 +701,7 @@ async def check_envdump_command(instance):
     logger.success(
         f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} code validation success: {command_line=}"
     )
+    return True
 
 
 @backoff.on_exception(
@@ -816,6 +816,7 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
     if should_slurp_code(instance.chute.chutes_version):
         try:
             if not await check_live_code(instance):
+                logger.warning(f"Failed live app code check: {instance.instance_id=}")
                 return False
             return True
         except Exception as exc:
@@ -850,7 +851,9 @@ async def _verify_filesystem(session: AsyncSession, instance: Instance) -> bool:
 
     results = await asyncio.gather(*[_safe_verify_one(challenge) for challenge in challenges])
     passed = sum(1 for r in results if r)
-    logger.info(f"{instance.instance_id=} passed {passed} of {len(challenges)}")
+    logger.info(
+        f"{instance.instance_id=} passed {passed} of {len(challenges)} filesystem challenges"
+    )
     return passed == len(challenges)
 
 
@@ -959,7 +962,7 @@ async def verify_instance(instance_id: str):
 
         for idx in range(settings.device_info_challenge_count):
             if not await check_device_info_challenge(
-                instance.nodes, url=url, purpose="chutes", verify_with_chutes=verify_with_chutes
+                instance.nodes, url=url, purpose="chutes", with_chutes=verify_with_chutes
             ):
                 error_message = f"{instance_id=} failed one or more device info challenges"
                 logger.warning(error_message)
