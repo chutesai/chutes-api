@@ -444,9 +444,9 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
 
-    # Check if the advertised IP matches outbound IP.
-    if not await verify_outbound_ip(nodes):
-        return False, "Outbound IP address does not match advertised IP address"
+    # Check if the advertised IP matches outbound IP, disabled temporarily.
+    # if not await verify_outbound_ip(nodes):
+    #     return False, "Outbound IP address does not match advertised IP address"
 
     # Fast pass, do simple device info challenges.
     for _ in range(settings.device_info_challenge_count):
