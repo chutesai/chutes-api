@@ -361,7 +361,7 @@ async def check_weight_files(
                 )
                 if duration > 5.0:
                     logger.warning(
-                        f"Duration to fetch model weight map exceeded expected duration: {duration=}"
+                        f"Duration to fetch model weight random offset exceeded expected duration: {duration=}"
                     )
                     soft_failed.append(instance)
         except Exception as exc:
@@ -454,7 +454,7 @@ async def check_llm_weights(chute, instances):
                 logger.info(
                     f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest} {duration=}"
                 )
-                if duration > 7.0:
+                if duration > 9.0:
                     logger.warning(
                         f"Duration to fetch model weight map exceeded expected duration: {duration=}"
                     )
@@ -1481,7 +1481,7 @@ async def get_env_sig(instance, salt):
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         enc_payload,
-        timeout=15.0,
+        timeout=5.0,
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(
