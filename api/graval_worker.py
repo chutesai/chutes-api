@@ -251,8 +251,9 @@ async def generate_cipher(node):
         node,
         plaintext,
         with_chutes=False,
-        cuda=True,
+        cuda=False,
         seed=node.seed,
+        iterations=graval_config["iterations"],
     )
     logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {cipher=}")
     return plaintext, cipher
@@ -294,18 +295,17 @@ async def check_encryption_challenge(
                     error_message = (
                         f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
                     )
-                # XXX Disabled until opencl version is fixed.
-                # elif timeout is None:
-                #     delta = time.time() - started_at
-                #     if (
-                #         not graval_config["estimate"] * 0.88
-                #         < delta
-                #         < graval_config["estimate"] * 1.12
-                #     ):
-                #         error_message = (
-                #             f"GraVal decryption challenge completed in {int(delta)} seconds, "
-                #             f"but estimate is {graval_config['estimate']} seconds"
-                #         )
+                elif timeout is None:
+                    delta = time.time() - started_at
+                    if (
+                        not graval_config["estimate"] * 0.88
+                        < delta
+                        < graval_config["estimate"] * 1.12
+                    ):
+                        error_message = (
+                            f"GraVal decryption challenge completed in {int(delta)} seconds, "
+                            f"but estimate is {graval_config['estimate']} seconds"
+                        )
     except Exception as exc:
         error_message = f"Unhandled exception performing miner decryption challenge: {exc=}\n{traceback.format_exc()}"
 
@@ -444,13 +444,13 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
 
-    # Check if the advertised IP matches outbound IP, disabled temporarily.
-    # if not await verify_outbound_ip(nodes):
-    #     return False, "Outbound IP address does not match advertised IP address"
+    # Check if the advertised IP matches outbound IP.
+    if not await verify_outbound_ip(nodes):
+        return False, "Outbound IP address does not match advertised IP address"
 
     # Fast pass, do simple device info challenges.
     for _ in range(settings.device_info_challenge_count):
-        if not await check_device_info_challenge(nodes, opencl=False):
+        if not await check_device_info_challenge(nodes, opencl=True):
             error_message = "one or more device info challenges failed"
             logger.warning(error_message)
             return False, error_message
