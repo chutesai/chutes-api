@@ -8,6 +8,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
+import decimal
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -95,6 +96,10 @@ async def _cached_get_metrics(table, cache_key):
         result = await session.execute(text(f"SELECT * FROM {table}"))
         rows = result.mappings().all()
         rv = [dict(row) for row in rows]
+        for row in rv:
+            for key, value in row.items():
+                if isinstance(value, decimal.Decimal):
+                    row[key] = float(value)
         cache_value = base64.b64encode(gzip.compress(json.dumps(rv)))
         await settings.memcache.set(cache_key, cache_value, exptime=1800)
         return rv

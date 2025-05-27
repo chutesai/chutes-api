@@ -27,14 +27,14 @@ class NodeArgs(BaseModel):
     uuid: str
     name: str
     memory: int
-    major: Optional[int]
-    minor: Optional[int]
+    major: Optional[int] = None
+    minor: Optional[int] = None
     processors: int
-    sxm: Optional[bool]
+    sxm: Optional[bool] = None
     clock_rate: float
     max_threads_per_processor: int
-    concurrent_kernels: Optional[bool]
-    ecc: Optional[bool]
+    concurrent_kernels: Optional[bool] = None
+    ecc: Optional[bool] = None
     device_index: int = Field(gte=0, lt=10)
     gpu_identifier: str
     verification_host: str
@@ -121,12 +121,9 @@ class Node(Base):
         """
         self.validate_gpu_model(None, self.name)
         self.validate_memory(None, self.memory)
-        self.validate_compute_capability("major", self.major)
-        self.validate_compute_capability("minor", self.minor)
         self.validate_processors(None, self.processors)
         self.validate_clock_rate(None, self.clock_rate)
         self.validate_max_threads(None, self.max_threads_per_processor)
-        self.validate_boolean_features("concurrent_kernels", self.concurrent_kernels)
         self.validate_identifier(None, self.gpu_identifier)
 
     @validates("verification_port")
@@ -173,17 +170,6 @@ class Node(Base):
             )
         return memory
 
-    @validates("major", "minor")
-    def validate_compute_capability(self, key: str, value: int) -> int:
-        if not self._gpu_specs:
-            return value
-        expected = self._gpu_specs[key]
-        if value != expected:
-            raise ValueError(
-                f"Compute capability {key} {value} does not match expected {expected} for {self._gpu_key}"
-            )
-        return value
-
     @validates("processors")
     def validate_processors(self, _, processors: int) -> int:
         if not self._gpu_specs:
@@ -218,17 +204,6 @@ class Node(Base):
                 f"Max threads per processor {max_threads} does not match expected {expected} for {self._gpu_key}"
             )
         return max_threads
-
-    @validates("concurrent_kernels")
-    def validate_boolean_features(self, key: str, value: bool) -> bool:
-        if not self._gpu_specs:
-            return value
-        expected = self._gpu_specs[key]
-        if value != expected:
-            raise ValueError(
-                f"{key} setting {value} does not match expected {expected} for {self._gpu_key}"
-            )
-        return value
 
     def is_suitable(self, chute: Chute) -> bool:
         """
