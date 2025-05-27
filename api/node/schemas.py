@@ -4,7 +4,7 @@ ORM definitions for nodes (single GPUs in miner infra).
 
 import re
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from sqlalchemy import (
     Column,
     String,
@@ -13,6 +13,7 @@ from sqlalchemy import (
     Float,
     ForeignKey,
     DateTime,
+    Boolean,
     func,
 )
 from sqlalchemy.orm import validates, relationship
@@ -26,9 +27,14 @@ class NodeArgs(BaseModel):
     uuid: str
     name: str
     memory: int
+    major: Optional[int]
+    minor: Optional[int]
     processors: int
+    sxm: Optional[bool]
     clock_rate: float
     max_threads_per_processor: int
+    concurrent_kernels: Optional[bool]
+    ecc: Optional[bool]
     device_index: int = Field(gte=0, lt=10)
     gpu_identifier: str
     verification_host: str
@@ -45,9 +51,14 @@ class Node(Base):
     uuid = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     memory = Column(BigInteger, nullable=False)
+    major = Column(Integer, nullable=True)
+    minor = Column(Integer, nullable=True)
     processors = Column(Integer, nullable=False)
+    sxm = Column(Boolean, nullable=True)
     clock_rate = Column(Float, nullable=False)
     max_threads_per_processor = Column(Integer, nullable=False)
+    concurrent_kernels = Column(Boolean, nullable=True)
+    ecc = Column(Boolean, nullable=True)
     seed = Column(BigInteger, nullable=False)
 
     # Meta/app fields.
@@ -92,10 +103,16 @@ class Node(Base):
                 "uuid",
                 "name",
                 "memory",
+                "major",
+                "minor",
                 "processors",
+                "sxm",
                 "clock_rate",
                 "max_threads_per_processor",
+                "concurrent_kernels",
+                "ecc",
             ]
+            if getattr(self, key, None) is not None
         }
 
     def _validate_all(self):

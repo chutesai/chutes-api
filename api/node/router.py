@@ -221,6 +221,11 @@ async def create_nodes(
                     **{"miner_hotkey": hotkey, "seed": seed, "verified_at": verified_at},
                 }
             )
+            # Legacy flags for backwards graval compatibility.
+            gpu_info = SUPPORTED_GPUS[node.gpu_identifier]
+            if "major" in gpu_info:
+                for key in ["major", "minor", "tensor_cores", "concurrent_kernels", "ecc", "sxm"]:
+                    setattr(key, gpu_info.get(key))
             db.add(node)
             nodes.append(node)
         await db.commit()

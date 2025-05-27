@@ -138,6 +138,7 @@ async def get_encryption_settings(
     # Double check this chute is available.
     if slug not in await available_verification_chutes():
         with_chutes = False
+    with_chutes = False
 
     # Encrypt the payload.
     url = f"https://{slug}.{settings.base_domain}/{path}"
