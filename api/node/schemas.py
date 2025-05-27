@@ -123,7 +123,6 @@ class Node(Base):
         self.validate_memory(None, self.memory)
         self.validate_processors(None, self.processors)
         self.validate_clock_rate(None, self.clock_rate)
-        self.validate_max_threads(None, self.max_threads_per_processor)
         self.validate_identifier(None, self.gpu_identifier)
 
     @validates("verification_port")
@@ -193,17 +192,6 @@ class Node(Base):
                 f"Clock rate {clock_mhz:.0f}MHz not within expected range {base_clock}-{boost_clock}MHz for {self._gpu_key}"
             )
         return clock_rate
-
-    @validates("max_threads_per_processor")
-    def validate_max_threads(self, _, max_threads: int) -> int:
-        if not self._gpu_specs:
-            return max_threads
-        expected = self._gpu_specs["max_threads_per_processor"]
-        if max_threads != expected:
-            raise ValueError(
-                f"Max threads per processor {max_threads} does not match expected {expected} for {self._gpu_key}"
-            )
-        return max_threads
 
     def is_suitable(self, chute: Chute) -> bool:
         """

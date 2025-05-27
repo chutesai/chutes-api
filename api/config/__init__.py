@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     graval_url: str = os.getenv("GRAVAL_URL", "")
+    opencl_graval_url: str = os.getenv("OPENCL_GRAVAL_URL", "https://opencl-graval.chutes.ai")
 
     # Database settings.
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "64"))

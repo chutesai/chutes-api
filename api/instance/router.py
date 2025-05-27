@@ -239,6 +239,13 @@ async def create_instance(
                 )
             node_hosts.add(node.verification_host)
 
+            # Not verified?
+            if not node.verified_at:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"GPU {node_id} is not yet verified, and cannot be associated with an instance",
+                )
+
             # Already associated with an instance?
             if node.instance:
                 raise HTTPException(

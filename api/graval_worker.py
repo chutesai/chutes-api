@@ -278,11 +278,14 @@ async def check_encryption_challenge(
     error_message = None
     try:
         started_at = time.time()
+        timeout_obj = aiohttp.ClientTimeout(
+            connect=5.0, total=timeout or int(graval_config["estimate"] * 1.12)
+        )
         async with miner_client.post(
             node.miner_hotkey,
             url,
             payload=payload,
-            timeout=timeout or int(graval_config["estimate"] * 1.12),
+            timeout=timeout_obj,
         ) as response:
             if response.status != 200:
                 error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
@@ -426,7 +429,7 @@ async def verify_outbound_ip(nodes):
 
 
 @broker.task
-async def validate_gpus(uuids: List[str], cuda: bool = True) -> Tuple[bool, str]:
+async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     """
     Validate GPUs.
     """
