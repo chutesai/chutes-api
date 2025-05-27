@@ -17,6 +17,7 @@ class InstanceResponse(BaseModel):
     region: str
     active: bool
     verified: bool
+    chutes_version: Optional[str] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_verified_at: Optional[datetime] = None

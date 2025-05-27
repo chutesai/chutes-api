@@ -18,6 +18,7 @@ from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
+from api.exceptions import EnvdumpMissing
 from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
@@ -339,7 +340,9 @@ async def check_weight_files(
             "end_byte": end_byte,
         }
         try:
+            started_at = time.time()
             data = await do_slurp(instance, payload, encrypted_slurp)
+            duration = time.time() - started_at
             if data is None:
                 hard_failed.append(instance)
                 continue
@@ -354,8 +357,13 @@ async def check_weight_files(
                 incorrect.append(instance)
             else:
                 logger.success(
-                    f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest}"
+                    f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest} {duration=}"
                 )
+                if duration > 5.0:
+                    logger.warning(
+                        f"Duration to fetch model weight random offset exceeded expected duration: {duration=}"
+                    )
+                    soft_failed.append(instance)
         except Exception as exc:
             logger.warning(
                 f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
@@ -427,7 +435,9 @@ async def check_llm_weights(chute, instances):
             nice_name = chute.name.replace("/", "--")
             payload = {"path": f"/cache/hub/models--{nice_name}/snapshots/{revision}/{target_path}"}
             try:
+                started_at = time.time()
                 data = await do_slurp(instance, payload, encrypted_slurp)
+                duration = time.time() - started_at
                 if data is None:
                     hard_failed.append(instance)
                     continue
@@ -442,8 +452,13 @@ async def check_llm_weights(chute, instances):
                     )
                     incorrect.append(instance)
                 logger.info(
-                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest}"
+                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest} {duration=}"
                 )
+                if duration > 9.0:
+                    logger.warning(
+                        f"Duration to fetch model weight map exceeded expected duration: {duration=}"
+                    )
+                    soft_failed.append(instance)
             except Exception as exc:
                 logger.warning(
                     f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
@@ -615,6 +630,28 @@ async def increment_soft_fail(instance, chute):
         await purge_and_notify(instance)
 
 
+def get_expected_command(instance, chute):
+    """
+    Get the command line for a given instance.
+    """
+    return " ".join(
+        [
+            "python",
+            "/home/chutes/.local/bin/chutes",
+            "run",
+            chute.ref_str,
+            "--port",
+            "8000",
+            "--graval-seed",
+            str(instance.nodes[0].seed),
+            "--miner-ss58",
+            instance.miner_hotkey,
+            "--validator-ss58",
+            settings.validator_ss58,
+        ]
+    ).strip()
+
+
 async def check_chute(chute_id):
     """
     Check a single chute.
@@ -634,10 +671,15 @@ async def check_chute(chute_id):
 
     # Updated environment/code checks.
     instances = await load_chute_instances(chute.chute_id)
+    bad_env = set()
     if re.match(r"^[0-9]+\.(2\.(39|4[0-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""):
         signatures = {instance.instance_id: None for instance in instances}
         salt = str(uuid.uuid4())
         for instance in instances:
+            failed_envdump = False
+            log_prefix = (
+                f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+            )
             try:
                 signature = await get_env_sig(instance, salt)
                 logger.info(
@@ -655,34 +697,55 @@ async def check_chute(chute_id):
                         command_line = re.sub(
                             r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
                         )
-                        expected = " ".join(
-                            [
-                                "python",
-                                "/home/chutes/.local/bin/chutes",
-                                "run",
-                                chute.ref_str,
-                                "--port",
-                                "8000",
-                                "--graval-seed",
-                                str(instance.nodes[0].seed),
-                                "--miner-ss58",
-                                instance.miner_hotkey,
-                                "--validator-ss58",
-                                settings.validator_ss58,
-                            ]
-                        ).strip()
-                        assert command_line == expected
-                        logger.success(
-                            f"Validated expected runtime command from env dump: {expected}"
+                        if command_line != get_expected_command(instance, chute):
+                            logger.error(f"{log_prefix} running invalid process: {command_line=}")
+                            failed_envdump = True
+                        else:
+                            logger.success(
+                                f"{log_prefix} successfully validated expected runtime command: {command_line=}"
+                            )
+                    except EnvdumpMissing:
+                        logger.error(f"{log_prefix} returned invalid status code, clearly bad")
+                        failed_envdump = True
+                    except Exception as exc:
+                        logger.error(
+                            f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
                         )
-                    except Exception:
-                        logger.error("Invalid response from env dump, missing or invalid process!")
+            except EnvdumpMissing:
+                logger.error(f"{log_prefix} returned invalid status code, clearly bad")
+                failed_envdump = True
             except Exception as exc:
-                logger.warning(
-                    f"Failed to retrieve env signature or dump from {instance.instance_id=}: {exc}\n{traceback.format_exc()}"
+                logger.error(
+                    f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
                 )
+
+            if failed_envdump:
+                await purge_and_notify(
+                    instance, reason="Instance failed env dump signature or process checks."
+                )
+                bad_env.add(instance.instance_id)
+                failed_count = await settings.redis_client.incr(
+                    f"envdumpfail:{instance.miner_hotkey}"
+                )
+                logger.warning(
+                    f"ENVDUMP: Miner {instance.miner_hotkey} has now failed {failed_count} envdump checks"
+                )
+                # if failed_count >= 5:
+                #    async with get_session() as session:
+                #        await session.execute(
+                #            text("""
+                #            UPDATE metagraph_nodes
+                #            SET blacklist_reason = 'Recurring pattern of invalid processes discovered by watchtower.'
+                #            WHERE hotkey = :hotkey
+                #            """),
+                #            {"hotkey": instance.miner_hotkey}
+                #        )
+
         if len(set(signatures.values())) > 1:
             logger.error(f"Multiple signatures found: {signatures=}")
+
+    # Filter out the ones we already blacklisted.
+    instances = [instance for instance in instances if instance.instance_id not in bad_env]
 
     # Ping test.
     soft_failed = await check_pings(chute, instances)
@@ -1400,7 +1463,10 @@ async def get_env_dump(instance):
         enc_payload,
         timeout=15.0,
     ) as resp:
-        resp.raise_for_status()
+        if resp.status != 200:
+            raise EnvdumpMissing(
+                f"Received invalid response code on /_env_dump: {instance.instance_id=}"
+            )
         return json.loads(decrypt_envdump_cipher(await resp.text(), key))
 
 
@@ -1415,9 +1481,12 @@ async def get_env_sig(instance, salt):
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         enc_payload,
-        timeout=15.0,
+        timeout=5.0,
     ) as resp:
-        resp.raise_for_status()
+        if resp.status != 200:
+            raise EnvdumpMissing(
+                f"Received invalid response code on /_env_sig: {instance.instance_id=}"
+            )
         return await resp.text()
 
 
@@ -1459,4 +1528,5 @@ async def main():
         index += 1
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

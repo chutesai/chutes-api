@@ -10,7 +10,6 @@ from sqlalchemy import (
     String,
     Integer,
     BigInteger,
-    Boolean,
     Float,
     ForeignKey,
     DateTime,
@@ -27,14 +26,9 @@ class NodeArgs(BaseModel):
     uuid: str
     name: str
     memory: int
-    major: int
-    minor: int
     processors: int
-    sxm: bool
     clock_rate: float
     max_threads_per_processor: int
-    concurrent_kernels: bool
-    ecc: bool
     device_index: int = Field(gte=0, lt=10)
     gpu_identifier: str
     verification_host: str
@@ -51,14 +45,9 @@ class Node(Base):
     uuid = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     memory = Column(BigInteger, nullable=False)
-    major = Column(Integer, nullable=False)
-    minor = Column(Integer, nullable=False)
     processors = Column(Integer, nullable=False)
-    sxm = Column(Boolean, nullable=False)
     clock_rate = Column(Float, nullable=False)
     max_threads_per_processor = Column(Integer, nullable=False)
-    concurrent_kernels = Column(Boolean, nullable=False)
-    ecc = Column(Boolean, nullable=False)
     seed = Column(BigInteger, nullable=False)
 
     # Meta/app fields.
@@ -103,14 +92,9 @@ class Node(Base):
                 "uuid",
                 "name",
                 "memory",
-                "major",
-                "minor",
                 "processors",
-                "sxm",
                 "clock_rate",
                 "max_threads_per_processor",
-                "concurrent_kernels",
-                "ecc",
             ]
         }
 

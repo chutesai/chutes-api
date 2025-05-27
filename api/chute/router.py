@@ -10,9 +10,8 @@ import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from fastapi_cache.decorator import cache
-from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -22,7 +21,6 @@ from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.chute.schemas import (
     Chute,
     ChuteArgs,
-    InvocationArgs,
     NodeSelector,
     ChuteUpdateArgs,
     RollingUpdate,
@@ -38,7 +36,7 @@ from api.chute.templates import (
     build_tei_code,
 )
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, invoke, selector_hourly_price
+from api.chute.util import get_chute_by_id_or_name, selector_hourly_price
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -53,8 +51,7 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, rate_limit, limit_deployments
-from api.permissions import Permissioning
+from api.util import ensure_is_developer, limit_deployments
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -398,7 +395,7 @@ async def _deploy_chute(
             detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
 
-    # Prevent h200 usage for now.
+    # Limit h200 and b200 usage.
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
@@ -411,12 +408,14 @@ async def _deploy_chute(
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not allowed to require h200 at this time.",
+                detail="You are not allowed to require > 80gb VRAM per GPU at this time.",
             )
         if not chute_args.node_selector.exclude:
             chute_args.node_selector.exclude = []
         if "h200" not in chute_args.node_selector.exclude:
             chute_args.node_selector.exclude.append("h200")
+        if "b200" not in chute_args.node_selector.exclude:
+            chute_args.node_selector.exclude.append("b200")
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -514,13 +513,12 @@ async def _deploy_chute(
 
         db.add(chute)
 
-    # Limit h200 access for now.
-    if (chute.node_selector or {}).get("supported_gpus", []) == [
-        "h200"
-    ] and chute.user_id != await chutes_user_id():
+    # Limit h/b 200 access for now.
+    supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
+    if not (supported_gpus - set(["b200", "h200"])) and chute.user_id != await chutes_user_id():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to require h200 at this time.",
+            detail="You are not allowed to require h200 or b200 at this time.",
         )
 
     await db.commit()
@@ -787,7 +785,7 @@ async def easy_deploy_tei_chute(
             min_vram_gb_per_gpu=16,
         )
     if not node_selector.include and not node_selector.exclude:
-        node_selector.exclude = ["h200", "h100", "h100_sxm"]
+        node_selector.exclude = ["h200", "b200", "h100", "h100_sxm", "h100_nvl", "h800"]
     chute_args = ChuteArgs(
         name=args.model,
         image=image,
@@ -804,105 +802,6 @@ async def easy_deploy_tei_chute(
         cords=chute_to_cords(chute.chute),
     )
     return await _deploy_chute(chute_args, db, current_user)
-
-
-@router.post("/{chute_id}/{path:path}")
-async def invoke_(
-    chute_id: str,
-    path: str,
-    invocation: InvocationArgs,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
-):
-    """
-    Invoke a "chute" aka function.
-    """
-    logger.warning(f"INVOKE_VIA_SDK: {chute_id=} {path=}")
-    return HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Please use the standard JSON API calls",
-    )
-
-    if current_user.balance <= 0 and not current_user.has_role(Permissioning.free_account):
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
-        )
-
-    # Rate limit requests.
-    await rate_limit(chute_id, current_user, settings.rate_limit_count, settings.rate_limit_window)
-
-    args = invocation.args
-    kwargs = invocation.kwargs
-    query = (
-        select(Chute)
-        .join(User, Chute.user_id == User.user_id)
-        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-        .where(Chute.chute_id == chute_id)
-    )
-    result = await db.execute(query)
-    chute = result.unique().scalar_one_or_none()
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or you do not have permission to use",
-        )
-
-    # Find a target to query.
-    targets = await discover_chute_targets(db, chute_id, max_wait=60)
-    if not targets:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"No instances available (yet) for {chute_id=}",
-        )
-
-    # Identify the upstream path to call.
-    cord = None
-    path = "/" + path.lstrip("/")
-    identified = False
-    stream = False
-    function = None
-    for cord in chute.cords:
-        if cord["path"] == path:
-            identified = True
-            stream = cord["stream"]
-            function = cord["function"]
-    if not identified:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute has no cord matching your request",
-        )
-
-    # Initialize metrics.
-    metrics = None
-    if chute.standard_template == "vllm":
-        metrics = {
-            "ttft": None,
-            "tps": 0.0,
-            "tokens": 0,
-        }
-
-    # Do the deed.
-    await db.close()
-    parent_invocation_id = str(uuid.uuid4())
-    return StreamingResponse(
-        invoke(
-            chute,
-            current_user.user_id,
-            path,
-            function,
-            stream,
-            args,
-            kwargs,
-            targets,
-            parent_invocation_id,
-            metrics=metrics,
-            request=request,
-            prefixes=None,
-        ),
-        headers={"X-Chutes-InvocationID": parent_invocation_id},
-    )
 
 
 @router.put("/{chute_id_or_name:path}", response_model=ChuteResponse)
