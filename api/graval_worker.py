@@ -295,17 +295,18 @@ async def check_encryption_challenge(
                     error_message = (
                         f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
                     )
-                elif timeout is None:
-                    delta = time.time() - started_at
-                    if (
-                        not graval_config["estimate"] * 0.70
-                        < delta
-                        < graval_config["estimate"] * 1.3
-                    ):
-                        error_message = (
-                            f"GraVal decryption challenge completed in {int(delta)} seconds, "
-                            f"but estimate is {graval_config['estimate']} seconds"
-                        )
+                # XXX disabled for the time being.
+                # elif timeout is None:
+                #     delta = time.time() - started_at
+                #     if (
+                #         not graval_config["estimate"] * 0.70
+                #         < delta
+                #         < graval_config["estimate"] * 1.3
+                #     ):
+                #         error_message = (
+                #             f"GraVal decryption challenge completed in {int(delta)} seconds, "
+                #             f"but estimate is {graval_config['estimate']} seconds"
+                #         )
     except Exception as exc:
         error_message = (
             "Unhandled exception performing miner decryption challenge after "
