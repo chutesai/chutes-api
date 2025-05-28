@@ -88,21 +88,15 @@ def get_actual_path(instance, path):
     interval=10,
     max_tries=7,
 )
-async def verify_device_info_challenge(
-    devices, challenge, response, with_chutes: bool = False, opencl: bool = False
-):
+async def verify_device_info_challenge(devices, challenge, response, opencl: bool = False):
     """
     Verify a device info challenge.
     """
-    url = f"https://chutes-graval-device-challenge.{settings.base_domain}/verify_device_hash"
-    headers = {}
-    if not with_chutes:
-        if opencl:
-            url = f"{settings.opencl_graval_url}/verify_device_challenge"
-        else:
-            url = f"{settings.graval_url}/verify_device_challenge"
-    else:
-        headers["Authorization"] = settings.codecheck_key
+    url = (
+        f"{settings.opencl_graval_url}/verify_device_challenge"
+        if opencl
+        else f"{settings.graval_url}/verify_device_challenge"
+    )
     logger.info(f"Verifying device info challenge hash with {url=}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(
@@ -112,7 +106,6 @@ async def verify_device_info_challenge(
                 "challenge": challenge,
                 "response": response,
             },
-            headers=headers,
         ) as resp:
             return (await resp.json())["result"]
 
@@ -333,7 +326,6 @@ async def check_device_info_challenge(
     nodes: List[Node],
     url: str = None,
     purpose: str = "graval",
-    with_chutes: bool = False,
     opencl: bool = False,
 ) -> bool:
     """
@@ -359,7 +351,6 @@ async def check_device_info_challenge(
                     [node.graval_dict() for node in nodes],
                     challenge,
                     response,
-                    with_chutes=with_chutes,
                     opencl=opencl,
                 )
     except Exception as exc:
@@ -960,22 +951,11 @@ async def verify_instance(instance_id: str):
         # Device info challenges.
         path = get_actual_path(instance, "_device_challenge")
         url = f"http://{instance.host}:{instance.port}/{path}"
-
-        # Use chutes itself for verification, if not the verification chutes, thereby federating validation.
-        chutes_based = await available_verification_chutes()
-        verify_with_chutes = False
-        if (
-            not instance.chute.slug.startswith(("chutes-graval-", "chutes-device-challenge"))
-            and "chutes-graval-device-challenge" in chutes_based
-        ):
-            verify_with_chutes = True
-            logger.success(
-                f"Using chutes-based device challenge verification API for {instance.chute.slug=}"
-            )
-
         for idx in range(settings.device_info_challenge_count):
             if not await check_device_info_challenge(
-                instance.nodes, url=url, purpose="chutes", with_chutes=verify_with_chutes
+                instance.nodes,
+                url=url,
+                purpose="chutes",
             ):
                 error_message = f"{instance_id=} failed one or more device info challenges"
                 logger.warning(error_message)
