@@ -412,10 +412,9 @@ async def _deploy_chute(
             )
         if not chute_args.node_selector.exclude:
             chute_args.node_selector.exclude = []
-        if "h200" not in chute_args.node_selector.exclude:
-            chute_args.node_selector.exclude.append("h200")
-        if "b200" not in chute_args.node_selector.exclude:
-            chute_args.node_selector.exclude.append("b200")
+        chute_args.node_selector.exclude = list(
+            set(chute_args.node_selector.exclude or [] + ["h200", "b200", "mi300x"])
+        )
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -515,10 +514,13 @@ async def _deploy_chute(
 
     # Limit h/b 200 access for now.
     supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
-    if not (supported_gpus - set(["b200", "h200"])) and chute.user_id != await chutes_user_id():
+    if (
+        not (supported_gpus - set(["b200", "h200", "mi300x"]))
+        and chute.user_id != await chutes_user_id()
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to require h200 or b200 at this time.",
+            detail="You are not allowed to require h200, b200 or mi300x at this time.",
         )
 
     await db.commit()
@@ -784,8 +786,13 @@ async def easy_deploy_tei_chute(
             gpu_count=1,
             min_vram_gb_per_gpu=16,
         )
-    if not node_selector.include and not node_selector.exclude:
-        node_selector.exclude = ["h200", "b200", "h100", "h100_sxm", "h100_nvl", "h800"]
+    node_selector.exclude = list(
+        set(
+            node_selector.exclude
+            or [] + ["h200", "b200", "h100", "h100_sxm", "h100_nvl", "h800", "mi300x"]
+        )
+    )
+
     chute_args = ChuteArgs(
         name=args.model,
         image=image,

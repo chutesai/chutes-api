@@ -270,7 +270,9 @@ class Chute(Base):
     @computed_field
     @property
     def supported_gpus(self) -> List[str]:
-        return NodeSelector(**self.node_selector).supported_gpus
+        node_selector = NodeSelector(**self.node_selector)
+        node_selector.exclude = list(set(node_selector.exclude or [] + ["b200", "mi300x"]))
+        return node_selector.supported_gpus
 
 
 class ChuteHistory(Base):

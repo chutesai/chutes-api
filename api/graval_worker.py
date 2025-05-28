@@ -260,7 +260,7 @@ async def generate_cipher(node):
 
 
 async def check_encryption_challenge(
-    node: Node, plaintext: str, ciphertext: str, timeout: int = None
+    node: Node, plaintext: str, ciphertext: str, uuids: list[str], timeout: int = None
 ) -> bool:
     """
     Send a single device decryption challenge.
@@ -276,19 +276,19 @@ async def check_encryption_challenge(
 
     # Send the request and verify the response.
     error_message = None
+    started_at = time.time()
     try:
-        started_at = time.time()
-        timeout_obj = aiohttp.ClientTimeout(
-            connect=5.0, total=timeout or int(graval_config["estimate"] * 1.12)
-        )
         async with miner_client.post(
             node.miner_hotkey,
             url,
             payload=payload,
-            timeout=timeout_obj,
+            timeout=timeout or int(graval_config["estimate"] * 1.35),
         ) as response:
             if response.status != 200:
-                error_message = f"Failed to perform decryption challenge: {response.status=} {await response.text()}"
+                error_message = (
+                    "Failed to perform decryption challenge: "
+                    f"{response.status=} {await response.text()}"
+                )
             else:
                 response_text = (await response.json())["plaintext"]
                 if response_text != plaintext:
@@ -298,24 +298,28 @@ async def check_encryption_challenge(
                 elif timeout is None:
                     delta = time.time() - started_at
                     if (
-                        not graval_config["estimate"] * 0.88
+                        not graval_config["estimate"] * 0.70
                         < delta
-                        < graval_config["estimate"] * 1.12
+                        < graval_config["estimate"] * 1.3
                     ):
                         error_message = (
                             f"GraVal decryption challenge completed in {int(delta)} seconds, "
                             f"but estimate is {graval_config['estimate']} seconds"
                         )
     except Exception as exc:
-        error_message = f"Unhandled exception performing miner decryption challenge: {exc=}\n{traceback.format_exc()}"
+        error_message = (
+            "Unhandled exception performing miner decryption challenge after "
+            f"{time.time() - started_at} seconds: {exc=}\n{traceback.format_exc()}"
+        )
 
     # Store the reason for the verification error, upon failure.
     if error_message:
         logger.error(error_message)
         async with get_session() as session:
+            # On failure, mark all of the GPUs as failed.
             await session.execute(
                 update(Node)
-                .where(Node.uuid == node.uuid)
+                .where(Node.uuid.in_(uuids))
                 .values({"verification_error": error_message})
             )
         await session.commit()
@@ -461,7 +465,9 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     # See if they decrypt properly - send one challenge first, which triggers the graval
     # init for all GPUs, then if/when that passes we can call the decryption endpoint
     # for all other GPUs concurrently and it will be virtually instant.
-    if not await check_encryption_challenge(nodes[0], challenges[0][0], challenges[0][1]):
+    if not await check_encryption_challenge(
+        nodes[0], challenges[0][0], challenges[0][1], uuids=uuids
+    ):
         error_message = "one or more decryption challenges failed"
         logger.warning(error_message)
         return False, error_message
@@ -469,7 +475,10 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
         successes = await asyncio.gather(
             *[
                 check_encryption_challenge(
-                    nodes[idx], challenges[idx][0], challenges[idx][1], timeout=3.0
+                    nodes[idx],
+                    challenges[idx][0],
+                    challenges[idx][1],
+                    uuids=uuids,
                 )
                 for idx in range(1, len(nodes))
             ]
