@@ -61,9 +61,11 @@ class Instance(Base):
     consecutive_failures = Column(Integer, default=0)
     chutes_version = Column(String, nullable=True)
     symmetric_key = Column(String, default=lambda: secrets.token_bytes(16).hex())
+    job_id = Column(String, ForeignKey("jobs.job_id", ondelete="SET NULL"), nullable=True)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
+    job = relationship("Job", back_populates="instance")
 
     __table_args__ = (
         Index(

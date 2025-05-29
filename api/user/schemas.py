@@ -79,6 +79,9 @@ class User(Base):
     # Rate limit overrides.
     rate_limit_overrides = Column(JSONB, default=None)
 
+    # Job limits.
+    job_limits = Column(JSONB, default=None)
+
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -88,6 +91,7 @@ class User(Base):
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="user")
 
     @validates("username")
     def validate_username(self, _, value):

@@ -459,6 +459,7 @@ async def _deploy_chute(
         )
         chute.chutes_version = image.chutes_version
         chute.cords = chute_args.cords
+        chute.jobs = chute_args.jobs
         chute.updated_at = func.now()
     else:
         try:
@@ -481,6 +482,7 @@ async def _deploy_chute(
                 version=version,
                 public=chute_args.public,
                 cords=chute_args.cords,
+                jobs=chute_args.jobs,
                 node_selector=chute_args.node_selector,
                 standard_template=chute_args.standard_template,
                 chutes_version=image.chutes_version,
@@ -511,6 +513,13 @@ async def _deploy_chute(
             ).scalar()
 
         db.add(chute)
+
+    # Make sure we have at least one cord or one job definition.
+    if not chute.cords and not chute.jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A chute must define at least one cord() or job() function!",
+        )
 
     # Limit h/b 200 access for now.
     supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
@@ -724,6 +733,7 @@ async def easy_deploy_vllm_chute(
         standard_template="vllm",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
+        jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
 
@@ -762,6 +772,7 @@ async def easy_deploy_diffusion_chute(
         standard_template="diffusion",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
+        jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
 
@@ -807,6 +818,7 @@ async def easy_deploy_tei_chute(
         standard_template="tei",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
+        jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
 

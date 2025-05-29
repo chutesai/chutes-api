@@ -2,7 +2,6 @@
 Routes for instances.
 """
 
-import uuid
 import orjson as json
 import traceback
 from loguru import logger
@@ -51,6 +50,24 @@ async def create_instance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chute {chute_id} not found",
+        )
+
+    # Host port already used?
+    existing = (
+        (
+            await db.execute(
+                select(Instance)
+                .where(Instance.host == instance_args.host, Instance.port == instance_args.port)
+                .limit(1)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Host/port {instance_args.host}:{instance_args.port} is already in use by another instance.",
         )
 
     # Prevent miners from create instances of chutes they constantly rotate/spam.
@@ -143,10 +160,7 @@ async def create_instance(
         chute.rolling_update.permitted[hotkey] -= 1
 
     # Limit underutilized chutes.
-    lock_id = uuid.uuid5(uuid.NAMESPACE_OID, f"instance_lock:{chute_id}").int & 0x7FFFFFFFFFFFFFFF
     try:
-        await db.execute(text("SET lock_timeout = '30s'"))
-        await db.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
         query = text(
             "SELECT * FROM chute_utilization "
             "WHERE chute_id = :chute_id "
@@ -291,8 +305,6 @@ async def create_instance(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unhandled DB integrity error: {detail}",
         )
-    finally:
-        await db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})
     await db.refresh(instance)
 
     # Broadcast the event.
