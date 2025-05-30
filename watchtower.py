@@ -673,7 +673,7 @@ async def check_chute(chute_id):
     instances = await load_chute_instances(chute.chute_id)
     bad_env = set()
     if re.match(r"^[0-9]+\.(2\.(39|4[0-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""):
-        signatures = {instance.instance_id: None for instance in instances}
+        signatures = {}
         salt = str(uuid.uuid4())
         for instance in instances:
             failed_envdump = False
@@ -685,6 +685,7 @@ async def check_chute(chute_id):
                 logger.info(
                     f"Loaded environment signature for {instance.instance_id=}: {signature=}"
                 )
+                signatures[instance.instance_id] = signature
 
                 # Load env dump, if possible.
                 if re.match(

@@ -253,7 +253,7 @@ async def set_weights_periodically() -> None:
             [settings.netuid],
             return_value=False,
         )
-        updated: float = current_block - last_updated_value[uid]
+        updated: float = current_block - int(last_updated_value[uid])
         logger.info(f"Last updated: {updated} for my uid: {uid}")
         if updated < set_weights_interval_blocks:
             blocks_to_sleep = set_weights_interval_blocks - updated + 1
