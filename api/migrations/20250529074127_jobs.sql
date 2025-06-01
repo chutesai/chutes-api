@@ -5,9 +5,10 @@ ALTER TABLE chutes ADD COLUMN IF NOT EXISTS jobs JSONB;
 ALTER TABLE chutes_history ADD COLUMN IF NOT EXISTS jobs JSONB;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS job_limits JSONB;
 
--- job_id column on instances
-ALTER TABLE instances ADD COLUMN job_id VARCHAR;
+-- job_id and config_id columns on instances
+ALTER TABLE instances ADD COLUMN job_id VARCHAR, config_id VARCHAR;
 ALTER TABLE instances ADD CONSTRAINT fk_instances_job_id FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE SET NULL;
+ALTER TABLE instances ADD CONSTRAINT fk_instances_config_id FOREIGN KEY (config_id) REFERENCES launch_configs(config_id) ON DELETE SET NULL;
 
 -- update the history table functions to track jobs
 CREATE OR REPLACE FUNCTION fn_chute_history_insert()

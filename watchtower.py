@@ -1466,7 +1466,7 @@ async def get_env_dump(instance):
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(
-                f"Received invalid response code on /_env_dump: {instance.instance_id=}"
+                f"Received invalid response code on /_env_dump: {instance.instance_id=} {resp.status=} {await resp.text()}"
             )
         return json.loads(decrypt_envdump_cipher(await resp.text(), key))
 
@@ -1486,7 +1486,7 @@ async def get_env_sig(instance, salt):
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(
-                f"Received invalid response code on /_env_sig: {instance.instance_id=}"
+                f"Received invalid response code on /_env_sig: {instance.instance_id=} {resp.status=} {await resp.text()}"
             )
         return await resp.text()
 

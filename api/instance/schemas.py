@@ -62,6 +62,7 @@ class Instance(Base):
     chutes_version = Column(String, nullable=True)
     symmetric_key = Column(String, default=lambda: secrets.token_bytes(16).hex())
     job_id = Column(String, ForeignKey("jobs.job_id", ondelete="SET NULL"), nullable=True)
+    config_id = Column(String, ForeignKey("launch_configs.config_id", ondelete="SET NULL"), nullable=True)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
@@ -77,3 +78,12 @@ class Instance(Base):
         ),
         UniqueConstraint("host", "port", name="unique_host_port"),
     )
+
+
+class LaunchConfig(Base):
+    __tablename__ = "launch_configs"
+    config_id =  Column(String, primary_key=True, default=generate_uuid)
+    seed = Column(BigInteger, nullable=False)
+    env_key = Column(String, nullable=False)
+    chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(String, ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=True)
