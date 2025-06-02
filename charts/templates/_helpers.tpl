@@ -56,6 +56,18 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "cacher.labels" -}}
+app.kubernetes.io/name: cacher
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
+{{- define "downscaler.labels" -}}
+app.kubernetes.io/name: downscaler
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "autostaker.labels" -}}
 app.kubernetes.io/name: autostaker
 redis-access: "true"

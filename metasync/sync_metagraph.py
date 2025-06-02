@@ -2,6 +2,7 @@
 Sync the metagraph to the database, broadcast any updated nodes.
 """
 
+import os
 import hashlib
 import json
 import asyncio
@@ -19,13 +20,14 @@ MetagraphNode = create_metagraph_node_class(Base)
 logger = get_logger(__name__)
 
 
-async def sync_and_save_metagraph(substrate, redis_client):
+async def sync_and_save_metagraph(substrate):
     """
     Load the metagraph for our subnet and persist it to the database.
     """
     nodes = get_nodes_for_netuid(substrate, settings.netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")
+    redis_client = redis.Redis.from_url(settings.redis_url)
     updated = 0
     async with SessionLocal() as session:
         hotkeys = ", ".join([f"'{node.hotkey}'" for node in nodes])
@@ -57,6 +59,7 @@ async def sync_and_save_metagraph(substrate, redis_client):
         else:
             logger.info(f"No metagraph changes detected for netuid={settings.netuid}")
         await session.commit()
+        redis_client.close()
 
 
 async def main():
@@ -66,10 +69,17 @@ async def main():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    redis_client = redis.Redis.from_url(settings.redis_url)
     substrate = get_substrate(subtensor_address=settings.subtensor)
-    logger.info("Attempting to resync metagraph...")
-    await asyncio.wait_for(sync_and_save_metagraph(substrate, redis_client), 60)
+    try:
+        logger.info("Attempting to resync metagraph...")
+        await asyncio.wait_for(sync_and_save_metagraph(substrate), 60)
+        logger.success("Successfully synced metagraph.")
+    finally:
+        substrate.close()
+        substrate = None
+        await engine.dispose()
+
+    os._exit(0)
 
 
 if __name__ == "__main__":

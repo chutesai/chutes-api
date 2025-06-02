@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cacher
+  labels:
+    {{- include "cacher.labels" . | nindent 4 }}
+spec:
+  schedule: "*/10 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 15000
+      template:
+        metadata:
+          labels:
+            {{- include "cacher.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.cacher.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.cacher.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.cacher.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: cacher
+              image: "{{ .Values.cacher.image }}"
+              imagePullPolicy: {{ .Values.cacher.imagePullPolicy }}
+              command: ["poetry", "run", "python", "cacher.py"]
+              env:
+                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
+                {{- include "chutes.commonEnv" . | nindent 16 }}
+                - name: MEMCACHED
+                  value: memcached
+              resources:
+                {{- toYaml .Values.cacher.resources | nindent 16 }}

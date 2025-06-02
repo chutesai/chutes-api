@@ -314,6 +314,33 @@ watchtower:
   affinity: {}
   tolerations: []
 
+
+cacher:
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  affinity: {}
+  tolerations: []
+
+downscaler:
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  affinity: {}
+  tolerations: []
+
 paymentWatcher:
   image: parachutes/validator:latest
   imagePullPolicy: Always
