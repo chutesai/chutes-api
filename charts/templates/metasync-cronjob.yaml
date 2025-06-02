@@ -8,13 +8,13 @@ metadata:
 spec:
   schedule: "*/3 * * * *"
   concurrencyPolicy: Forbid
-  ttlSecondsAfterFinished: 7200
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 7200
+      activeDeadlineSeconds: 120
       template:
         metadata:
           labels:

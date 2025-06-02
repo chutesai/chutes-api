@@ -24,6 +24,7 @@ async def sync_and_save_metagraph(substrate):
     """
     Load the metagraph for our subnet and persist it to the database.
     """
+    substrate = get_substrate(subtensor_address=settings.subtensor)
     nodes = get_nodes_for_netuid(substrate, settings.netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")
@@ -69,14 +70,11 @@ async def main():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    substrate = get_substrate(subtensor_address=settings.subtensor)
     try:
         logger.info("Attempting to resync metagraph...")
-        await asyncio.wait_for(sync_and_save_metagraph(substrate), 60)
+        await asyncio.wait_for(sync_and_save_metagraph(), 60)
         logger.success("Successfully synced metagraph.")
     finally:
-        substrate.close()
-        substrate = None
         await engine.dispose()
 
     os._exit(0)
