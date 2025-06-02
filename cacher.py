@@ -16,11 +16,14 @@ from api.invocation.util import generate_invocation_history_metrics
 
 PAST_DAY_METRICS_QUERY = """
 UPDATE chutes
-SET invocation_count = (
-    SELECT COUNT(distinct(parent_invocation_id))
-    FROM invocations
-    WHERE invocations.chute_id = chutes.chute_id and started_at >= now() - interval '1 days'
-);
+SET invocation_count = COALESCE(usage_summary.total_count, 0)
+FROM (
+    SELECT chute_id, SUM(count) as total_count
+    FROM usage_data
+    WHERE bucket >= now() - interval '1 day'
+    GROUP BY chute_id
+) usage_summary
+WHERE chutes.chute_id = usage_summary.chute_id;
 """
 
 
@@ -73,6 +76,10 @@ async def update_past_day_metrics():
     """
     logger.info("Updating past day metrics...")
     async with get_session() as session:
+        # Set counts to 0 since not all chutes will have data from the usage_data table.
+        await session.execute(text("UPDATE chutes SET invocation_count = 0"))
+
+        # Then, update for the chutes that do have metrics.
         await session.execute(text(PAST_DAY_METRICS_QUERY))
     logger.success("Updated past day invocation metric on chutes.")
 
