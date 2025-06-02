@@ -382,6 +382,7 @@ reqHashDns:
   tolerations: []
 
 metasync:
+  enabled: true
   replicaCount: 1
   image: parachutes/metasync:latest
   imagePullPolicy: Always
@@ -400,6 +401,7 @@ metasync:
 
 weightsetter:
   replicaCount: 1
+  enabled: true
   image: parachutes/metasync:latest
   imagePullPolicy: Always
   resources:
@@ -478,24 +480,6 @@ llmCacheRedis:
   config:
     customArgs: []
 
-pgproxy:
-  image: haproxy:3.1
-  imagePullPolicy: IfNotPresent
-  real_host: 10.245.112.2
-  real_port: 5432
-  nodeSelector:
-    kubernetes.io/hostname: chutes-prod-0
-  tolerations: []
-  resources:
-    requests:
-      cpu: 0.5
-      memory: 512Mi
-    limits:
-      cpu: 0.5
-      memory: 512Mi
-  service:
-    port: 5432
-
 registry:
   image: registry:2
   imagePullPolicy: IfNotPresent
@@ -544,11 +528,13 @@ registryProxy:
     targetPort: 5000
 
 auditExporter:
+  enabled: true
   image: parachutes/validator:latest
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
 
 failedChuteCleanup:
+  enabled: true
   image: parachutes/validator:latest
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
@@ -574,6 +560,7 @@ memcached:
     memory_mb: 800
 
 autostaker:
+  enabled: true
   replicaCount: 2
   image: parachutes/validator:latest
   imagePullPolicy: Always

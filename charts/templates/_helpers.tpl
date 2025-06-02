@@ -100,10 +100,6 @@ app.kubernetes.io/name: memcached
 app.kubernetes.io/name: registry
 {{- end }}
 
-{{- define "pgproxy.labels" -}}
-app.kubernetes.io/name: pgproxy
-{{- end }}
-
 {{- define "registryProxy.labels" -}}
 app.kubernetes.io/name: registry-proxy
 {{- end }}
