@@ -6,7 +6,6 @@ import hashlib
 import json
 import asyncio
 import redis
-import traceback
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from fiber.chain.interface import get_substrate
@@ -69,19 +68,8 @@ async def main():
 
     redis_client = redis.Redis.from_url(settings.redis_url)
     substrate = get_substrate(subtensor_address=settings.subtensor)
-    while True:
-        logger.info("Attempting to resync metagraph...")
-        try:
-            await asyncio.wait_for(sync_and_save_metagraph(substrate, redis_client), 30)
-        except asyncio.TimeoutError:
-            logger.error("Metagraph sync timed out!")
-            substrate = get_substrate(subtensor_address=settings.subtensor)
-        except Exception as exc:
-            logger.error(
-                f"Unhandled exception raised while syncing metagraph: {exc}\n{traceback.format_exc()}"
-            )
-            substrate = get_substrate(subtensor_address=settings.subtensor)
-        await asyncio.sleep(60)
+    logger.info("Attempting to resync metagraph...")
+    await asyncio.wait_for(sync_and_save_metagraph(substrate, redis_client), 60)
 
 
 if __name__ == "__main__":
