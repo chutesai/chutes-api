@@ -1,3 +1,7 @@
+"""
+Scale down underutilized chutes.
+"""
+
 import asyncio
 import random
 import math
@@ -94,7 +98,10 @@ async def scale_down():
             logger.warning(
                 f"Downsizing chute {chute_id}, current count = {len(instances)}, removing {number_to_kick} unlucky instances"
             )
+
+            kicked = set()
             for idx in range(number_to_kick):
+                instances = [i for i in instances if i.instance_id not in kicked]
                 # Kick a miner with highest instance counts, when > 1.
                 unlucky_instance = None
                 unlucky_reason = None
@@ -174,6 +181,7 @@ async def scale_down():
 
                 # Purge the unlucky one.
                 if unlucky_instance:
+                    kicked.add(unlucky_instance.instance_id)
                     await purge_and_notify(unlucky_instance, reason=unlucky_reason)
                     instances_removed += 1
             else:
