@@ -17,9 +17,9 @@ ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 #  $/million = compute hourly price * 0.2
 # For example:
 #  llama-3-8b with node selector requiring minimally an a100
-#  Example a100 hourly price (subject to change): $1.0125
-#  $/million = $1.0125*0.2 = $0.20250
-LLM_PRICE_MULT_PER_MILLION = 0.2
+#  Example a100 hourly price (subject to change): $0.8
+#  $/million = $0.8 * 0.07 = $0.56/million tokens
+LLM_PRICE_MULT_PER_MILLION = 0.07
 
 # Likewise, for diffusion models, we allow different node selectors and step
 # counts, so we can't really have a fixed "per image" pricing, just a price

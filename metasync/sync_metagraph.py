@@ -20,7 +20,7 @@ MetagraphNode = create_metagraph_node_class(Base)
 logger = get_logger(__name__)
 
 
-async def sync_and_save_metagraph(substrate):
+async def sync_and_save_metagraph():
     """
     Load the metagraph for our subnet and persist it to the database.
     """
@@ -73,7 +73,7 @@ async def main():
     try:
         logger.info("Attempting to resync metagraph...")
         await asyncio.wait_for(sync_and_save_metagraph(), 60)
-        logger.success("Successfully synced metagraph.")
+        logger.info("Successfully synced metagraph.")
     finally:
         await engine.dispose()
 
