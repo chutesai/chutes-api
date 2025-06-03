@@ -55,6 +55,14 @@ class NodeSelector(BaseModel):
     exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
 
+    def __init__(self, **data):
+        """
+        Override the constructor to remove computed fields.
+        """
+        super().__init__(
+            **{k: v for k, v in data.items() if k not in ("compute_multiplier", "supported_gpus")}
+        )
+
     @validator("include")
     def include_supported_gpus(cls, gpus):
         """
@@ -293,7 +301,10 @@ class Chute(Base):
         """
         Convert back to dict.
         """
-        return node_selector.dict()
+        as_dict = node_selector.dict()
+        as_dict.pop("compute_multiplier", None)
+        as_dict.pop("supported_gpus", None)
+        return as_dict
 
     @computed_field
     @property

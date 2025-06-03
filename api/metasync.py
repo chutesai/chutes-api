@@ -114,7 +114,7 @@ async def get_scoring_data():
 async def get_unique_chute_history():
     query = text(UNIQUE_CHUTE_HISTORY_QUERY.format(interval=SCORING_INTERVAL))
     values = {}
-    async with get_session(readonly=True) as session:
+    async with get_session() as session:
         result = await session.execute(query)
         for hotkey, timepoint, count in result:
             if hotkey not in values:

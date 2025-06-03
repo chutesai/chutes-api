@@ -363,7 +363,7 @@ async def admin_create_user(
 
     # Prevent multiple signups from the same IP.
     ip_signups = await settings.redis_client.get(f"ip_signups:{actual_ip}")
-    if ip_signups and int(ip_signups) > 2:
+    if ip_signups and int(ip_signups) >= 2:
         logger.warning(
             f"Attempted multiple registrations from the same IP: {actual_ip} {ip_signups=}"
         )
@@ -411,6 +411,10 @@ async def admin_create_user(
 
     # Track signups per IP.
     await settings.redis_client.incr(f"ip_signups:{actual_ip}")
+<<<<<<< HEAD
+=======
+    await settings.redis_client.expire(f"ip_signups:{actual_ip}", 24 * 60 * 60)
+>>>>>>> b1e8572fe7db8205b0dd6c89320d2050557c7fd4
 
     return response
 

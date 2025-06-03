@@ -56,6 +56,18 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "cacher.labels" -}}
+app.kubernetes.io/name: cacher
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
+{{- define "downscaler.labels" -}}
+app.kubernetes.io/name: downscaler
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "autostaker.labels" -}}
 app.kubernetes.io/name: autostaker
 redis-access: "true"
@@ -98,10 +110,6 @@ app.kubernetes.io/name: memcached
 
 {{- define "registry.labels" -}}
 app.kubernetes.io/name: registry
-{{- end }}
-
-{{- define "pgproxy.labels" -}}
-app.kubernetes.io/name: pgproxy
 {{- end }}
 
 {{- define "registryProxy.labels" -}}

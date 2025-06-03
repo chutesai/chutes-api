@@ -2,11 +2,11 @@
 Sync the metagraph to the database, broadcast any updated nodes.
 """
 
+import os
 import hashlib
 import json
 import asyncio
 import redis
-import traceback
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from fiber.chain.interface import get_substrate
@@ -20,13 +20,15 @@ MetagraphNode = create_metagraph_node_class(Base)
 logger = get_logger(__name__)
 
 
-async def sync_and_save_metagraph(substrate, redis_client):
+async def sync_and_save_metagraph():
     """
     Load the metagraph for our subnet and persist it to the database.
     """
+    substrate = get_substrate(subtensor_address=settings.subtensor)
     nodes = get_nodes_for_netuid(substrate, settings.netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")
+    redis_client = redis.Redis.from_url(settings.redis_url)
     updated = 0
     async with SessionLocal() as session:
         hotkeys = ", ".join([f"'{node.hotkey}'" for node in nodes])
@@ -58,6 +60,7 @@ async def sync_and_save_metagraph(substrate, redis_client):
         else:
             logger.info(f"No metagraph changes detected for netuid={settings.netuid}")
         await session.commit()
+        redis_client.close()
 
 
 async def main():
@@ -67,21 +70,14 @@ async def main():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    redis_client = redis.Redis.from_url(settings.redis_url)
-    substrate = get_substrate(subtensor_address=settings.subtensor)
-    while True:
+    try:
         logger.info("Attempting to resync metagraph...")
-        try:
-            await asyncio.wait_for(sync_and_save_metagraph(substrate, redis_client), 30)
-        except asyncio.TimeoutError:
-            logger.error("Metagraph sync timed out!")
-            substrate = get_substrate(subtensor_address=settings.subtensor)
-        except Exception as exc:
-            logger.error(
-                f"Unhandled exception raised while syncing metagraph: {exc}\n{traceback.format_exc()}"
-            )
-            substrate = get_substrate(subtensor_address=settings.subtensor)
-        await asyncio.sleep(60)
+        await asyncio.wait_for(sync_and_save_metagraph(), 60)
+        logger.info("Successfully synced metagraph.")
+    finally:
+        await engine.dispose()
+
+    os._exit(0)
 
 
 if __name__ == "__main__":
