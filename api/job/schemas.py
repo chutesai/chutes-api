@@ -27,9 +27,9 @@ class Job(Base):
     chutes_version = Column(String, nullable=True)
 
     # Miner info, when claimed.
-    miner_uid = Column(Integer, nullable=False)
-    miner_hotkey = Column(String, nullable=False)
-    miner_coldkey = Column(String, nullable=False)
+    miner_uid = Column(Integer, nullable=True)
+    miner_hotkey = Column(String, nullable=True)
+    miner_coldkey = Column(String, nullable=True)
     instance_id = Column(String, nullable=True)
 
     # State info.

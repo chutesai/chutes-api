@@ -3,6 +3,7 @@ Application-wide settings.
 """
 
 import os
+import hashlib
 import aioboto3
 import aiomcache
 from functools import cached_property
@@ -145,6 +146,11 @@ class Settings(BaseSettings):
 
     # Base domain.
     base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
+
+    # Launch config JWT signing key.
+    launch_config_key: str = hashlib.sha256(
+        os.getenv("LAUNCH_CONFIG_KEY", "launch-secret").encode()
+    ).hexdigest()
 
     # Rate limits.
     rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))

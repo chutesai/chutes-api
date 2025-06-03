@@ -2,21 +2,24 @@
 Helper functions for instances.
 """
 
+import jwt
 import time
 import uuid
 import asyncio
 import random
 import aiohttp
 import orjson as json
+from fastapi import HTTPException, status
+from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
 from loguru import logger
 from contextlib import asynccontextmanager
-from api.instance.schemas import Instance
+from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import text
+from sqlalchemy import text, func
 from sqlalchemy.orm import aliased, joinedload
 
 # Define an alias for the Instance model to use in a subquery
@@ -287,3 +290,66 @@ async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
     )
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
+
+
+def create_launch_jwt(launch_config) -> str:
+    """
+    Create JWT for a given launch config (updated chutes lib with new graval etc).
+    """
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=1)
+    payload = {
+        "exp": expires_at.replace(tzinfo=None),
+        "sub": launch_config.config_id,
+        "iat": now.replace(tzinfo=None),
+        "url": f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}",
+        "env_key": launch_config.env_key,
+        "iss": "chutes",
+    }
+    if launch_config.job_id:
+        payload["job_id"] = launch_config.job_id
+    encoded_jwt = jwt.encode(payload, settings.launch_config_key, algorithm="HS256")
+    return encoded_jwt
+
+
+async def load_launch_config_from_jwt(db, config_id: str, token: str) -> str:
+    detail = "Missing or invalid launch config JWT"
+    try:
+        payload = jwt.decode(
+            token,
+            settings.launch_config_key,
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_iat": True,
+                "verify_iss": True,
+                "require": ["exp", "iat", "iss"],
+            },
+            issuer="chutes",
+        )
+        if config_id == payload["sub"]:
+            config = (
+                (await db.execute(select(LaunchConfig).where(LaunchConfig.config_id == config_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
+            if config:
+                if not config.retrieved_at:
+                    config.retrieved_at = func.now()
+                    return config
+                detail = f"Launch config {config_id=} has already been retrieved: {token=} {config.retrieved_at=}"
+                logger.warning(detail)
+            else:
+                detail = f"Launch config {config_id} not found in database."
+        else:
+            detail = f"Launch config {config_id=} does not match token!"
+    except jwt.InvalidTokenError:
+        logger.warning(f"Attempted to use invalid token for launch config: {config_id=} {token=}")
+    except Exception as exc:
+        logger.warning(f"Unhandled exception checking launch config JWT: {exc}")
+
+    # If we got here, it failed somewhere.
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+    )

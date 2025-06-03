@@ -626,10 +626,34 @@ async def increment_soft_fail(instance, chute):
         await purge_and_notify(instance)
 
 
-def get_expected_command(instance, chute):
+def get_expected_command(chute, instance=None, token=None):
     """
     Get the command line for a given instance.
     """
+    # New chutes run format expects a JWT and TLS key/cert, but not graval seed.
+    if re.match(r"^[0-9]+\.([3-9][0-9]*)\.[0-9]+$", chute.chutes_version or ""):
+        return " ".join(
+            [
+                "python",
+                "/home/chutes/.local/bin/chutes",
+                "run",
+                chute.ref_str,
+                "--port",
+                "8000",
+                "--miner-ss58",
+                instance.miner_hotkey,
+                "--validator-ss58",
+                settings.validator_ss58,
+                "--token",
+                token,
+                "--keyfile",
+                "/app/.chutetls/key.pem",
+                "--certfile",
+                "/app/.chutetls/cert.pem",
+            ]
+        ).strip()
+
+    # Legacy format.
     return " ".join(
         [
             "python",
@@ -694,7 +718,7 @@ async def check_chute(chute_id):
                         command_line = re.sub(
                             r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
                         )
-                        if command_line != get_expected_command(instance, chute):
+                        if command_line != get_expected_command(chute, instance=instance):
                             logger.error(f"{log_prefix} running invalid process: {command_line=}")
                             failed_envdump = True
                         else:

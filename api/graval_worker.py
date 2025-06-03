@@ -697,7 +697,7 @@ async def check_envdump_command(instance):
     process = dump[1] if isinstance(dump, list) else dump["process"]
     assert process["pid"] == 1
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"]))
-    if command_line != get_expected_command(instance, instance.chute):
+    if command_line != get_expected_command(instance.chute, instance=instance):
         logger.error(
             f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} running invalid process: {command_line}"
         )
@@ -743,7 +743,7 @@ async def check_live_code(instance: Instance) -> bool:
             .strip()
         )
         command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
-        expected = get_expected_command(instance, instance.chute)
+        expected = get_expected_command(instance.chute, instance=instance)
         if command_line != expected:
             logger.error(
                 f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"

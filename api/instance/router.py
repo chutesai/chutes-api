@@ -2,45 +2,53 @@
 Routes for instances.
 """
 
+import re
+import uuid
 import orjson as json
 import traceback
+import random
+import secrets
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from api.gpu import SUPPORTED_GPUS
 from api.database import get_db_session, generate_uuid
 from api.config import settings
-from api.constants import HOTKEY_HEADER, EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
+from api.constants import (
+    HOTKEY_HEADER,
+    EXPANSION_UTILIZATION_THRESHOLD,
+    UNDERUTILIZED_CAP,
+    AUTHORIZATION_HEADER,
+)
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute
-from api.instance.schemas import InstanceArgs, Instance, instance_nodes, ActivateArgs
-from api.instance.util import get_instance_by_chute_and_id
+from api.instance.schemas import (
+    InstanceArgs,
+    Instance,
+    instance_nodes,
+    ActivateArgs,
+    LaunchConfig,
+    LaunchConfigArgs,
+)
+from api.job.schemas import Job
+from api.instance.util import (
+    get_instance_by_chute_and_id,
+    create_launch_jwt,
+    load_launch_config_from_jwt,
+)
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import is_valid_host, generate_ip_token
-from api.graval_worker import verify_instance
+from api.graval_worker import verify_instance, graval_encrypt
+from watchtower import get_expected_command, decrypt_envdump_cipher
 
 router = APIRouter()
 
 
-@router.post("/{chute_id}/", status_code=status.HTTP_202_ACCEPTED)
-async def create_instance(
-    chute_id: str,
-    instance_args: InstanceArgs,
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
-):
-    mgnode = await get_miner_by_hotkey(hotkey, db)
-    if mgnode.blacklist_reason:
-        logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}",
-        )
-
+async def _load_chute(db, chute_id: str):
     chute = (
         (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
         .unique()
@@ -52,101 +60,20 @@ async def create_instance(
             detail=f"Chute {chute_id} not found",
         )
 
-    # Host port already used?
-    existing = (
-        (
-            await db.execute(
-                select(Instance)
-                .where(Instance.host == instance_args.host, Instance.port == instance_args.port)
-                .limit(1)
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
-    )
-    if existing:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Host/port {instance_args.host}:{instance_args.port} is already in use by another instance.",
-        )
 
-    # Prevent miners from create instances of chutes they constantly rotate/spam.
-    query = text("""
-    WITH lifetimes AS (
-        SELECT
-            miner_hotkey,
-            COUNT(*) AS instance_count,
-            AVG(EXTRACT(EPOCH FROM deleted_at - created_at)) AS avg_lifetime
-        FROM
-            instance_audit
-        WHERE
-            chute_id = :chute_id
-            AND version = :version
-            AND verified_at IS NOT NULL
-            AND created_at >= NOW() - INTERVAL '1 day'
-            AND NOT EXISTS (
-                SELECT 1
-                FROM chutes
-                WHERE chutes.chute_id = :chute_id
-                AND updated_at >= NOW() - INTERVAL '4 hours'
-            )
-        GROUP BY
-            miner_hotkey
-    ),
-    instance_counts AS (
-        SELECT miner_hotkey, count(*) AS count
-        FROM instances
-        WHERE verified is true
-        GROUP BY miner_hotkey
-    ),
-    metrics AS (
-        SELECT
-            AVG(instance_count) AS avg_count,
-            AVG(avg_lifetime) AS avg_lifetime
-        FROM
-            lifetimes
-    )
-    SELECT EXISTS (
-        SELECT 1
-        FROM
-            lifetimes l, metrics m, instance_counts c
-        WHERE
-            l.miner_hotkey = :hotkey
-            AND c.count <= 3
-            AND c.miner_hotkey = :hotkey
-            AND l.instance_count >= m.avg_count
-            AND l.instance_count >= 3
-            AND l.avg_lifetime < m.avg_lifetime
-            AND l.avg_lifetime < EXTRACT(EPOCH FROM INTERVAL '4 hours')
-            AND (
-                SELECT COUNT(*)
-                FROM instance_audit
-                WHERE miner_hotkey = :hotkey
-                AND deletion_reason = 'miner initialized'
-                AND created_at >= NOW() - INTERVAL '1 day'
-                AND verified_at IS NOT NULL
-            ) > (
-                SELECT COUNT(*)
-                FROM instance_audit
-                WHERE miner_hotkey = :hotkey
-                AND deletion_reason != 'miner initialized'
-                AND created_at >= NOW() - INTERVAL '1 day'
-                AND verified_at IS NOT NULL
-            )
-    ) AS is_banned
-    """)
-    result = await db.execute(
-        query, {"chute_id": chute_id, "version": chute.version, "hotkey": hotkey}
-    )
-    is_spammy = result.scalar()
-    if is_spammy:
-        logger.warning(f"THRASHER: {hotkey=} has abnormal instance lifetimes for {chute_id=}")
+async def _check_blacklisted(db, hotkey):
+    mgnode = await get_miner_by_hotkey(hotkey, db)
+    if mgnode.blacklist_reason:
+        logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
         raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=f"Your hotkey is spamming {chute_id=} with low average lifetime.",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}",
         )
+    return mgnode
 
-    # Rolling update handling.
+
+async def _check_scalable(db, chute, hotkey):
+    chute_id = chute.chute_id
     if chute.rolling_update:
         limit = chute.rolling_update.permitted.get(hotkey, 0)
         if not limit:
@@ -157,10 +84,7 @@ async def create_instance(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
             )
-        chute.rolling_update.permitted[hotkey] -= 1
-
-    # Limit underutilized chutes.
-    try:
+    else:
         query = text(
             "SELECT * FROM chute_utilization "
             "WHERE chute_id = :chute_id "
@@ -196,22 +120,311 @@ async def create_instance(
                     detail=f"Chute {chute_id} is underutilized and either at capacity or you already have an instance.",
                 )
 
+
+async def _validate_node(db, chute, node_id: str, hotkey: str):
+    node = await get_node_by_id(node_id, db, hotkey)
+    if not node:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Node {node_id} not found",
+        )
+
+    # Not verified?
+    if not node.verified_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"GPU {node_id} is not yet verified, and cannot be associated with an instance",
+        )
+
+    # Already associated with an instance?
+    if node.instance:
+        instance = node.instance
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"GPU {node_id} is already assigned to an instance: {instance.instance_id=} {instance.chute_id=}",
+        )
+
+    # Valid GPU for this chute?
+    if not node.is_suitable(chute):
+        logger.warning(
+            f"INSTANCEFAIL: attempt to post incompatible GPUs: {node.name} for {chute.node_selector} {hotkey=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Node {node_id} is not compatible with chute node selector!",
+        )
+    return node
+
+
+async def _validate_nodes(db, chute, node_ids: list[str], hotkey: str, instance: Instance):
+    host = instance.host
+    gpu_count = chute.node_selector.get("gpu_count", 1)
+    if len(set(node_ids)) != gpu_count:
+        logger.warning(
+            f"INSTANCEFAIL: Attempt to post incorrect GPU count: {len(node_ids)} vs {gpu_count} from {hotkey=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"{chute.chute_id=} {chute.name=} requires exactly {gpu_count} GPUs.",
+        )
+
+    node_hosts = set()
+    nodes = []
+    for node_id in set(node_ids):
+        node = await _validate_node(db, chute, node_id, hotkey)
+        nodes.append(node)
+        node_hosts.add(node.verification_host)
+
+        # Create the association record.
+        await db.execute(
+            instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
+        )
+
+    # The hostname used in verifying the node must match the hostname of the instance.
+    if len(node_hosts) > 1 or list(node_hosts)[0].lower() != host.lower():
+        logger.warning("INSTANCEFAIL: Instance hostname mismatch: {node_hosts=} {host=}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Instance hostname does not match the node verification hostname: {host=} vs {node_hosts=}",
+        )
+    return nodes
+
+
+async def _validate_host_port(db, host, port):
+    existing = (
+        (
+            await db.execute(
+                select(Instance).where(Instance.host == host, Instance.port == port).limit(1)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if existing:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Host/port {host}:{port} is already in use by another instance.",
+        )
+
+    if not await is_valid_host(host):
+        logger.warning(f"INSTANCEFAIL: Attempt to post bad host: {host}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid instance host: {host}",
+        )
+
+
+@router.get("/launch_config")
+async def get_launch_config(
+    chute_id: str,
+    host: str,
+    port: int,
+    job_id: str = None,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+):
+    miner = await _check_blacklisted(db, hotkey)
+
+    # Load the chute and check if it's scalable.
+    chute = await _load_chute(db, chute_id)
+    await _check_scalable(db, chute, hotkey)
+
+    # Associated with a job?
+    if job_id:
+        job = (
+            (await db.execute(select(Job).where(Job.chute_id == chute_id, Job.job_id == job_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {job_id} for chute {chute_id} not found",
+            )
+        if job.miner_hotkey:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Job {job_id} has already been claimed!",
+            )
+        existing = (
+            (await db.execute(select(LaunchConfig).where(LaunchConfig.job_id == job_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Job {job_id} has already been claimed!",
+            )
+
+    # Create the launch config and JWT.
+    try:
+        launch_config = LaunchConfig(
+            config_id=str(uuid.uuid4()),
+            seed=random.randint(1, 2**63 - 1),
+            env_key=secrets.token_bytes(16).hex(),
+            chute_id=chute_id,
+            job_id=job_id,
+            miner_hotkey=hotkey,
+            miner_uid=miner.node_id,
+            miner_coldkey=miner.coldkey,
+        )
+        db.add(launch_config)
+        await db.commit()
+        await db.refresh(launch_config)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Launch config conflict/unique constraint error: {exc}",
+        )
+
+    # Generate the JWT.
+    return {
+        "token": create_launch_jwt(launch_config),
+        "config_id": launch_config.config_id,
+    }
+
+
+@router.post("/launch_config/{config_id}")
+async def claim_launch_config(
+    config_id: str,
+    args: LaunchConfigArgs,
+    db: AsyncSession = Depends(get_db_session),
+    authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
+):
+    # Load the launch config, verifying the token.
+    token = authorization.strip().split(" ")[-1]
+    launch_config = await load_launch_config_from_jwt(db, config_id, token)
+    chute = await _load_chute(launch_config.chute_id)
+
+    # Verify the code is what is expected.
+    try:
+        dump = json.loads(decrypt_envdump_cipher(args.dump, launch_config.env_key))
+        process = dump[1] if isinstance(dump, list) else dump["process"]
+        assert process["pid"] == 1
+        command_line = re.sub(
+            r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
+        )
+        if command_line != get_expected_command(chute, token=token):
+            logger.error(f"Attempt to claim {config_id=} failed, invalid command: {command_line=}")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = f"Invalid command: {command_line=}"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You are not running the correct command, sneaky devil: {command_line=}",
+            )
+    except Exception as exc:
+        logger.error(
+            f"Attempt to claim {config_id=} failed, unable to verify command: {exc=} {args=}"
+        )
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = f"Unable to verify: {exc=} {args=}"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=launch_config.verification_error,
+        )
+
+    # Tenative instance.
+    instance = Instance(
+        instance_id=generate_uuid(),
+        host=launch_config.host,
+        port=launch_config.port,
+        chute_id=launch_config.chute_id,
+        version=chute.version,
+        miner_uid=launch_config.miner_uid,
+        miner_hotkey=launch_config.miner_hotkey,
+        miner_coldkey=launch_config.miner_coldkey,
+        region="n/a",
+        active=True,
+        verified=False,
+        chutes_version=chute.chutes_version,
+        symmetric_key=secrets.token_bytes(16).hex(),
+    )
+    db.add(instance)
+
+    # Verify the GPUs are suitable.
+    node_ids = [node["uuid"] for node in args.gpus]
+    nodes = await _validate_nodes(
+        db,
+        chute,
+        node_ids,
+        launch_config.miner_hotkey,
+        instance,
+    )
+
+    # Generate a ciphertext for this instance to decrypt.
+    node_idx = random.choice(list(range(len(nodes))))
+    node = nodes[node_idx]
+    iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
+    cipher = await graval_encrypt(
+        node,
+        instance.symmetric_key,
+        with_chutes=True,
+        cuda=False,
+        seed=node.seed,
+        iterations=iterations,
+    )
+    logger.success(
+        f"Generated ciphertext for {node.uuid} for symmetric key validation/PovW check {cipher=}"
+    )
+
+    # Store the timestamp so we can verify the graval challenges completed in the expected time.
+    launch_config.retrieved_at = func.now()
+    await db.commit()
+
+    # The miner must decrypt the proposed symmetric key from this response payload,
+    # then encrypt something using this symmetric key within the expected graval timeout.
+    return {
+        "seed": launch_config.seed,
+        "iterations": iterations,
+        "symmetric_key": {
+            "ciphertext": cipher,
+            "device_index": node_idx,
+        },
+    }
+
+
+@router.post("/{chute_id}/", status_code=status.HTTP_202_ACCEPTED)
+async def create_instance(
+    chute_id: str,
+    instance_args: InstanceArgs,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+):
+    await _check_blacklisted(db, hotkey)
+
+    chute = (
+        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chute {chute_id} not found",
+        )
+
+    # Host port already used?
+    await _validate_host_port(db, instance_args.host, instance_args.port)
+
+    # Scalable?
+    await _check_scalable(db, chute, hotkey)
+    if chute.rolling_update:
+        chute.rolling_update.permitted[hotkey] -= 1
+
+    gpu_type = None
+    gpu_count = chute.node_selector.get("gpu_count", 1)
+    try:
         # Load the miner.
         miner = await get_miner_by_hotkey(hotkey, db)
         if not miner:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail=f"Did not find miner with {hotkey=}",
-            )
-
-        # Validate the hostname.
-        if not await is_valid_host(instance_args.host):
-            logger.warning(
-                f"INSTANCEFAIL: Attempt to post bad host: {instance_args.host} from {hotkey=}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid instance host: {instance_args.host}",
             )
 
         # Instantiate the instance.
@@ -232,65 +445,9 @@ async def create_instance(
         db.add(instance)
 
         # Verify the GPUs are suitable.
-        gpu_count = chute.node_selector.get("gpu_count", 1)
-        if len(instance_args.node_ids) != gpu_count:
-            logger.warning(
-                f"INSTANCEFAIL: Attempt to post incorrect GPU count: {len(instance_args.node_ids)} vs {gpu_count} from {hotkey=}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
-            )
-        gpu_type = None
-        node_hosts = set()
-        for node_id in instance_args.node_ids:
-            # Make sure the node is in the miner's inventory.
-            node = await get_node_by_id(node_id, db, hotkey)
-            if not node:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"Node {node_id} not found",
-                )
-            node_hosts.add(node.verification_host)
+        nodes = await _validate_nodes(db, chute, instance_args.node_ids, hotkey, instance)
+        gpu_type = nodes[0].gpu_identifier
 
-            # Not verified?
-            if not node.verified_at:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"GPU {node_id} is not yet verified, and cannot be associated with an instance",
-                )
-
-            # Already associated with an instance?
-            if node.instance:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"GPU {node_id} is already assigned to an instance: {instance.instance_id=} {instance.host=} {instance.port=} {instance.chute_id=}",
-                )
-
-            # Valid GPU for this chute?
-            gpu_type = node.name
-            if not node.is_suitable(chute):
-                logger.warning(
-                    f"INSTANCEFAIL: attempt to post incompatible GPUs: {node.name} for {chute.node_selector}"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Node {node_id} is not compatible with chute node selector!",
-                )
-
-            # Create the association record.
-            await db.execute(
-                instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
-            )
-
-        # The hostname used in verifying the node must match the hostname of the instance.
-        if len(node_hosts) > 1 or list(node_hosts)[0].lower() != instance.host.lower():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}",
-            )
-
-        # Persist, which will raise a unique constraint error when the node is already allocated.
         await db.commit()
     except IntegrityError as exc:
         detail = f"INTEGRITYERROR {hotkey=}: {exc}\n{traceback.format_exc()}"

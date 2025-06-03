@@ -117,6 +117,11 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: LAUNCH_CONFIG_KEY
+  valueFrom:
+    secretKeyRef:
+      name: launch-config
+      key: key
 - name: ENVCHECK_KEY
   valueFrom:
     secretKeyRef:

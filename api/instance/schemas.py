@@ -15,6 +15,7 @@ from sqlalchemy import (
     Integer,
     Index,
     Table,
+    BigInteger,
     UniqueConstraint,
 )
 from api.database import Base, generate_uuid
@@ -40,6 +41,12 @@ class ActivateArgs(BaseModel):
     active: bool
 
 
+class LaunchConfigArgs(BaseModel):
+    gpus: list[dict]
+    env: str
+    sig: str
+
+
 class Instance(Base):
     __tablename__ = "instances"
     instance_id = Column(String, primary_key=True, default=generate_uuid)
@@ -62,7 +69,9 @@ class Instance(Base):
     chutes_version = Column(String, nullable=True)
     symmetric_key = Column(String, default=lambda: secrets.token_bytes(16).hex())
     job_id = Column(String, ForeignKey("jobs.job_id", ondelete="SET NULL"), nullable=True)
-    config_id = Column(String, ForeignKey("launch_configs.config_id", ondelete="SET NULL"), nullable=True)
+    config_id = Column(
+        String, ForeignKey("launch_configs.config_id", ondelete="SET NULL"), nullable=True
+    )
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
@@ -82,8 +91,20 @@ class Instance(Base):
 
 class LaunchConfig(Base):
     __tablename__ = "launch_configs"
-    config_id =  Column(String, primary_key=True, default=generate_uuid)
+    config_id = Column(String, primary_key=True, default=generate_uuid)
     seed = Column(BigInteger, nullable=False)
     env_key = Column(String, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
     job_id = Column(String, ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=True)
+    host = Column(String, nullable=False)
+    port = Column(Integer, nullable=False)
+    miner_uid = Column(Integer, nullable=False)
+    miner_hotkey = Column(String, nullable=False)
+    miner_coldkey = Column(String, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    retrieved_at = Column(DateTime, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    failed_at = Column(DateTime, nullable=True)
+    verification_error = Column(String, nullable=True)
+
+    __table_args__ = (UniqueConstraint("job_id", name="uq_job_launch_config"),)
