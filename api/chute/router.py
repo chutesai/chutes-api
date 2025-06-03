@@ -409,10 +409,18 @@ async def _deploy_chute(
         chute_args.node_selector.exclude = list(
             set(chute_args.node_selector.exclude or [] + ["h200", "b200", "mi300x"])
         )
+
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No supported GPUs based on node selector!",
+            )
+
+        # Limit h/b 200 access for now.
+        if not set(chute_args.node_selector.supported_gpus) - set(["b200", "h200", "mi300x"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to require h200, b200 or mi300x at this time.",
             )
 
     old_version = None
@@ -505,17 +513,6 @@ async def _deploy_chute(
             ).scalar()
 
         db.add(chute)
-
-    # Limit h/b 200 access for now.
-    supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
-    if (
-        not (supported_gpus - set(["b200", "h200", "mi300x"]))
-        and chute.user_id != await chutes_user_id()
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to require h200, b200 or mi300x at this time.",
-        )
 
     await db.commit()
     await db.refresh(chute)
