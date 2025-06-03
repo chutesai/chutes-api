@@ -76,6 +76,7 @@ class Instance(Base):
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
     job = relationship("Job", back_populates="instance")
+    config = relationship("LaunchConfig", back_populates="instance")
 
     __table_args__ = (
         Index(
@@ -106,5 +107,10 @@ class LaunchConfig(Base):
     verified_at = Column(DateTime, nullable=True)
     failed_at = Column(DateTime, nullable=True)
     verification_error = Column(String, nullable=True)
+    instance_id = Column(
+        String, ForeignKey("instances.instance_id", ondelete="SET NULL"), nullable=True
+    )
+
+    instance = relationship("Instance", back_populates="config")
 
     __table_args__ = (UniqueConstraint("job_id", name="uq_job_launch_config"),)

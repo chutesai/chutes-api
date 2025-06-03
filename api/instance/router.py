@@ -8,9 +8,11 @@ import orjson as json
 import traceback
 import random
 import secrets
+from datetime import datetime, timedelta, timezone
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text, func
+from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from api.gpu import SUPPORTED_GPUS
@@ -214,6 +216,21 @@ async def _validate_host_port(db, host, port):
         )
 
 
+async def _reset_job(db, job_id: str):
+    if not job_id:
+        return
+    await db.execute(
+        text(
+            "UPDATE jobs SET "
+            " miner_uid = null, "
+            "  miner_hotkey = null, 
+            miner_coldkey = null, instance_id = null WHERE job_id = :job_id"))
+    job.miner_uid = None
+    job.miner_hotkey = None
+    job.miner_coldkey = None
+    job.instance_id = None
+
+
 @router.get("/launch_config")
 async def get_launch_config(
     chute_id: str,
@@ -247,6 +264,7 @@ async def get_launch_config(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Job {job_id} has already been claimed!",
             )
+
         existing = (
             (await db.execute(select(LaunchConfig).where(LaunchConfig.job_id == job_id)))
             .unique()
@@ -257,6 +275,11 @@ async def get_launch_config(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Job {job_id} has already been claimed!",
             )
+
+        # Update job with miner info.
+        job.miner_uid = miner.node_id
+        job.miner_hotkey = miner.hotkey
+        job.miner_coldkey = miner.coldkey
 
     # Create the launch config and JWT.
     try:
@@ -327,7 +350,7 @@ async def claim_launch_config(
             detail=launch_config.verification_error,
         )
 
-    # Tenative instance.
+    # Create the instance on the fly.
     instance = Instance(
         instance_id=generate_uuid(),
         host=launch_config.host,
@@ -338,38 +361,54 @@ async def claim_launch_config(
         miner_hotkey=launch_config.miner_hotkey,
         miner_coldkey=launch_config.miner_coldkey,
         region="n/a",
-        active=True,
+        active=False,
         verified=False,
         chutes_version=chute.chutes_version,
         symmetric_key=secrets.token_bytes(16).hex(),
+        job_id=launch_config.job_id,
+        config_id=launch_config.config_id,
     )
     db.add(instance)
 
+    # Mark the job as associated with this instance.
+    if launch_config.job_id:
+        job = (
+            (await db.execute(select(Job).where(Job.job_id == launch_config.job_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not job:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job {launch_config.job_id} no longer exists!",
+            )
+        job.instance_id = instance.instance_id
+
     # Verify the GPUs are suitable.
     node_ids = [node["uuid"] for node in args.gpus]
-    nodes = await _validate_nodes(
-        db,
-        chute,
-        node_ids,
-        launch_config.miner_hotkey,
-        instance,
-    )
+    try:
+        nodes = await _validate_nodes(
+            db,
+            chute,
+            node_ids,
+            launch_config.miner_hotkey,
+            instance,
+        )
+    except Exception:
+        await db.rollback()
+        async with get_session() as error_session:
+            await error_session.execute(text(
+                "UPDATE launch_configs SET failed_at = NOW(), "
+                "verification_error = 'invalid GPU/nodes configuration provided' "
+                "WHERE config_id = :config_id"
+            ), {"config_id": launch_config.config_id})
+        raise
 
     # Generate a ciphertext for this instance to decrypt.
     node_idx = random.choice(list(range(len(nodes))))
     node = nodes[node_idx]
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
-    cipher = await graval_encrypt(
-        node,
-        instance.symmetric_key,
-        with_chutes=True,
-        cuda=False,
-        seed=node.seed,
-        iterations=iterations,
-    )
-    logger.success(
-        f"Generated ciphertext for {node.uuid} for symmetric key validation/PovW check {cipher=}"
-    )
+    await generate_launch_cipher.kiq(config_id, node_idx, node.uuid, iterations)
 
     # Store the timestamp so we can verify the graval challenges completed in the expected time.
     launch_config.retrieved_at = func.now()
@@ -380,10 +419,63 @@ async def claim_launch_config(
     return {
         "seed": launch_config.seed,
         "iterations": iterations,
+        "job_id": launch_config.job_id,
         "symmetric_key": {
             "ciphertext": cipher,
             "device_index": node_idx,
         },
+    }
+
+
+@router.put("/launch_config/{config_id}")
+async def verify_launch_config_instance(
+    config_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
+):
+    token = authorization.strip().split(" ")[-1]
+    launch_config = await load_launch_config_from_jwt(db, config_id, token, allow_retrieved=True)
+
+    # Validate the launch config.
+    if launch_config.verified_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Launch config has already been verified: {config_id}",
+        )
+    if launch_config.failed_at:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Launch config failed verification: {launch_config.failed_at=} {launch_config.verification_error=}",
+        )
+
+    # Check decryption time.
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    start = launch_config.retrieved_at.replace(tzinfo=None)
+    query = (
+        select(Instance)
+        .where(Instance.config_id == launch_config.config_id)
+        .options(joinedload(Instance.nodes))
+    )
+    instance = (await db.execute(query)).unique().scalar_one_or_none()
+    estimate = SUPPORTED_GPUS[instance.gpu_identifier]["graval"]["estimate"]
+    max_duration = estimate * 1.3
+    if (delta := now - start) >= timedelta(seconds=max_duration):
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = f"GraVal challenge took {delta}, expected completion time {estimate} with buffer of up to {max_duration}"
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=launch_config.verification_error,
+        )
+
+    # Everything checks out (so far).
+    launch_config.verified_at = func.now()
+    await db.commit()
+    await db.refresh(launch_config)
+    return {
+        "chute_id": launch_config.chute_id,
+        "instance_id": instance.instance_id,
+        "verified_at": launch_config.verified_at.isoformat(),
     }
 
 

@@ -312,7 +312,9 @@ def create_launch_jwt(launch_config) -> str:
     return encoded_jwt
 
 
-async def load_launch_config_from_jwt(db, config_id: str, token: str) -> str:
+async def load_launch_config_from_jwt(
+    db, config_id: str, token: str, allow_retrieved: bool = False
+) -> str:
     detail = "Missing or invalid launch config JWT"
     try:
         payload = jwt.decode(
@@ -336,6 +338,8 @@ async def load_launch_config_from_jwt(db, config_id: str, token: str) -> str:
             if config:
                 if not config.retrieved_at:
                     config.retrieved_at = func.now()
+                    return config
+                elif allow_retrieved:
                     return config
                 detail = f"Launch config {config_id=} has already been retrieved: {token=} {config.retrieved_at=}"
                 logger.warning(detail)

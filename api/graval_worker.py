@@ -904,33 +904,37 @@ async def verify_instance(instance_id: str):
             await settings.redis_client.delete(f"verify:lock:{instance_id}")
             return
 
-        if not use_encryption_v2(instance.chutes_version):
-            # Legacy/encryption V1 tests.
-            try:
-                if not await _verify_instance_graval(instance):
-                    logger.warning(f"{instance_id=} failed GraVal verification!")
-                    instance.verification_error = "Failed one or more GraVal encryption challenges."
+        # Legacy encryption/key exchange tests.
+        if not re.match(r"^[0-9]+\.([3-9][0-9]*)\.[0-9]+$", instance.chutes_version or ""):
+            if not use_encryption_v2(instance.chutes_version):
+                # Legacy/encryption V1 tests.
+                try:
+                    if not await _verify_instance_graval(instance):
+                        logger.warning(f"{instance_id=} failed GraVal verification!")
+                        instance.verification_error = (
+                            "Failed one or more GraVal encryption challenges."
+                        )
+                        await session.commit()
+                        await settings.redis_client.delete(f"verify:lock:{instance_id}")
+                        return
+                except Exception as exc:
+                    error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+                    logger.error(error_message)
+                    instance.verification_error = error_message
                     await session.commit()
                     await settings.redis_client.delete(f"verify:lock:{instance_id}")
                     return
-            except Exception as exc:
-                error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
-                logger.error(error_message)
-                instance.verification_error = error_message
-                await session.commit()
-                await settings.redis_client.delete(f"verify:lock:{instance_id}")
-                return
-        else:
-            # Encryption V2, create and exchange an AES key.
-            try:
-                await exchange_symmetric_key(instance)
-            except Exception as exc:
-                error_message = f"Failed to exchange symmetric key via GraVal encryption for {instance_id=}: {exc}\n{traceback.format_exc()}"
-                logger.error(error_message)
-                instance.verification_error = error_message
-                await session.commit()
-                await settings.redis_client.delete(f"verify:lock:{instance_id}")
-                return
+            else:
+                # Encryption V2, create and exchange an AES key.
+                try:
+                    await exchange_symmetric_key(instance)
+                except Exception as exc:
+                    error_message = f"Failed to exchange symmetric key via GraVal encryption for {instance_id=}: {exc}\n{traceback.format_exc()}"
+                    logger.error(error_message)
+                    instance.verification_error = error_message
+                    await session.commit()
+                    await settings.redis_client.delete(f"verify:lock:{instance_id}")
+                    return
 
         # Filesystem test.
         try:
@@ -1151,3 +1155,30 @@ async def handle_rolling_update(chute_id: str, version: str):
                     f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"
                 )
         await session.delete(rolling_update)
+
+
+@broker.ltask
+async def generate_launch_cipher(config_id: str, node_idx: int, node_id: str, iterations: int):
+    async with get_session() as session:
+        node = (await session.execute(select(Node).where(Node.uuid == node_id))).unique().scalar_one_or_none()
+        if not node:
+            # Fail.
+
+        instance = (await session.execute(select(Instance).where(Instance.config_id == config_id))).unique().scalar_one_or_none()
+        if not instance:
+            # Fail.
+
+        # Generate the ciphertext.
+        instance.config.cipher_node_idx = node_idx
+        instance.config.cipher = await graval_encrypt(
+            node,
+            instance.symmetric_key,
+            with_chutes=True,
+            cuda=False,
+            seed=instance.config.seed,
+            iterations=iterations,
+        )
+        logger.success(
+            f"Generated ciphertext for {node.uuid} for symmetric key validation/PovW check {cipher=}"
+        )
+        await session.commit()
