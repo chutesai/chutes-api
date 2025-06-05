@@ -687,6 +687,51 @@ async def check_chute(chute_id):
                     r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
                 ):
                     dump = await get_env_dump(instance)
+
+                    if (
+                        "build_sglang_chute(" in chute.code
+                        and chute.standard_template == "vllm"
+                        and chute.user_id == "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
+                    ):
+                        processes = dump[3] if isinstance(dump, list) else dump["all_processes"]
+                        revision_match = re.search(
+                            r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code
+                        )
+                        found_sglang = False
+                        for process in processes:
+                            if (
+                                process["exe"] == "/opt/python/bin/python3.12"
+                                and process["username"] == "chutes"
+                                and process["cmdline"][:9]
+                                == [
+                                    "python",
+                                    "-m",
+                                    "sglang.launch_server",
+                                    "--host",
+                                    "127.0.0.1",
+                                    "--port",
+                                    "10101",
+                                    "--model-path",
+                                    chute.name,
+                                ]
+                            ):
+                                logger.success(f"{log_prefix} found SGLang chute: {process=}")
+                                found_sglang = True
+                                if revision_match:
+                                    revision = revision_match.group(1)
+                                    if revision in process["cmdline"]:
+                                        logger.success(
+                                            f"{log_prefix} also found revision identifier"
+                                        )
+                                    else:
+                                        logger.warning(
+                                            f"{log_prefix} did not find chute revision: {revision}"
+                                        )
+                                break
+                        if not found_sglang:
+                            logger.error(f"{log_prefix} did not find SGLang process, bad...")
+                            failed_envdump = True
+
                     try:
                         process = dump[1] if isinstance(dump, list) else dump["process"]
                         assert process["pid"] == 1
@@ -1195,7 +1240,7 @@ async def get_env_dump(instance):
             raise EnvdumpMissing(
                 f"Received invalid response code on /_env_dump: {instance.instance_id=}"
             )
-        return json.loads(decrypt_envdump_cipher(await resp.text(), key))
+        return json.loads(decrypt_envdump_cipher(await resp.text(), key, instance.chutes_version))
 
 
 async def get_env_sig(instance, salt):

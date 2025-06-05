@@ -14,7 +14,7 @@ from typing import Any, Optional
 from pydantic.fields import ComputedFieldInfo
 import api.database.orms  # noqa
 from api.user.schemas import User
-from api.chute.schemas import Chute
+from api.chute.schemas import Chute, NodeSelector
 from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance
@@ -40,6 +40,13 @@ def model_to_dict(obj):
             data[name] = getattr(obj, name)
     if isinstance(obj, Chute):
         data["image"] = f"{obj.image.user.username}/{obj.image.name}:{obj.image.tag}"
+        ns = NodeSelector(**obj.node_selector)
+        data["node_selector"].update(
+            {
+                "compute_multiplier": ns.compute_multiplier,
+                "supported_gpus": ns.supported_gpus,
+            }
+        )
     return data
 
 

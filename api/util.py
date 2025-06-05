@@ -386,17 +386,23 @@ def should_slurp_code(chutes_version: str):
     return False
 
 
-def derive_envdump_key(key):
+def derive_envdump_key(key, version):
     """
     Derive the AES key from the envdump mechanism of chutes lib.
     """
-    stored_bytes = bytes.fromhex(settings.envcheck_key)
+    parts = [int(s) for s in version.split(".")]
+    target_key = settings.envcheck_key
+    target_salt = settings.envcheck_salt
+    if parts[1] == 2 and parts[2] >= 51 or parts[1] > 2:
+        target_key = settings.envcheck_52_key
+        target_salt = settings.envcheck_52_salt
+    stored_bytes = bytes.fromhex(target_key)
     user_bytes = key
     combined_secret = stored_bytes + user_bytes
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=bytes.fromhex(settings.envcheck_salt),
+        salt=bytes.fromhex(target_salt),
         iterations=100000,
         backend=default_backend(),
     )
@@ -404,11 +410,11 @@ def derive_envdump_key(key):
     return key
 
 
-def decrypt_envdump_cipher(encrypted_b64, key):
+def decrypt_envdump_cipher(encrypted_b64, key, version):
     """
     Decrypt data that was encrypted from the envcheck chute code.
     """
-    actual_key = derive_envdump_key(key)
+    actual_key = derive_envdump_key(key, version)
     raw_data = base64.b64decode(encrypted_b64)
     iv = raw_data[:16]
     encrypted_data = raw_data[16:]
@@ -429,3 +435,15 @@ def generate_ip_token(origin_ip, extra_salt: str = None):
     if extra_salt:
         target_string = f"{target_string}:{extra_salt}"
     return str(uuid.uuid5(uuid.NAMESPACE_OID, target_string))
+
+
+def use_opencl_graval(chutes_version: str):
+    """
+    Check if we should use the opencl/clblast version of graval.
+    """
+    if not chutes_version:
+        return False
+    major, minor, bug = chutes_version.split(".")[:3]
+    if int(minor) >= 2 and int(bug) == 50 or int(minor) > 2:
+        return True
+    return False

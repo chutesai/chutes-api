@@ -415,24 +415,6 @@ async def _invoke(
             if "temperature" not in request_body:
                 request_body["temperature"] = 0.05
 
-        # SGLang chute we use for R1 uses the default overlap scheduler which does not support
-        # these penalty params, and sampling params are causing crashes.
-        if chute.name in (
-            "deepseek-ai/DeepSeek-R1",
-            "deepseek-ai/DeepSeek-V3",
-            "deepseek-ai/DeepSeek-V3-0324",
-            "deepseek-ai/DeepSeek-R1-Zero",
-        ):
-            for param in [
-                "frequency_penalty",
-                "presence_penalty",
-                "repetition_penalty",
-                "min_p",
-                "top_p",
-                "top_k",
-            ]:
-                request_body.pop(param, None)
-
         # Make sure the model name is correct.
         if (requested_model := request_body.get("model")) != chute.name:
             logger.warning(
