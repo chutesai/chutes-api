@@ -84,15 +84,22 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     # Legacy/fallback.
     if not response.current_estimated_price:
         response.current_estimated_price = {}
-    response.current_estimated_price.update(
-        await NodeSelector(**chute.node_selector).current_estimated_price()
-    )
+    node_selector = NodeSelector(**chute.node_selector)
+    response.current_estimated_price.update(await node_selector.current_estimated_price())
     if chute.discount and response.current_estimated_price:
         for key in ("usd", "tao"):
             values = response.current_estimated_price.get(key)
             if values:
                 for unit in values:
                     values[unit] -= values[unit] * chute.discount
+
+    # Fix node selector return value.
+    response.node_selector.update(
+        {
+            "compute_multiplier": node_selector.compute_multiplier,
+            "supported_gpus": node_selector.supported_gpus,
+        }
+    )
 
 
 @cache(expire=60)
@@ -394,7 +401,7 @@ async def _deploy_chute(
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
         chute_args.node_selector = NodeSelector(**chute_args.node_selector)
-    if current_user.user_id != await chutes_user_id():
+    if current_user.user_id not in (await chutes_user_id(), "5bf8a979-ea71-54bf-8644-26a3411a3b58"):
         if (
             chute_args.node_selector
             and chute_args.node_selector.min_vram_gb_per_gpu
@@ -409,10 +416,18 @@ async def _deploy_chute(
         chute_args.node_selector.exclude = list(
             set(chute_args.node_selector.exclude or [] + ["h200", "b200", "mi300x"])
         )
+
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No supported GPUs based on node selector!",
+            )
+
+        # Limit h/b 200 access for now.
+        if not set(chute_args.node_selector.supported_gpus) - set(["b200", "h200", "mi300x"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to require h200, b200 or mi300x at this time.",
             )
 
     old_version = None
@@ -558,7 +573,11 @@ async def deploy_chute(
     """
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
-    if current_user.user_id not in (await chutes_user_id(), "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4"):
+    if current_user.user_id not in (
+        await chutes_user_id(),
+        "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
+        "5bf8a979-ea71-54bf-8644-26a3411a3b58",
+    ):
         bad, response = await is_bad_code(chute_args.code)
         logger.warning(
             f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"

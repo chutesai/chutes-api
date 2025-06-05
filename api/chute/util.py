@@ -399,7 +399,30 @@ async def _invoke_one(
                         "SGLang backend failure, input_ids null error response produced."
                     )
 
+                response_ids = set()
                 if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
+                    if (
+                        chute.standard_template == "vllm"
+                        and chunk.startswith(b"data: {")
+                        and chute.name.startswith("deepseek-ai")
+                    ):
+                        valid = True
+                        try:
+                            data = json.loads(chunk[6:])
+                            if (not data.get("id") or not data.get("created")) and not data.get(
+                                "error"
+                            ):
+                                logger.warning(f"BAD_RESPONSE: {data=} {target.miner_hotkey=}")
+                                valid = False
+                            response_ids.add(data["id"])
+                            raise
+                        except Exception:
+                            ...
+                        if not valid or len(response_ids) > 1:
+                            raise EmptyLLMResponse(
+                                f"BAD_RESPONSE {target.instance_id=} {chute.name} returned invalid chunks"
+                            )
+
                     last_chunk = chunk
                 if b"data:" in chunk:
                     any_chunks = True

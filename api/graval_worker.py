@@ -30,6 +30,7 @@ from api.util import (
     decrypt_envdump_cipher,
     get_resolved_ips,
     generate_ip_token,
+    use_opencl_graval,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_session
@@ -194,7 +195,7 @@ async def graval_encrypt(
             if chute:
                 body = await resp.json()
                 result = json.loads(
-                    decrypt_envdump_cipher(body["cipher"], bytes.fromhex(data["key"]))
+                    decrypt_envdump_cipher(body["cipher"], bytes.fromhex(data["key"]), "0.2.46")
                 )
                 return base64.b64encode(
                     bytes.fromhex(result["iv"]) + bytes.fromhex(result["ciphertext"])
@@ -230,7 +231,7 @@ async def graval_decrypt(
             logger.success(f"Decrypted ciphertext from node {node.uuid} via {url=}")
             if chute:
                 text = (await resp.json())["plaintext"]
-                return decrypt_envdump_cipher(text, data["key"])
+                return decrypt_envdump_cipher(text, data["key"], "0.2.46")
             return await resp.text()
 
 
@@ -535,8 +536,8 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     ciphertext = await graval_encrypt(
         target_node,
         expected,
-        with_chutes=True,
-        cuda=True,
+        with_chutes=not instance.chute.slug.startswith("chutes-graval"),
+        cuda=not use_opencl_graval(instance.chute.chutes_version),
         seed=target_node.seed,
     )
 
@@ -587,8 +588,8 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
     ciphertext = await graval_encrypt(
         target_node,
         instance.symmetric_key,
-        with_chutes=True,
-        cuda=True,
+        with_chutes=not instance.chute.slug.startswith("chutes-graval"),
+        cuda=not use_opencl_graval(instance.chute.chutes_version),
         seed=target_node.seed,
     )
 
