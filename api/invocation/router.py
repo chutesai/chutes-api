@@ -30,7 +30,7 @@ from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
-from api.database import get_db_session, get_session
+from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
 from api.permissions import Permissioning
