@@ -210,7 +210,7 @@ async def get_export(
 async def get_recent_export(
     hotkey: Optional[str] = None,
     limit: Optional[int] = 100,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_db_ro_session),
 ):
     """
     Get an export for recent data, which may not yet be in S3.
@@ -233,6 +233,8 @@ async def get_recent_export(
             bounty
         FROM partitioned_invocations
         WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
+        AND completed_at IS NOT NULL
+        AND error_message IS NULL
     """
     if not limit or limit <= 0:
         limit = 100
