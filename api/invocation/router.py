@@ -230,7 +230,8 @@ async def get_recent_export(
             completed_at,
             error_message,
             compute_multiplier,
-            bounty
+            bounty,
+            metrics
         FROM partitioned_invocations
         WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
         AND completed_at IS NOT NULL
