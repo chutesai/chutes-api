@@ -280,7 +280,7 @@ async def get_stats(
             "compute_units": compute_data,
         }
 
-    await settings.memcache.set(cache_key, json.dumps(results), exptime=300)
+    await settings.memcache.set(cache_key, json.dumps(results))
     return _filter_by_key(results)
 
 
