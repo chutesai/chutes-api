@@ -648,6 +648,76 @@ def get_expected_command(instance, chute):
     ).strip()
 
 
+def uuid_dict(data, current_path=[]):
+    flat_dict = {}
+    for key, value in data.items():
+        new_path = current_path + [key]
+        if isinstance(value, dict):
+            flat_dict.update(uuid_dict(value, new_path))
+        else:
+            uuid_key = str(
+                uuid.uuid5(uuid.NAMESPACE_OID, json.dumps(new_path) + settings.envcheck_52_salt)
+            )
+            flat_dict[uuid_key] = value
+    return flat_dict
+
+
+def is_kubernetes_env(instance: Instance, dump: dict):
+    log_prefix = f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+    if not isinstance(dump, dict):
+        return True
+    version_parts = list(map(int, instance.chutes_version.split(".")))
+    if version_parts[1] <= 2 and version_parts[2] < 52:
+        return True
+    flat = uuid_dict(dump)
+    if special_key := flat.get("97a9e854-7f12-56c5-88a1-9de1744c22dd"):
+        if (
+            str(uuid.uuid5(uuid.NAMESPACE_OID, special_key[:6] + settings.envcheck_52_salt))
+            != "8d967b00-c6f9-5138-bc96-82a5963d9cfe"
+        ):
+            logger.warning(
+                f"{log_prefix} Invalid environment found: "
+                "expecting magic uuid 10b81b83-33c3-50fd-b497-fa59a7fc1ab0 "
+                f"in magic key 6799f7a0-5552-5c20-82e8-68ac2c7162f4: {special_key[:6]}"
+            )
+            return False
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 97a9e854-7f12-56c5-88a1-9de1744c22dd"
+        )
+    if special_key := flat.get("0aede012-8b95-5960-bad0-a90d05a2c77b"):
+        for value in special_key:
+            nested = uuid_dict(value)
+            if secret := nested.get("210169b6-faae-5e0b-9278-172b0d7b2371"):
+                if any(
+                    [
+                        str(uuid.uuid5(uuid.NAMESPACE_OID, part + settings.envcheck_52_salt))
+                        == "dc617c6e-4a1e-57b5-b55a-d170000386a5"
+                        for part in secret.split("/")
+                    ]
+                ):
+                    logger.warning(
+                        f"{log_prefix} Invalid environment found: "
+                        "expecting NOT to find magic uuid dc617c6e-4a1e-57b5-b55a-d170000386a5 "
+                        "in magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
+                    )
+                    return False
+            else:
+                logger.warning(
+                    f"{log_prefix} Did not find nested magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
+                )
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 0aede012-8b95-5960-bad0-a90d05a2c77b"
+        )
+    if "57d08936-e24b-5ae9-a62a-f347075052ef" not in flat:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 57d08936-e24b-5ae9-a62a-f347075052ef"
+        )
+        return False
+    return True
+
+
 async def check_chute(chute_id):
     """
     Check a single chute.
@@ -687,6 +757,9 @@ async def check_chute(chute_id):
                     r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
                 ):
                     dump = await get_env_dump(instance)
+                    if settings.envcheck_52_salt and not is_kubernetes_env(instance, dump):
+                        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+                        failed_envdump = True
 
                     if (
                         "build_sglang_chute(" in chute.code
