@@ -761,6 +761,36 @@ async def check_chute(chute_id):
                         logger.error(f"{log_prefix} is not running a valid kubernetes environment")
                         failed_envdump = True
 
+                    # Additional K8S checks.
+                    flat = uuid_dict(dump, salt=settings.kubecheck_salt)
+                    found_expected = False
+                    if (secret := flat.get("b61ec704-0cbd-5175-bbbe-f25aa399c469")) is not None:
+                        expected = (
+                            settings.kubecheck_prefix
+                            + "_".join(secret.split("-")[1:-2]).upper()
+                            + settings.kubecheck_suffix
+                        )
+                        expected_uuid = str(
+                            uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt)
+                        )
+                        for v in dump.values():
+                            if isinstance(v, dict):
+                                for key in v:
+                                    if (
+                                        str(
+                                            uuid.uuid5(
+                                                uuid.NAMESPACE_OID, key + settings.kubecheck_salt
+                                            )
+                                        )
+                                        == expected_uuid
+                                    ):
+                                        found_expected = True
+                                        logger.success(f"Found the magic uuid: {expected_uuid}")
+                                        break
+                    if not found_expected:
+                        logger.error(f"{log_prefix} is not running a valid kubernetes environment.")
+                        failed_envdump = True
+
                     if (
                         "build_sglang_chute(" in chute.code
                         and chute.standard_template == "vllm"

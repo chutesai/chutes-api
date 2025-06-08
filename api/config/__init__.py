@@ -141,6 +141,9 @@ class Settings(BaseSettings):
     envcheck_salt: Optional[str] = os.getenv("ENVCHECK_SALT")
     envcheck_52_key: Optional[str] = os.getenv("ENVCHECK_KEY_52")
     envcheck_52_salt: Optional[str] = os.getenv("ENVCHECK_SALT_52")
+    kubecheck_salt: Optional[str] = os.getenv("KUBECHECK_SALT")
+    kubecheck_prefix: Optional[str] = os.getenv("KUBECHECK_PREFIX")
+    kubecheck_suffix: Optional[str] = os.getenv("KUBECHECK_SUFFIX")
 
     # Logos CDN hostname.
     logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
