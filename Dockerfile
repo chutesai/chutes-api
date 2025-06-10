@@ -100,8 +100,9 @@ ENV PATH=$PATH:/home/chutes/.local/bin
 ADD pyproject.toml /app/
 ADD poetry.lock /app/
 WORKDIR /app
-RUN poetry install
+RUN poetry install --no-root
 ADD --chown=chutes api /app/api
 ADD --chown=chutes metasync /app/metasync
 ADD --chown=chutes tokenizer /app/tokenizer
-ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "1"]
+ADD --chown=chutes watchtower.py /app/watchtower.py
+ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]
