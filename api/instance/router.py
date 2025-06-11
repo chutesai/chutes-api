@@ -271,10 +271,14 @@ async def create_instance(
 
         # The hostname used in verifying the node must match the hostname of the instance.
         if len(node_hosts) > 1 or list(node_hosts)[0].lower() != instance.host.lower():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}",
+            logger.warning(
+                f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}"
             )
+            # XXX disable for now to allow domain-based DDoS protection.
+            # raise HTTPException(
+            #     status_code=status.HTTP_400_BAD_REQUEST,
+            #     detail=f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}",
+            # )
 
         # Persist, which will raise a unique constraint error when the node is already allocated.
         await db.commit()
