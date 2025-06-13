@@ -864,6 +864,9 @@ async def check_chute(chute_id):
             except EnvdumpMissing:
                 logger.error(f"{log_prefix} returned invalid status code, clearly bad")
                 failed_envdump = True
+            except TimeoutError:
+                logger.error(f"{log_prefix} envdump timeout, basically impossible")
+                failed_envdump = True
             except Exception as exc:
                 logger.error(
                     f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
@@ -1343,7 +1346,7 @@ async def get_env_dump(instance):
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         enc_payload,
-        timeout=15.0,
+        timeout=30.0,
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(
