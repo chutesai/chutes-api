@@ -10,6 +10,8 @@ import hashlib
 import json
 import secrets
 import traceback
+import numpy as np
+from collections import Counter, defaultdict
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
@@ -24,6 +26,9 @@ import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
+from datasets import load_dataset
+
+PROMPTS = load_dataset("allenai/WildChat-1M", split="train")
 
 
 PAST_DAY_METRICS_QUERY = """
@@ -658,6 +663,229 @@ def uuid_dict(data, current_path=[], salt=settings.envcheck_52_salt):
             uuid_key = str(uuid.uuid5(uuid.NAMESPACE_OID, json.dumps(new_path) + salt))
             flat_dict[uuid_key] = value
     return flat_dict
+
+
+def get_random_item():
+    item = PROMPTS[random.randint(0, len(PROMPTS))]
+    while not item["conversation"]:
+        item = PROMPTS[random.randint(0, len(PROMPTS))]
+    return item
+
+
+def item_to_chat(item):
+    messages = []
+    for conv in item["conversation"]:
+        messages.append(
+            {
+                "role": (
+                    "user"
+                    if conv.get("from", conv.get("role")) in ("human", "user")
+                    else "assistant"
+                    if conv.get("from", conv.get("role")) in ("gpt", "assistant")
+                    else "system"
+                ),
+                "content": conv.get("value", conv.get("content")) or "",
+            }
+        )
+    if messages[-1]["role"] == "assistant":
+        messages.pop()
+    return {
+        "temperature": round(random.random(), 2),
+        "seed": random.randint(0, 1000000000),
+        "max_tokens": random.randint(10, 4096),
+        "messages": messages,
+        "logprobs": True,
+        "top_logprobs": 5,
+    }
+
+
+async def check_logprobs(chute: Chute, instances: list[Instance]):
+    by_hotkey = defaultdict(dict)
+
+    # Generate a random prompt.
+    body = None
+    while True:
+        body = item_to_chat(get_random_item())
+        response = body["messages"][-1]
+        if not response or not response.get("content"):
+            logger.warning("Failed to generate a prompt.")
+            continue
+        response_words = response["content"].split(" ")
+        if len(response_words) < 10:
+            logger.warning("Failed to generate a prompt.")
+            continue
+        body["messages"][-1]["content"] = " ".join(
+            response_words[: random.randint(5, len(response_words) - 2)]
+        )
+        break
+
+    body["max_tokens"] = 1
+    body["model"] = chute.name
+
+    logger.info(f"Querying {chute.name} with: {body=}")
+
+    # Query each instance for this particular prompt.
+    random.shuffle(instances)
+    failed_instances = []
+    for instance in instances:
+        response_data = None
+        data = None
+        try:
+            enc_payload = aes_encrypt(json.dumps(body).encode(), instance.symmetric_key)
+            iv = bytes.fromhex(enc_payload[:32])
+            path = aes_encrypt("/chat".ljust(24, "?"), instance.symmetric_key, hex_encode=True)
+            async with miner_client.post(
+                instance.miner_hotkey,
+                f"http://{instance.host}:{instance.port}/{path}",
+                enc_payload,
+                timeout=30.0,
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning(f"Bad response: {await resp.text()}")
+                else:
+                    response_data = await resp.json()
+                    plaintext = aes_decrypt(response_data["json"], instance.symmetric_key, iv)
+                    data = json.loads(plaintext)
+                    logprob_data = None
+                    if data["choices"]:
+                        try:
+                            logprob_data = data["choices"][0]["logprobs"]["content"][0]
+                        except Exception:
+                            logger.warning(
+                                f"{instance.instance_id=} {instance.miner_hotkey=} produced invalid output in logprob check!\n{data}"
+                            )
+                            # await purge_and_notify(
+                            #    instance, reason="Failed token prediction verification."
+                            # )
+                            # failed_instances.append(instance)
+                            continue
+                    logprob_data = data["choices"][0]["logprobs"]["content"][0]
+                    token = logprob_data["token"]
+                    logprob = logprob_data["logprob"]
+                    top_logprobs = {
+                        item["token"]: item["logprob"]
+                        for item in logprob_data.get("top_logprobs", [])
+                    }
+                    logger.info(
+                        f"Logprob for {instance.instance_id=} {instance.miner_hotkey=} token '{token}' is {logprob}"
+                    )
+                    by_hotkey[instance.miner_hotkey][instance.instance_id] = {
+                        "token": token,
+                        "logprob": logprob,
+                        "top_logprobs": top_logprobs,
+                    }
+        except Exception as exc:
+            logger.error(
+                f"Failed here {instance.instance_id=} {instance.miner_hotkey=}: {exc}\n{response_data=}\n{data=}"
+            )
+
+    # Analyze results
+    outlier_hotkeys = []
+
+    # Find the most common token across all responses
+    all_tokens = []
+    for hotkey_data in by_hotkey.values():
+        for instance_data in hotkey_data.values():
+            all_tokens.append(instance_data["token"])
+
+    if not all_tokens:
+        return {
+            "failed_formatting": failed_instances,
+            "by_hotkey": dict(by_hotkey),
+            "outlier_hotkeys": [],
+            "summary": {"error": "No successful responses"},
+        }
+
+    token_counts = Counter(all_tokens)
+    majority_token = token_counts.most_common(1)[0][0]
+    majority_percentage = token_counts[majority_token] / len(all_tokens)
+
+    # Calculate statistics per hotkey
+    hotkey_stats = {}
+    for hotkey, instances_data in by_hotkey.items():
+        if instances_data:
+            tokens = [d["token"] for d in instances_data.values()]
+            token_counter = Counter(tokens)
+
+            # Get logprobs for the majority token (even if this hotkey didn't produce it)
+            majority_token_logprobs = []
+            for instance_data in instances_data.values():
+                if instance_data["token"] == majority_token:
+                    majority_token_logprobs.append(instance_data["logprob"])
+                elif majority_token in instance_data["top_logprobs"]:
+                    # Use the logprob from top_logprobs if available
+                    majority_token_logprobs.append(instance_data["top_logprobs"][majority_token])
+
+            hotkey_stats[hotkey] = {
+                "token_distribution": dict(token_counter),
+                "most_common_token": token_counter.most_common(1)[0][0] if token_counter else None,
+                "majority_token_percentage": token_counter.get(majority_token, 0) / len(tokens),
+                "majority_token_logprobs": majority_token_logprobs,
+                "instance_count": len(instances_data),
+            }
+
+    # Detect outliers
+    if len(hotkey_stats) >= 3:
+        # Method 1: Token distribution outliers
+        for hotkey, stats in hotkey_stats.items():
+            is_outlier = False
+            reasons = []
+
+            # Check if this hotkey rarely/never produces the majority token
+            if stats["majority_token_percentage"] < 0.2 and majority_percentage > 0.7:
+                is_outlier = True
+                reasons.append(
+                    f"Different token preference (produces '{majority_token}' only {stats['majority_token_percentage']:.1%} vs {majority_percentage:.1%} overall)"
+                )
+
+            # Check if the most common token for this hotkey is unusual
+            if stats["most_common_token"] != majority_token and majority_percentage > 0.7:
+                hotkey_token_count = sum(1 for t in all_tokens if t == stats["most_common_token"])
+                if hotkey_token_count / len(all_tokens) < 0.1:
+                    is_outlier = True
+                    reasons.append(
+                        f"Produces unusual token '{stats['most_common_token']}' most frequently"
+                    )
+
+            # Method 2: Logprob analysis for the majority token
+            if stats["majority_token_logprobs"]:
+                median_logprob = np.median(stats["majority_token_logprobs"])
+
+                # Compare with other hotkeys' logprobs for the same token
+                all_majority_logprobs = []
+                for h, s in hotkey_stats.items():
+                    if h != hotkey and s["majority_token_logprobs"]:
+                        all_majority_logprobs.extend(s["majority_token_logprobs"])
+
+                if all_majority_logprobs:
+                    q1, q3 = np.percentile(all_majority_logprobs, [25, 75])
+                    iqr = q3 - q1
+                    lower_bound = q1 - 1.5 * iqr
+                    upper_bound = q3 + 1.5 * iqr
+
+                    if median_logprob < lower_bound or median_logprob > upper_bound:
+                        is_outlier = True
+                        reasons.append(
+                            f"Abnormal logprob for '{majority_token}' (median {median_logprob:.6f} outside [{lower_bound:.6f}, {upper_bound:.6f}])"
+                        )
+
+            if is_outlier:
+                outlier_hotkeys.append({"hotkey": hotkey, "stats": stats, "reasons": reasons})
+                logger.warning(f"Outlier detected: {hotkey} - {', '.join(reasons)}")
+
+    return {
+        "failed_formatting": failed_instances,
+        "by_hotkey": dict(by_hotkey),
+        "outlier_hotkeys": outlier_hotkeys,
+        "hotkey_stats": hotkey_stats,
+        "summary": {
+            "total_hotkeys": len(hotkey_stats),
+            "total_instances": len(all_tokens),
+            "majority_token": majority_token,
+            "majority_percentage": majority_percentage,
+            "outliers_found": len(outlier_hotkeys),
+        },
+    }
 
 
 def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):

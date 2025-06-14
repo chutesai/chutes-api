@@ -49,6 +49,7 @@ aiomcache = "^0.8.2"
 async-substrate-interface = "^1.0.0"
 transformers = "<4.49.0"
 dnslib = "^0.9.26"
+datasets = "^3.6.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
