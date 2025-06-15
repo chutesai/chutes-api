@@ -463,6 +463,7 @@ async def verify_launch_config_instance(
     if (delta := now - start) >= timedelta(seconds=max_duration):
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"GraVal challenge took {delta}, expected completion time {estimate} with buffer of up to {max_duration}"
+        await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
