@@ -672,6 +672,152 @@ def get_expected_command(chute, instance=None, token=None):
     ).strip()
 
 
+def uuid_dict(data, current_path=[], salt=settings.envcheck_52_salt):
+    flat_dict = {}
+    for key, value in data.items():
+        new_path = current_path + [key]
+        if isinstance(value, dict):
+            flat_dict.update(uuid_dict(value, new_path, salt=salt))
+        else:
+            uuid_key = str(uuid.uuid5(uuid.NAMESPACE_OID, json.dumps(new_path) + salt))
+            flat_dict[uuid_key] = value
+    return flat_dict
+
+
+def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
+    # Ignore if we don't have envdump configured.
+    if not settings.envcheck_52_salt:
+        return True
+
+    # Does not function with old versions of chutes.
+    if not isinstance(dump, dict):
+        return True
+    version_parts = list(map(int, instance.chutes_version.split(".")))
+    if version_parts[1] <= 2 and version_parts[2] < 52:
+        return True
+
+    # Check for certain flags and values in the dump.
+    flat = uuid_dict(dump)
+    if special_key := flat.get("97a9e854-7f12-56c5-88a1-9de1744c22dd"):
+        if (
+            str(uuid.uuid5(uuid.NAMESPACE_OID, special_key[:6] + settings.envcheck_52_salt))
+            != "8d967b00-c6f9-5138-bc96-82a5963d9cfe"
+        ):
+            logger.warning(
+                f"{log_prefix} Invalid environment found: "
+                "expecting magic uuid 10b81b83-33c3-50fd-b497-fa59a7fc1ab0 "
+                f"in magic key 6799f7a0-5552-5c20-82e8-68ac2c7162f4: {special_key[:6]}"
+            )
+            return False
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 97a9e854-7f12-56c5-88a1-9de1744c22dd"
+        )
+    if special_key := flat.get("0aede012-8b95-5960-bad0-a90d05a2c77b"):
+        for value in special_key:
+            nested = uuid_dict(value)
+            if secret := nested.get("210169b6-faae-5e0b-9278-172b0d7b2371"):
+                if any(
+                    [
+                        str(uuid.uuid5(uuid.NAMESPACE_OID, part + settings.envcheck_52_salt))
+                        == "dc617c6e-4a1e-57b5-b55a-d170000386a5"
+                        for part in secret.split("/")
+                    ]
+                ):
+                    logger.warning(
+                        f"{log_prefix} Invalid environment found: "
+                        "expecting NOT to find magic uuid dc617c6e-4a1e-57b5-b55a-d170000386a5 "
+                        "in magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
+                    )
+                    return False
+            else:
+                logger.warning(
+                    f"{log_prefix} Did not find nested magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
+                )
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 0aede012-8b95-5960-bad0-a90d05a2c77b"
+        )
+    if "57d08936-e24b-5ae9-a62a-f347075052ef" not in flat:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 57d08936-e24b-5ae9-a62a-f347075052ef"
+        )
+        return False
+
+    # More checks...
+    if not settings.kubecheck_salt:
+        return True
+    flat = uuid_dict(dump, salt=settings.kubecheck_salt)
+    found_expected = False
+    if (secret := flat.get("b61ec704-0cbd-5175-bbbe-f25aa399c469")) is not None:
+        expected = (
+            settings.kubecheck_prefix
+            + "_".join(secret.split("-")[1:-2]).upper()
+            + settings.kubecheck_suffix
+        )
+        expected_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt))
+        for v in dump.values():
+            if isinstance(v, dict):
+                for key in v:
+                    if (
+                        str(uuid.uuid5(uuid.NAMESPACE_OID, key + settings.kubecheck_salt))
+                        == expected_uuid
+                    ):
+                        found_expected = True
+                        logger.success(f"Found the magic uuid: {expected_uuid}")
+                        break
+    if not found_expected:
+        logger.warning(
+            f"{log_prefix} did not find expected magic key derived rom b61ec704-0cbd-5175-bbbe-f25aa399c469"
+        )
+        return False
+
+    return True
+
+
+def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
+    if (
+        "build_sglang_chute(" not in chute.code
+        or chute.standard_template != "vllm"
+        or chute.user_id != "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
+    ):
+        return True
+
+    processes = dump[3] if isinstance(dump, list) else dump["all_processes"]
+    revision_match = re.search(r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code)
+    found_sglang = False
+    for process in processes:
+        if (
+            process["exe"] == "/opt/python/bin/python3.12"
+            and process["username"] == "chutes"
+            and process["cmdline"][:9]
+            == [
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "10101",
+                "--model-path",
+                chute.name,
+            ]
+        ):
+            logger.success(f"{log_prefix} found SGLang chute: {process=}")
+            found_sglang = True
+            if revision_match:
+                revision = revision_match.group(1)
+                if revision in process["cmdline"]:
+                    logger.success(f"{log_prefix} also found revision identifier")
+                else:
+                    logger.warning(f"{log_prefix} did not find chute revision: {revision}")
+            break
+    if not found_sglang:
+        logger.error(f"{log_prefix} did not find SGLang process, bad...")
+        return False
+    return True
+
+
 async def check_chute(chute_id):
     """
     Check a single chute.
@@ -712,50 +858,13 @@ async def check_chute(chute_id):
                     r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
                 ):
                     dump = await get_env_dump(instance)
+                    if not is_kubernetes_env(instance, dump, log_prefix):
+                        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+                        failed_envdump = True
 
-                    if (
-                        "build_sglang_chute(" in chute.code
-                        and chute.standard_template == "vllm"
-                        and chute.user_id == "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
-                    ):
-                        processes = dump[3] if isinstance(dump, list) else dump["all_processes"]
-                        revision_match = re.search(
-                            r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code
-                        )
-                        found_sglang = False
-                        for process in processes:
-                            if (
-                                process["exe"] == "/opt/python/bin/python3.12"
-                                and process["username"] == "chutes"
-                                and process["cmdline"][:9]
-                                == [
-                                    "python",
-                                    "-m",
-                                    "sglang.launch_server",
-                                    "--host",
-                                    "127.0.0.1",
-                                    "--port",
-                                    "10101",
-                                    "--model-path",
-                                    chute.name,
-                                ]
-                            ):
-                                logger.success(f"{log_prefix} found SGLang chute: {process=}")
-                                found_sglang = True
-                                if revision_match:
-                                    revision = revision_match.group(1)
-                                    if revision in process["cmdline"]:
-                                        logger.success(
-                                            f"{log_prefix} also found revision identifier"
-                                        )
-                                    else:
-                                        logger.warning(
-                                            f"{log_prefix} did not find chute revision: {revision}"
-                                        )
-                                break
-                        if not found_sglang:
-                            logger.error(f"{log_prefix} did not find SGLang process, bad...")
-                            failed_envdump = True
+                    if not check_sglang(instance, chute, dump, log_prefix):
+                        logger.error(f"{log_prefix} did not find SGLang process, bad...")
+                        failed_envdump = True
 
                     try:
                         process = dump[1] if isinstance(dump, list) else dump["process"]
@@ -779,6 +888,9 @@ async def check_chute(chute_id):
                         )
             except EnvdumpMissing:
                 logger.error(f"{log_prefix} returned invalid status code, clearly bad")
+                failed_envdump = True
+            except TimeoutError:
+                logger.error(f"{log_prefix} envdump timeout, basically impossible")
                 failed_envdump = True
             except Exception as exc:
                 logger.error(
@@ -1259,7 +1371,7 @@ async def get_env_dump(instance):
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         enc_payload,
-        timeout=15.0,
+        timeout=30.0,
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(

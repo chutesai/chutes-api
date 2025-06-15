@@ -30,7 +30,7 @@ from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
-from api.database import get_db_session, get_session
+from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
 from api.permissions import Permissioning
@@ -210,7 +210,7 @@ async def get_export(
 async def get_recent_export(
     hotkey: Optional[str] = None,
     limit: Optional[int] = 100,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_db_ro_session),
 ):
     """
     Get an export for recent data, which may not yet be in S3.
@@ -230,9 +230,12 @@ async def get_recent_export(
             completed_at,
             error_message,
             compute_multiplier,
-            bounty
+            bounty,
+            metrics
         FROM partitioned_invocations
         WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
+        AND completed_at IS NOT NULL
+        AND error_message IS NULL
     """
     if not limit or limit <= 0:
         limit = 100
