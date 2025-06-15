@@ -1042,6 +1042,7 @@ async def get_vllm_models(request: Request):
                         Chute.chutes_version >= "0.2.15",
                         Chute.public.is_(True),
                         Chute.user_id == await chutes_user_id(),
+                        Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
                     )
                     .options(selectinload(Chute.instances))
                 )
