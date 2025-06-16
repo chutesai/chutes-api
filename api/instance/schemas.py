@@ -72,6 +72,7 @@ class Instance(Base):
     config_id = Column(
         String, ForeignKey("launch_configs.config_id", ondelete="SET NULL"), nullable=True
     )
+    cacert = Column(String, nullable=True)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")

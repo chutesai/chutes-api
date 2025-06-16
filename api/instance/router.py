@@ -8,6 +8,7 @@ import orjson as json
 import traceback
 import random
 import secrets
+import base64
 from datetime import datetime, timedelta, timezone
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
@@ -16,7 +17,7 @@ from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from api.gpu import SUPPORTED_GPUS
-from api.database import get_db_session, generate_uuid
+from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
 from api.constants import (
     HOTKEY_HEADER,
@@ -43,9 +44,9 @@ from api.instance.util import (
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
-from api.util import is_valid_host, generate_ip_token
+from api.util import is_valid_host, generate_ip_token, aes_decrypt
 from api.graval_worker import verify_instance, graval_encrypt
-from watchtower import get_expected_command, decrypt_envdump_cipher
+from watchtower import get_expected_command, decrypt_envdump_cipher, is_kubernetes_env
 
 router = APIRouter()
 
@@ -216,21 +217,6 @@ async def _validate_host_port(db, host, port):
         )
 
 
-async def _reset_job(db, job_id: str):
-    if not job_id:
-        return
-    await db.execute(
-        text(
-            "UPDATE jobs SET "
-            " miner_uid = null, "
-            "  miner_hotkey = null, 
-            miner_coldkey = null, instance_id = null WHERE job_id = :job_id"))
-    job.miner_uid = None
-    job.miner_hotkey = None
-    job.miner_coldkey = None
-    job.instance_id = None
-
-
 @router.get("/launch_config")
 async def get_launch_config(
     chute_id: str,
@@ -323,7 +309,9 @@ async def claim_launch_config(
 
     # Verify the code is what is expected.
     try:
-        dump = json.loads(decrypt_envdump_cipher(args.dump, launch_config.env_key))
+        dump = json.loads(
+            decrypt_envdump_cipher(args.dump, launch_config.env_key, chute.chutes_version)
+        )
         process = dump[1] if isinstance(dump, list) else dump["process"]
         assert process["pid"] == 1
         command_line = re.sub(
@@ -338,6 +326,17 @@ async def claim_launch_config(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"You are not running the correct command, sneaky devil: {command_line=}",
             )
+        log_prefix = f"{config_id=} {chute.chute_id=}"
+        if not is_kubernetes_env(chute, dump, log_prefix):
+            logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Failed kubernetes environment check."
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+
     except Exception as exc:
         logger.error(
             f"Attempt to claim {config_id=} failed, unable to verify command: {exc=} {args=}"
@@ -397,22 +396,46 @@ async def claim_launch_config(
     except Exception:
         await db.rollback()
         async with get_session() as error_session:
-            await error_session.execute(text(
-                "UPDATE launch_configs SET failed_at = NOW(), "
-                "verification_error = 'invalid GPU/nodes configuration provided' "
-                "WHERE config_id = :config_id"
-            ), {"config_id": launch_config.config_id})
+            await error_session.execute(
+                text(
+                    "UPDATE launch_configs SET failed_at = NOW(), "
+                    "verification_error = 'invalid GPU/nodes configuration provided' "
+                    "WHERE config_id = :config_id"
+                ),
+                {"config_id": launch_config.config_id},
+            )
         raise
 
     # Generate a ciphertext for this instance to decrypt.
     node_idx = random.choice(list(range(len(nodes))))
     node = nodes[node_idx]
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
-    await generate_launch_cipher.kiq(config_id, node_idx, node.uuid, iterations)
+    ciphertext = await graval_encrypt(
+        node,
+        instance.symmetric_key,
+        with_chutes=True,
+        cuda=False,
+        seed=launch_config.seed,
+        iterations=iterations,
+    )
+    logger.success(
+        f"Generated ciphertext for {node.uuid} "
+        f"with seed={launch_config.seed} "
+        f"instance_id={instance.instance_id} "
+        f"for symmetric key validation/PovW check: {ciphertext=}"
+    )
 
     # Store the timestamp so we can verify the graval challenges completed in the expected time.
     launch_config.retrieved_at = func.now()
     await db.commit()
+    await db.refresh(launch_config)
+
+    # Set timestamp in a fresh transaction so it's not affected by the long cipher gen time.
+    async with get_session() as session:
+        await session.execute(
+            text("UPDATE launch_configs SET retrieved_at = NOW() WHERE config_id = :config_id"),
+            {"config_id": config_id},
+        )
 
     # The miner must decrypt the proposed symmetric key from this response payload,
     # then encrypt something using this symmetric key within the expected graval timeout.
@@ -421,8 +444,9 @@ async def claim_launch_config(
         "iterations": iterations,
         "job_id": launch_config.job_id,
         "symmetric_key": {
-            "ciphertext": cipher,
+            "ciphertext": ciphertext,
             "device_index": node_idx,
+            "plaintext_response": f"secret is {launch_config.config_id} {launch_config.seed}",
         },
     }
 
@@ -455,7 +479,7 @@ async def verify_launch_config_instance(
     query = (
         select(Instance)
         .where(Instance.config_id == launch_config.config_id)
-        .options(joinedload(Instance.nodes))
+        .options(joinedload(Instance.nodes).joinedload(Instance.job))
     )
     instance = (await db.execute(query)).unique().scalar_one_or_none()
     estimate = SUPPORTED_GPUS[instance.gpu_identifier]["graval"]["estimate"]
@@ -469,15 +493,45 @@ async def verify_launch_config_instance(
             detail=launch_config.verification_error,
         )
 
+    # Valid response cipher?
+    try:
+        ciphertext = (await request.json())["response"]
+        bytes_ = base64.b64decode(ciphertext[32:])
+        iv = bytes.fromhex(ciphertext[:32])
+        response = aes_decrypt(bytes_, instance.symmetric_key, iv)
+        assert response == f"secret is {launch_config.config_id} {launch_config.seed}"
+    except Exception as exc:
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=launch_config.verification_error,
+        )
+
     # Everything checks out (so far).
     launch_config.verified_at = func.now()
+    job = instance.job
+    if job:
+        job.started_at = func.now()
     await db.commit()
     await db.refresh(launch_config)
-    return {
+    if job:
+        await db.refresh(job)
+    return_value = {
         "chute_id": launch_config.chute_id,
         "instance_id": instance.instance_id,
         "verified_at": launch_config.verified_at.isoformat(),
     }
+    if job:
+        return_value.update(
+            {
+                "job_id": instance.job_id,
+                "job_method": instance.job.method,
+                "job_data": instance.job.job_args,
+            }
+        )
+    return return_value
 
 
 @router.post("/{chute_id}/", status_code=status.HTTP_202_ACCEPTED)

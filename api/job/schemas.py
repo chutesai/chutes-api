@@ -25,6 +25,7 @@ class Job(Base):
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="SET NULL"), nullable=False)
     version = Column(String, nullable=False)
     chutes_version = Column(String, nullable=True)
+    method = Column(String, nullable=False)
 
     # Miner info, when claimed.
     miner_uid = Column(Integer, nullable=True)

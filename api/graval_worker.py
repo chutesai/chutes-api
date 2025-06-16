@@ -1162,30 +1162,3 @@ async def handle_rolling_update(chute_id: str, version: str):
                     f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"
                 )
         await session.delete(rolling_update)
-
-
-@broker.ltask
-async def generate_launch_cipher(config_id: str, node_idx: int, node_id: str, iterations: int):
-    async with get_session() as session:
-        node = (await session.execute(select(Node).where(Node.uuid == node_id))).unique().scalar_one_or_none()
-        if not node:
-            # Fail.
-
-        instance = (await session.execute(select(Instance).where(Instance.config_id == config_id))).unique().scalar_one_or_none()
-        if not instance:
-            # Fail.
-
-        # Generate the ciphertext.
-        instance.config.cipher_node_idx = node_idx
-        instance.config.cipher = await graval_encrypt(
-            node,
-            instance.symmetric_key,
-            with_chutes=True,
-            cuda=False,
-            seed=instance.config.seed,
-            iterations=iterations,
-        )
-        logger.success(
-            f"Generated ciphertext for {node.uuid} for symmetric key validation/PovW check {cipher=}"
-        )
-        await session.commit()
