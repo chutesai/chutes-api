@@ -10,7 +10,7 @@ import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi_cache.decorator import cache
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -323,6 +323,67 @@ async def get_chute(
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
     return response
+
+
+@router.post("/{chute_id}/share", response_model=ChuteResponse)
+async def share_chute(
+    chute_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
+):
+    """
+    Share a chute with another user.
+    """
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not isinstance(user_id, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a user_id to share to.",
+        )
+
+    # Can be username also, in which case we need to convert from username to the uuid.
+    try:
+        _ = uuid.UUID(user_id)
+    except ValueError:
+        user = (
+            await db.execute(select(User).where(User.username == user_id).limit(1))
+            .unique()
+            .scalar_one_or_none()
+        )
+        user_id = user.user_id
+
+    # Load the chute.
+    chute = await get_chute_by_id_or_name(chute_id, db, current_user, load_instances=True)
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+
+    # Make sure the requester owns the chute.
+    if chute.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot share chute that does not belong to you",
+        )
+
+    # Insert the share record.
+    await db.execute(
+        text(
+            """
+            INSERT INTO chute_shares
+              (chute_id, shared_by, shared_to, shared_at)
+            VALUES (:chute_id, :shared_by, :shared_to, NOW())
+            ON CONFLICT (chute_id, shared_by, shared_to)
+            DO NOTHING
+            """
+        ),
+        {"chute_id": chute_id, "shared_by": current_user.user_id, "shared_to": user_id},
+    )
+    await db.commit()
+    return {"ok": True}
 
 
 @router.delete("/{chute_id_or_name:path}")

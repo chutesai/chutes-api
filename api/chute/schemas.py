@@ -190,6 +190,9 @@ class Chute(Base):
     instances = relationship(
         "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
+    shares = relationship(
+        "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
+    )
 
     @validates("name")
     def validate_name(self, _, name):
@@ -326,3 +329,19 @@ class RollingUpdate(Base):
     permitted = Column(JSONB, nullable=False)
 
     chute = relationship("Chute", back_populates="rolling_update", uselist=False)
+
+
+class ChuteShare(Base):
+    __tablename__ = "chute_shares"
+    chute_id = Column(
+        String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    shared_by = Column(
+        String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    shared_to = Column(
+        String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    shared_at = Column(DateTime, server_default=func.now())
+
+    chute = relationship("Chute", back_populates="shares", uselist=False)

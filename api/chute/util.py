@@ -21,7 +21,7 @@ from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, String
+from sqlalchemy import and_, or_, text, String, exists
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -32,7 +32,7 @@ from api.constants import (
 from api.database import get_session
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired, EmptyLLMResponse
 from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
-from api.chute.schemas import Chute, NodeSelector
+from api.chute.schemas import Chute, NodeSelector, ChuteShare
 from api.user.schemas import User
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
@@ -280,6 +280,18 @@ async def get_one(name_or_id: str):
             .unique()
             .scalar_one_or_none()
         )
+
+
+async def is_shared(chute_id: str, user_id: str):
+    """
+    Check if a chute has been shared with a user.
+    """
+    async with get_session() as db:
+        query = select(
+            exists().where(and_(ChuteShare.chute_id == chute_id, ChuteShare.shared_to == user_id))
+        )
+        result = await db.execute(query)
+        return result.scalar()
 
 
 async def track_prefix_hashes(prefixes, instance_id):
