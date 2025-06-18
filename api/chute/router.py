@@ -36,7 +36,7 @@ from api.chute.templates import (
     build_tei_code,
 )
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, selector_hourly_price
+from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -355,18 +355,11 @@ async def share_chute(
         user_id = user.user_id
 
     # Load the chute.
-    chute = await get_chute_by_id_or_name(chute_id, db, current_user, load_instances=True)
-    if not chute:
+    chute = await get_one(chute_id)
+    if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
-        )
-
-    # Make sure the requester owns the chute.
-    if chute.user_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Cannot share chute that does not belong to you",
         )
 
     # Insert the share record.
@@ -885,7 +878,7 @@ async def update_common_attributes(
     Update readme, tagline, etc. (but not code, image, etc.).
     """
     chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances=True)
-    if not chute:
+    if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
