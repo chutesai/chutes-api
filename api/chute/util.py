@@ -232,6 +232,8 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
 
     conditions = []
     conditions.append(Chute.chute_id == chute_id_or_name)
+    conditions.append(Chute.name.ilike(chute_id_or_name))
+    conditions.append(Chute.name.ilike(chute_name))
 
     # User specific lookups.
     if current_user:
@@ -239,11 +241,11 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
             [
                 and_(
                     User.username == current_user.username,
-                    Chute.name == chute_name,
+                    Chute.name.ilike(chute_name),
                 ),
                 and_(
                     User.username == current_user.username,
-                    Chute.name == chute_id_or_name,
+                    Chute.name.ilike(chute_id_or_name),
                 ),
             ]
         )
@@ -253,7 +255,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
         conditions.append(
             and_(
                 User.username == username,
-                Chute.name == chute_name,
+                Chute.name.ilike(chute_name),
             )
         )
 
@@ -261,11 +263,11 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     conditions.extend(
         [
             and_(
-                Chute.name == chute_id_or_name,
+                Chute.name.ilike(chute_id_or_name),
                 Chute.public.is_(True),
             ),
             and_(
-                Chute.name == chute_name,
+                Chute.name.ilike(chute_name),
                 Chute.public.is_(True),
             ),
             and_(

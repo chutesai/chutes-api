@@ -314,7 +314,7 @@ async def _invoke(
     # Check if the user has access.
     chute = await get_one(request.state.chute_id)
     if not chute or (not chute.public and chute.user_id != current_user.user_id):
-        if not await is_shared(chute.chute_id, current_user.user_id):
+        if not chute or not await is_shared(chute.chute_id, current_user.user_id):
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
             )
