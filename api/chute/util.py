@@ -40,6 +40,7 @@ from api.instance.schemas import Instance
 from api.instance.util import LeastConnManager, get_chute_target_manager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
+from api.metrics.perf import PERF_TRACKER
 
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
@@ -482,6 +483,13 @@ async def _invoke_one(
                 metrics["tt"] = round(total_time, 3)
                 if manager and manager.mean_count is not None:
                     metrics["mc"] = manager.mean_count
+
+                # Moving average performance tracking to keep compute units immutable.
+                ma_updates = await PERF_TRACKER.update_invocation_metrics(
+                    chute_id=chute.chute_id, duration=total_time, metrics=metrics
+                )
+                metrics.update(ma_updates)
+
                 logger.info(f"Metrics for chute={chute.name} {metrics}")
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 await track_prefix_hashes(prefixes, target.instance_id)
@@ -589,6 +597,13 @@ async def _invoke_one(
                     metrics["tt"] = round(total_time, 3)
                     if manager and manager.mean_count is not None:
                         metrics["mc"] = manager.mean_count
+
+                    # Moving average performance tracking to keep compute units immutable.
+                    ma_updates = await PERF_TRACKER.update_invocation_metrics(
+                        chute_id=chute.chute_id, duration=total_time, metrics=metrics
+                    )
+                    metrics.update(ma_updates)
+
                     logger.info(f"Metrics for {chute.name}: {metrics}")
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                     await track_prefix_hashes(prefixes, target.instance_id)
@@ -597,7 +612,14 @@ async def _invoke_one(
                 and path == "generate"
                 and (metrics or {}).get("steps")
             ):
-                metrics["sps"] = int(metrics["steps"]) / (time.time() - started_at)
+                delta = time.time() - started_at
+                metrics["sps"] = int(metrics["steps"]) / delta
+
+                # Moving average steps per second calc.
+                ma_updates = await PERF_TRACKER.update_invocation_metrics(
+                    chute_id=chute.chute_id, duration=delta, metrics=metrics
+                )
+                metrics.update(ma_updates)
 
             yield data
     finally:
