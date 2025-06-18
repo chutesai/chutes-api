@@ -11,7 +11,6 @@ import aiohttp
 from loguru import logger
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
-from fastapi_cache.decorator import cache
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -36,7 +35,7 @@ from api.chute.templates import (
     build_tei_code,
 )
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one
+from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -102,7 +101,6 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     )
 
 
-@cache(expire=60)
 @router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
@@ -246,7 +244,6 @@ async def get_gpu_count_history():
         return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
 
 
-@cache(expire=60)
 @router.get("/code/{chute_id}")
 async def get_chute_code(
     chute_id: str,
@@ -256,13 +253,21 @@ async def get_chute_code(
     """
     Load a chute's code by ID or name.
     """
-    query = select(Chute).where(Chute.chute_id == chute_id)
-    if current_user:
-        query = query.where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-    else:
-        query = query.where(Chute.public.is_(True))
-    chute = (await db.execute(query)).unique().scalar_one_or_none()
+    chute = await get_one(chute_id)
     if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    authorized = False
+    if chute.public or (
+        current_user
+        and (
+            current_user.user_id == chute.user_id or await is_shared(chute_id, current_user.user_id)
+        )
+    ):
+        authorized = True
+    if not authorized:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
@@ -304,7 +309,6 @@ async def get_chute_utilization():
         return utilization_data
 
 
-@cache(expire=60)
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
     chute_id_or_name: str,
@@ -635,6 +639,7 @@ async def _find_latest_image(db: AsyncSession, name: str) -> Image:
         select(Image)
         .where(Image.name == name)
         .where(Image.user_id == chute_user.user_id)
+        .where(Image.tag != "0.8.3")
         .order_by(Image.created_at.desc())
         .limit(1)
     )
