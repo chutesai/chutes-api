@@ -313,7 +313,7 @@ async def get_chute_utilization():
 async def get_chute(
     chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes")),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
 ):
     """
     Load a chute by ID or name.
