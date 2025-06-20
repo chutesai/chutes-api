@@ -14,8 +14,8 @@ import time
 import base64
 import backoff
 import secrets
-import orjson as json
 import semver
+import orjson as json
 from async_lru import alru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -694,20 +694,23 @@ async def check_envdump_command(instance):
 
     # Load the dump.
     dump = await get_dump(instance)
-    if settings.envcheck_52_salt and not is_kubernetes_env(instance, dump):
+    if not is_kubernetes_env(instance, dump):
         logger.error(
             f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} is not running a valid kubernetes environment"
         )
         return False
 
-    process = dump[1] if isinstance(dump, list) else dump["process"]
+    # Check the running command.
+    process = dump["all_processes"][0]
     assert process["pid"] == 1
-    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"]))
-    if command_line != get_expected_command(instance.chute, instance=instance):
+    assert process["username"] == "chutes"
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+    if command_line != get_expected_command(instance, chute):
         logger.error(
             f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} running invalid process: {command_line}"
         )
         return False
+
     logger.success(
         f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} code validation success: {command_line=}"
     )
