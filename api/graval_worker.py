@@ -14,6 +14,7 @@ import time
 import base64
 import backoff
 import secrets
+import semver
 import orjson as json
 from async_lru import alru_cache
 from typing import List, Tuple
@@ -43,7 +44,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
-from watchtower import get_env_dump, get_expected_command, is_kubernetes_env
+from watchtower import get_expected_command, is_kubernetes_env, get_dump
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 
@@ -685,30 +686,31 @@ async def check_envdump_command(instance):
     Check the running command via chutes envdump, for supported chutes versions.
     """
     chute = instance.chute
-    if not re.match(
-        r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
-    ):
+    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") < 0:
         logger.warning(
             f"Unable to check envdump command line for {chute.chutes_version=} {chute.chute_id=}"
         )
         return True
 
     # Load the dump.
-    dump = await get_env_dump(instance)
-    if settings.envcheck_52_salt and not is_kubernetes_env(instance, dump):
+    dump = await get_dump(instance)
+    if not is_kubernetes_env(instance, dump):
         logger.error(
             f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} is not running a valid kubernetes environment"
         )
         return False
 
-    process = dump[1] if isinstance(dump, list) else dump["process"]
+    # Check the running command.
+    process = dump["all_processes"][0]
     assert process["pid"] == 1
-    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"]))
-    if command_line != get_expected_command(instance, instance.chute):
+    assert process["username"] == "chutes"
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+    if command_line != get_expected_command(instance, chute):
         logger.error(
             f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} running invalid process: {command_line}"
         )
         return False
+
     logger.success(
         f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} code validation success: {command_line=}"
     )
