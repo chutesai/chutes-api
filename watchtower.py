@@ -1443,7 +1443,7 @@ async def get_dump(instance, outdir: str = None):
 
 
 @asynccontextmanager
-async def get_dumps(instances: list[Instance], concurrency: int = 16):
+async def get_dumps(instances: list[Instance], concurrency: int = 32):
     """
     Get (new) environment dumps from all instances, controlling concurrency.
     """
