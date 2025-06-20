@@ -502,13 +502,14 @@ async def _deploy_chute(
             ),
             {"chute_id": chute.chute_id},
         )
-        rolling_update = RollingUpdate(
-            chute_id=chute.chute_id,
-            old_version=chute.version,
-            new_version=version,
-            permitted=permitted,
-        )
-        db.add(rolling_update)
+        if chute.instances:
+            rolling_update = RollingUpdate(
+                chute_id=chute.chute_id,
+                old_version=chute.version,
+                new_version=version,
+                permitted=permitted,
+            )
+            db.add(rolling_update)
 
         old_version = chute.version
         chute.image_id = image.image_id

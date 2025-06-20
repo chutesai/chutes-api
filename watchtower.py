@@ -10,6 +10,9 @@ import hashlib
 import json
 import secrets
 import traceback
+import tempfile
+import semver
+from contextlib import asynccontextmanager
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
@@ -813,89 +816,78 @@ async def check_chute(chute_id):
 
     # Updated environment/code checks.
     instances = await load_chute_instances(chute.chute_id)
+    random.shuffle(instances)
     bad_env = set()
-    if re.match(r"^[0-9]+\.(2\.(39|4[0-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""):
-        signatures = {instance.instance_id: None for instance in instances}
-        salt = str(uuid.uuid4())
-        for instance in instances:
-            failed_envdump = False
-            log_prefix = (
-                f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
-            )
-            try:
-                signature = await get_env_sig(instance, salt)
-                logger.info(
-                    f"Loaded environment signature for {instance.instance_id=}: {signature=}"
-                )
+    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") >= 0:
+        instance_map = {instance.instance_id: instance for instance in instances}
 
-                # Load env dump, if possible.
-                if re.match(
-                    r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
-                ):
-                    dump = await get_env_dump(instance)
-                    if not is_kubernetes_env(instance, dump, log_prefix):
-                        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+        # Load the envdump dump outputs for each.
+        missing = set(instance_map)
+        async with get_dumps(instances) as paths:
+            for path in paths:
+                failed_envdump = False
+                if not path:
+                    continue
+                instance_id = path.split("dump-")[-1].split(".")[0]
+                missing.discard(instance_id)
+                instance = instance_map[instance_id]
+                log_prefix = f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+                with open(path) as infile:
+                    dump = json.load(infile)
+
+                # Ensure proper k8s env.
+                if not is_kubernetes_env(instance, dump, log_prefix):
+                    logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+                    failed_envdump = True
+
+                # Check SGLang processes.
+                if not check_sglang(instance, chute, dump, log_prefix):
+                    logger.error(f"{log_prefix} did not find SGLang process, bad...")
+                    failed_envdump = True
+
+                # Check the running command.
+                try:
+                    process = dump["all_processes"][0]
+                    assert process["pid"] == 1
+                    assert process["username"] == "chutes"
+                    command_line = re.sub(
+                        r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]
+                    ).strip()
+                    if command_line != get_expected_command(instance, chute):
+                        logger.error(f"{log_prefix} running invalid process: {command_line=}")
                         failed_envdump = True
-
-                    if not check_sglang(instance, chute, dump, log_prefix):
-                        logger.error(f"{log_prefix} did not find SGLang process, bad...")
-                        failed_envdump = True
-
-                    try:
-                        process = dump[1] if isinstance(dump, list) else dump["process"]
-                        assert process["pid"] == 1
-                        command_line = re.sub(
-                            r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
+                    else:
+                        logger.success(
+                            f"{log_prefix} successfully validated expected runtime command: {command_line=}"
                         )
-                        if command_line != get_expected_command(instance, chute):
-                            logger.error(f"{log_prefix} running invalid process: {command_line=}")
-                            failed_envdump = True
-                        else:
-                            logger.success(
-                                f"{log_prefix} successfully validated expected runtime command: {command_line=}"
-                            )
-                    except EnvdumpMissing:
-                        logger.error(f"{log_prefix} returned invalid status code, clearly bad")
-                        failed_envdump = True
-                    except Exception as exc:
-                        logger.error(
-                            f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
-                        )
-            except EnvdumpMissing:
-                logger.error(f"{log_prefix} returned invalid status code, clearly bad")
-                failed_envdump = True
-            except TimeoutError:
-                logger.error(f"{log_prefix} envdump timeout, basically impossible")
-                failed_envdump = True
-            except Exception as exc:
-                logger.error(
-                    f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
-                )
+                except Exception as exc:
+                    logger.error(
+                        f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
+                    )
+                    failed_envdump = True
 
-            if failed_envdump:
-                await purge_and_notify(
-                    instance, reason="Instance failed env dump signature or process checks."
-                )
-                bad_env.add(instance.instance_id)
-                failed_count = await settings.redis_client.incr(
-                    f"envdumpfail:{instance.miner_hotkey}"
-                )
-                logger.warning(
-                    f"ENVDUMP: Miner {instance.miner_hotkey} has now failed {failed_count} envdump checks"
-                )
-                # if failed_count >= 5:
-                #    async with get_session() as session:
-                #        await session.execute(
-                #            text("""
-                #            UPDATE metagraph_nodes
-                #            SET blacklist_reason = 'Recurring pattern of invalid processes discovered by watchtower.'
-                #            WHERE hotkey = :hotkey
-                #            """),
-                #            {"hotkey": instance.miner_hotkey}
-                #        )
-
-        if len(set(signatures.values())) > 1:
-            logger.error(f"Multiple signatures found: {signatures=}")
+                # Delete failed checks.
+                if failed_envdump:
+                    await purge_and_notify(
+                        instance, reason="Instance failed env dump signature or process checks."
+                    )
+                    bad_env.add(instance.instance_id)
+                    failed_count = await settings.redis_client.incr(
+                        f"envdumpfail:{instance.miner_hotkey}"
+                    )
+                    logger.warning(
+                        f"ENVDUMP: Miner {instance.miner_hotkey} has now failed {failed_count} envdump checks"
+                    )
+                    # if failed_count >= 5:
+                    #    async with get_session() as session:
+                    #        await session.execute(
+                    #            text("""
+                    #            UPDATE metagraph_nodes
+                    #            SET blacklist_reason = 'Recurring pattern of invalid processes discovered by watchtower.'
+                    #            WHERE hotkey = :hotkey
+                    #            """),
+                    #            {"hotkey": instance.miner_hotkey}
+                    #        )
 
     # Filter out the ones we already blacklisted.
     instances = [instance for instance in instances if instance.instance_id not in bad_env]
@@ -1373,6 +1365,124 @@ async def get_env_sig(instance, salt):
                 f"Received invalid response code on /_env_sig: {instance.instance_id=}"
             )
         return await resp.text()
+
+
+async def get_dump(instance, outdir: str = None):
+    """
+    Load the (new) environment dump from the remote instance.
+    """
+    from chutes.envdump import DUMPER
+
+    key = secrets.token_bytes(16).hex()
+    payload = {"key": key}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_dump", instance.symmetric_key, hex_encode=True)
+    logger.info(f"Querying {instance.instance_id=} envdump (dump)")
+    try:
+        async with miner_client.post(
+            instance.miner_hotkey,
+            f"http://{instance.host}:{instance.port}/{path}",
+            enc_payload,
+            timeout=60.0,
+        ) as resp:
+            if resp.status != 200:
+                err = f"Received invalid response code on /_dump: {resp.status=}"
+                if outdir:
+                    logger.error(f"ENVDUMP: {err} {instance.miner_hotkey=} {instance.instance_id=}")
+                    return None
+                else:
+                    raise EnvdumpMissing(err)
+            try:
+                body = await resp.json()
+                result = DUMPER.decrypt(key, body["result"])
+                if outdir:
+                    outpath = os.path.join(outdir, f"dump-{instance.instance_id}.json")
+                    with open(outpath, "w") as outfile:
+                        bytes_ = outfile.write(json.dumps(result, indent=2))
+                    logger.success(f"Saved {bytes_} byte JSON dump to {outpath}")
+                    return outpath
+                return result
+            except Exception as exc:
+                err = f"Failed to load and decrypt _dump payload: {exc=}"
+                if outdir:
+                    logger.error(f"ENVDUMP: {err} {instance.miner_hotkey=} {instance.instance_id=}")
+                    return None
+                else:
+                    raise EnvdumpMissing(err)
+    except Exception as exc:
+        err = f"Failed to fetch _dump: {exc=}"
+        if outdir:
+            logger.error(f"ENVDUMP: {err} {instance.miner_hotkey=} {instance.instance_id=}")
+            return None
+        else:
+            raise EnvdumpMissing(err)
+
+
+@asynccontextmanager
+async def get_dumps(instances: list[Instance], concurrency: int = 16):
+    """
+    Get (new) environment dumps from all instances, controlling concurrency.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def _dump(instance):
+            async with semaphore:
+                return await get_dump(instance, tmpdir)
+
+        tasks = [_dump(instance) for instance in instances]
+        results = await asyncio.gather(*tasks)
+        yield results
+
+
+async def get_sig(instance):
+    """
+    Load the (new) environment signature from remote instance.
+    """
+    salt = secrets.token_bytes(16).hex()
+    payload = {"salt": salt}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_sig", instance.symmetric_key, hex_encode=True)
+    logger.info(f"Querying {instance.instance_id=} envdump (sig)")
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        enc_payload,
+        timeout=15.0,
+    ) as resp:
+        if resp.status != 200:
+            raise EnvdumpMissing(f"Received invalid response code on /_dump: {resp.status=}")
+        try:
+            body = await resp.json()
+            return body["result"]
+        except Exception as exc:
+            raise EnvdumpMissing(f"Failed to load and decrypt _dump payload: {exc=}")
+
+
+async def slurp(instance, path, offset: int = 0, length: int = 0):
+    """
+    Load contents of a remote file/dir via (new) envdump lib.
+    """
+    from chutes.envdump import DUMPER
+
+    key = secrets.token_bytes(16).hex()
+    payload = {"key": key, "path": path, "offset": offset, "length": length}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_eslurp", instance.symmetric_key, hex_encode=True)
+    logger.info(f"Querying {instance.instance_id=} envdump (slurp) {payload=}")
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        enc_payload,
+        timeout=30.0,
+    ) as resp:
+        if resp.status != 200:
+            raise EnvdumpMissing(f"Received invalid response code on /_eslurp: {resp.status=}")
+        try:
+            body = await resp.json()
+            return DUMPER.decrypt(key, body["result"])
+        except Exception as exc:
+            raise EnvdumpMissing(f"Failed to load and decrypt _eslurp payload: {exc=}")
 
 
 async def main():
