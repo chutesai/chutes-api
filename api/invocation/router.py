@@ -24,6 +24,7 @@ from api.chute.util import (
     invoke,
     get_one,
     get_vllm_models,
+    is_shared,
     count_prompt_tokens,
 )
 from api.util import rate_limit, ip_rate_limit
@@ -310,12 +311,13 @@ async def _invoke(
     request: Request,
     current_user: User,
 ):
-    # This call will perform auth/access checks.
+    # Check if the user has access.
     chute = await get_one(request.state.chute_id)
     if not chute or (not chute.public and chute.user_id != current_user.user_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
-        )
+        if not chute or not await is_shared(chute.chute_id, current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
+            )
 
     # Check account balance.
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
@@ -708,7 +710,11 @@ async def hostname_invocation(
                     detail=f"model not found: {model}",
                 )
             if chute.standard_template != template or (
-                not chute.public and chute.user_id != current_user.user_id
+                not chute.public
+                and (
+                    chute.user_id != current_user.user_id
+                    and not await is_shared(chute.chute_id, current_user.user_id)
+                )
             ):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

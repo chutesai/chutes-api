@@ -79,7 +79,7 @@ async def _check_scalable(db, chute, hotkey):
     chute_id = chute.chute_id
     if chute.rolling_update:
         limit = chute.rolling_update.permitted.get(hotkey, 0)
-        if not limit:
+        if not limit and chute.rolling_update.permitted:
             logger.warning(
                 f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
             )
@@ -88,6 +88,11 @@ async def _check_scalable(db, chute, hotkey):
                 detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
             )
     else:
+        if limit:
+            chute.rolling_update.permitted[hotkey] -= 1
+
+    # Limit underutilized chutes.
+    try:
         query = text(
             "SELECT * FROM chute_utilization "
             "WHERE chute_id = :chute_id "

@@ -10,8 +10,7 @@ import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status, Response
-from fastapi_cache.decorator import cache
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -36,7 +35,7 @@ from api.chute.templates import (
     build_tei_code,
 )
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, selector_hourly_price
+from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -102,7 +101,6 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     )
 
 
-@cache(expire=60)
 @router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
@@ -246,7 +244,6 @@ async def get_gpu_count_history():
         return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
 
 
-@cache(expire=60)
 @router.get("/code/{chute_id}")
 async def get_chute_code(
     chute_id: str,
@@ -256,13 +253,21 @@ async def get_chute_code(
     """
     Load a chute's code by ID or name.
     """
-    query = select(Chute).where(Chute.chute_id == chute_id)
-    if current_user:
-        query = query.where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-    else:
-        query = query.where(Chute.public.is_(True))
-    chute = (await db.execute(query)).unique().scalar_one_or_none()
+    chute = await get_one(chute_id)
     if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    authorized = False
+    if chute.public or (
+        current_user
+        and (
+            current_user.user_id == chute.user_id or await is_shared(chute_id, current_user.user_id)
+        )
+    ):
+        authorized = True
+    if not authorized:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
@@ -304,12 +309,11 @@ async def get_chute_utilization():
         return utilization_data
 
 
-@cache(expire=60)
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
     chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes")),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
 ):
     """
     Load a chute by ID or name.
@@ -323,6 +327,60 @@ async def get_chute(
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
     return response
+
+
+@router.post("/{chute_id}/share", response_model=ChuteResponse)
+async def share_chute(
+    chute_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
+):
+    """
+    Share a chute with another user.
+    """
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not isinstance(user_id, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a user_id to share to.",
+        )
+
+    # Can be username also, in which case we need to convert from username to the uuid.
+    try:
+        _ = uuid.UUID(user_id)
+    except ValueError:
+        user = (
+            await db.execute(select(User).where(User.username == user_id).limit(1))
+            .unique()
+            .scalar_one_or_none()
+        )
+        user_id = user.user_id
+
+    # Load the chute.
+    chute = await get_one(chute_id)
+    if not chute or chute.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+
+    # Insert the share record.
+    await db.execute(
+        text(
+            """
+            INSERT INTO chute_shares
+              (chute_id, shared_by, shared_to, shared_at)
+            VALUES (:chute_id, :shared_by, :shared_to, NOW())
+            ON CONFLICT (chute_id, shared_by, shared_to)
+            DO NOTHING
+            """
+        ),
+        {"chute_id": chute_id, "shared_by": current_user.user_id, "shared_to": user_id},
+    )
+    await db.commit()
+    return {"ok": True}
 
 
 @router.delete("/{chute_id_or_name:path}")
@@ -444,13 +502,14 @@ async def _deploy_chute(
             ),
             {"chute_id": chute.chute_id},
         )
-        rolling_update = RollingUpdate(
-            chute_id=chute.chute_id,
-            old_version=chute.version,
-            new_version=version,
-            permitted=permitted,
-        )
-        db.add(rolling_update)
+        if chute.instances:
+            rolling_update = RollingUpdate(
+                chute_id=chute.chute_id,
+                old_version=chute.version,
+                new_version=version,
+                permitted=permitted,
+            )
+            db.add(rolling_update)
 
         old_version = chute.version
         chute.image_id = image.image_id
@@ -601,6 +660,7 @@ async def _find_latest_image(db: AsyncSession, name: str) -> Image:
         select(Image)
         .where(Image.name == name)
         .where(Image.user_id == chute_user.user_id)
+        .where(Image.tag != "0.8.3")
         .order_by(Image.created_at.desc())
         .limit(1)
     )
@@ -847,7 +907,7 @@ async def update_common_attributes(
     Update readme, tagline, etc. (but not code, image, etc.).
     """
     chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances=True)
-    if not chute:
+    if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",

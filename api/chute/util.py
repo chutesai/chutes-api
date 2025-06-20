@@ -21,7 +21,7 @@ from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, String
+from sqlalchemy import and_, or_, text, String, exists
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -32,7 +32,7 @@ from api.constants import (
 from api.database import get_session
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired, EmptyLLMResponse
 from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
-from api.chute.schemas import Chute, NodeSelector
+from api.chute.schemas import Chute, NodeSelector, ChuteShare
 from api.user.schemas import User
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
@@ -194,6 +194,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     """
     if not chute_id_or_name:
         return None
+
     name_match = re.match(
         r"/?(?:([a-zA-Z0-9_\.-]{3,15})/)?([a-z0-9][a-z0-9_\.\/-]*)$",
         chute_id_or_name.lstrip("/"),
@@ -201,44 +202,83 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     )
     if not name_match:
         return None
-    query = (
-        select(Chute)
-        .join(User, Chute.user_id == User.user_id)
-        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-    )
+    query = select(Chute).join(User, Chute.user_id == User.user_id)
+
+    # Perms check.
+    if current_user:
+        query = query.outerjoin(
+            ChuteShare,
+            and_(
+                ChuteShare.chute_id == Chute.chute_id, ChuteShare.shared_to == current_user.user_id
+            ),
+        ).where(
+            or_(
+                Chute.public.is_(True),
+                Chute.user_id == current_user.user_id,
+                ChuteShare.shared_to == current_user.user_id,
+            )
+        )
+    else:
+        query = query.where(Chute.public.is_(True))
+
     if load_instances:
         query = query.options(selectinload(Chute.instances))
-    username = name_match.group(1) or current_user.username
+
+    username = name_match.group(1)
     chute_name = name_match.group(2)
     chute_id_or_name = chute_id_or_name.lstrip("/")
-    chute_user = await chutes_user_id()
-    user_sort_id = current_user.user_id if current_user else chute_user
-    query = query.where(
-        or_(
-            and_(
-                User.username == current_user.username,
-                Chute.name == chute_name,
-            ),
-            and_(
-                User.username == current_user.username,
-                Chute.name == chute_id_or_name,
-            ),
+    if not username and current_user:
+        username = current_user.username
+
+    conditions = []
+    conditions.append(Chute.chute_id == chute_id_or_name)
+    conditions.append(Chute.name.ilike(chute_id_or_name))
+    conditions.append(Chute.name.ilike(chute_name))
+
+    # User specific lookups.
+    if current_user:
+        conditions.extend(
+            [
+                and_(
+                    User.username == current_user.username,
+                    Chute.name.ilike(chute_name),
+                ),
+                and_(
+                    User.username == current_user.username,
+                    Chute.name.ilike(chute_id_or_name),
+                ),
+            ]
+        )
+
+    # Username/chute_name lookup (if username provided or defaulted)
+    if username:
+        conditions.append(
             and_(
                 User.username == username,
-                Chute.name == chute_name,
-            ),
-            Chute.chute_id == chute_id_or_name,
-            and_(
-                Chute.name == chute_id_or_name,
-                Chute.public.is_(True),
-            ),
-            and_(
-                Chute.name == chute_name,
-                Chute.public.is_(True),
-            ),
+                Chute.name.ilike(chute_name),
+            )
         )
-    ).order_by((Chute.user_id == user_sort_id).desc())
 
+    # Public chute lookups by name/ID only
+    conditions.extend(
+        [
+            and_(
+                Chute.name.ilike(chute_id_or_name),
+                Chute.public.is_(True),
+            ),
+            and_(
+                Chute.name.ilike(chute_name),
+                Chute.public.is_(True),
+            ),
+            and_(
+                Chute.chute_id == chute_id_or_name,
+                Chute.public.is_(True),
+            ),
+        ]
+    )
+    query = query.where(or_(*conditions))
+    user_sort_id = current_user.user_id if current_user else await chutes_user_id()
+    query = query.order_by((Chute.user_id == user_sort_id).desc())
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
 
@@ -280,6 +320,18 @@ async def get_one(name_or_id: str):
             .unique()
             .scalar_one_or_none()
         )
+
+
+async def is_shared(chute_id: str, user_id: str):
+    """
+    Check if a chute has been shared with a user.
+    """
+    async with get_session() as db:
+        query = select(
+            exists().where(and_(ChuteShare.chute_id == chute_id, ChuteShare.shared_to == user_id))
+        )
+        result = await db.execute(query)
+        return result.scalar()
 
 
 async def track_prefix_hashes(prefixes, instance_id):
