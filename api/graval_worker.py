@@ -15,6 +15,7 @@ import base64
 import backoff
 import secrets
 import orjson as json
+import semver
 from async_lru import alru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -43,7 +44,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
-from watchtower import get_env_dump, get_expected_command, is_kubernetes_env
+from watchtower import get_expected_command, is_kubernetes_env, get_dump
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 
@@ -685,16 +686,14 @@ async def check_envdump_command(instance):
     Check the running command via chutes envdump, for supported chutes versions.
     """
     chute = instance.chute
-    if not re.match(
-        r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
-    ):
+    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") < 0:
         logger.warning(
             f"Unable to check envdump command line for {chute.chutes_version=} {chute.chute_id=}"
         )
         return True
 
     # Load the dump.
-    dump = await get_env_dump(instance)
+    dump = await get_dump(instance)
     if settings.envcheck_52_salt and not is_kubernetes_env(instance, dump):
         logger.error(
             f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} is not running a valid kubernetes environment"
@@ -912,7 +911,7 @@ async def verify_instance(instance_id: str):
             return
 
         # Legacy encryption/key exchange tests.
-        if not re.match(r"^[0-9]+\.([3-9][0-9]*)\.[0-9]+$", instance.chutes_version or ""):
+        if semver.compare(instance.chutes_version or "0.0.0", "0.3.0") < 0:
             if not use_encryption_v2(instance.chutes_version):
                 # Legacy/encryption V1 tests.
                 try:

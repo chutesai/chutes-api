@@ -689,70 +689,37 @@ def uuid_dict(data, current_path=[], salt=settings.envcheck_52_salt):
 
 def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
     # Ignore if we don't have envdump configured.
-    if not settings.envcheck_52_salt:
+    if not settings.kubecheck_salt:
+        return True
+    # Requires chutes SDK 0.2.53+
+    if semver.compare(instance.chutes_version or "0.0.0", "0.2.53") < 0:
         return True
 
-    # Does not function with old versions of chutes.
-    if not isinstance(dump, dict):
-        return True
-    version_parts = list(map(int, instance.chutes_version.split(".")))
-    if version_parts[1] <= 2 and version_parts[2] < 52:
-        return True
-
-    # Check for certain flags and values in the dump.
+    # Simple flags.
     flat = uuid_dict(dump)
-    if special_key := flat.get("97a9e854-7f12-56c5-88a1-9de1744c22dd"):
-        if (
-            str(uuid.uuid5(uuid.NAMESPACE_OID, special_key[:6] + settings.envcheck_52_salt))
-            != "8d967b00-c6f9-5138-bc96-82a5963d9cfe"
-        ):
-            logger.warning(
-                f"{log_prefix} Invalid environment found: "
-                "expecting magic uuid 10b81b83-33c3-50fd-b497-fa59a7fc1ab0 "
-                f"in magic key 6799f7a0-5552-5c20-82e8-68ac2c7162f4: {special_key[:6]}"
-            )
-            return False
-    else:
+    if "809e6d11-690f-5fe6-b203-30e4dd96827d" not in flat:
         logger.warning(
-            f"{log_prefix} Did not find expected magic key 97a9e854-7f12-56c5-88a1-9de1744c22dd"
+            f"{log_prefix} Invalid environment found: "
+            "expecting magic uuid 809e6d11-690f-5fe6-b203-30e4dd96827d"
         )
-    if special_key := flat.get("0aede012-8b95-5960-bad0-a90d05a2c77b"):
-        for value in special_key:
-            nested = uuid_dict(value)
-            if secret := nested.get("210169b6-faae-5e0b-9278-172b0d7b2371"):
-                if any(
-                    [
-                        str(uuid.uuid5(uuid.NAMESPACE_OID, part + settings.envcheck_52_salt))
-                        == "dc617c6e-4a1e-57b5-b55a-d170000386a5"
-                        for part in secret.split("/")
-                    ]
-                ):
-                    logger.warning(
-                        f"{log_prefix} Invalid environment found: "
-                        "expecting NOT to find magic uuid dc617c6e-4a1e-57b5-b55a-d170000386a5 "
-                        "in magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
-                    )
-                    return False
-            else:
-                logger.warning(
-                    f"{log_prefix} Did not find nested magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
-                )
-    else:
+        return False
+    if not flat.get("a4286a4a-858c-56c3-ad11-734cbcc88c00"):
         logger.warning(
-            f"{log_prefix} Did not find expected magic key 0aede012-8b95-5960-bad0-a90d05a2c77b"
+            f"{log_prefix} Invalid environment found: "
+            "expecting truthy magic uuid a4286a4a-858c-56c3-ad11-734cbcc88c00"
         )
-    if "57d08936-e24b-5ae9-a62a-f347075052ef" not in flat:
+        return False
+    ms = flat.get("1ddb0807-3076-5e1b-a696-4867bf97d50f")
+    if not isinstance(ms, list) or not any([m["name"] == "nvidia" for m in ms]):
         logger.warning(
-            f"{log_prefix} Did not find expected magic key 57d08936-e24b-5ae9-a62a-f347075052ef"
+            f"{log_prefix} Invalid environment found: "
+            "expecting to find nvidia in magic key 1ddb0807-3076-5e1b-a696-4867bf97d50f"
         )
         return False
 
-    # More checks...
-    if not settings.kubecheck_salt:
-        return True
-    flat = uuid_dict(dump, salt=settings.kubecheck_salt)
+    # Sneaky flags.
     found_expected = False
-    if (secret := flat.get("b61ec704-0cbd-5175-bbbe-f25aa399c469")) is not None:
+    if (secret := flat.get("8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d")) is not None:
         expected = (
             settings.kubecheck_prefix
             + "_".join(secret.split("-")[1:-2]).upper()
@@ -771,10 +738,33 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
                         break
     if not found_expected:
         logger.warning(
-            f"{log_prefix} did not find expected magic key derived rom b61ec704-0cbd-5175-bbbe-f25aa399c469"
+            f"{log_prefix} did not find expected magic key derived from 8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d"
         )
         return False
 
+    # Extra sneaky.
+    if special_key := flat.get("3aba393c-2046-59e2-b524-992f5c17b3f4"):
+        for value in special_key:
+            nested = uuid_dict(value)
+            if secret := nested.get("cc523b3d-4ca2-5062-9182-bdfbf2fda998"):
+                if any(
+                    [
+                        str(uuid.uuid5(uuid.NAMESPACE_OID, part + settings.kubecheck_salt))
+                        == "8dbd3657-047e-5cfd-b30e-77f3135280c9"
+                        for part in secret.split("/")
+                    ]
+                ):
+                    logger.warning(
+                        f"{log_prefix} Invalid environment found: "
+                        "expecting NOT to find magic uuid 8dbd3657-047e-5cfd-b30e-77f3135280c9 "
+                        "in magic key 3aba393c-2046-59e2-b524-992f5c17b3f4"
+                    )
+                    return False
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 3aba393c-2046-59e2-b524-992f5c17b3f4"
+        )
+        return False
     return True
 
 
@@ -786,25 +776,16 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
     ):
         return True
 
-    processes = dump[3] if isinstance(dump, list) else dump["all_processes"]
+    processes = dump["all_processes"]
     revision_match = re.search(r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code)
     found_sglang = False
     for process in processes:
         if (
             process["exe"] == "/opt/python/bin/python3.12"
             and process["username"] == "chutes"
-            and process["cmdline"][:9]
-            == [
-                "python",
-                "-m",
-                "sglang.launch_server",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "10101",
-                "--model-path",
-                chute.name,
-            ]
+            and process["cmdline"].startswith(
+                f"python -m sglang.launch_server --host 127.0.0.1 --port 10101 --model-path {chute.name}"
+            )
         ):
             logger.success(f"{log_prefix} found SGLang chute: {process=}")
             found_sglang = True
