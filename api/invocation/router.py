@@ -8,7 +8,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
-import time
+import decimal
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -20,29 +20,20 @@ from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
-from api.constants import LLM_PRICE_MULT_PER_MILLION
 from api.chute.util import (
     invoke,
     get_one,
     get_vllm_models,
+    is_shared,
     count_prompt_tokens,
-    TRACK_INVOCATION,
-    UPDATE_INVOCATION,
-    selector_hourly_price,
 )
-from api.util import rate_limit, ip_rate_limit, sse, now_str
+from api.util import rate_limit, ip_rate_limit
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
-from api.database import get_db_session, get_session
+from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.invocation.cache import (
-    cached_responder,
-    append_stream,
-    purge_stream,
-    set_stream_expiration,
-)
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -66,13 +57,16 @@ class DiffusionInput(BaseModel):
         extra = "forbid"
 
 
-@cache(expire=600)
 @router.get("/usage")
-async def get_usage():
+async def get_usage(request: Request):
     """
     Get aggregated usage data, which is the amount of revenue
     we would be receiving if no usage was free.
     """
+    cache_key = b"invocation_usage_data"
+    if request:
+        if cached := await settings.memcache.get(cache_key):
+            return json.loads(cached)
     query = text(
         "SELECT chute_id, DATE(bucket) as date, sum(amount) as usd_amount, sum(count) as invocation_count "
         "from usage_data "
@@ -80,7 +74,7 @@ async def get_usage():
         "group by chute_id, date "
         "order by date desc, usd_amount desc"
     )
-    async with get_session(readonly=True) as session:
+    async with get_session() as session:
         result = await session.execute(query)
         rv = []
         for chute_id, date, usd_amount, invocation_count in result:
@@ -88,27 +82,38 @@ async def get_usage():
                 {
                     "chute_id": chute_id,
                     "date": date,
-                    "usd_amount": usd_amount,
-                    "invocation_count": invocation_count,
+                    "usd_amount": float(usd_amount),
+                    "invocation_count": int(invocation_count),
                 }
             )
+        await settings.memcache.set(cache_key, json.dumps(rv))
+        return rv
+
+
+async def _cached_get_metrics(table, cache_key):
+    if cached := await settings.memcache.get(cache_key):
+        return json.loads(gzip.decompress(base64.b64decode(cached)))
+    async with get_session() as session:
+        result = await session.execute(text(f"SELECT * FROM {table}"))
+        rows = result.mappings().all()
+        rv = [dict(row) for row in rows]
+        for row in rv:
+            for key, value in row.items():
+                if isinstance(value, decimal.Decimal):
+                    row[key] = float(value)
+        cache_value = base64.b64encode(gzip.compress(json.dumps(rv)))
+        await settings.memcache.set(cache_key, cache_value, exptime=1800)
         return rv
 
 
 @router.get("/stats/llm")
 async def get_llm_stats():
-    async with get_session(readonly=True) as session:
-        result = await session.execute(text("SELECT * FROM vllm_metrics"))
-        rows = result.mappings().all()
-        return [dict(row) for row in rows]
+    return await _cached_get_metrics("vllm_metrics", b"llm_stats")
 
 
 @router.get("/stats/diffusion")
 async def get_diffusion_stats():
-    async with get_session(readonly=True) as session:
-        result = await session.execute(text("SELECT * FROM diffusion_metrics"))
-        rows = result.mappings().all()
-        return [dict(row) for row in rows]
+    return await _cached_get_metrics("diffusion_metrics", b"diff_stats")
 
 
 @router.get("/exports/{year}/{month}/{day}/{hour_format}")
@@ -206,7 +211,7 @@ async def get_export(
 async def get_recent_export(
     hotkey: Optional[str] = None,
     limit: Optional[int] = 100,
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_db_ro_session),
 ):
     """
     Get an export for recent data, which may not yet be in S3.
@@ -226,9 +231,12 @@ async def get_recent_export(
             completed_at,
             error_message,
             compute_multiplier,
-            bounty
+            bounty,
+            metrics
         FROM partitioned_invocations
         WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
+        AND completed_at IS NOT NULL
+        AND error_message IS NULL
     """
     if not limit or limit <= 0:
         limit = 100
@@ -303,12 +311,13 @@ async def _invoke(
     request: Request,
     current_user: User,
 ):
-    # This call will perform auth/access checks.
+    # Check if the user has access.
     chute = await get_one(request.state.chute_id)
     if not chute or (not chute.public and chute.user_id != current_user.user_id):
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
-        )
+        if not chute or not await is_shared(chute.chute_id, current_user.user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
+            )
 
     # Check account balance.
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
@@ -343,7 +352,7 @@ async def _invoke(
         if not chute.openrouter:
             limit *= 2
         if is_paid_account:
-            limit *= 3
+            limit *= 2
     await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
 
     # IP address rate limits.
@@ -411,31 +420,6 @@ async def _invoke(
             if "temperature" not in request_body:
                 request_body["temperature"] = 0.05
 
-        # SGLang chute we use for R1 uses the default overlap scheduler which does not support
-        # these penalty params, and sampling params are causing crashes.
-        if chute.name in (
-            "deepseek-ai/DeepSeek-R1",
-            "deepseek-ai/DeepSeek-V3",
-            "deepseek-ai/DeepSeek-V3-0324",
-            "deepseek-ai/DeepSeek-R1-Zero",
-        ):
-            for param in [
-                "frequency_penalty",
-                "presence_penalty",
-                "repetition_penalty",
-                "min_p",
-                "top_p",
-                "top_k",
-            ]:
-                request_body.pop(param, None)
-            if (max_tokens := request_body.get("max_tokens")) is not None:
-                try:
-                    max_tokens = int(request_body["max_tokens"])
-                    if max_tokens > 4096:
-                        request_body["max_tokens"] = 4096
-                except ValueError:
-                    request_body["max_tokens"] = 4096
-
         # Make sure the model name is correct.
         if (requested_model := request_body.get("model")) != chute.name:
             logger.warning(
@@ -454,7 +438,7 @@ async def _invoke(
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
     async with get_session() as db:
-        manager = await get_chute_target_manager(db, chute.chute_id, max_wait=10)
+        manager = await get_chute_target_manager(db, chute.chute_id, max_wait=0)
     if not manager or not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(
@@ -494,7 +478,6 @@ async def _invoke(
 
     include_trace = request.headers.get("X-Chutes-Trace", "").lower() == "true"
     parent_invocation_id = str(uuid.uuid4())
-    request_hash = None
 
     # Track unique requests.
     body_target = request_body
@@ -504,7 +487,7 @@ async def _invoke(
         and "json" in request_body
     ):
         body_target = request_body["json"]
-    _request_hash = None
+    request_hash = None
     user_dupe_count = 0
     total_dupe_count = 0
     try:
@@ -526,7 +509,7 @@ async def _invoke(
                 raw_dump,
             ]
         ).encode()
-        _request_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, request_hash_str)).replace("-", "")
+        request_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, request_hash_str)).replace("-", "")
         _prompt_hash = None
         if prompt_dump:
             prompt_hash_str = "::".join(
@@ -538,7 +521,7 @@ async def _invoke(
             ).encode()
             _prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
 
-        for _hash in (_request_hash, _prompt_hash):
+        for _hash in (request_hash, _prompt_hash):
             if not _hash:
                 continue
             req_key = f"req:{_hash}".encode()
@@ -547,8 +530,7 @@ async def _invoke(
                 await settings.memcache.set(req_key, b"0")
             count = await settings.memcache.incr(req_key, 1)
             await settings.memcache.touch(req_key, exptime=60 * 60 * 3)
-            if count > 1 and _hash == _request_hash:
-                logger.info(f"Duplicate prompt received: {chute.name} {_hash} {count=}")
+            if count > 1 and _hash == request_hash:
                 total_dupe_count = count
 
                 # Check for user specific spam.
@@ -563,208 +545,69 @@ async def _invoke(
         logger.warning(f"Error updating request hash tracking: {exc}")
 
     # Handle cacheable requests.
-    enable_cache = request.headers.get("X-Enable-Cache", "false").lower() in ("1", "true", "yes")
     if total_dupe_count >= 1500:
-        logger.warning(f"REQSPAM: {total_dupe_count=} for {_request_hash=} on {chute.name=}")
-        # enable_cache = True
+        logger.warning(f"REQSPAM: {total_dupe_count=} for {request_hash=} on {chute.name=}")
 
     # And user spam.
-    if user_dupe_count >= 1000 and current_user.user_id not in [
-        "8930c58d-00f6-57d3-bc62-156eb8b73026",
-        "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f",
-        "376536e8-674b-5e6f-b36e-c9168f0bf4a7",
-        "b6bb1347-6ea5-556f-8b23-50b124f3ffc8",
-        "5682c3e0-3635-58f7-b7f5-694962450dfc",
-        "2104acf4-999e-5452-84f1-de82de35a7e7",
-        "18c244ab-8a2e-5767-ae0e-5d20b50d05b5",
-    ]:
+    if (
+        user_dupe_count >= 1000
+        and not current_user.has_role(Permissioning.unlimited)
+        and current_user.user_id
+        not in [
+            "8930c58d-00f6-57d3-bc62-156eb8b73026",
+            "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f",
+            "376536e8-674b-5e6f-b36e-c9168f0bf4a7",
+            "b6bb1347-6ea5-556f-8b23-50b124f3ffc8",
+            "5682c3e0-3635-58f7-b7f5-694962450dfc",
+            "2104acf4-999e-5452-84f1-de82de35a7e7",
+            "18c244ab-8a2e-5767-ae0e-5d20b50d05b5",
+            "90fd1e31-84c9-5bc4-b628-ccc1e5dc75e6",
+        ]
+    ):
         logger.warning(
             f"USERSPAM: {current_user.username} sent {user_dupe_count} requests for {chute.name}"
         )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Stop spamming please.",
-        )
-
-    request_hash = None
-    if (
-        (
-            enable_cache
-            or (
-                current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
-                and not chute.openrouter
-                and not request.headers.get("X-Disable-Cache")
-            )
-        )
-        and metrics
-        and "ttft" in metrics
-    ):
-        request_hash = _request_hash
-        started_at = time.time()
-        if (streamer := await cached_responder(request_hash, chute.name)) is not None:
-
-            async def _send_from_cached_stream():
-                invocation_id = str(uuid.uuid4())
-                if include_trace:
-                    yield sse(
-                        {
-                            "trace": {
-                                "timestamp": now_str(),
-                                "invocation_id": parent_invocation_id,
-                                "chute_id": chute.chute_id,
-                                "function": selected_cord["function"],
-                                "message": f"responding from cache, {request_hash=}",
-                            },
-                        }
-                    )
-                any_chunk = False
-                last_chunk = None
-                async for chunk in streamer:
-                    if not chunk:
-                        continue
-                    if include_trace:
-                        yield {"result": chunk}
-                    else:
-                        yield chunk
-                    if chunk.startswith(b"data: {"):
-                        if metrics.get("ttft") is None:
-                            metrics["ttft"] = time.time() - started_at
-                        last_chunk = chunk
-                    elif b"data:" in chunk:
-                        any_chunk = True
-
-                # Parse usage data.
-                total_time = time.time() - started_at
-                if last_chunk and b'"usage"' in last_chunk:
-                    try:
-                        usage_obj = json.loads(last_chunk[6:].decode())
-                        usage = usage_obj.get("usage", {})
-                        prompt_tokens = usage.get("prompt_tokens")
-                        completion_tokens = usage.get("completion_tokens")
-                        if prompt_tokens is not None and completion_tokens is not None:
-                            metrics["it"] = max(0, prompt_tokens or 0)
-                            metrics["ot"] = max(0, completion_tokens or 0)
-                            metrics["tokens"] = metrics["ot"]
-                            metrics["tps"] = metrics["ot"] / total_time
-                            logger.info(f"LLMCACHE: metrics for chute={chute.name}: {metrics}")
-
-                            if metrics["ot"] and not request.state.free_invocation:
-                                tokens = metrics["ot"] + metrics["it"]
-                                hourly_price = await selector_hourly_price(chute.node_selector)
-                                discount = 0.0
-                                if chute.discount and -3 < chute.discount <= 1:
-                                    discount = chute.discount
-                                balance_used = (
-                                    tokens / 1000000.0 * hourly_price * LLM_PRICE_MULT_PER_MILLION
-                                )
-                                balance_used -= balance_used * discount
-                                logger.info(
-                                    f"LLMCACHE BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
-                                )
-                                await set_stream_expiration(request_hash)
-
-                                # User account balance deductions.
-                                pipeline = settings.cm_redis_client.pipeline()
-                                key = f"balance:{current_user.user_id}:{chute.chute_id}"
-                                pipeline.hincrbyfloat(key, "amount", balance_used)
-                                pipeline.hincrby(key, "count", 1)
-                                pipeline.hset(key, "timestamp", int(time.time()))
-                                await pipeline.execute()
-                                logger.info(
-                                    f"LLMCACHE Deducted (soon) ${balance_used:.12f} from {current_user.user_id=} for {chute.chute_id=} {chute.name}"
-                                )
-
-                    except Exception as exc:
-                        logger.warning(f"Error checking metrics: {exc}")
-
-                if any_chunk:
-                    # Track an invocation, just set the UID to < 0.
-                    async with get_session() as session:
-                        invocation_id = str(uuid.uuid4())
-                        result = await session.execute(
-                            TRACK_INVOCATION,
-                            {
-                                "parent_invocation_id": parent_invocation_id,
-                                "invocation_id": invocation_id,
-                                "function_name": selected_cord["function"],
-                                "chute_id": chute.chute_id,
-                                "chute_user_id": chute.user_id,
-                                "user_id": current_user.user_id,
-                                "image_id": chute.image_id,
-                                "image_user_id": chute.image.user_id,
-                                "instance_id": "00000000-0000-0000-0000-000000000000",
-                                "miner_uid": -1,
-                                "miner_hotkey": "00000000-0000-0000-0000-000000000000",
-                                "request_path": selected_cord["path"],
-                                "compute_multiplier": 0.0,
-                            },
-                        )
-                        partition_suffix = result.scalar()
-                        await session.execute(
-                            text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
-                            {
-                                "chute_id": chute.chute_id,
-                                "invocation_id": invocation_id,
-                                "response_path": None,
-                                "metrics": json.dumps(metrics).decode(),
-                            },
-                        )
-                        await session.commit()
-
-            return StreamingResponse(
-                _send_from_cached_stream(),
-                media_type="text/event-stream",
-                headers={"X-Chutes-InvocationID": parent_invocation_id},
+        if user_dupe_count > 5000:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Stop spamming this prompt, please...",
             )
 
     if stream or include_trace:
 
         async def _stream_response():
-            try:
-                skip = False
-                async for chunk in invoke(
-                    chute,
-                    current_user.user_id,
-                    selected_cord["path"],
-                    selected_cord["function"],
-                    stream,
-                    args,
-                    kwargs,
-                    manager,
-                    parent_invocation_id,
-                    metrics=metrics,
-                    request=request,
-                    prefixes=prefix_hashes,
-                ):
-                    if include_trace:
-                        yield chunk
-                        continue
-                    if skip:
-                        continue
-                    if chunk.startswith('data: {"result"'):
-                        result_val = json.loads(chunk[6:])["result"]
-                        yield result_val
-                        if request_hash:
-                            await append_stream(request_hash, result_val.encode())
-                    elif chunk.startswith('data: {"error"'):
-                        error = json.loads(chunk[6:])["error"]
-                        yield json.dumps(
-                            {
-                                "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                                "detail": error or "No result returned from upstream",
-                            }
-                        )
-                        skip = True
-                        if request_hash:
-                            await purge_stream(request_hash)
-                if request_hash:
-                    await append_stream(request_hash, b"[[__END__]]")
-                    await set_stream_expiration(request_hash)
-
-            except Exception:
-                if request_hash:
-                    await purge_stream(request_hash)
-                raise
+            skip = False
+            async for chunk in invoke(
+                chute,
+                current_user.user_id,
+                selected_cord["path"],
+                selected_cord["function"],
+                stream,
+                args,
+                kwargs,
+                manager,
+                parent_invocation_id,
+                metrics=metrics,
+                request=request,
+                prefixes=prefix_hashes,
+            ):
+                if include_trace:
+                    yield chunk
+                    continue
+                if skip:
+                    continue
+                if chunk.startswith('data: {"result"'):
+                    result_val = json.loads(chunk[6:])["result"]
+                    yield result_val
+                elif chunk.startswith('data: {"error"'):
+                    error = json.loads(chunk[6:])["error"]
+                    yield json.dumps(
+                        {
+                            "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            "detail": error or "No result returned from upstream",
+                        }
+                    )
+                    skip = True
 
         return StreamingResponse(
             _stream_response(),
@@ -867,7 +710,11 @@ async def hostname_invocation(
                     detail=f"model not found: {model}",
                 )
             if chute.standard_template != template or (
-                not chute.public and chute.user_id != current_user.user_id
+                not chute.public
+                and (
+                    chute.user_id != current_user.user_id
+                    and not await is_shared(chute.chute_id, current_user.user_id)
+                )
             ):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
@@ -875,4 +722,13 @@ async def hostname_invocation(
                 )
             request.state.chute_id = chute.chute_id
             request.state.auth_object_id = chute.chute_id
+
+    # Model disabled temporarily?
+    if await settings.redis_client.get(f"model_disabled:{request.state.chute_id}"):
+        logger.warning(f"MODEL DISABLED: {request.state.chute_id}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="model is under maintenance",
+        )
+
     return await _invoke(request, current_user)

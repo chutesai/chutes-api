@@ -21,7 +21,7 @@ from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, String
+from sqlalchemy import and_, or_, text, String, exists
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -32,7 +32,7 @@ from api.constants import (
 from api.database import get_session
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired, EmptyLLMResponse
 from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
-from api.chute.schemas import Chute, NodeSelector
+from api.chute.schemas import Chute, NodeSelector, ChuteShare
 from api.user.schemas import User
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
@@ -40,6 +40,7 @@ from api.instance.schemas import Instance
 from api.instance.util import LeastConnManager, get_chute_target_manager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
+from api.metrics.perf import PERF_TRACKER
 
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
@@ -193,6 +194,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     """
     if not chute_id_or_name:
         return None
+
     name_match = re.match(
         r"/?(?:([a-zA-Z0-9_\.-]{3,15})/)?([a-z0-9][a-z0-9_\.\/-]*)$",
         chute_id_or_name.lstrip("/"),
@@ -200,48 +202,88 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     )
     if not name_match:
         return None
-    query = (
-        select(Chute)
-        .join(User, Chute.user_id == User.user_id)
-        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-    )
+    query = select(Chute).join(User, Chute.user_id == User.user_id)
+
+    # Perms check.
+    if current_user:
+        query = query.outerjoin(
+            ChuteShare,
+            and_(
+                ChuteShare.chute_id == Chute.chute_id, ChuteShare.shared_to == current_user.user_id
+            ),
+        ).where(
+            or_(
+                Chute.public.is_(True),
+                Chute.user_id == current_user.user_id,
+                ChuteShare.shared_to == current_user.user_id,
+            )
+        )
+    else:
+        query = query.where(Chute.public.is_(True))
+
     if load_instances:
         query = query.options(selectinload(Chute.instances))
-    username = name_match.group(1) or current_user.username
+
+    username = name_match.group(1)
     chute_name = name_match.group(2)
     chute_id_or_name = chute_id_or_name.lstrip("/")
-    chute_user = await chutes_user_id()
-    query = query.where(
-        or_(
-            and_(
-                User.username == current_user.username,
-                Chute.name == chute_name,
-            ),
-            and_(
-                User.username == current_user.username,
-                Chute.name == chute_id_or_name,
-            ),
+    if not username and current_user:
+        username = current_user.username
+
+    conditions = []
+    conditions.append(Chute.chute_id == chute_id_or_name)
+    conditions.append(Chute.name.ilike(chute_id_or_name))
+    conditions.append(Chute.name.ilike(chute_name))
+
+    # User specific lookups.
+    if current_user:
+        conditions.extend(
+            [
+                and_(
+                    User.username == current_user.username,
+                    Chute.name.ilike(chute_name),
+                ),
+                and_(
+                    User.username == current_user.username,
+                    Chute.name.ilike(chute_id_or_name),
+                ),
+            ]
+        )
+
+    # Username/chute_name lookup (if username provided or defaulted)
+    if username:
+        conditions.append(
             and_(
                 User.username == username,
-                Chute.name == chute_name,
-            ),
-            Chute.chute_id == chute_id_or_name,
-            and_(
-                Chute.name == chute_id_or_name,
-                Chute.public.is_(True),
-            ),
-            and_(
-                Chute.name == chute_name,
-                Chute.public.is_(True),
-            ),
+                Chute.name.ilike(chute_name),
+            )
         )
-    ).order_by((Chute.user_id == chute_user).desc())
 
+    # Public chute lookups by name/ID only
+    conditions.extend(
+        [
+            and_(
+                Chute.name.ilike(chute_id_or_name),
+                Chute.public.is_(True),
+            ),
+            and_(
+                Chute.name.ilike(chute_name),
+                Chute.public.is_(True),
+            ),
+            and_(
+                Chute.chute_id == chute_id_or_name,
+                Chute.public.is_(True),
+            ),
+        ]
+    )
+    query = query.where(or_(*conditions))
+    user_sort_id = current_user.user_id if current_user else await chutes_user_id()
+    query = query.order_by((Chute.user_id == user_sort_id).desc())
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
 
 
-@alru_cache(maxsize=100)
+@alru_cache(maxsize=100, ttl=30)
 async def chute_id_by_slug(slug: str):
     """
     Check if a chute exists with the specified slug (which is a subdomain for standard apps).
@@ -254,7 +296,7 @@ async def chute_id_by_slug(slug: str):
     return None
 
 
-@alru_cache(maxsize=100)
+@alru_cache(maxsize=100, ttl=30)
 async def get_one(name_or_id: str):
     """
     Load a chute by it's name or ID.
@@ -278,6 +320,18 @@ async def get_one(name_or_id: str):
             .unique()
             .scalar_one_or_none()
         )
+
+
+async def is_shared(chute_id: str, user_id: str):
+    """
+    Check if a chute has been shared with a user.
+    """
+    async with get_session() as db:
+        query = select(
+            exists().where(and_(ChuteShare.chute_id == chute_id, ChuteShare.shared_to == user_id))
+        )
+        result = await db.execute(query)
+        return result.scalar()
 
 
 async def track_prefix_hashes(prefixes, instance_id):
@@ -334,10 +388,6 @@ async def _invoke_one(
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
         if iv:
             headers["X-Chutes-Serialized"] = "true"
-        iv_hex = iv.hex() if iv else None
-        logger.debug(
-            f"Attempting invocation of {chute.chute_id=} on {target.instance_id=} {iv_hex=}"
-        )
         started_at = time.time()
         response = await session.post(
             f"http://{target.host}:{target.port}/{path}",
@@ -387,10 +437,49 @@ async def _invoke_one(
                     if metrics["ttft"] is None:
                         metrics["ttft"] = round(time.time() - started_at, 3)
                     metrics["tokens"] += 1
+
+                if (
+                    chute.standard_template == "vllm"
+                    and last_chunk is None
+                    and chunk.startswith(
+                        b'data: {"error": {"object": "error", "message": "input_ids cannot be empty."'
+                    )
+                ):
+                    logger.warning(
+                        f"SGLang failure: {chute.chute_id=} {target.instance_id=} {chunk=}"
+                    )
+                    raise Exception(
+                        "SGLang backend failure, input_ids null error response produced."
+                    )
+
+                response_ids = set()
                 if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
+                    if (
+                        chute.standard_template == "vllm"
+                        and chunk.startswith(b"data: {")
+                        and chute.name.startswith("deepseek-ai")
+                    ):
+                        valid = True
+                        try:
+                            data = json.loads(chunk[6:])
+                            if (not data.get("id") or not data.get("created")) and not data.get(
+                                "error"
+                            ):
+                                logger.warning(f"BAD_RESPONSE: {data=} {target.miner_hotkey=}")
+                                valid = False
+                            response_ids.add(data["id"])
+                            raise
+                        except Exception:
+                            ...
+                        if not valid or len(response_ids) > 1:
+                            raise EmptyLLMResponse(
+                                f"BAD_RESPONSE {target.instance_id=} {chute.name} returned invalid chunks"
+                            )
+
                     last_chunk = chunk
                 if b"data:" in chunk:
                     any_chunks = True
+
                 yield chunk.decode()
 
             if chute.standard_template == "vllm" and plain_path in LLM_PATHS and metrics:
@@ -446,6 +535,13 @@ async def _invoke_one(
                 metrics["tt"] = round(total_time, 3)
                 if manager and manager.mean_count is not None:
                     metrics["mc"] = manager.mean_count
+
+                # Moving average performance tracking to keep compute units immutable.
+                ma_updates = await PERF_TRACKER.update_invocation_metrics(
+                    chute_id=chute.chute_id, duration=total_time, metrics=metrics
+                )
+                metrics.update(ma_updates)
+
                 logger.info(f"Metrics for chute={chute.name} {metrics}")
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 await track_prefix_hashes(prefixes, target.instance_id)
@@ -459,6 +555,15 @@ async def _invoke_one(
                 response_data = json.loads(body_bytes)
                 if "json" in response_data:
                     plaintext = aes_decrypt(response_data["json"], target.symmetric_key, iv)
+                    if chute.standard_template == "vllm" and plaintext.startswith(
+                        b'{"object":"error","message":"input_ids cannot be empty."'
+                    ):
+                        logger.warning(
+                            f"Non-stream failed here: {chute.chute_id=} {target.instance_id=} {plaintext=}"
+                        )
+                        raise Exception(
+                            "SGLang backend failure, input_ids null error response produced."
+                        )
                     try:
                         data = {"content_type": "application/json", "json": json.loads(plaintext)}
                     except Exception as exc2:
@@ -544,6 +649,13 @@ async def _invoke_one(
                     metrics["tt"] = round(total_time, 3)
                     if manager and manager.mean_count is not None:
                         metrics["mc"] = manager.mean_count
+
+                    # Moving average performance tracking to keep compute units immutable.
+                    ma_updates = await PERF_TRACKER.update_invocation_metrics(
+                        chute_id=chute.chute_id, duration=total_time, metrics=metrics
+                    )
+                    metrics.update(ma_updates)
+
                     logger.info(f"Metrics for {chute.name}: {metrics}")
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                     await track_prefix_hashes(prefixes, target.instance_id)
@@ -552,7 +664,14 @@ async def _invoke_one(
                 and path == "generate"
                 and (metrics or {}).get("steps")
             ):
-                metrics["sps"] = int(metrics["steps"]) / (time.time() - started_at)
+                delta = time.time() - started_at
+                metrics["sps"] = int(metrics["steps"]) / delta
+
+                # Moving average steps per second calc.
+                ma_updates = await PERF_TRACKER.update_invocation_metrics(
+                    chute_id=chute.chute_id, duration=delta, metrics=metrics
+                )
+                metrics.update(ma_updates)
 
             yield data
     finally:
@@ -675,6 +794,13 @@ async def invoke(
                 async for data in _invoke_one(
                     chute, path, stream, args, kwargs, target, metrics, prefixes, manager
                 ):
+                    try:
+                        if "input_ids cannot be empty" in str(data):
+                            logger.warning(
+                                f"Failed here: {chute.chute_id=} {target.instance_id=} {data=}"
+                            )
+                    except Exception:
+                        ...
                     yield sse({"result": data})
                     if request_path:
                         response_data.append(data)
@@ -759,12 +885,16 @@ async def invoke(
                                 )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
-                    pipeline = settings.cm_redis_client.pipeline()
-                    key = f"balance:{user_id}:{chute.chute_id}"
-                    pipeline.hincrbyfloat(key, "amount", balance_used)
-                    pipeline.hincrby(key, "count", 1)
-                    pipeline.hset(key, "timestamp", int(time.time()))
-                    await pipeline.execute()
+                    try:
+                        pipeline = settings.redis_client.pipeline()
+                        key = f"balance:{user_id}:{chute.chute_id}"
+                        pipeline.hincrbyfloat(key, "amount", balance_used)
+                        pipeline.hincrby(key, "count", 1)
+                        pipeline.hset(key, "timestamp", int(time.time()))
+                        await pipeline.execute()
+                    except Exception as exc:
+                        logger.error(f"Error updating usage pipeline: {exc}")
+
                     if balance_used:
                         logger.info(
                             f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"
@@ -986,6 +1116,7 @@ async def get_vllm_models(request: Request):
                         Chute.chutes_version >= "0.2.15",
                         Chute.public.is_(True),
                         Chute.user_id == await chutes_user_id(),
+                        Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
                     )
                     .options(selectinload(Chute.instances))
                 )

@@ -6,6 +6,7 @@ import uuid
 import time
 import secrets
 import hashlib
+import orjson as json
 from loguru import logger
 from datetime import datetime
 from typing import Optional
@@ -36,7 +37,7 @@ from api.user.util import validate_the_username, generate_payment_address
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 router = APIRouter()
 
@@ -95,6 +96,37 @@ async def _link_hotkey(
     )
 
 
+@router.get("/growth")
+async def get_user_growth(
+    db: AsyncSession = Depends(get_db_session),
+):
+    cache_key = "user_growth".encode()
+    cached = await settings.memcache.get(cache_key)
+    if cached:
+        return json.loads(cached)
+    query = text("""
+        SELECT
+            date(created_at) as date,
+            count(*) as daily_count,
+            sum(count(*)) OVER (ORDER BY date(created_at)) as cumulative_count
+        FROM users
+        GROUP BY date(created_at)
+        ORDER BY date DESC;
+    """)
+    result = await db.execute(query)
+    rows = result.fetchall()
+    response = [
+        {
+            "date": row.date,
+            "daily_count": int(row.daily_count),
+            "cumulative_count": int(row.cumulative_count),
+        }
+        for row in rows
+    ]
+    await settings.memcache.set(cache_key, json.dumps(response), exptime=600)
+    return response
+
+
 @router.post("/admin_balance_change")
 async def admin_balance_change(
     balance_req: BalanceRequest,
@@ -113,7 +145,7 @@ async def admin_balance_change(
     )
     if not user:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user.user_id}"
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {balance_req.user_id}"
         )
     user.balance += balance_req.amount
     event_id = str(uuid.uuid4())
@@ -328,6 +360,18 @@ async def admin_create_user(
     )
     actual_ip = actual_ip.split(",")[0]
     logger.info(f"USERCREATION: {actual_ip} username={user_args.username}")
+
+    # Prevent multiple signups from the same IP.
+    ip_signups = await settings.redis_client.get(f"ip_signups:{actual_ip}")
+    if ip_signups and int(ip_signups) >= 2:
+        logger.warning(
+            f"Attempted multiple registrations from the same IP: {actual_ip} {ip_signups=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too may registration requests from this IP.",
+        )
+
     if not current_user.has_role(Permissioning.create_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -363,6 +407,10 @@ async def admin_create_user(
     key_response.secret_key = one_time_secret
     response = _registration_response(user, fingerprint)
     response.api_key = key_response
+
+    # Track signups per IP.
+    await settings.redis_client.incr(f"ip_signups:{actual_ip}")
+    await settings.redis_client.expire(f"ip_signups:{actual_ip}", 24 * 60 * 60)
 
     return response
 

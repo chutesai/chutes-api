@@ -10,9 +10,7 @@ import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
-from fastapi_cache.decorator import cache
-from starlette.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -22,7 +20,6 @@ from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.chute.schemas import (
     Chute,
     ChuteArgs,
-    InvocationArgs,
     NodeSelector,
     ChuteUpdateArgs,
     RollingUpdate,
@@ -38,7 +35,7 @@ from api.chute.templates import (
     build_tei_code,
 )
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, invoke, selector_hourly_price
+from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -53,8 +50,7 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, rate_limit, limit_deployments
-from api.permissions import Permissioning
+from api.util import ensure_is_developer, limit_deployments
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -87,9 +83,8 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     # Legacy/fallback.
     if not response.current_estimated_price:
         response.current_estimated_price = {}
-    response.current_estimated_price.update(
-        await NodeSelector(**chute.node_selector).current_estimated_price()
-    )
+    node_selector = NodeSelector(**chute.node_selector)
+    response.current_estimated_price.update(await node_selector.current_estimated_price())
     if chute.discount and response.current_estimated_price:
         for key in ("usd", "tao"):
             values = response.current_estimated_price.get(key)
@@ -97,8 +92,15 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
                 for unit in values:
                     values[unit] -= values[unit] * chute.discount
 
+    # Fix node selector return value.
+    response.node_selector.update(
+        {
+            "compute_multiplier": node_selector.compute_multiplier,
+            "supported_gpus": node_selector.supported_gpus,
+        }
+    )
 
-@cache(expire=60)
+
 @router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
@@ -215,6 +217,15 @@ async def list_chutes(
     return result
 
 
+@router.get("/rolling_updates")
+async def list_rolling_updates():
+    async with get_session() as session:
+        result = await session.execute(text("SELECT * FROM rolling_updates"))
+        columns = result.keys()
+        rows = result.fetchall()
+        return [dict(zip(columns, row)) for row in rows]
+
+
 @router.get("/gpu_count_history")
 async def get_gpu_count_history():
     query = """
@@ -233,7 +244,6 @@ async def get_gpu_count_history():
         return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
 
 
-@cache(expire=60)
 @router.get("/code/{chute_id}")
 async def get_chute_code(
     chute_id: str,
@@ -243,13 +253,21 @@ async def get_chute_code(
     """
     Load a chute's code by ID or name.
     """
-    query = select(Chute).where(Chute.chute_id == chute_id)
-    if current_user:
-        query = query.where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-    else:
-        query = query.where(Chute.public.is_(True))
-    chute = (await db.execute(query)).unique().scalar_one_or_none()
+    chute = await get_one(chute_id)
     if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    authorized = False
+    if chute.public or (
+        current_user
+        and (
+            current_user.user_id == chute.user_id or await is_shared(chute_id, current_user.user_id)
+        )
+    ):
+        authorized = True
+    if not authorized:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
@@ -291,12 +309,11 @@ async def get_chute_utilization():
         return utilization_data
 
 
-@cache(expire=60)
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
     chute_id_or_name: str,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes")),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
 ):
     """
     Load a chute by ID or name.
@@ -310,6 +327,60 @@ async def get_chute(
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
     return response
+
+
+@router.post("/{chute_id}/share", response_model=ChuteResponse)
+async def share_chute(
+    chute_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
+):
+    """
+    Share a chute with another user.
+    """
+    body = await request.json()
+    user_id = body.get("user_id")
+    if not isinstance(user_id, str):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a user_id to share to.",
+        )
+
+    # Can be username also, in which case we need to convert from username to the uuid.
+    try:
+        _ = uuid.UUID(user_id)
+    except ValueError:
+        user = (
+            await db.execute(select(User).where(User.username == user_id).limit(1))
+            .unique()
+            .scalar_one_or_none()
+        )
+        user_id = user.user_id
+
+    # Load the chute.
+    chute = await get_one(chute_id)
+    if not chute or chute.user_id != current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+
+    # Insert the share record.
+    await db.execute(
+        text(
+            """
+            INSERT INTO chute_shares
+              (chute_id, shared_by, shared_to, shared_at)
+            VALUES (:chute_id, :shared_by, :shared_to, NOW())
+            ON CONFLICT (chute_id, shared_by, shared_to)
+            DO NOTHING
+            """
+        ),
+        {"chute_id": chute_id, "shared_by": current_user.user_id, "shared_to": user_id},
+    )
+    await db.commit()
+    return {"ok": True}
 
 
 @router.delete("/{chute_id_or_name:path}")
@@ -383,12 +454,12 @@ async def _deploy_chute(
             detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
 
-    # Prevent h200 usage for now.
+    # Limit h200 and b200 usage.
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
         chute_args.node_selector = NodeSelector(**chute_args.node_selector)
-    if current_user.user_id != await chutes_user_id():
+    if current_user.user_id not in (await chutes_user_id(), "5bf8a979-ea71-54bf-8644-26a3411a3b58"):
         if (
             chute_args.node_selector
             and chute_args.node_selector.min_vram_gb_per_gpu
@@ -396,16 +467,25 @@ async def _deploy_chute(
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not allowed to require h200 at this time.",
+                detail="You are not allowed to require > 80gb VRAM per GPU at this time.",
             )
         if not chute_args.node_selector.exclude:
             chute_args.node_selector.exclude = []
-        if "h200" not in chute_args.node_selector.exclude:
-            chute_args.node_selector.exclude.append("h200")
+        chute_args.node_selector.exclude = list(
+            set(chute_args.node_selector.exclude or [] + ["h200", "b200", "mi300x"])
+        )
+
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No supported GPUs based on node selector!",
+            )
+
+        # Limit h/b 200 access for now.
+        if not set(chute_args.node_selector.supported_gpus) - set(["b200", "h200", "mi300x"]):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You are not allowed to require h200, b200 or mi300x at this time.",
             )
 
     old_version = None
@@ -419,8 +499,8 @@ async def _deploy_chute(
         await db.execute(
             text(
                 "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
-                {"chute_id": chute.chute_id},
-            )
+            ),
+            {"chute_id": chute.chute_id},
         )
         rolling_update = RollingUpdate(
             chute_id=chute.chute_id,
@@ -428,7 +508,7 @@ async def _deploy_chute(
             new_version=version,
             permitted=permitted,
         )
-        await db.add(rolling_update)
+        db.add(rolling_update)
 
         old_version = chute.version
         chute.image_id = image.image_id
@@ -445,6 +525,7 @@ async def _deploy_chute(
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
         )
         chute.chutes_version = image.chutes_version
+        chute.cords = chute_args.cords
         chute.updated_at = func.now()
     else:
         try:
@@ -498,20 +579,11 @@ async def _deploy_chute(
 
         db.add(chute)
 
-    # Limit h200 access for now.
-    if (chute.node_selector or {}).get("supported_gpus", []) == [
-        "h200"
-    ] and chute.user_id != await chutes_user_id():
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to require h200 at this time.",
-        )
-
     await db.commit()
     await db.refresh(chute)
 
     if old_version:
-        await handle_rolling_update.kiq(chute.chute_id)
+        await handle_rolling_update.kiq(chute.chute_id, chute.version)
     else:
         await settings.redis_client.publish(
             "miner_broadcast",
@@ -539,7 +611,11 @@ async def deploy_chute(
     """
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
-    if current_user.user_id != await chutes_user_id():
+    if current_user.user_id not in (
+        await chutes_user_id(),
+        "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
+        "5bf8a979-ea71-54bf-8644-26a3411a3b58",
+    ):
         bad, response = await is_bad_code(chute_args.code)
         logger.warning(
             f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
@@ -563,6 +639,7 @@ async def _find_latest_image(db: AsyncSession, name: str) -> Image:
         select(Image)
         .where(Image.name == name)
         .where(Image.user_id == chute_user.user_id)
+        .where(Image.tag != "0.8.3")
         .order_by(Image.created_at.desc())
         .limit(1)
     )
@@ -770,8 +847,13 @@ async def easy_deploy_tei_chute(
             gpu_count=1,
             min_vram_gb_per_gpu=16,
         )
-    if not node_selector.include and not node_selector.exclude:
-        node_selector.exclude = ["h200", "h100", "h100_sxm"]
+    node_selector.exclude = list(
+        set(
+            node_selector.exclude
+            or [] + ["h200", "b200", "h100", "h100_sxm", "h100_nvl", "h800", "mi300x"]
+        )
+    )
+
     chute_args = ChuteArgs(
         name=args.model,
         image=image,
@@ -790,105 +872,6 @@ async def easy_deploy_tei_chute(
     return await _deploy_chute(chute_args, db, current_user)
 
 
-@router.post("/{chute_id}/{path:path}")
-async def invoke_(
-    chute_id: str,
-    path: str,
-    invocation: InvocationArgs,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
-):
-    """
-    Invoke a "chute" aka function.
-    """
-    logger.warning(f"INVOKE_VIA_SDK: {chute_id=} {path=}")
-    return HTTPException(
-        status_code=status.HTTP_400_BAD_REQUEST,
-        detail="Please use the standard JSON API calls",
-    )
-
-    if current_user.balance <= 0 and not current_user.has_role(Permissioning.free_account):
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
-        )
-
-    # Rate limit requests.
-    await rate_limit(chute_id, current_user, settings.rate_limit_count, settings.rate_limit_window)
-
-    args = invocation.args
-    kwargs = invocation.kwargs
-    query = (
-        select(Chute)
-        .join(User, Chute.user_id == User.user_id)
-        .where(or_(Chute.public.is_(True), Chute.user_id == current_user.user_id))
-        .where(Chute.chute_id == chute_id)
-    )
-    result = await db.execute(query)
-    chute = result.unique().scalar_one_or_none()
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or you do not have permission to use",
-        )
-
-    # Find a target to query.
-    targets = await discover_chute_targets(db, chute_id, max_wait=60)
-    if not targets:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"No instances available (yet) for {chute_id=}",
-        )
-
-    # Identify the upstream path to call.
-    cord = None
-    path = "/" + path.lstrip("/")
-    identified = False
-    stream = False
-    function = None
-    for cord in chute.cords:
-        if cord["path"] == path:
-            identified = True
-            stream = cord["stream"]
-            function = cord["function"]
-    if not identified:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute has no cord matching your request",
-        )
-
-    # Initialize metrics.
-    metrics = None
-    if chute.standard_template == "vllm":
-        metrics = {
-            "ttft": None,
-            "tps": 0.0,
-            "tokens": 0,
-        }
-
-    # Do the deed.
-    await db.close()
-    parent_invocation_id = str(uuid.uuid4())
-    return StreamingResponse(
-        invoke(
-            chute,
-            current_user.user_id,
-            path,
-            function,
-            stream,
-            args,
-            kwargs,
-            targets,
-            parent_invocation_id,
-            metrics=metrics,
-            request=request,
-            prefixes=None,
-        ),
-        headers={"X-Chutes-InvocationID": parent_invocation_id},
-    )
-
-
 @router.put("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def update_common_attributes(
     chute_id_or_name: str,
@@ -900,7 +883,7 @@ async def update_common_attributes(
     Update readme, tagline, etc. (but not code, image, etc.).
     """
     chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances=True)
-    if not chute:
+    if not chute or chute.user_id != current_user.user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",

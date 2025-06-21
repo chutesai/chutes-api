@@ -41,7 +41,11 @@ MANAGERS = {}
 
 
 class LeastConnManager:
-    def __init__(self, instances: list[Instance], connection_expiry: int = 600):
+    def __init__(self, chute_id: str, instances: list[Instance], connection_expiry: int = 600):
+        self.chute_id = chute_id
+        self.redis_client = settings.cm_redis_client[
+            uuid.UUID(chute_id).int % len(settings.cm_redis_client)
+        ]
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.lock = asyncio.Lock()
@@ -66,7 +70,7 @@ class LeastConnManager:
         now = time.time()
 
         # Get connection counts for each instance via redis pipe.
-        pipe = settings.cm_redis_client.pipeline()
+        pipe = self.redis_client.pipeline()
         to_query = [instance_id for instance_id in instance_ids if instance_id not in avoid]
         for instance_id in to_query:
             pipe.zcount(f"conn:{instance_id}", now - self.connection_expiry, now)
@@ -77,16 +81,24 @@ class LeastConnManager:
             self.mean_count = int(sum(raw_counts) / (len(self.instances) or 1))
 
         # Periodically log counts for debugging.
-        if random.random() < 0.05:
+        if random.random() < 0.05 and self.instances:
             logger.info(
-                "Instance counts:\n\t" + "\n\t".join([f"{k} {v}" for k, v in counts.items()])
+                f"Instance counts for {self.chute_id=}: {min_count=} mean_count={self.mean_count} instance_count={len(self.instances)}"
             )
         if not counts:
+            return []
+
+        # Too many connections?
+        if min_count >= 25:
+            logger.warning(f"Instances overwhelmed: {min_count=}, pausing requests...")
             return []
 
         # Randomize the ordering for instances that have the same counts.
         grouped_by_count = {}
         for instance_id, count in counts.items():
+            if count >= 25:
+                logger.warning(f"Too many connections to {instance_id=} at the moment, skipping...")
+                continue
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
             if instance := self.instances.get(instance_id):
@@ -123,9 +135,6 @@ class LeastConnManager:
                     if abs(counts[instance_id] - min_count) <= 3
                 ]
                 if routable:
-                    logger.info(
-                        f"Performing prefix aware routing: {len(routable)} potentially cached instances"
-                    )
                     result = sorted(
                         [
                             self.instances[instance_id]
@@ -164,17 +173,18 @@ class LeastConnManager:
             yield None
             return
         instance = targets[0]
-        await settings.cm_redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
-        await settings.cm_redis_client.expire(
-            f"conn:{instance.instance_id}", self.connection_expiry
-        )
+        try:
+            await self.redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
+            await self.redis_client.expire(f"conn:{instance.instance_id}", self.connection_expiry)
+        except Exception as exc:
+            logger.warning(f"Error tracking connection counts: {exc}")
         try:
             yield instance
-        except Exception:
-            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
-            raise
         finally:
-            await settings.cm_redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            try:
+                await self.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
+            except Exception as exc:
+                logger.warning(f"Error cleaning up connection counts: {exc}")
 
     async def clean_up_expired_connections(self):
         now = time.time()
@@ -182,7 +192,7 @@ class LeastConnManager:
             return
         for instance_id in self.instances:
             try:
-                removed_count = await settings.cm_redis_client.zremrangebyscore(
+                removed_count = await self.redis_client.zremrangebyscore(
                     f"conn:{instance_id}",
                     0,
                     now - self.connection_expiry,
@@ -202,57 +212,59 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
     """
     instances = await load_chute_targets(chute_id, nonce=0)
     started_at = time.time()
-    if max_wait > 0:
-        try:
-            current_bounty = 0
-            while not instances and time.time() - started_at < max_wait:
-                async with get_session() as bounty_session:
-                    result = await bounty_session.execute(
-                        text("SELECT * FROM increase_bounty(:chute_id)"),
-                        {"chute_id": chute_id},
-                    )
-                    bounty, last_increased_at = result.one()
-                    await bounty_session.commit()
-                if bounty != current_bounty:
-                    logger.info(f"Bounty for {chute_id=} is now {bounty}")
-                    current_bounty = bounty
-                    if not await settings.memcache.get(
-                        f"bounty_broadcast:{chute_id}:{bounty}".encode()
-                    ):
-                        await settings.memcache.set(
-                            f"bounty_broadcast:{chute_id}:{bounty}".encode(), b"1", exptime=60
-                        )
-                        await settings.redis_client.publish(
-                            "miner_broadcast",
-                            json.dumps(
-                                {
-                                    "reason": "bounty_change",
-                                    "data": {"chute_id": chute_id, "bounty": bounty},
-                                }
-                            ).decode(),
-                        )
-                        await settings.redis_client.publish(
-                            "events",
-                            json.dumps(
-                                {
-                                    "reason": "bounty_change",
-                                    "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
-                                    "data": {
-                                        "chute_id": chute_id,
-                                        "bounty": bounty,
-                                    },
-                                }
-                            ).decode(),
-                        )
-                await asyncio.sleep(1)
-                instances = await load_chute_targets(chute_id, nonce=time.time())
-        except asyncio.CancelledError:
-            logger.warning("Target discovery cancelled")
-            return []
+    while not instances:
+        # Increase the bounty.
+        bounty, last_increased_at, was_increased = None, None, False
+        async with get_session() as bounty_session:
+            update_result = await bounty_session.execute(
+                text("SELECT 1 FROM rolling_updates WHERE chute_id = :chute_id"),
+                {"chute_id": chute_id},
+            )
+            if update_result.first() is not None:
+                logger.warning(
+                    f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
+                )
+            else:
+                result = await bounty_session.execute(
+                    text("SELECT * FROM increase_bounty(:chute_id)"),
+                    {"chute_id": chute_id},
+                )
+                bounty, last_increased_at, was_increased = result.one()
+                await bounty_session.commit()
+
+        # Broadcast unique bounty events.
+        if was_increased:
+            logger.info(f"Bounty for {chute_id=} is now {bounty}")
+            await settings.redis_client.publish(
+                "miner_broadcast",
+                json.dumps(
+                    {
+                        "reason": "bounty_change",
+                        "data": {"chute_id": chute_id, "bounty": bounty},
+                    }
+                ).decode(),
+            )
+            await settings.redis_client.publish(
+                "events",
+                json.dumps(
+                    {
+                        "reason": "bounty_change",
+                        "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
+                        "data": {
+                            "chute_id": chute_id,
+                            "bounty": bounty,
+                        },
+                    }
+                ).decode(),
+            )
+        if not max_wait or time.time() - started_at >= max_wait:
+            break
+        await asyncio.sleep(1.0)
+        instances = await load_chute_targets(chute_id, nonce=time.time())
     if not instances:
         return None
     if chute_id not in MANAGERS:
-        MANAGERS[chute_id] = LeastConnManager(instances=instances)
+        MANAGERS[chute_id] = LeastConnManager(chute_id=chute_id, instances=instances)
         async with MANAGERS[chute_id].lock:
             await MANAGERS[chute_id].initialize()
     async with MANAGERS[chute_id].lock:

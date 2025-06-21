@@ -56,6 +56,18 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "cacher.labels" -}}
+app.kubernetes.io/name: cacher
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
+{{- define "downscaler.labels" -}}
+app.kubernetes.io/name: downscaler
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "autostaker.labels" -}}
 app.kubernetes.io/name: autostaker
 redis-access: "true"
@@ -100,15 +112,21 @@ app.kubernetes.io/name: memcached
 app.kubernetes.io/name: registry
 {{- end }}
 
-{{- define "pgproxy.labels" -}}
-app.kubernetes.io/name: pgproxy
-{{- end }}
-
 {{- define "registryProxy.labels" -}}
 app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: ENVCHECK_KEY
+  valueFrom:
+    secretKeyRef:
+      name: envcheck
+      key: key
+- name: ENVCHECK_SALT
+  valueFrom:
+    secretKeyRef:
+      name: envcheck
+      key: salt
 - name: CODECHECK_KEY
   valueFrom:
     secretKeyRef:

@@ -83,6 +83,8 @@ spec:
               value: "{{ .Values.account_settings.developer_deposit }}"
             - name: CONSECUTIVE_FAILURE_LIMIT
               value: "{{ .Values.consecutive_failure_limit }}"
+            - name: CM_REDIS_SHARD_COUNT
+              value: "{{ .Values.cmRedis.shard_count }}"
             {{- if .Values.squad_enabled }}
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem

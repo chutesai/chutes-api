@@ -8,13 +8,15 @@ import aiohttp
 import random
 import hashlib
 import json
+import secrets
 import traceback
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt
+from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
+from api.exceptions import EnvdumpMissing
 from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
@@ -22,8 +24,6 @@ import api.miner_client as miner_client
 from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
-from api.chute.util import update_chute_utilization
-from api.invocation.util import generate_invocation_history_metrics
 
 
 PAST_DAY_METRICS_QUERY = """
@@ -202,7 +202,7 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
         await session.commit()
         event_data = {
             "reason": "instance_deleted",
-            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} failed watchtower checks.",
+            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
             "data": {
                 "chute_id": target.chute_id,
                 "instance_id": target.instance_id,
@@ -336,7 +336,9 @@ async def check_weight_files(
             "end_byte": end_byte,
         }
         try:
+            started_at = time.time()
             data = await do_slurp(instance, payload, encrypted_slurp)
+            duration = time.time() - started_at
             if data is None:
                 hard_failed.append(instance)
                 continue
@@ -351,8 +353,13 @@ async def check_weight_files(
                 incorrect.append(instance)
             else:
                 logger.success(
-                    f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest}"
+                    f"Digest of {path} on {instance.instance_id=} of {model} is correct: [{start_byte}:{end_byte}] {expected_digest} {duration=}"
                 )
+                if duration > 5.0:
+                    logger.warning(
+                        f"Duration to fetch model weight random offset exceeded expected duration: {duration=}"
+                    )
+                    soft_failed.append(instance)
         except Exception as exc:
             logger.warning(
                 f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
@@ -424,7 +431,9 @@ async def check_llm_weights(chute, instances):
             nice_name = chute.name.replace("/", "--")
             payload = {"path": f"/cache/hub/models--{nice_name}/snapshots/{revision}/{target_path}"}
             try:
+                started_at = time.time()
                 data = await do_slurp(instance, payload, encrypted_slurp)
+                duration = time.time() - started_at
                 if data is None:
                     hard_failed.append(instance)
                     continue
@@ -439,8 +448,13 @@ async def check_llm_weights(chute, instances):
                     )
                     incorrect.append(instance)
                 logger.info(
-                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest}"
+                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest} {duration=}"
                 )
+                if duration > 9.0:
+                    logger.warning(
+                        f"Duration to fetch model weight map exceeded expected duration: {duration=}"
+                    )
+                    soft_failed.append(instance)
             except Exception as exc:
                 logger.warning(
                     f"Unhandled exception checking {instance.instance_id}: {exc}\n{traceback.format_exc()}"
@@ -612,6 +626,174 @@ async def increment_soft_fail(instance, chute):
         await purge_and_notify(instance)
 
 
+def get_expected_command(instance, chute):
+    """
+    Get the command line for a given instance.
+    """
+    return " ".join(
+        [
+            "python",
+            "/home/chutes/.local/bin/chutes",
+            "run",
+            chute.ref_str,
+            "--port",
+            "8000",
+            "--graval-seed",
+            str(instance.nodes[0].seed),
+            "--miner-ss58",
+            instance.miner_hotkey,
+            "--validator-ss58",
+            settings.validator_ss58,
+        ]
+    ).strip()
+
+
+def uuid_dict(data, current_path=[], salt=settings.envcheck_52_salt):
+    flat_dict = {}
+    for key, value in data.items():
+        new_path = current_path + [key]
+        if isinstance(value, dict):
+            flat_dict.update(uuid_dict(value, new_path, salt=salt))
+        else:
+            uuid_key = str(uuid.uuid5(uuid.NAMESPACE_OID, json.dumps(new_path) + salt))
+            flat_dict[uuid_key] = value
+    return flat_dict
+
+
+def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
+    # Ignore if we don't have envdump configured.
+    if not settings.envcheck_52_salt:
+        return True
+
+    # Does not function with old versions of chutes.
+    if not isinstance(dump, dict):
+        return True
+    version_parts = list(map(int, instance.chutes_version.split(".")))
+    if version_parts[1] <= 2 and version_parts[2] < 52:
+        return True
+
+    # Check for certain flags and values in the dump.
+    flat = uuid_dict(dump)
+    if special_key := flat.get("97a9e854-7f12-56c5-88a1-9de1744c22dd"):
+        if (
+            str(uuid.uuid5(uuid.NAMESPACE_OID, special_key[:6] + settings.envcheck_52_salt))
+            != "8d967b00-c6f9-5138-bc96-82a5963d9cfe"
+        ):
+            logger.warning(
+                f"{log_prefix} Invalid environment found: "
+                "expecting magic uuid 10b81b83-33c3-50fd-b497-fa59a7fc1ab0 "
+                f"in magic key 6799f7a0-5552-5c20-82e8-68ac2c7162f4: {special_key[:6]}"
+            )
+            return False
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 97a9e854-7f12-56c5-88a1-9de1744c22dd"
+        )
+    if special_key := flat.get("0aede012-8b95-5960-bad0-a90d05a2c77b"):
+        for value in special_key:
+            nested = uuid_dict(value)
+            if secret := nested.get("210169b6-faae-5e0b-9278-172b0d7b2371"):
+                if any(
+                    [
+                        str(uuid.uuid5(uuid.NAMESPACE_OID, part + settings.envcheck_52_salt))
+                        == "dc617c6e-4a1e-57b5-b55a-d170000386a5"
+                        for part in secret.split("/")
+                    ]
+                ):
+                    logger.warning(
+                        f"{log_prefix} Invalid environment found: "
+                        "expecting NOT to find magic uuid dc617c6e-4a1e-57b5-b55a-d170000386a5 "
+                        "in magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
+                    )
+                    return False
+            else:
+                logger.warning(
+                    f"{log_prefix} Did not find nested magic key 210169b6-faae-5e0b-9278-172b0d7b2371"
+                )
+    else:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 0aede012-8b95-5960-bad0-a90d05a2c77b"
+        )
+    if "57d08936-e24b-5ae9-a62a-f347075052ef" not in flat:
+        logger.warning(
+            f"{log_prefix} Did not find expected magic key 57d08936-e24b-5ae9-a62a-f347075052ef"
+        )
+        return False
+
+    # More checks...
+    if not settings.kubecheck_salt:
+        return True
+    flat = uuid_dict(dump, salt=settings.kubecheck_salt)
+    found_expected = False
+    if (secret := flat.get("b61ec704-0cbd-5175-bbbe-f25aa399c469")) is not None:
+        expected = (
+            settings.kubecheck_prefix
+            + "_".join(secret.split("-")[1:-2]).upper()
+            + settings.kubecheck_suffix
+        )
+        expected_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt))
+        for v in dump.values():
+            if isinstance(v, dict):
+                for key in v:
+                    if (
+                        str(uuid.uuid5(uuid.NAMESPACE_OID, key + settings.kubecheck_salt))
+                        == expected_uuid
+                    ):
+                        found_expected = True
+                        logger.success(f"Found the magic uuid: {expected_uuid}")
+                        break
+    if not found_expected:
+        logger.warning(
+            f"{log_prefix} did not find expected magic key derived rom b61ec704-0cbd-5175-bbbe-f25aa399c469"
+        )
+        return False
+
+    return True
+
+
+def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
+    if (
+        "build_sglang_chute(" not in chute.code
+        or chute.standard_template != "vllm"
+        or chute.user_id != "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
+    ):
+        return True
+
+    processes = dump[3] if isinstance(dump, list) else dump["all_processes"]
+    revision_match = re.search(r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code)
+    found_sglang = False
+    for process in processes:
+        if (
+            process["exe"] == "/opt/python/bin/python3.12"
+            and process["username"] == "chutes"
+            and process["cmdline"][:9]
+            == [
+                "python",
+                "-m",
+                "sglang.launch_server",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "10101",
+                "--model-path",
+                chute.name,
+            ]
+        ):
+            logger.success(f"{log_prefix} found SGLang chute: {process=}")
+            found_sglang = True
+            if revision_match:
+                revision = revision_match.group(1)
+                if revision in process["cmdline"]:
+                    logger.success(f"{log_prefix} also found revision identifier")
+                else:
+                    logger.warning(f"{log_prefix} did not find chute revision: {revision}")
+            break
+    if not found_sglang:
+        logger.error(f"{log_prefix} did not find SGLang process, bad...")
+        return False
+    return True
+
+
 async def check_chute(chute_id):
     """
     Check a single chute.
@@ -626,11 +808,99 @@ async def check_chute(chute_id):
             logger.warning(f"Chute not found: {chute_id=}")
             return
         if chute.rolling_update:
-            logger.waring(f"Chute has a rolling update in progress: {chute_id=}")
+            logger.warning(f"Chute has a rolling update in progress: {chute_id=}")
             return
 
-    # Ping test.
+    # Updated environment/code checks.
     instances = await load_chute_instances(chute.chute_id)
+    bad_env = set()
+    if re.match(r"^[0-9]+\.(2\.(39|4[0-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""):
+        signatures = {instance.instance_id: None for instance in instances}
+        salt = str(uuid.uuid4())
+        for instance in instances:
+            failed_envdump = False
+            log_prefix = (
+                f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+            )
+            try:
+                signature = await get_env_sig(instance, salt)
+                logger.info(
+                    f"Loaded environment signature for {instance.instance_id=}: {signature=}"
+                )
+
+                # Load env dump, if possible.
+                if re.match(
+                    r"^[0-9]+\.(2\.(4[1-9]|[5-9][0-9])|[3-9]\.[0-9]+)$", chute.chutes_version or ""
+                ):
+                    dump = await get_env_dump(instance)
+                    if not is_kubernetes_env(instance, dump, log_prefix):
+                        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+                        failed_envdump = True
+
+                    if not check_sglang(instance, chute, dump, log_prefix):
+                        logger.error(f"{log_prefix} did not find SGLang process, bad...")
+                        failed_envdump = True
+
+                    try:
+                        process = dump[1] if isinstance(dump, list) else dump["process"]
+                        assert process["pid"] == 1
+                        command_line = re.sub(
+                            r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
+                        )
+                        if command_line != get_expected_command(instance, chute):
+                            logger.error(f"{log_prefix} running invalid process: {command_line=}")
+                            failed_envdump = True
+                        else:
+                            logger.success(
+                                f"{log_prefix} successfully validated expected runtime command: {command_line=}"
+                            )
+                    except EnvdumpMissing:
+                        logger.error(f"{log_prefix} returned invalid status code, clearly bad")
+                        failed_envdump = True
+                    except Exception as exc:
+                        logger.error(
+                            f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
+                        )
+            except EnvdumpMissing:
+                logger.error(f"{log_prefix} returned invalid status code, clearly bad")
+                failed_envdump = True
+            except TimeoutError:
+                logger.error(f"{log_prefix} envdump timeout, basically impossible")
+                failed_envdump = True
+            except Exception as exc:
+                logger.error(
+                    f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
+                )
+
+            if failed_envdump:
+                await purge_and_notify(
+                    instance, reason="Instance failed env dump signature or process checks."
+                )
+                bad_env.add(instance.instance_id)
+                failed_count = await settings.redis_client.incr(
+                    f"envdumpfail:{instance.miner_hotkey}"
+                )
+                logger.warning(
+                    f"ENVDUMP: Miner {instance.miner_hotkey} has now failed {failed_count} envdump checks"
+                )
+                # if failed_count >= 5:
+                #    async with get_session() as session:
+                #        await session.execute(
+                #            text("""
+                #            UPDATE metagraph_nodes
+                #            SET blacklist_reason = 'Recurring pattern of invalid processes discovered by watchtower.'
+                #            WHERE hotkey = :hotkey
+                #            """),
+                #            {"hotkey": instance.miner_hotkey}
+                #        )
+
+        if len(set(signatures.values())) > 1:
+            logger.error(f"Multiple signatures found: {signatures=}")
+
+    # Filter out the ones we already blacklisted.
+    instances = [instance for instance in instances if instance.instance_id not in bad_env]
+
+    # Ping test.
     soft_failed = await check_pings(chute, instances)
 
     # Check the running command.
@@ -724,57 +994,6 @@ async def purge_unverified():
             total += 1
         if total:
             logger.success(f"Purged {total} total unverified+old instances.")
-
-
-async def keep_cache_warm():
-    """
-    Keep some of the DB-heavy endpoints warm in cache so API requests are always fast.
-    """
-    from api.miner.router import get_scores, get_stats, get_utilization, get_utilization_instances
-
-    while True:
-        try:
-            logger.info("About to warm up cache...")
-            async with get_session() as session:
-                await get_stats(miner_hotkey=None, session=session, per_chute=False, request=None)
-                logger.success("Warmed up stats endpoint, per_chute=False")
-                await get_stats(miner_hotkey=None, session=session, per_chute=True, request=None)
-                logger.success("Warmed up stats endpoint, per_chute=True")
-            await get_scores(hotkey=None, request=None)
-            logger.success("Warmed up scores endpoint")
-            await get_utilization(hotkey=None, request=None)
-            logger.success("Warmed up utilization score endpoint")
-            await get_utilization_instances(hotkey=None, request=None)
-            logger.success("Warmed up utilization per instance endpoint")
-        except Exception as exc:
-            logger.warning(f"Error warming up cache: {exc}")
-        await asyncio.sleep(60)
-
-
-async def keep_miner_chute_history_warm():
-    """
-    Continuously update the miner unique chute count endpoint.
-    """
-    from api.metasync import get_unique_chute_history
-
-    while True:
-        logger.info("Attempting to warm up unique chute history...")
-        history = None
-        started_at = time.time()
-        try:
-            history = await get_unique_chute_history()
-            for hotkey, values in history.items():
-                cache_key = f"uqhist:{hotkey}".encode()
-                await settings.memcache.set(cache_key, json.dumps(values).encode())
-        except Exception as exc:
-            logger.error(f"Error warming up unique chute history: {exc}")
-            await asyncio.sleep(60)
-            continue
-        delta = time.time() - started_at
-        logger.success(
-            f"Successfully warmed up unique chute history for {len(history)} hotkeys in {int(delta)} seconds."
-        )
-        await asyncio.sleep(300)
 
 
 async def generate_confirmed_reports(chute_id, reason):
@@ -949,36 +1168,6 @@ async def remove_bad_chutes():
             logger.success(f"Chute seems fine: {chute.chute_id=} {chute.name=}")
 
 
-async def update_past_day_metrics():
-    """
-    Update the past day invocation counts for sorting.
-    """
-    while True:
-        try:
-            logger.info("Updating past day metrics...")
-            async with get_session() as session:
-                await session.execute(text(PAST_DAY_METRICS_QUERY))
-            logger.success("Updated past day invocation metric on chutes.")
-            await asyncio.sleep(1800)
-        except Exception as exc:
-            logger.error(f"Error updating past day invocation metrics on chutes: {exc}")
-            await asyncio.sleep(300)
-
-
-async def generate_invocation_history_metrics_loop():
-    """
-    Continuously update the invocation metrics summary tables.
-    """
-    while True:
-        try:
-            logger.info("Updating global historical metrics data...")
-            await generate_invocation_history_metrics()
-            await asyncio.sleep(3600)
-        except Exception as exc:
-            logger.error(f"Error updating global historical metrics tables: {exc}")
-            await asyncio.sleep(300)
-
-
 async def rolling_update_cleanup():
     """
     Continuously clean up any stale rolling updates.
@@ -1022,14 +1211,13 @@ async def rolling_update_cleanup():
                             logger.warning(
                                 f"Would be deleting {instance.instance_id=} of {instance.miner_hotkey=} since {instance.version=} != {chute.version}"
                             )
-
-                            # await purge_and_notify(
-                            #     instance,
-                            #     reason=(
-                            #         f"{instance.instance_id=} of {instance.miner_hotkey=} "
-                            #         f"has an old version: {instance.version=} vs {chute.version=}"
-                            #     ),
-                            # )
+                            await purge_and_notify(
+                                instance,
+                                reason=(
+                                    f"{instance.instance_id=} of {instance.miner_hotkey=} "
+                                    f"has an old version: {instance.version=} vs {chute.version=}"
+                                ),
+                            )
 
         except Exception as exc:
             logger.error(f"Error cleaning up rolling updates: {exc}")
@@ -1087,35 +1275,116 @@ async def remove_disproportionate_new_chutes():
         await generate_confirmed_reports(chute_id, reason)
 
 
-async def update_chute_utilization_loop():
+async def procs_check():
     """
-    Continuously update chute utilization.
+    Check processes.
     """
     while True:
-        try:
-            await update_chute_utilization()
-        except Exception as exc:
-            logger.error(f"Unhandled exception updating chute utilization: {exc}")
-        await asyncio.sleep(60)
+        async with get_session() as session:
+            query = (
+                select(Instance)
+                .where(
+                    Instance.verified.is_(True),
+                    Instance.active.is_(True),
+                )
+                .options(selectinload(Instance.nodes), selectinload(Instance.chute))
+            )
+            batch_size = 10
+            async for row in await session.stream(query.execution_options(yield_per=batch_size)):
+                instance = row[0]
+                if not instance.chutes_version or not re.match(
+                    r"^0\.2\.[3-9][0-9]$", instance.chutes_version
+                ):
+                    continue
+                skip_key = f"procskip:{instance.instance_id}".encode()
+                if await settings.memcache.get(skip_key):
+                    await settings.memcache.touch(skip_key, exptime=60 * 60 * 24 * 2)
+                    continue
+                path = aes_encrypt("/_procs", instance.symmetric_key, hex_encode=True)
+                try:
+                    async with miner_client.get(
+                        instance.miner_hotkey,
+                        f"http://{instance.host}:{instance.port}/{path}",
+                        purpose="chutes",
+                        timeout=15.0,
+                    ) as resp:
+                        data = await resp.json()
+                        env = data.get("1", {}).get("environ", {})
+                        cmdline = data.get("1", {}).get("cmdline", [])
+                        reason = None
+                        if not cmdline and (not env or "CHUTES_EXECUTION_CONTEXT" not in env):
+                            reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
+                        elif len(cmdline) <= 5 or cmdline[1] != "/home/chutes/.local/bin/chutes":
+                            reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
+                        if reason:
+                            logger.warning(reason)
+                            await purge_and_notify(
+                                instance, reason="miner failed watchtower probes"
+                            )
+                        else:
+                            logger.success(
+                                f"Passed proc check: {instance.instance_id=} {instance.chute_id=} {instance.miner_hotkey=}"
+                            )
+                            await settings.memcache.set(skip_key, b"y")
+                except Exception as exc:
+                    logger.warning(
+                        f"Couldn't check procs, must be bad? {exc}\n{traceback.format_exc()}"
+                    )
+        logger.info("Finished proc check loop...")
+        await asyncio.sleep(10)
+
+
+async def get_env_dump(instance):
+    """
+    Load the environment dump from remote instance.
+    """
+    key = secrets.token_bytes(16)
+    payload = {"key": key.hex()}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_env_dump", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        enc_payload,
+        timeout=30.0,
+    ) as resp:
+        if resp.status != 200:
+            raise EnvdumpMissing(
+                f"Received invalid response code on /_env_dump: {instance.instance_id=}"
+            )
+        return json.loads(decrypt_envdump_cipher(await resp.text(), key, instance.chutes_version))
+
+
+async def get_env_sig(instance, salt):
+    """
+    Load the environment signature from the remote instance.
+    """
+    payload = {"salt": salt}
+    enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+    path = aes_encrypt("/_env_sig", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        enc_payload,
+        timeout=5.0,
+    ) as resp:
+        if resp.status != 200:
+            raise EnvdumpMissing(
+                f"Received invalid response code on /_env_sig: {instance.instance_id=}"
+            )
+        return await resp.text()
 
 
 async def main():
     """
     Main loop, continuously check all chutes and instances.
     """
-    # Cache warmup in the background for miner stats and scores, since those are DB heavy.
-    asyncio.create_task(keep_cache_warm())
-    asyncio.create_task(keep_miner_chute_history_warm())
-
-    # Metrics.
-    asyncio.create_task(update_past_day_metrics())
-    asyncio.create_task(generate_invocation_history_metrics_loop())
 
     # Rolling update cleanup.
     asyncio.create_task(rolling_update_cleanup())
 
-    # Chute utilization.
-    asyncio.create_task(update_chute_utilization_loop())
+    # Secondary process check.
+    asyncio.create_task(procs_check())
 
     index = 0
     while True:
@@ -1131,4 +1400,5 @@ async def main():
         index += 1
 
 
-asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())

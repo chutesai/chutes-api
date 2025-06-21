@@ -33,6 +33,7 @@ def create_metagraph_node_class(base):
         real_host = Column(String)
         real_port = Column(Integer)
         synced_at = Column(DateTime, server_default=func.now())
+        blacklist_reason = Column(String)
 
         nodes = relationship(
             "Node",

@@ -9,7 +9,7 @@ from sqlalchemy.orm import relationship, validates
 from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey, BigInteger
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, ALLOWED_INCLUDE, COMPUTE_UNIT_PRICE_BASIS
+from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
 from api.fmv.fetcher import get_fetcher
 from pydantic import BaseModel, Field, computed_field, validator
 from typing import List, Optional, Dict, Any
@@ -42,33 +42,34 @@ class NodeSelector(BaseModel):
     exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
 
+    def __init__(self, **data):
+        """
+        Override the constructor to remove computed fields.
+        """
+        super().__init__(
+            **{k: v for k, v in data.items() if k not in ("compute_multiplier", "supported_gpus")}
+        )
+
     @validator("include")
     def include_supported_gpus(cls, gpus):
         """
-        Simple validation for including specific GPUs in the filter.  We're currently
-        only allowing high availability and likely-to-be-selected GPUs in this list.
+        Simple validation for including specific GPUs in the filter.
         """
         if not gpus:
             return gpus
-        if not set(map(lambda s: s.lower(), gpus)) & ALLOWED_INCLUDE:
-            raise ValueError(
-                f"include must allow for at least one of the following GPUs: {list(ALLOWED_INCLUDE)}"
-            )
+        if extra := set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
+            raise ValueError(f"Invalid GPU identifiers `include`: {extra}")
         return gpus
 
     @validator("exclude")
     def validate_exclude(cls, gpus):
         """
-        Make sure people don't try to be sneaky with the exclude flag to XOR
-        the list of allowed GPUs.
+        Simpe validation for excluding specific GPUs.
         """
         if not gpus:
             return gpus
-        remaining = set(SUPPORTED_GPUS) - set(gpus)
-        if not remaining & ALLOWED_INCLUDE:
-            raise ValueError(
-                f"exclude must allow for at least one the following GPUs: {list(ALLOWED_INCLUDE)}"
-            )
+        if extra := set(map(lambda s: s.lower(), gpus)) - set(SUPPORTED_GPUS):
+            raise ValueError(f"Invalid GPU identifiers `exclude`: {extra}")
         return gpus
 
     @computed_field
@@ -183,9 +184,14 @@ class Chute(Base):
     image = relationship("Image", back_populates="chutes", lazy="joined")
     user = relationship("User", back_populates="chutes", lazy="joined")
     logo = relationship("Logo", back_populates="chutes", lazy="joined")
-    rolling_update = relationship("RollingUpdate", back_populates="chute", lazy="joined")
+    rolling_update = relationship(
+        "RollingUpdate", back_populates="chute", lazy="joined", uselist=False
+    )
     instances = relationship(
         "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"
+    )
+    shares = relationship(
+        "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
 
     @validates("name")
@@ -270,12 +276,17 @@ class Chute(Base):
         """
         Convert back to dict.
         """
-        return node_selector.dict()
+        as_dict = node_selector.dict()
+        as_dict.pop("compute_multiplier", None)
+        as_dict.pop("supported_gpus", None)
+        return as_dict
 
     @computed_field
     @property
     def supported_gpus(self) -> List[str]:
-        return NodeSelector(**self.node_selector).supported_gpus
+        node_selector = NodeSelector(**self.node_selector)
+        node_selector.exclude = list(set(node_selector.exclude or [] + ["b200", "mi300x"]))
+        return node_selector.supported_gpus
 
 
 class ChuteHistory(Base):
@@ -317,4 +328,20 @@ class RollingUpdate(Base):
     started_at = Column(DateTime, server_default=func.now())
     permitted = Column(JSONB, nullable=False)
 
-    chute = relationship("Chute", back_populates="rolling_update")
+    chute = relationship("Chute", back_populates="rolling_update", uselist=False)
+
+
+class ChuteShare(Base):
+    __tablename__ = "chute_shares"
+    chute_id = Column(
+        String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    shared_by = Column(
+        String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    shared_to = Column(
+        String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    shared_at = Column(DateTime, server_default=func.now())
+
+    chute = relationship("Chute", back_populates="shares", uselist=False)

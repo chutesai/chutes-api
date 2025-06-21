@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import random
 import string
+import uuid
 import time
 import secrets
 import orjson as json
@@ -25,7 +26,8 @@ from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives import padding, hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from scalecodec.utils.ss58 import is_valid_ss58_address, ss58_decode
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
@@ -191,7 +193,14 @@ async def _limit_dev_activity(session, user, maximum, clazz):
         user.username in ("chutes", "rayonlabs")
         or user.validator_hotkey
         or user.subnet_owner_hotkey
-        or user.user_id == "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4"
+        or user.has_role(Permissioning.unlimited_dev)
+        or user.user_id
+        in (
+            "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
+            "5260fc63-dbf0-5e76-ae76-811f87fe1e19",
+            "7bbd5ffa-b696-5e3a-b4cc-b8aff6854c41",
+            "5bf8a979-ea71-54bf-8644-26a3411a3b58",
+        )
     ):
         return
 
@@ -219,13 +228,13 @@ async def _limit_dev_activity(session, user, maximum, clazz):
         )
 
 
-async def limit_deployments(session, user, maximum: int = 9):
+async def limit_deployments(session, user, maximum: int = 12):
     from api.chute.schemas import ChuteHistory
 
     await _limit_dev_activity(session, user, maximum, ChuteHistory)
 
 
-async def limit_images(session, user, maximum: int = 12):
+async def limit_images(session, user, maximum: int = 18):
     from api.image.schemas import ImageHistory
 
     await _limit_dev_activity(session, user, maximum, ImageHistory)
@@ -374,5 +383,68 @@ def should_slurp_code(chutes_version: str):
         return False
     major, minor, bug = chutes_version.split(".")[:3]
     if int(minor) >= 2 and int(bug) >= 20 or int(minor) > 2:
+        return True
+    return False
+
+
+def derive_envdump_key(key, version):
+    """
+    Derive the AES key from the envdump mechanism of chutes lib.
+    """
+    parts = [int(s) for s in version.split(".")]
+    target_key = settings.envcheck_key
+    target_salt = settings.envcheck_salt
+    if parts[1] == 2 and parts[2] >= 51 or parts[1] > 2:
+        target_key = settings.envcheck_52_key
+        target_salt = settings.envcheck_52_salt
+    stored_bytes = bytes.fromhex(target_key)
+    user_bytes = key
+    combined_secret = stored_bytes + user_bytes
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=bytes.fromhex(target_salt),
+        iterations=100000,
+        backend=default_backend(),
+    )
+    key = kdf.derive(combined_secret)
+    return key
+
+
+def decrypt_envdump_cipher(encrypted_b64, key, version):
+    """
+    Decrypt data that was encrypted from the envcheck chute code.
+    """
+    actual_key = derive_envdump_key(key, version)
+    raw_data = base64.b64decode(encrypted_b64)
+    iv = raw_data[:16]
+    encrypted_data = raw_data[16:]
+    cipher = Cipher(
+        algorithms.AES(actual_key),
+        modes.CBC(iv),
+        backend=default_backend(),
+    )
+    unpadder = padding.PKCS7(128).unpadder()
+    decryptor = cipher.decryptor()
+    decrypted_data = decryptor.update(encrypted_data) + decryptor.finalize()
+    unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
+    return unpadded_data
+
+
+def generate_ip_token(origin_ip, extra_salt: str = None):
+    target_string = f"{origin_ip}:{settings.ip_check_salt}"
+    if extra_salt:
+        target_string = f"{target_string}:{extra_salt}"
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, target_string))
+
+
+def use_opencl_graval(chutes_version: str):
+    """
+    Check if we should use the opencl/clblast version of graval.
+    """
+    if not chutes_version:
+        return False
+    major, minor, bug = chutes_version.split(".")[:3]
+    if int(minor) >= 2 and int(bug) == 50 or int(minor) > 2:
         return True
     return False

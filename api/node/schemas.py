@@ -4,16 +4,16 @@ ORM definitions for nodes (single GPUs in miner infra).
 
 import re
 from pydantic import BaseModel, Field
-from typing import List
+from typing import List, Optional
 from sqlalchemy import (
     Column,
     String,
     Integer,
     BigInteger,
-    Boolean,
     Float,
     ForeignKey,
     DateTime,
+    Boolean,
     func,
 )
 from sqlalchemy.orm import validates, relationship
@@ -27,14 +27,14 @@ class NodeArgs(BaseModel):
     uuid: str
     name: str
     memory: int
-    major: int
-    minor: int
+    major: Optional[int] = None
+    minor: Optional[int] = None
     processors: int
-    sxm: bool
+    sxm: Optional[bool] = None
     clock_rate: float
     max_threads_per_processor: int
-    concurrent_kernels: bool
-    ecc: bool
+    concurrent_kernels: Optional[bool] = None
+    ecc: Optional[bool] = None
     device_index: int = Field(gte=0, lt=10)
     gpu_identifier: str
     verification_host: str
@@ -51,14 +51,14 @@ class Node(Base):
     uuid = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     memory = Column(BigInteger, nullable=False)
-    major = Column(Integer, nullable=False)
-    minor = Column(Integer, nullable=False)
+    major = Column(Integer, nullable=True)
+    minor = Column(Integer, nullable=True)
     processors = Column(Integer, nullable=False)
-    sxm = Column(Boolean, nullable=False)
+    sxm = Column(Boolean, nullable=True)
     clock_rate = Column(Float, nullable=False)
     max_threads_per_processor = Column(Integer, nullable=False)
-    concurrent_kernels = Column(Boolean, nullable=False)
-    ecc = Column(Boolean, nullable=False)
+    concurrent_kernels = Column(Boolean, nullable=True)
+    ecc = Column(Boolean, nullable=True)
     seed = Column(BigInteger, nullable=False)
 
     # Meta/app fields.
@@ -112,6 +112,7 @@ class Node(Base):
                 "concurrent_kernels",
                 "ecc",
             ]
+            if getattr(self, key, None) is not None
         }
 
     def _validate_all(self):
@@ -120,12 +121,8 @@ class Node(Base):
         """
         self.validate_gpu_model(None, self.name)
         self.validate_memory(None, self.memory)
-        self.validate_compute_capability("major", self.major)
-        self.validate_compute_capability("minor", self.minor)
         self.validate_processors(None, self.processors)
         self.validate_clock_rate(None, self.clock_rate)
-        self.validate_max_threads(None, self.max_threads_per_processor)
-        self.validate_boolean_features("concurrent_kernels", self.concurrent_kernels)
         self.validate_identifier(None, self.gpu_identifier)
 
     @validates("verification_port")
@@ -172,17 +169,6 @@ class Node(Base):
             )
         return memory
 
-    @validates("major", "minor")
-    def validate_compute_capability(self, key: str, value: int) -> int:
-        if not self._gpu_specs:
-            return value
-        expected = self._gpu_specs[key]
-        if value != expected:
-            raise ValueError(
-                f"Compute capability {key} {value} does not match expected {expected} for {self._gpu_key}"
-            )
-        return value
-
     @validates("processors")
     def validate_processors(self, _, processors: int) -> int:
         if not self._gpu_specs:
@@ -206,28 +192,6 @@ class Node(Base):
                 f"Clock rate {clock_mhz:.0f}MHz not within expected range {base_clock}-{boost_clock}MHz for {self._gpu_key}"
             )
         return clock_rate
-
-    @validates("max_threads_per_processor")
-    def validate_max_threads(self, _, max_threads: int) -> int:
-        if not self._gpu_specs:
-            return max_threads
-        expected = self._gpu_specs["max_threads_per_processor"]
-        if max_threads != expected:
-            raise ValueError(
-                f"Max threads per processor {max_threads} does not match expected {expected} for {self._gpu_key}"
-            )
-        return max_threads
-
-    @validates("concurrent_kernels")
-    def validate_boolean_features(self, key: str, value: bool) -> bool:
-        if not self._gpu_specs:
-            return value
-        expected = self._gpu_specs[key]
-        if value != expected:
-            raise ValueError(
-                f"{key} setting {value} does not match expected {expected} for {self._gpu_key}"
-            )
-        return value
 
     def is_suitable(self, chute: Chute) -> bool:
         """

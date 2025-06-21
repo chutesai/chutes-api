@@ -10,7 +10,7 @@ from api.config import settings
 from sqlalchemy import text
 
 TOKEN_METRICS_QUERY = """
-CREATE TABLE vllm_metrics AS WITH min_date AS (
+CREATE TABLE vllm_metrics_temp AS WITH min_date AS (
   SELECT MIN(DATE(started_at)) AS min_date
   FROM invocations
   JOIN chutes ON invocations.chute_id = chutes.chute_id
@@ -70,7 +70,7 @@ ORDER BY cd.date DESC, cd.name;
 """
 
 DIFFUSION_METRICS_QUERY = """
-CREATE TABLE diffusion_metrics AS WITH min_date AS (
+CREATE TABLE diffusion_metrics_temp AS WITH min_date AS (
   SELECT MIN(DATE(started_at)) AS min_date
   FROM invocations
   JOIN chutes ON invocations.chute_id = chutes.chute_id
@@ -141,8 +141,8 @@ SELECT
     current_timestamp AS end_date,
     current_timestamp - INTERVAL '{interval}' AS start_date,
     AVG(i.compute_multiplier) AS compute_multiplier,
-    COUNT(DISTINCT i.parent_invocation_id) as total_invocations,
-    SUM(EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS total_compute_time,
+    COUNT(DISTINCT CASE WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN i.parent_invocation_id END) as total_invocations,
+    SUM(CASE WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN EXTRACT(EPOCH FROM (i.completed_at - i.started_at)) END) AS total_compute_time,
     COUNT(CASE WHEN i.error_message IS NOT NULL THEN 1 END) AS error_count,
     COUNT(CASE WHEN i.error_message = 'RATE_LIMIT' THEN 1 END) AS rate_limit_count,
     COUNT(DISTINCT CASE WHEN inst.active AND inst.verified THEN i.instance_id END) AS instance_count
@@ -199,7 +199,14 @@ async def generate_invocation_history_metrics():
     Generate all vllm/diffusion metrics through time.
     """
     async with get_session() as session:
-        await session.execute(text("DROP TABLE IF EXISTS vllm_metrics"))
-        await session.execute(text("DROP TABLE IF EXISTS diffusion_metrics"))
+        await session.execute(text("DROP TABLE IF EXISTS vllm_metrics_temp"))
+        await session.execute(text("DROP TABLE IF EXISTS diffusion_metrics_temp"))
         await session.execute(text(TOKEN_METRICS_QUERY))
         await session.execute(text(DIFFUSION_METRICS_QUERY))
+    async with get_session() as session:
+        await session.execute(text("DROP TABLE IF EXISTS vllm_metrics"))
+        await session.execute(text("DROP TABLE IF EXISTS diffusion_metrics"))
+        await session.execute(text("ALTER TABLE vllm_metrics_temp RENAME TO vllm_metrics"))
+        await session.execute(
+            text("ALTER TABLE diffusion_metrics_temp RENAME to diffusion_metrics")
+        )

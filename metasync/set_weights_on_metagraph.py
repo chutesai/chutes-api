@@ -18,10 +18,8 @@ from fiber.chain.chain_utils import query_substrate
 from metasync.constants import (
     UNIQUE_CHUTE_AVERAGE_QUERY,
     NORMALIZED_COMPUTE_QUERY,
-    UTILIZATION_RATIO_QUERY,
     SCORING_INTERVAL,
     FEATURE_WEIGHTS,
-    UTILIZATION_THRESHOLD,
 )
 
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
@@ -56,9 +54,8 @@ async def _get_weights_to_set(
 
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    utilization_query = text(UTILIZATION_RATIO_QUERY.format(interval="8 hours"))
-
     raw_compute_values = {}
+    highest_unique = 0.0
     async with get_session() as session:
         # Metagraph query if we enable multi-uid punishments.
         metagraph_nodes = await session.execute(
@@ -68,16 +65,9 @@ async def _get_weights_to_set(
 
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
-        utilization_result = await session.execute(utilization_query)
-
-        # Get the set of miners with less than useless utilization.
-        utilization = {hotkey: float(utilization) for hotkey, utilization in utilization_result}
 
         # Compute units, invocation counts, and bounties.
         for hotkey, invocation_count, bounty_count, compute_units in compute_result:
-            if (ut := utilization.get(hotkey, 0.0)) < UTILIZATION_THRESHOLD:
-                logger.warning(f"Miner {hotkey} has utilization ratio {ut}, zero score...")
-                continue
             raw_compute_values[hotkey] = {
                 "invocation_count": invocation_count,
                 "bounty_count": bounty_count,
@@ -90,6 +80,8 @@ async def _get_weights_to_set(
             if miner_hotkey not in raw_compute_values:
                 continue
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
+            if average_active_chutes > highest_unique:
+                highest_unique = average_active_chutes
 
     # Logging.
     for hotkey, values in raw_compute_values.items():
@@ -99,10 +91,43 @@ async def _get_weights_to_set(
     totals = {
         key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
     }
-    normalized_values = {
-        hotkey: {key: row[key] / totals[key] for key in FEATURE_WEIGHTS}
-        for hotkey, row in raw_compute_values.items()
-    }
+    normalized_values = {}
+
+    unique_scores = [
+        row["unique_chute_count"]
+        for row in raw_compute_values.values()
+        if row["unique_chute_count"]
+    ]
+    unique_scores.sort()
+    n = len(unique_scores)
+    if n > 0:
+        if n % 2 == 0:
+            median_unique_score = (unique_scores[n // 2 - 1] + unique_scores[n // 2]) / 2
+        else:
+            median_unique_score = unique_scores[n // 2]
+    else:
+        median_unique_score = 0
+    for key in FEATURE_WEIGHTS:
+        for hotkey, row in raw_compute_values.items():
+            if hotkey not in normalized_values:
+                normalized_values[hotkey] = {}
+            if key == "unique_chute_count":
+                if row[key] >= median_unique_score:
+                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 1.3
+                else:
+                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 2.2
+            else:
+                normalized_values[hotkey][key] = row[key] / totals[key]
+
+    # Re-normalize unique to [0, 1]
+    unique_sum = sum([val["unique_chute_count"] for val in normalized_values.values()])
+    old_unique_sum = sum([val["unique_chute_count"] for val in raw_compute_values.values()])
+    for hotkey in normalized_values:
+        normalized_values[hotkey]["unique_chute_count"] /= unique_sum
+        old_value = raw_compute_values[hotkey]["unique_chute_count"] / old_unique_sum
+        logger.info(
+            f"Normalized, exponential unique score {hotkey} = {normalized_values[hotkey]['unique_chute_count']}, vs default: {old_value}"
+        )
 
     # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
     pre_final_scores = {

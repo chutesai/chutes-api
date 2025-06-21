@@ -74,11 +74,14 @@ class Settings(BaseSettings):
     redis_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     )
-    cm_redis_client: redis.Redis = redis.Redis.from_url(
-        os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
-            "@redis.chutes.svc.cluster.local", "@cm-redis.chutes.svc.cluster.local"
+    cm_redis_client: list[redis.Redis] = [
+        redis.Redis.from_url(
+            os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
+                "@redis.chutes.svc.cluster.local", f"@cm-redis-{idx}.chutes.svc.cluster.local"
+            )
         )
-    )
+        for idx in range(int(os.getenv("CM_REDIS_SHARD_COUNT", "0")))
+    ]
     llm_cache_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
             "@redis.chutes.svc.cluster.local", "@llm-cache-redis.chutes.svc.cluster.local"
@@ -102,9 +105,10 @@ class Settings(BaseSettings):
     first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 100.0))
     developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "250.0"))
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "128"))
-    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "200"))
+    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
     graval_url: str = os.getenv("GRAVAL_URL", "")
+    opencl_graval_url: str = os.getenv("OPENCL_GRAVAL_URL", "https://opencl-graval.chutes.ai")
 
     # Database settings.
     db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "64"))
@@ -132,17 +136,29 @@ class Settings(BaseSettings):
     # API key for checking code.
     codecheck_key: Optional[str] = os.getenv("CODECHECK_KEY")
 
+    # Chutes decryption key bit.
+    envcheck_key: Optional[str] = os.getenv("ENVCHECK_KEY")
+    envcheck_salt: Optional[str] = os.getenv("ENVCHECK_SALT")
+    envcheck_52_key: Optional[str] = os.getenv("ENVCHECK_KEY_52")
+    envcheck_52_salt: Optional[str] = os.getenv("ENVCHECK_SALT_52")
+    kubecheck_salt: Optional[str] = os.getenv("KUBECHECK_SALT")
+    kubecheck_prefix: Optional[str] = os.getenv("KUBECHECK_PREFIX")
+    kubecheck_suffix: Optional[str] = os.getenv("KUBECHECK_SUFFIX")
+
     # Logos CDN hostname.
     logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
 
+    # Base domain.
+    base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
+
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 20))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
     ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 60))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.29")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.52")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))

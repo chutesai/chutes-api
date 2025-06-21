@@ -1,15 +1,20 @@
+{{- range $i := until (int .Values.cmRedis.shard_count) }}
+---
 apiVersion: v1
 kind: Service
 metadata:
-  name: cm-redis
+  name: cm-redis-{{ $i }}
   labels:
-    {{- include "cmRedis.labels" . | nindent 4 }}
+    {{- include "cmRedis.labels" $ | nindent 4 }}
+    shard: "{{ $i }}"
 spec:
-  type: {{ .Values.cmRedis.service.type }}
+  type: {{ $.Values.cmRedis.service.type }}
   ports:
-    - port: {{ .Values.cmRedis.service.port }}
+    - port: {{ $.Values.cmRedis.service.port }}
       targetPort: redis
       protocol: TCP
       name: redis
   selector:
-    {{- include "cmRedis.labels" . | nindent 4 }}
+    {{- include "cmRedis.labels" $ | nindent 4 }}
+    shard: "{{ $i }}"
+{{- end }}

@@ -7,7 +7,7 @@ account_settings:
 
 squad_enabled: true
 
-chutes_version: 0.2.29
+chutes_version: 0.2.42
 
 consecutive_failure_limit: 7
 
@@ -314,6 +314,33 @@ watchtower:
   affinity: {}
   tolerations: []
 
+
+cacher:
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  affinity: {}
+  tolerations: []
+
+downscaler:
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "1"
+      memory: "4Gi"
+    limits:
+      cpu: "1"
+      memory: "4Gi"
+  affinity: {}
+  tolerations: []
+
 paymentWatcher:
   image: parachutes/validator:latest
   imagePullPolicy: Always
@@ -382,6 +409,7 @@ reqHashDns:
   tolerations: []
 
 metasync:
+  enabled: true
   replicaCount: 1
   image: parachutes/metasync:latest
   imagePullPolicy: Always
@@ -400,6 +428,7 @@ metasync:
 
 weightsetter:
   replicaCount: 1
+  enabled: true
   image: parachutes/metasync:latest
   imagePullPolicy: Always
   resources:
@@ -437,9 +466,9 @@ redis:
     customArgs: []
 
 cmRedis:
+  shard_count: 1
   image: redis:7
   imagePullPolicy: IfNotPresent
-  replicaCount: 1
   nodeSelector: {}
   affinity:
     nodeAffinity: {}
@@ -477,24 +506,6 @@ llmCacheRedis:
     port: 6379
   config:
     customArgs: []
-
-pgproxy:
-  image: haproxy:3.1
-  imagePullPolicy: IfNotPresent
-  real_host: 10.245.112.2
-  real_port: 5432
-  nodeSelector:
-    kubernetes.io/hostname: chutes-prod-0
-  tolerations: []
-  resources:
-    requests:
-      cpu: 0.5
-      memory: 512Mi
-    limits:
-      cpu: 0.5
-      memory: 512Mi
-  service:
-    port: 5432
 
 registry:
   image: registry:2
@@ -544,11 +555,13 @@ registryProxy:
     targetPort: 5000
 
 auditExporter:
+  enabled: true
   image: parachutes/validator:latest
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
 
 failedChuteCleanup:
+  enabled: true
   image: parachutes/validator:latest
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
@@ -574,6 +587,7 @@ memcached:
     memory_mb: 800
 
 autostaker:
+  enabled: true
   replicaCount: 2
   image: parachutes/validator:latest
   imagePullPolicy: Always

@@ -4,6 +4,7 @@ Routes for instances.
 
 import uuid
 import orjson as json
+import traceback
 from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text
@@ -19,7 +20,7 @@ from api.instance.util import get_instance_by_chute_and_id
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
-from api.util import is_valid_host
+from api.util import is_valid_host, generate_ip_token
 from api.graval_worker import verify_instance
 
 router = APIRouter()
@@ -33,6 +34,14 @@ async def create_instance(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
 ):
+    mgnode = await get_miner_by_hotkey(hotkey, db)
+    if mgnode.blacklist_reason:
+        logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}",
+        )
+
     chute = (
         (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
         .unique()
@@ -42,6 +51,82 @@ async def create_instance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chute {chute_id} not found",
+        )
+
+    # Prevent miners from create instances of chutes they constantly rotate/spam.
+    query = text("""
+    WITH lifetimes AS (
+        SELECT
+            miner_hotkey,
+            COUNT(*) AS instance_count,
+            AVG(EXTRACT(EPOCH FROM deleted_at - created_at)) AS avg_lifetime
+        FROM
+            instance_audit
+        WHERE
+            chute_id = :chute_id
+            AND version = :version
+            AND verified_at IS NOT NULL
+            AND created_at >= NOW() - INTERVAL '1 day'
+            AND NOT EXISTS (
+                SELECT 1
+                FROM chutes
+                WHERE chutes.chute_id = :chute_id
+                AND updated_at >= NOW() - INTERVAL '4 hours'
+            )
+        GROUP BY
+            miner_hotkey
+    ),
+    instance_counts AS (
+        SELECT miner_hotkey, count(*) AS count
+        FROM instances
+        WHERE verified is true
+        GROUP BY miner_hotkey
+    ),
+    metrics AS (
+        SELECT
+            AVG(instance_count) AS avg_count,
+            AVG(avg_lifetime) AS avg_lifetime
+        FROM
+            lifetimes
+    )
+    SELECT EXISTS (
+        SELECT 1
+        FROM
+            lifetimes l, metrics m, instance_counts c
+        WHERE
+            l.miner_hotkey = :hotkey
+            AND c.count <= 3
+            AND c.miner_hotkey = :hotkey
+            AND l.instance_count >= m.avg_count
+            AND l.instance_count >= 3
+            AND l.avg_lifetime < m.avg_lifetime
+            AND l.avg_lifetime < EXTRACT(EPOCH FROM INTERVAL '4 hours')
+            AND (
+                SELECT COUNT(*)
+                FROM instance_audit
+                WHERE miner_hotkey = :hotkey
+                AND deletion_reason = 'miner initialized'
+                AND created_at >= NOW() - INTERVAL '1 day'
+                AND verified_at IS NOT NULL
+            ) > (
+                SELECT COUNT(*)
+                FROM instance_audit
+                WHERE miner_hotkey = :hotkey
+                AND deletion_reason != 'miner initialized'
+                AND created_at >= NOW() - INTERVAL '1 day'
+                AND verified_at IS NOT NULL
+            )
+    ) AS is_banned
+    """)
+    result = await db.execute(
+        query, {"chute_id": chute_id, "version": chute.version, "hotkey": hotkey}
+    )
+    is_spammy = result.scalar()
+    if is_spammy:
+        logger.warning(f"THRASHER: {hotkey=} has abnormal instance lifetimes for {chute_id=}")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Your hotkey is spamming {chute_id=} with low average lifetime.",
         )
 
     # Rolling update handling.
@@ -62,7 +147,15 @@ async def create_instance(
     try:
         await db.execute(text("SET lock_timeout = '30s'"))
         await db.execute(text("SELECT pg_advisory_lock(:lock_id)"), {"lock_id": lock_id})
-        query = text("SELECT * FROM chute_utilization WHERE chute_id = :chute_id")
+        query = text(
+            "SELECT * FROM chute_utilization "
+            "WHERE chute_id = :chute_id "
+            "AND NOT EXISTS ("
+            "  SELECT FROM chutes "
+            "  WHERE chute_id = :chute_id "
+            "  AND updated_at >= now() - INTERVAL '1 hour' "
+            ")"
+        )
         results = await db.execute(query, {"chute_id": chute_id})
         utilization = results.mappings().first()
         if (
@@ -135,13 +228,32 @@ async def create_instance(
                 detail=f"Chute {chute_id} requires exactly {gpu_count} GPUs.",
             )
         gpu_type = None
+        node_hosts = set()
         for node_id in instance_args.node_ids:
+            # Make sure the node is in the miner's inventory.
             node = await get_node_by_id(node_id, db, hotkey)
             if not node:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Node {node_id} not found",
                 )
+            node_hosts.add(node.verification_host)
+
+            # Not verified?
+            if not node.verified_at:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"GPU {node_id} is not yet verified, and cannot be associated with an instance",
+                )
+
+            # Already associated with an instance?
+            if node.instance:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"GPU {node_id} is already assigned to an instance: {instance.instance_id=} {instance.host=} {instance.port=} {instance.chute_id=}",
+                )
+
+            # Valid GPU for this chute?
             gpu_type = node.name
             if not node.is_suitable(chute):
                 logger.warning(
@@ -151,22 +263,37 @@ async def create_instance(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Node {node_id} is not compatible with chute node selector!",
                 )
+
+            # Create the association record.
             await db.execute(
                 instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
             )
 
+        # The hostname used in verifying the node must match the hostname of the instance.
+        if len(node_hosts) > 1 or list(node_hosts)[0].lower() != instance.host.lower():
+            logger.warning(
+                f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}"
+            )
+            # XXX disable for now to allow domain-based DDoS protection.
+            # raise HTTPException(
+            #     status_code=status.HTTP_400_BAD_REQUEST,
+            #     detail=f"Instance hostname does not match the node verification hostname: {instance.host=} vs {node_hosts=}",
+            # )
+
         # Persist, which will raise a unique constraint error when the node is already allocated.
         await db.commit()
     except IntegrityError as exc:
+        detail = f"INTEGRITYERROR {hotkey=}: {exc}\n{traceback.format_exc()}"
+        logger.error(detail)
         await db.rollback()
-        if "uq_instance_node" in str(exc):
+        if "uq_inode" in str(exc):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Node {node_id} is already provisioned to another instance",
+                detail=f"One or more nodes already provisioned to an instance: {detail=}",
             )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unknown database integrity error",
+            detail=f"Unhandled DB integrity error: {detail}",
         )
     finally:
         await db.execute(text("SELECT pg_advisory_unlock(:lock_id)"), {"lock_id": lock_id})
@@ -195,10 +322,10 @@ async def create_instance(
     return instance
 
 
-@router.get("/get_token")
-async def get_token(request: Request):
+@router.get("/token_check")
+async def get_token(salt: str = None, request: Request = None):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
-    return {"token": str(uuid.uuid5(uuid.NAMESPACE_OID, f"{origin_ip}:{settings.ip_check_salt}"))}
+    return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
 
 
 @router.patch("/{chute_id}/{instance_id}")
