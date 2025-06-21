@@ -173,6 +173,37 @@ async def me(
     return current_user
 
 
+@router.delete("/me")
+async def delete_my_user(
+    db: AsyncSession = Depends(get_db_session),
+    authorization: str = Header(
+        ..., description="Authorization header", alias=AUTHORIZATION_HEADER
+    ),
+):
+    """
+    Delete account.
+    """
+    fingerprint = authorization.strip().split(" ")[-1]
+    fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
+    current_user = (
+        await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
+    ).scalar_one_or_none()
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authorized",
+        )
+
+    await db.execute(
+        text("DELETE FROM usage_data WHERE user_id = :user_id"), {"user_id": current_user.user_id}
+    )
+    await db.execute(
+        text("DELETE FROM users WHERE user_id = :user_id"), {"user_id": current_user.user_id}
+    )
+    await db.commit()
+    return {"deleted": True}
+
+
 @router.get("/set_logo", response_model=SelfResponse)
 async def set_logo(
     logo_id: str,
