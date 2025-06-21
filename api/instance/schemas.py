@@ -43,8 +43,9 @@ class ActivateArgs(BaseModel):
 
 class LaunchConfigArgs(BaseModel):
     gpus: list[dict]
+    host: str
+    port: int
     env: str
-    sig: str
 
 
 class Instance(Base):
@@ -98,8 +99,8 @@ class LaunchConfig(Base):
     env_key = Column(String, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
     job_id = Column(String, ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=True)
-    host = Column(String, nullable=False)
-    port = Column(Integer, nullable=False)
+    host = Column(String, nullable=True)
+    port = Column(Integer, nullable=True)
     miner_uid = Column(Integer, nullable=False)
     miner_hotkey = Column(String, nullable=False)
     miner_coldkey = Column(String, nullable=False)

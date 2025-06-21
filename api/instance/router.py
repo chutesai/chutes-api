@@ -46,7 +46,7 @@ from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import is_valid_host, generate_ip_token, aes_decrypt
 from api.graval_worker import verify_instance, graval_encrypt
-from watchtower import get_expected_command, decrypt_envdump_cipher, is_kubernetes_env
+from watchtower import get_expected_command, is_kubernetes_env
 
 router = APIRouter()
 
@@ -221,8 +221,6 @@ async def _validate_host_port(db, host, port):
 @router.get("/launch_config")
 async def get_launch_config(
     chute_id: str,
-    host: str,
-    port: int,
     job_id: str = None,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
@@ -303,6 +301,8 @@ async def claim_launch_config(
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
 ):
+    from chutes.envdump import DUMPER
+
     # Load the launch config, verifying the token.
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
@@ -310,15 +310,16 @@ async def claim_launch_config(
 
     # Verify the code is what is expected.
     try:
-        dump = json.loads(
-            decrypt_envdump_cipher(args.dump, launch_config.env_key, chute.chutes_version)
-        )
-        process = dump[1] if isinstance(dump, list) else dump["process"]
+        dump = DUMPER.decrypt(launch_config.env_key, args.dump)
+
+        # Check the process, environment, running command, etc.
+        process = dump["all_processes"][0]
         assert process["pid"] == 1
-        command_line = re.sub(
-            r"([^ ]+/)?python3?(\.[0-9]+)", "python", " ".join(process["cmdline"])
-        )
-        if command_line != get_expected_command(chute, token=token):
+        assert process["username"] == "chutes"
+        command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+        command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
+        expected = get_expected_command(chute, miner_hotkey=launch_config.miner_hotkey)
+        if command_line != expected:
             logger.error(f"Attempt to claim {config_id=} failed, invalid command: {command_line=}")
             launch_config.failed_at = func.now()
             launch_config.verification_error = f"Invalid command: {command_line=}"
@@ -327,8 +328,9 @@ async def claim_launch_config(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"You are not running the correct command, sneaky devil: {command_line=}",
             )
-        log_prefix = f"{config_id=} {chute.chute_id=}"
-        if not is_kubernetes_env(chute, dump, log_prefix):
+
+        log_prefix = f"ENVDUMP: {config_id=} {chute.chute_id=}"
+        if not is_kubernetes_env(chute, dump, log_prefix=log_prefix):
             logger.error(f"{log_prefix} is not running a valid kubernetes environment")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Failed kubernetes environment check."
@@ -353,8 +355,8 @@ async def claim_launch_config(
     # Create the instance on the fly.
     instance = Instance(
         instance_id=generate_uuid(),
-        host=launch_config.host,
-        port=launch_config.port,
+        host=args.host,
+        port=args.port,
         chute_id=launch_config.chute_id,
         version=chute.version,
         miner_uid=launch_config.miner_uid,

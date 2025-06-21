@@ -694,10 +694,9 @@ async def check_envdump_command(instance):
 
     # Load the dump.
     dump = await get_dump(instance)
-    if not is_kubernetes_env(instance, dump):
-        logger.error(
-            f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} is not running a valid kubernetes environment"
-        )
+    log_prefix = f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+    if not is_kubernetes_env(instance, dump, log_prefix=log_prefix):
+        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
         return False
 
     # Check the running command.
@@ -705,15 +704,15 @@ async def check_envdump_command(instance):
     assert process["pid"] == 1
     assert process["username"] == "chutes"
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
-    if command_line != get_expected_command(instance, chute):
-        logger.error(
-            f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} running invalid process: {command_line}"
-        )
+    command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
+    expected = get_expected_command(
+        chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
+    )
+    if command_line != expected:
+        logger.error(f"{log_prefix} running invalid process: {command_line} vs {expected=}")
         return False
 
-    logger.success(
-        f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} code validation success: {command_line=}"
-    )
+    logger.success(f"{log_prefix} code validation success: {command_line=}")
     return True
 
 
@@ -752,7 +751,10 @@ async def check_live_code(instance: Instance) -> bool:
             .strip()
         )
         command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
-        expected = get_expected_command(instance.chute, instance=instance)
+        command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
+        expected = get_expected_command(
+            instance.chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
+        )
         if command_line != expected:
             logger.error(
                 f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"

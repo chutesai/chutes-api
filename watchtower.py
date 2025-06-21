@@ -629,32 +629,34 @@ async def increment_soft_fail(instance, chute):
         await purge_and_notify(instance)
 
 
-def get_expected_command(chute, instance=None, token=None):
+def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool = False):
     """
     Get the command line for a given instance.
     """
     # New chutes run format expects a JWT and TLS key/cert, but not graval seed.
-    if re.match(r"^[0-9]+\.([3-9][0-9]*)\.[0-9]+$", chute.chutes_version or ""):
-        return " ".join(
-            [
-                "python",
-                "/home/chutes/.local/bin/chutes",
-                "run",
-                chute.ref_str,
-                "--port",
-                "8000",
-                "--miner-ss58",
-                instance.miner_hotkey,
-                "--validator-ss58",
-                settings.validator_ss58,
-                "--token",
-                token,
+    if semver.compare(chute.chutes_version or "0.0.0", "0.3.0") >= 0:
+        parts = [
+            "python",
+            "/home/chutes/.local/bin/chutes",
+            "run",
+            chute.ref_str,
+            "--port",
+            "8000",
+            "--miner-ss58",
+            miner_hotkey,
+            "--validator-ss58",
+            settings.validator_ss58,
+            "--token",
+            "JWT_PLACEHOLDER",
+        ]
+        if tls:
+            parts += [
                 "--keyfile",
                 "/app/.chutetls/key.pem",
                 "--certfile",
                 "/app/.chutetls/cert.pem",
             ]
-        ).strip()
+        return " ".join(parts).strip()
 
     # Legacy format.
     return " ".join(
@@ -666,9 +668,9 @@ def get_expected_command(chute, instance=None, token=None):
             "--port",
             "8000",
             "--graval-seed",
-            str(instance.nodes[0].seed),
+            str(seed),
             "--miner-ss58",
-            instance.miner_hotkey,
+            miner_hotkey,
             "--validator-ss58",
             settings.validator_ss58,
         ]
@@ -858,7 +860,12 @@ async def check_chute(chute_id):
                     command_line = re.sub(
                         r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]
                     ).strip()
-                    if command_line != get_expected_command(instance, chute):
+                    command_line = re.sub(
+                        r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line
+                    )
+                    if command_line != get_expected_command(
+                        chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
+                    ):
                         logger.error(f"{log_prefix} running invalid process: {command_line=}")
                         failed_envdump = True
                     else:
