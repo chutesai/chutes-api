@@ -44,7 +44,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
-from watchtower import get_expected_command, is_kubernetes_env, get_dump
+from watchtower import get_expected_command, verify_expected_command, is_kubernetes_env, get_dump
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 
@@ -700,19 +700,14 @@ async def check_envdump_command(instance):
         return False
 
     # Check the running command.
-    process = dump["all_processes"][0]
-    assert process["pid"] == 1
-    assert process["username"] == "chutes"
-    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
-    command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
-    expected = get_expected_command(
-        chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
-    )
-    if command_line != expected:
-        logger.error(f"{log_prefix} running invalid process: {command_line} vs {expected=}")
+    try:
+        await verify_expected_command(
+            dump, chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed, tls=False
+        )
+    except AssertionError as exc:
+        logger.error(f"{log_prefix} running invalid process: {exc=}")
         return False
 
-    logger.success(f"{log_prefix} code validation success: {command_line=}")
     return True
 
 

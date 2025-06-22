@@ -677,6 +677,19 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
     ).strip()
 
 
+def verify_expected_command(
+    dump: dict, chute: Chute, miner_hotkey: str, seed: int = None, tls: bool = False
+):
+    process = dump["all_processes"][0]
+    assert process["pid"] == 1, "Failed to find chutes comman as PID 1"
+    assert process["username"] == "chutes", "Not running as chutes user"
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+    command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
+    expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed, tls=tls)
+    assert command_line == expected, f"Unexpected command: {command_line=} vs {expected=}"
+    logger.success(f"Verified command line: {miner_hotkey=} {command_line=}")
+
+
 def uuid_dict(data, current_path=[], salt=settings.envcheck_52_salt):
     flat_dict = {}
     for key, value in data.items():
@@ -854,24 +867,16 @@ async def check_chute(chute_id):
 
                 # Check the running command.
                 try:
-                    process = dump["all_processes"][0]
-                    assert process["pid"] == 1
-                    assert process["username"] == "chutes"
-                    command_line = re.sub(
-                        r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]
-                    ).strip()
-                    command_line = re.sub(
-                        r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line
+                    await verify_expected_command(
+                        dump,
+                        chute,
+                        miner_hotkey=instance.miner_hotkey,
+                        seed=instance.nodes[0].seed,
+                        tls=False,
                     )
-                    if command_line != get_expected_command(
-                        chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
-                    ):
-                        logger.error(f"{log_prefix} running invalid process: {command_line=}")
-                        failed_envdump = True
-                    else:
-                        logger.success(
-                            f"{log_prefix} successfully validated expected runtime command: {command_line=}"
-                        )
+                except AssertionError as exc:
+                    logger.error(f"{log_prefix} failed running command check: {exc=}")
+                    failed_envdump = True
                 except Exception as exc:
                     logger.error(
                         f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"

@@ -2,7 +2,6 @@
 Routes for instances.
 """
 
-import re
 import uuid
 import orjson as json
 import traceback
@@ -46,7 +45,7 @@ from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import is_valid_host, generate_ip_token, aes_decrypt
 from api.graval_worker import verify_instance, graval_encrypt
-from watchtower import get_expected_command, is_kubernetes_env
+from watchtower import is_kubernetes_env, verify_expected_command
 
 router = APIRouter()
 
@@ -308,41 +307,12 @@ async def claim_launch_config(
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(launch_config.chute_id)
 
-    # Verify the code is what is expected.
+    # Verify, decrypt, parse the envdump payload.
     try:
         dump = DUMPER.decrypt(launch_config.env_key, args.dump)
-
-        # Check the process, environment, running command, etc.
-        process = dump["all_processes"][0]
-        assert process["pid"] == 1
-        assert process["username"] == "chutes"
-        command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
-        command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
-        expected = get_expected_command(chute, miner_hotkey=launch_config.miner_hotkey)
-        if command_line != expected:
-            logger.error(f"Attempt to claim {config_id=} failed, invalid command: {command_line=}")
-            launch_config.failed_at = func.now()
-            launch_config.verification_error = f"Invalid command: {command_line=}"
-            await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You are not running the correct command, sneaky devil: {command_line=}",
-            )
-
-        log_prefix = f"ENVDUMP: {config_id=} {chute.chute_id=}"
-        if not is_kubernetes_env(chute, dump, log_prefix=log_prefix):
-            logger.error(f"{log_prefix} is not running a valid kubernetes environment")
-            launch_config.failed_at = func.now()
-            launch_config.verification_error = "Failed kubernetes environment check."
-            await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=launch_config.verification_error,
-            )
-
     except Exception as exc:
         logger.error(
-            f"Attempt to claim {config_id=} failed, unable to verify command: {exc=} {args=}"
+            f"Attempt to claim {config_id=} failed, invalid envdump payload received: {exc}"
         )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"Unable to verify: {exc=} {args=}"
@@ -352,7 +322,35 @@ async def claim_launch_config(
             detail=launch_config.verification_error,
         )
 
-    # Create the instance on the fly.
+    # Check the environment.
+    try:
+        await verify_expected_command(
+            dump,
+            chute,
+            miner_hotkey=launch_config.miner_hotkey,
+        )
+    except AssertionError as exc:
+        logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = f"Invalid command: {exc}"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"You are not running the correct command, sneaky devil: {exc}",
+        )
+    # K8S check.
+    log_prefix = f"ENVDUMP: {config_id=} {chute.chute_id=}"
+    if not is_kubernetes_env(chute, dump, log_prefix=log_prefix):
+        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = "Failed kubernetes environment check."
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=launch_config.verification_error,
+        )
+
+    # Create the instance now that we've verified the envdump/k8s env.
     instance = Instance(
         instance_id=generate_uuid(),
         host=args.host,
