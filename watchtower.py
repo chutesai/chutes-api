@@ -671,9 +671,6 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
     if semver.compare(instance.chutes_version or "0.0.0", "0.2.53") < 0:
         return True
 
-    # XXX disabled
-    return True
-
     # Simple flags.
     flat = uuid_dict(dump, salt=settings.kubecheck_salt)
     secret = flat.get("8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d")
@@ -747,6 +744,7 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
             f"{log_prefix} Did not find expected magic key 3aba393c-2046-59e2-b524-992f5c17b3f4"
         )
         return False
+    logger.success(f"{log_prefix} kubernetes check passed")
     return True
 
 
