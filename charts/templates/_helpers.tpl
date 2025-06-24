@@ -100,8 +100,8 @@ app.kubernetes.io/name: redis
 app.kubernetes.io/name: cm-redis
 {{- end }}
 
-{{- define "llmCacheRedis.labels" -}}
-app.kubernetes.io/name: llm-cache-redis
+{{- define "quotaRedis.labels" -}}
+app.kubernetes.io/name: quota-redis
 {{- end }}
 
 {{- define "memcached.labels" -}}

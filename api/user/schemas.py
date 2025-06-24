@@ -76,8 +76,8 @@ class User(Base):
     # Squad enabled.
     squad_enabled = Column(Boolean, default=False)
 
-    # Rate limit overrides.
-    rate_limit_overrides = Column(JSONB, default=None)
+    # Quotas.
+    quotas = Column(JSONB, default=None)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())

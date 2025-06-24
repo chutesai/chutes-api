@@ -27,7 +27,7 @@ from api.chute.util import (
     is_shared,
     count_prompt_tokens,
 )
-from api.util import rate_limit, ip_rate_limit
+from api.util import quota_key
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
@@ -321,51 +321,50 @@ async def _invoke(
 
     # Check account balance.
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
-    is_paid_account = not current_user.has_role(Permissioning.free_account)
-    if (
-        current_user.balance <= 0
-        and is_paid_account
-        and (not chute.discount or chute.discount < 1.0)
-        and not request.state.free_invocation
-    ):
-        logger.warning(
-            f"Payment required: attempted invocation of {chute.name} from user {current_user.username} [{origin_ip}] with no balance"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=f"Account balance is ${current_user.balance}, please send tao to {current_user.payment_address}",
-        )
 
-    # Rate limits.
-    limit = settings.rate_limit_count
-    overrides = current_user.rate_limit_overrides or {}
-    override = overrides.get(chute.chute_id, overrides.get("*"))
-    if override:
-        limit = override
-    else:
-        # Temporary fallback manual overrides.
-        if current_user.user_id == "5682c3e0-3635-58f7-b7f5-694962450dfc":
-            limit = int(limit * 10)
-        if current_user.user_id == "2104acf4-999e-5452-84f1-de82de35a7e7":
-            limit = int(limit * 2.5)
-        # Allow extra capacity for the models not on OpenRouter.
-        if not chute.openrouter:
-            limit *= 2
-        if is_paid_account:
-            limit *= 2
-    await rate_limit(chute.chute_id, current_user, limit, settings.rate_limit_window)
-
-    # IP address rate limits.
-    if (
-        current_user.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc"
-        and current_user.user_id != "2104acf4-999e-5452-84f1-de82de35a7e7"
-        and not request.state.squad_request
-        and not override
-        and origin_ip != "2a06:98c0:3600::103"
+    # Check account quotas if not free/invoiced.
+    if not (
+        current_user.has_role(Permissioning.free_account)
+        or current_user.has_role(Permissioning.invoice_billing)
+        or request.state_free_invocation
     ):
-        await ip_rate_limit(
-            current_user, origin_ip, settings.ip_rate_limit_count, settings.ip_rate_limit_window
-        )
+        quotas = current_user.quotas or settings.default_quotas
+        quota = quotas.get(chute.chute_id, quotas.get("*", 200))
+        key = quota_key(current_user, chute.chute_id)
+        request_count = (await settings.quota_client.get(key) or b"").decode()
+        if request_count and request_count.digit():
+            request_count = int(request_count)
+
+            # Automatically switch to paygo when the quota is exceeded.
+            if request_count >= quota:
+                if current_user.balance <= 0 and not request.state.free_invocation:
+                    logger.warning(
+                        f"Payment required: attempted invocation of {chute.name} "
+                        f"from user {current_user.username} [{origin_ip}] with no balance "
+                        f"and {request_count=} of {quota=}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                        detail=(
+                            f"Quota exceeded and account balance is ${current_user.balance}, "
+                            f"please pay with fiat or send tao to {current_user.payment_address}"
+                        ),
+                    )
+            else:
+                # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
+                logger.info(
+                    f"QUOTA: {request_count=} for {current_user.user_id=} of {chute.chute_id=} of {quota=}"
+                )
+                request.state_free_invocation = True
+
+        elif request_count:
+            # Just ouf an abundance of caution...
+            logger.warning(f"QUOTA: invalid quota quota usage value: {request_count}")
+            await settings.quota_client.delete(key)
+        else:
+            # Initialize the quota key with an expiration date.
+            await settings.quota_client.incrbyfloat(key, 0.0)
+            await settings.quota_client.expire(key, 25 * 60 * 60)
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None
@@ -579,7 +578,7 @@ async def _invoke(
             skip = False
             async for chunk in invoke(
                 chute,
-                current_user.user_id,
+                current_user,
                 selected_cord["path"],
                 selected_cord["function"],
                 stream,
@@ -590,6 +589,7 @@ async def _invoke(
                 metrics=metrics,
                 request=request,
                 prefixes=prefix_hashes,
+                reroll=user_dupe_count > 0,
             ):
                 if include_trace:
                     yield chunk
@@ -620,7 +620,7 @@ async def _invoke(
     response = None
     async for chunk in invoke(
         chute,
-        current_user.user_id,
+        current_user,
         selected_cord["path"],
         selected_cord["function"],
         stream,

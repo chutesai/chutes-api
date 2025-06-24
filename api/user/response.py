@@ -5,6 +5,7 @@ Safer response class for user.
 from typing import Optional
 from pydantic import BaseModel, computed_field
 from datetime import datetime
+from api.config import settings
 from api.api_key.response import APIKeyCreationResponse
 from api.permissions import Permissioning, Role
 
@@ -13,6 +14,7 @@ class UserResponse(BaseModel):
     username: str
     user_id: str
     logo_id: Optional[str] = None
+    quotas: Optional[dict] = settings.default_quotas
     created_at: datetime
 
     class Config:

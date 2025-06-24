@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: quota-redis
+  labels:
+    {{- include "quotaRedis.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.quotaRedis.service.type }}
+  ports:
+    - port: {{ .Values.quotaRedis.service.port }}
+      targetPort: redis
+      protocol: TCP
+      name: redis
+  selector:
+    {{- include "quotaRedis.labels" . | nindent 4 }}

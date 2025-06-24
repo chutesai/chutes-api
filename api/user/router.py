@@ -127,7 +127,7 @@ async def get_user_growth(
     return response
 
 
-@router.post("/admin_balance_change")
+@router.post("/admin_balance_change", response_model=SelfResponse)
 async def admin_balance_change(
     balance_req: BalanceRequest,
     db: AsyncSession = Depends(get_db_session),
@@ -160,6 +160,53 @@ async def admin_balance_change(
     await db.commit()
     await db.refresh(user)
     return {"new_balance": user.balance, "event_id": event_id}
+
+
+@router.post("/{user_id}/quotas")
+async def admin_quotas_change(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+
+    # Validate payload.
+    quotas = await request.json()
+    for key, value in quotas.items():
+        if not isinstance(value, int) or value < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid quota value {key=} {value=}",
+            )
+        if key == "*":
+            continue
+        try:
+            uuid.UUID(key)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid chute_id specified: {key}",
+            )
+
+    user = (
+        (await db.execute(select(User).where(User.user_id == user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id}"
+        )
+    user.quotas = quotas
+    await db.commit()
+    await db.refresh(user)
+    logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {quotas=}")
+    return user
 
 
 @router.get("/me", response_model=SelfResponse)
