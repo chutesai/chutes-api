@@ -489,6 +489,7 @@ async def _invoke(
     request_hash = None
     user_dupe_count = 0
     total_dupe_count = 0
+    reroll = False
     try:
         raw_dump = json.dumps(body_target).decode()
         prompt_dump = None
@@ -519,6 +520,16 @@ async def _invoke(
                 ]
             ).encode()
             _prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
+
+            # Check for rerolls, which are cheaper.
+            rr_key = f"userreq:{current_user.user_id}{_prompt_hash}".encode()
+            value = await settings.memcache.get(rr_key)
+            if value is None:
+                await settings.memcache.set(rr_key, b"0")
+            count = await settings.memcache.incr(rr_key, 1)
+            await settings.memcache.touch(rr_key, 60 * 60 * 3)
+            if count > 1:
+                reroll = True
 
         for _hash in (request_hash, _prompt_hash):
             if not _hash:
@@ -589,7 +600,7 @@ async def _invoke(
                 metrics=metrics,
                 request=request,
                 prefixes=prefix_hashes,
-                reroll=user_dupe_count > 0,
+                reroll=reroll,
             ):
                 if include_trace:
                     yield chunk
