@@ -127,7 +127,7 @@ async def get_user_growth(
     return response
 
 
-@router.post("/admin_balance_change", response_model=SelfResponse)
+@router.post("/admin_balance_change")
 async def admin_balance_change(
     balance_req: BalanceRequest,
     db: AsyncSession = Depends(get_db_session),
@@ -162,7 +162,7 @@ async def admin_balance_change(
     return {"new_balance": user.balance, "event_id": event_id}
 
 
-@router.post("/{user_id}/quotas")
+@router.post("/{user_id}/quotas", response_model=SelfResponse)
 async def admin_quotas_change(
     user_id: str,
     request: Request,
