@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
 
     # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 15))
+    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 10))
     rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
     ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 60))
     ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))

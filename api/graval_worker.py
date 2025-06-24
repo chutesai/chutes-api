@@ -694,10 +694,9 @@ async def check_envdump_command(instance):
 
     # Load the dump.
     dump = await get_dump(instance)
-    if not is_kubernetes_env(instance, dump):
-        logger.error(
-            f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} is not running a valid kubernetes environment"
-        )
+    log_prefix = f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+    if not is_kubernetes_env(instance, dump, log_prefix=log_prefix):
+        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
         return False
 
     # Check the running command.
