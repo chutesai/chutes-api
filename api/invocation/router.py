@@ -362,7 +362,7 @@ async def _invoke(
             logger.warning(f"QUOTA: invalid quota quota usage value: {request_count}")
             await settings.quota_client.delete(key)
         else:
-            # Initialize the quota key with an expiration date.
+            # Initialize the quota key with an expiration date (keys are daily)
             await settings.quota_client.incrbyfloat(key, 0.0)
             await settings.quota_client.expire(key, 25 * 60 * 60)
 
