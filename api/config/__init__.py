@@ -78,7 +78,11 @@ class Settings(BaseSettings):
         redis.Redis.from_url(
             os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
                 "@redis.chutes.svc.cluster.local", f"@cm-redis-{idx}.chutes.svc.cluster.local"
-            )
+            ),
+            socket_timeout=10.0,
+            socket_connect_timeout=3.0,
+            socket_keepalive=True,
+            health_check_interval=30,
         )
         for idx in range(int(os.getenv("CM_REDIS_SHARD_COUNT", "0")))
     ]
