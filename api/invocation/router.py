@@ -326,7 +326,7 @@ async def _invoke(
     if not (
         current_user.has_role(Permissioning.free_account)
         or current_user.has_role(Permissioning.invoice_billing)
-        or request.state_free_invocation
+        or request.state.free_invocation
     ):
         quota = await InvocationQuota.get(current_user.user_id, chute.chute_id)
         key = quota_key(current_user, chute.chute_id)
@@ -354,7 +354,7 @@ async def _invoke(
                 logger.info(
                     f"QUOTA: {request_count=} for {current_user.user_id=} of {chute.chute_id=} of {quota=}"
                 )
-                request.state_free_invocation = True
+                request.state.free_invocation = True
 
         elif request_count:
             # Just ouf an abundance of caution...
@@ -362,8 +362,10 @@ async def _invoke(
             await settings.quota_client.delete(key)
         else:
             # Initialize the quota key with an expiration date (keys are daily)
-            await settings.quota_client.incrbyfloat(key, 0.0)
-            await settings.quota_client.expire(key, 25 * 60 * 60)
+            pipe = settings.quota_client.pipeline()
+            pipe.incrbyfloat(key, 0.0)
+            pipe.expire(key, 25 * 60 * 60)
+            await pipe.execute()
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None
