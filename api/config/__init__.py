@@ -5,6 +5,7 @@ Application-wide settings.
 import os
 import aioboto3
 import aiomcache
+import orjson as json
 from functools import cached_property
 import redis.asyncio as redis
 from boto3.session import Config
@@ -86,9 +87,9 @@ class Settings(BaseSettings):
         )
         for idx in range(int(os.getenv("CM_REDIS_SHARD_COUNT", "0")))
     ]
-    llm_cache_client: redis.Redis = redis.Redis.from_url(
+    quota_client: redis.Redis = redis.Redis.from_url(
         os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0").replace(
-            "@redis.chutes.svc.cluster.local", "@llm-cache-redis.chutes.svc.cluster.local"
+            "@redis.chutes.svc.cluster.local", "@quota-redis.chutes.svc.cluster.local"
         )
     )
     memcache: Optional[aiomcache.Client] = (
@@ -155,11 +156,11 @@ class Settings(BaseSettings):
     # Base domain.
     base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
 
-    # Rate limits.
-    rate_limit_count: int = int(os.getenv("RATE_LIMIT_COUNT", 10))
-    rate_limit_window: int = int(os.getenv("RATE_LIMIT_WINDOW", 60))
-    ip_rate_limit_count: int = int(os.getenv("IP_RATE_LIMIT_COUNT", 60))
-    ip_rate_limit_window: int = int(os.getenv("IP_RATE_LIMIT_WINDOW", 60))
+    # Default quotas.
+    default_quotas = json.loads(os.getenv("DEFAULT_QUOTAS", '{"*": 200}'))
+
+    # Reroll discount (i.e. duplicate prompts for re-roll in RP, or pass@k, etc.)
+    reroll_multiplier = float(os.getenv("REROLL_MULTIPLIER", "0.1"))
 
     # Chutes pinned version.
     chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.53")

@@ -13,7 +13,7 @@ from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from api.database import get_db_session
-from api.user.schemas import UserRequest, User, AdminUserRequest
+from api.user.schemas import UserRequest, User, AdminUserRequest, InvocationQuota
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
@@ -37,7 +37,7 @@ from api.user.util import validate_the_username, generate_payment_address
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
-from sqlalchemy import select, text
+from sqlalchemy import select, text, delete
 
 router = APIRouter()
 
@@ -162,6 +162,68 @@ async def admin_balance_change(
     return {"new_balance": user.balance, "event_id": event_id}
 
 
+@router.post("/{user_id}/quotas", response_model=SelfResponse)
+async def admin_quotas_change(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+
+    # Validate payload.
+    quotas = await request.json()
+    for key, value in quotas.items():
+        if not isinstance(value, int) or value < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid quota value {key=} {value=}",
+            )
+        if key == "*":
+            continue
+        try:
+            uuid.UUID(key)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid chute_id specified: {key}",
+            )
+
+    user = (
+        (await db.execute(select(User).where(User.user_id == user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id}"
+        )
+
+    # Delete old quota values.
+    result = await db.execute(
+        delete(InvocationQuota)
+        .where(InvocationQuota.user_id == user_id)
+        .returning(InvocationQuota.chute_id)
+    )
+    deleted_chute_ids = [row[0] for row in result]
+
+    # Purge the cache.
+    for chute_id in deleted_chute_ids:
+        key = f"quota:{user_id}:{chute_id}".encode()
+        await settings.memcache.delete(key)
+
+    # Add the new values.
+    for key, quota in quotas.items():
+        db.add(InvocationQuota(user_id=user_id, chute_id=key, quota=quota))
+    await db.commit()
+    logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {quotas=}")
+    return user
+
+
 @router.get("/me", response_model=SelfResponse)
 async def me(
     db: AsyncSession = Depends(get_db_session),
@@ -171,6 +233,33 @@ async def me(
     Get a detailed response for the current user.
     """
     return current_user
+
+
+@router.get("/me/quotas", response_model=SelfResponse)
+async def my_quota(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Load quotas for the current user.
+    """
+    if current_user.has_role(Permissioning.free_account) or current_user.has_role(
+        Permissioning.invoice_billing
+    ):
+        return {}
+    quotas = (
+        (
+            await db.execute(
+                select(InvocationQuota).where(InvocationQuota.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalars()
+        .all()
+    )
+    if not quotas:
+        return settings.default_quotas
+    return {quota.chute_id: quota.quota for quota in quotas}
 
 
 @router.delete("/me")

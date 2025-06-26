@@ -1,44 +1,42 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: llm-cache-redis
+  name: quota-redis
   labels:
-    {{- include "llmCacheRedis.labels" . | nindent 4 }}
+    {{- include "quotaRedis.labels" . | nindent 4 }}
 spec:
-  replicas: {{ .Values.llmCacheRedis.replicaCount }}
+  replicas: {{ .Values.quotaRedis.replicaCount }}
   selector:
     matchLabels:
-      {{- include "llmCacheRedis.labels" . | nindent 6 }}
+      {{- include "quotaRedis.labels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "llmCacheRedis.labels" . | nindent 8 }}
+        {{- include "quotaRedis.labels" . | nindent 8 }}
     spec:
-      {{- with .Values.llmCacheRedis.nodeSelector }}
+      {{- with .Values.quotaRedis.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.llmCacheRedis.affinity }}
+      {{- with .Values.quotaRedis.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.llmCacheRedis.tolerations }}
+      {{- with .Values.quotaRedis.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: redis
-          image: "{{ .Values.llmCacheRedis.image }}"
-          imagePullPolicy: {{ .Values.llmCacheRedis.imagePullPolicy }}
+          image: "{{ .Values.quotaRedis.image }}"
+          imagePullPolicy: {{ .Values.quotaRedis.imagePullPolicy }}
           args:
             - redis-server
             - --requirepass
             - $(REDIS_PASSWORD)
-            {{- range .Values.llmCacheRedis.config.customArgs }}
+            {{- range .Values.quotaRedis.config.customArgs }}
             - {{ . }}
             {{- end }}
-            - "--save"
-            - ""
           env:
             - name: REDIS_PASSWORD
               valueFrom:
@@ -47,7 +45,7 @@ spec:
                   key: password
           ports:
             - name: redis
-              containerPort: {{ .Values.llmCacheRedis.service.port }}
+              containerPort: {{ .Values.quotaRedis.service.port }}
               protocol: TCP
           resources:
-            {{- toYaml .Values.llmCacheRedis.resources | nindent 12 }}
+            {{- toYaml .Values.quotaRedis.resources | nindent 12 }}

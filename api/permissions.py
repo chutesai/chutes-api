@@ -43,6 +43,10 @@ class Permissioning:
         bitmask=1 << 7,
         description="Unlimited dev activity.",
     )
+    invoice_billing = Role(
+        bitmask=1 << 8,
+        description="Invoice billing option",
+    )
 
     @classmethod
     def enabled(cls, user, role):

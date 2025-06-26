@@ -31,7 +31,15 @@ from api.constants import (
 )
 from api.database import get_session
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired, EmptyLLMResponse
-from api.util import sse, now_str, aes_encrypt, aes_decrypt, use_encryption_v2, use_encrypted_path
+from api.util import (
+    sse,
+    now_str,
+    aes_encrypt,
+    aes_decrypt,
+    use_encryption_v2,
+    use_encrypted_path,
+    quota_key,
+)
 from api.chute.schemas import Chute, NodeSelector, ChuteShare
 from api.user.schemas import User
 from api.user.service import chutes_user_id
@@ -711,7 +719,7 @@ async def _sample_request(chute_id, parent_invocation_id, args, kwargs):
 
 async def invoke(
     chute: Chute,
-    user_id: str,
+    user: User,
     path: str,
     function: str,
     stream: bool,
@@ -722,11 +730,13 @@ async def invoke(
     metrics: dict = {},
     request: Request = None,
     prefixes: list = None,
+    reroll: bool = False,
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
     """
     chute_id = chute.chute_id
+    user_id = user.user_id
     yield sse(
         {
             "trace": {
@@ -885,6 +895,9 @@ async def invoke(
                                 )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
+                    if balance_used and reroll:
+                        # Also apply fractional balance to reroll.
+                        balance_used = balance_used * settings.reroll_multiplier
                     try:
                         pipeline = settings.redis_client.pipeline()
                         key = f"balance:{user_id}:{chute.chute_id}"
@@ -894,6 +907,19 @@ async def invoke(
                         await pipeline.execute()
                     except Exception as exc:
                         logger.error(f"Error updating usage pipeline: {exc}")
+
+                    # Increment quota usage value.
+                    try:
+                        value = 1.0 if not reroll else settings.reroll_multiplier
+                        key = quota_key(user, chute.chute_id)
+                        quota_used = await settings.quota_client.incrbyfloat(key, value)
+                        logger.info(
+                            f"QUOTA: used {quota_used} of daily quota for {user_id=} for {chute.chute_id=} {chute.name}"
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
+                        )
 
                     if balance_used:
                         logger.info(
