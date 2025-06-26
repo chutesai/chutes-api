@@ -235,6 +235,33 @@ async def me(
     return current_user
 
 
+@router.get("/me/quotas", response_model=SelfResponse)
+async def my_quota(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Load quotas for the current user.
+    """
+    if current_user.has_role(Permissioning.free_account) or current_user.has_role(
+        Permissioning.invoice_billing
+    ):
+        return {}
+    quotas = (
+        (
+            await db.execute(
+                select(InvocationQuota).where(InvocationQuota.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalars()
+        .all()
+    )
+    if not quotas:
+        return settings.default_quotas
+    return {quota.chute_id: quota.quota for quota in quotas}
+
+
 @router.delete("/me")
 async def delete_my_user(
     db: AsyncSession = Depends(get_db_session),

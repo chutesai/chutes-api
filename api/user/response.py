@@ -5,7 +5,6 @@ Safer response class for user.
 from typing import Optional
 from pydantic import BaseModel, computed_field
 from datetime import datetime
-from api.config import settings
 from api.api_key.response import APIKeyCreationResponse
 from api.permissions import Permissioning, Role
 
