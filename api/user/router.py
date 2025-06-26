@@ -235,8 +235,8 @@ async def me(
     return current_user
 
 
-@router.get("/me/quotas", response_model=SelfResponse)
-async def my_quota(
+@router.get("/me/quotas")
+async def my_quotas(
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -260,6 +260,30 @@ async def my_quota(
     if not quotas:
         return settings.default_quotas
     return {quota.chute_id: quota.quota for quota in quotas}
+
+
+@router.get("/me/quota_usage/{chute_id}")
+async def chute_quota_usage(
+    chute_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Check the current quota usage for a chute.
+    """
+    if current_user.has_role(Permissioning.free_account) or current_user.has_role(
+        Permissioning.invoice_billing
+    ):
+        return {"quota": "unlimited", "used": 0}
+    quota = await InvocationQuota.get(current_user.user_id, chute_id)
+    key = await InvocationQuota.quota_key(current_user.user_id, chute_id)
+    used_raw = await settings.quota_client.get(key)
+    used = 0.0
+    try:
+        used = float(used_raw or "0.0")
+    except ValueError:
+        await settings.quota_client.delete(key)
+    return {"quota": quota, "used": used}
 
 
 @router.delete("/me")
