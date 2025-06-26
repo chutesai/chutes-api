@@ -39,7 +39,7 @@ async def _load_key(token_id: str):
         )
         if api_key:
             serialized = pickle.dumps(api_key)
-            await settings.memcache.set(cache_key, serialized, expire=600)
+            await settings.memcache.set(cache_key, serialized, exptime=600)
         return api_key
 
 

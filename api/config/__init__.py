@@ -157,10 +157,10 @@ class Settings(BaseSettings):
     base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
 
     # Default quotas.
-    default_quotas = json.loads(os.getenv("DEFAULT_QUOTAS", '{"*": 200}'))
+    default_quotas: dict = json.loads(os.getenv("DEFAULT_QUOTAS", '{"*": 200}'))
 
     # Reroll discount (i.e. duplicate prompts for re-roll in RP, or pass@k, etc.)
-    reroll_multiplier = float(os.getenv("REROLL_MULTIPLIER", "0.1"))
+    reroll_multiplier: float = float(os.getenv("REROLL_MULTIPLIER", "0.1"))
 
     # Chutes pinned version.
     chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.53")

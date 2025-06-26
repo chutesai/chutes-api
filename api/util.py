@@ -384,14 +384,3 @@ def use_opencl_graval(chutes_version: str):
     if int(minor) >= 2 and int(bug) == 50 or int(minor) > 2:
         return True
     return False
-
-
-def quota_key(user, chute_id):
-    """
-    Get the quota (redis) key for a user and chute.
-    """
-    quotas = user.quotas or settings.default_quotas
-    date = datetime.datetime.now().strftime("%Y%m%d")
-    if chute_id in quotas:
-        return f"q:{date}:{user.user_id}:{chute_id}"
-    return f"q:{date}:{user.user_id}:__default__"

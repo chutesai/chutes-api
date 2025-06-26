@@ -40,24 +40,24 @@ SUPPORTED_GPUS = {
         },
     },
     # XXX Not enabled, supported by new graval but otherwise disabled.
-    # "5090": {
-    #     "model_name_check": "RTX 5090",
-    #     "memory": 32,
-    #     "major": 12,
-    #     "minor": 0,
-    #     "tensor_cores": 680,
-    #     "max_threads_per_processor": 1536,
-    #     "concurrent_kernels": True,
-    #     "ecc": False,
-    #     "sxm": False,
-    #     "processors": 170,
-    #     "clock_rate": {"base": 2017, "boost": 2407},
-    #     "hourly_rate": 0.7,
-    #     "graval": {
-    #         "iteration": 2,
-    #         "estimate": 60,
-    #     },
-    # },
+    "5090": {
+        "model_name_check": "RTX 5090",
+        "memory": 32,
+        "major": 12,
+        "minor": 0,
+        "tensor_cores": 680,
+        "max_threads_per_processor": 1536,
+        "concurrent_kernels": True,
+        "ecc": False,
+        "sxm": False,
+        "processors": 170,
+        "clock_rate": {"base": 2017, "boost": 2407},
+        "hourly_rate": 0.7,
+        "graval": {
+            "iteration": 2,
+            "estimate": 60,
+        },
+    },
     "a4000": {
         "model_name_check": "RTX A4000(?! Ada)",
         "memory": 16,
@@ -401,18 +401,18 @@ SUPPORTED_GPUS = {
         },
     },
     # XXX Not enabled, supported by new graval but otherwise disabled.
-    # "mi300x": {
-    #     "model_name_check": "gfx942:sramecc",
-    #     "memory": 192,
-    #     "processors": 304,
-    #     "clock_rate": {"base": 1600, "boost": 2100},
-    #     "max_threads_per_processor": 256,
-    #     "hourly_rate": 2.5,
-    #     "graval": {
-    #         "iterations": 2,
-    #         "estimate": 65,
-    #     },
-    # },
+    "mi300x": {
+        "model_name_check": "gfx942:sramecc",
+        "memory": 192,
+        "processors": 304,
+        "clock_rate": {"base": 1600, "boost": 2100},
+        "max_threads_per_processor": 256,
+        "hourly_rate": 2.5,
+        "graval": {
+            "iterations": 2,
+            "estimate": 65,
+        },
+    },
     # XXX Likewise, b200 is not yet supported, but kept here as a stub for
     # purpose of compute multiplier/scoring consistency.
     "b200": {

@@ -27,7 +27,6 @@ from api.chute.util import (
     is_shared,
     count_prompt_tokens,
 )
-from api.util import quota_key
 from api.user.schemas import User, InvocationQuota
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
@@ -329,43 +328,42 @@ async def _invoke(
         or request.state.free_invocation
     ):
         quota = await InvocationQuota.get(current_user.user_id, chute.chute_id)
-        key = quota_key(current_user, chute.chute_id)
-        request_count = (await settings.quota_client.get(key) or b"").decode()
-        if request_count and request_count.isdigit():
-            request_count = int(request_count)
-
-            # Automatically switch to paygo when the quota is exceeded.
-            if request_count >= quota:
-                if current_user.balance <= 0 and not request.state.free_invocation:
-                    logger.warning(
-                        f"Payment required: attempted invocation of {chute.name} "
-                        f"from user {current_user.username} [{origin_ip}] with no balance "
-                        f"and {request_count=} of {quota=}"
-                    )
-                    raise HTTPException(
-                        status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                        detail=(
-                            f"Quota exceeded and account balance is ${current_user.balance}, "
-                            f"please pay with fiat or send tao to {current_user.payment_address}"
-                        ),
-                    )
-            else:
-                # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
-                logger.info(
-                    f"QUOTA: {request_count=} for {current_user.user_id=} of {chute.chute_id=} of {quota=}"
-                )
-                request.state.free_invocation = True
-
-        elif request_count:
-            # Just ouf an abundance of caution...
-            logger.warning(f"QUOTA: invalid quota quota usage value: {request_count}")
-            await settings.quota_client.delete(key)
+        key = await InvocationQuota.quota_key(current_user.user_id, chute.chute_id)
+        cached = await settings.quota_client.get(key)
+        request_count = 0.0
+        if cached:
+            try:
+                request_count = float(cached.decode())
+            except ValueError:
+                await settings.quota_client.delete(key)
         else:
             # Initialize the quota key with an expiration date (keys are daily)
             pipe = settings.quota_client.pipeline()
             pipe.incrbyfloat(key, 0.0)
             pipe.expire(key, 25 * 60 * 60)
             await pipe.execute()
+
+        # Automatically switch to paygo when the quota is exceeded.
+        if request_count >= quota:
+            if current_user.balance <= 0 and not request.state.free_invocation:
+                logger.warning(
+                    f"Payment required: attempted invocation of {chute.name} "
+                    f"from user {current_user.username} [{origin_ip}] with no balance "
+                    f"and {request_count=} of {quota=}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail=(
+                        f"Quota exceeded and account balance is ${current_user.balance}, "
+                        f"please pay with fiat or send tao to {current_user.payment_address}"
+                    ),
+                )
+        else:
+            # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
+            logger.info(
+                f"QUOTA: {request_count=} for {current_user.user_id=} of {chute.chute_id=} of {quota=}"
+            )
+            request.state.free_invocation = True
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None

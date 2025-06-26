@@ -2,6 +2,7 @@
 ORM definitions for users.
 """
 
+import datetime
 from typing import Self, Optional
 from pydantic import BaseModel
 from sqlalchemy import (
@@ -160,7 +161,44 @@ class InvocationQuota(Base):
                 await settings.memcache.set(key, str(quota).encode(), exptime=3600)
                 return quota
             default_quota = settings.default_quotas.get(
-                chute_id, settings.default_quota.get("*", 200)
+                chute_id, settings.default_quotas.get("*", 200)
             )
-            await settings.memcache.set(key, str(default_quota).encode(), expire=3600)
+            await settings.memcache.set(key, str(default_quota).encode(), exptime=3600)
             return default_quota
+
+    @staticmethod
+    async def quota_key(user_id: str, chute_id: str):
+        """
+        Get the quota (redis) key for a user and chute.
+        """
+        date = datetime.datetime.now().strftime("%Y%m%d")
+        cache_key = f"quota_type:{user_id}:{chute_id}".encode()
+        cached = await settings.memcache.get(cache_key)
+        if cached is not None:
+            quota_type = cached.decode()
+        else:
+            async with get_session() as session:
+                result = await session.execute(
+                    select(InvocationQuota.chute_id)
+                    .where(InvocationQuota.user_id == user_id)
+                    .where(InvocationQuota.chute_id.in_([chute_id, "*"]))
+                    .order_by(case((InvocationQuota.chute_id == chute_id, 0), else_=1))
+                    .limit(1)
+                )
+                db_chute_id = result.scalar()
+            if db_chute_id == chute_id:
+                quota_type = "specific"
+            elif db_chute_id == "*":
+                quota_type = "wildcard"
+            elif chute_id in settings.default_quotas:
+                quota_type = "default_specific"
+            elif "*" in settings.default_quotas:
+                quota_type = "default_wildcard"
+            else:
+                quota_type = "none"
+            await settings.memcache.set(cache_key, quota_type.encode(), exptime=3600)
+
+        if quota_type in ["specific", "default_specific"]:
+            return f"q:{date}:{user_id}:{chute_id}"
+        else:
+            return f"q:{date}:{user_id}:__default__"

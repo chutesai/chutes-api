@@ -38,10 +38,9 @@ from api.util import (
     aes_decrypt,
     use_encryption_v2,
     use_encrypted_path,
-    quota_key,
 )
 from api.chute.schemas import Chute, NodeSelector, ChuteShare
-from api.user.schemas import User
+from api.user.schemas import User, InvocationQuota
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
@@ -911,7 +910,7 @@ async def invoke(
                     # Increment quota usage value.
                     try:
                         value = 1.0 if not reroll else settings.reroll_multiplier
-                        key = quota_key(user, chute.chute_id)
+                        key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
                         quota_used = await settings.quota_client.incrbyfloat(key, value)
                         logger.info(
                             f"QUOTA: used {quota_used} of daily quota for {user_id=} for {chute.chute_id=} {chute.name}"
