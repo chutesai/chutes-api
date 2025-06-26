@@ -1370,7 +1370,7 @@ async def get_dump(instance, outdir: str = None):
             instance.miner_hotkey,
             f"http://{instance.host}:{instance.port}/{path}",
             enc_payload,
-            timeout=300.0,
+            timeout=400.0,
         ) as resp:
             if resp.status != 200:
                 err = f"Received invalid response code on /_dump: {resp.status=}"

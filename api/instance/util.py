@@ -41,21 +41,80 @@ MANAGERS = {}
 
 
 class LeastConnManager:
-    def __init__(self, chute_id: str, instances: list[Instance], connection_expiry: int = 600):
+    def __init__(
+        self,
+        chute_id: str,
+        instances: list[Instance],
+        connection_expiry: int = 600,
+        cleanup_interval: int = 5,
+    ):
         self.chute_id = chute_id
         self.redis_client = settings.cm_redis_client[
             uuid.UUID(chute_id).int % len(settings.cm_redis_client)
         ]
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
-        self.lock = asyncio.Lock()
+        self.cleanup_interval = cleanup_interval
         self._session = None
-        self._last_cleanup = time.time()
         self.mean_count = None
+
+        # Start continuous cleanup task immediately
+        self._cleanup_task = asyncio.create_task(self._continuous_cleanup())
+
+        # Pre-register Lua scripts for better performance
+        self._register_lua_scripts()
+
+        self.lock = asyncio.Lock()
+
+    def _register_lua_scripts(self):
+        # Track new connection.
+        self.lua_add_connection = """
+        local key = KEYS[1]
+        local conn_id = ARGV[1]
+        local now = tonumber(ARGV[2])
+        local expiry = tonumber(ARGV[3])
+        redis.call('ZADD', key, now, conn_id)
+        redis.call('EXPIRE', key, expiry)
+        return redis.call('ZCOUNT', key, now - expiry, now)
+        """
+
+        # Remove "completed" connection.
+        self.lua_remove_connection = """
+        local key = KEYS[1]
+        local conn_id = ARGV[1]
+        local now = tonumber(ARGV[2])
+        local expiry = tonumber(ARGV[3])
+        local removed = redis.call('ZREM', key, conn_id)
+        local expired = redis.call('ZRANGEBYSCORE', key, 0, now - expiry, 'LIMIT', 0, 10)
+        if #expired > 0 then
+            redis.call('ZREM', key, unpack(expired))
+        end
+        return removed
+        """
+
+        # Batch cleanup all keys.
+        self.lua_batch_cleanup = """
+        local pattern = ARGV[1]
+        local now = tonumber(ARGV[2])
+        local expiry = tonumber(ARGV[3])
+        local cutoff = now - expiry
+        local cursor = "0"
+        local total_removed = 0
+        repeat
+            local result = redis.call('SCAN', cursor, 'MATCH', pattern, 'COUNT', 100)
+            cursor = result[1]
+            local keys = result[2]
+            for i, key in ipairs(keys) do
+                local removed = redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
+                total_removed = total_removed + removed
+            end
+        until cursor == "0"
+        return total_removed
+        """
 
     async def initialize(self):
         if self._session is None:
-            self.session = aiohttp.ClientSession(
+            self._session = aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
                 read_bufsize=8 * 1024 * 1024,
             )
@@ -65,145 +124,229 @@ class LeastConnManager:
             await self._session.close()
             self._session = None
 
-    async def get_targets(self, avoid=[], prefixes=None):
-        instance_ids = list(self.instances)
-        now = time.time()
+        if hasattr(self, "_cleanup_task") and self._cleanup_task:
+            self._cleanup_task.cancel()
+            try:
+                await self._cleanup_task
+            except asyncio.CancelledError:
+                pass
 
-        # Get connection counts for each instance via redis pipe.
-        pipe = self.redis_client.pipeline()
-        to_query = [instance_id for instance_id in instance_ids if instance_id not in avoid]
-        for instance_id in to_query:
-            pipe.zcount(f"conn:{instance_id}", now - self.connection_expiry, now)
-        raw_counts = await pipe.execute()
-        counts = dict(zip(to_query, raw_counts))
-        min_count = min(raw_counts) if raw_counts else 1
-        if not avoid:
-            self.mean_count = int(sum(raw_counts) / (len(self.instances) or 1))
+    async def _continuous_cleanup(self):
+        """
+        Run cleanup continuously while CM is alive.
+        """
+        while True:
+            try:
+                await self._cleanup_expired_connections()
+                await asyncio.sleep(self.cleanup_interval)
+            except asyncio.CancelledError:
+                logger.info(f"Cleanup task cancelled for chute {self.chute_id}")
+                break
+            except Exception as e:
+                logger.error(f"Error in cleanup loop: {e}", exc_info=True)
+                await asyncio.sleep(self.cleanup_interval)
 
-        # Periodically log counts for debugging.
-        if random.random() < 0.05 and self.instances:
-            logger.info(
-                f"Instance counts for {self.chute_id=}: {min_count=} mean_count={self.mean_count} instance_count={len(self.instances)}"
+    async def _cleanup_expired_connections(self):
+        now = int(time.time())
+        try:
+            pattern = f"conn:{self.chute_id}:*"
+            started_at = time.time()
+            total_removed = await self.redis_client.eval(
+                self.lua_batch_cleanup, 0, pattern, now, self.connection_expiry
             )
+            if total_removed:
+                logger.info(
+                    f"Cleaned {total_removed} expired connections for chute {self.chute_id} in {time.time() - started_at} seconds"
+                )
+        except Exception as e:
+            logger.error(f"Error in batch cleanup: {e}", exc_info=True)
+
+    async def get_connection_counts(self, instance_ids: list[str]) -> dict[str, int]:
+        """
+        Get current valid connection counts for instances.
+        """
+        now = time.time()
+        cutoff = now - self.connection_expiry
+        pipe = self.redis_client.pipeline()
+        for instance_id in instance_ids:
+            key = f"conn:{self.chute_id}:{instance_id}"
+            pipe.zcount(key, cutoff, now)
+        try:
+            counts = await pipe.execute()
+            return dict(zip(instance_ids, counts))
+        except Exception as e:
+            logger.error(f"Error getting connection counts: {e}")
+            return {iid: 0 for iid in instance_ids}
+
+    async def get_targets(self, avoid=[], prefixes=None):
+        # Get instances not in avoid list
+        available_instances = [iid for iid in self.instances.keys() if iid not in avoid]
+        if not available_instances:
+            return []
+        started_at = time.time()
+        counts = await self.get_connection_counts(available_instances)
+        time_taken = time.time() - started_at
         if not counts:
             return []
+        min_count = min(counts.values())
 
-        # Too many connections?
+        # Update mean count for monitoring
+        if not avoid:
+            self.mean_count = int(sum(counts.values()) / (len(counts) or 1))
+
+        # Periodic logging
+        if random.random() < 0.05:
+            logger.info(
+                f"Connection counts for {self.chute_id}: "
+                f"min={min_count}, mean={self.mean_count}, "
+                f"instances={len(self.instances)}, "
+                f"{time_taken=}"
+            )
+
+        # Check if all instances are overwhelmed
         if min_count >= 25:
-            logger.warning(f"Instances overwhelmed: {min_count=}, pausing requests...")
+            logger.warning(f"All instances overwhelmed for {self.chute_id}: min_count={min_count}")
             return []
 
-        # Randomize the ordering for instances that have the same counts.
+        # Group instances by connection count
         grouped_by_count = {}
         for instance_id, count in counts.items():
             if count >= 25:
-                logger.warning(f"Too many connections to {instance_id=} at the moment, skipping...")
+                logger.warning(f"Instance {instance_id} has too many connections: {count}")
                 continue
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
             if instance := self.instances.get(instance_id):
                 grouped_by_count[count].append(instance)
-        for count in grouped_by_count:
-            random.shuffle(grouped_by_count[count])
 
-        # Prefix aware routing for LLM requests.
+        # Randomize within each count group
+        for instances in grouped_by_count.values():
+            random.shuffle(instances)
+
+        # Handle prefix-aware routing if enabled
         if prefixes and random.random() <= 0.75:
-            likely_cached = set([])
-            for size, prefix_hash in prefixes:
-                try:
-                    instance_ids = list(counts)
-                    has_prefix = await settings.memcache.multi_get(
-                        *[
-                            f"pfx:{prefix_hash}:{instance_id}".encode()
-                            for instance_id in instance_ids
-                        ]
-                    )
-                    for idx in range(len(instance_ids)):
-                        if has_prefix[idx]:
-                            likely_cached.add(instance_ids[idx])
-                    if likely_cached:
-                        break
-                except Exception as exc:
-                    logger.error(f"Error performing prefix-aware routing lookups: {exc}")
-                    break
-            if likely_cached:
-                # Allow a small amount of discrepancy on active connection counts when
-                # there is likely a prefix cache hit since it's much better for the user.
-                routable = [
-                    instance_id
-                    for instance_id in likely_cached
-                    if abs(counts[instance_id] - min_count) <= 3
-                ]
-                if routable:
-                    result = sorted(
-                        [
-                            self.instances[instance_id]
-                            for instance_id in routable
-                            if instance_id in self.instances
-                        ],
-                        key=lambda inst: counts[inst.instance_id],
-                    )[:3]
-                    for count in sorted(grouped_by_count.keys()):
-                        result.extend(
-                            [
-                                instance
-                                for instance in grouped_by_count[count]
-                                if instance.instance_id not in routable
-                            ]
-                        )
-                    return result
+            result = await self._handle_prefix_routing(
+                counts, grouped_by_count, min_count, prefixes
+            )
+            if result:
+                return result
 
+        # Return instances sorted by connection count
         result = []
         for count in sorted(grouped_by_count.keys()):
             result.extend(grouped_by_count[count])
+
+        return result
+
+    async def _handle_prefix_routing(self, counts, grouped_by_count, min_count, prefixes):
+        likely_cached = set()
+        for size, prefix_hash in prefixes:
+            try:
+                instance_ids = list(counts.keys())
+                cache_keys = [f"pfx:{prefix_hash}:{iid}".encode() for iid in instance_ids]
+                has_prefix = await settings.memcache.multi_get(*cache_keys)
+                for idx, iid in enumerate(instance_ids):
+                    if has_prefix[idx]:
+                        likely_cached.add(iid)
+
+                if likely_cached:
+                    break
+            except Exception as e:
+                logger.error(f"Error in prefix-aware routing: {e}")
+                return None
+        if not likely_cached:
+            return None
+
+        # Select instances with cache that have reasonable connection counts
+        routable = [iid for iid in likely_cached if abs(counts[iid] - min_count) <= 2]
+        if not routable:
+            return None
+
+        # Sort routable instances by connection count
+        result = sorted(
+            [self.instances[iid] for iid in routable if iid in self.instances],
+            key=lambda inst: counts[inst.instance_id],
+        )[:3]
+
+        # Add remaining instances
+        for count in sorted(grouped_by_count.keys()):
+            result.extend(
+                [inst for inst in grouped_by_count[count] if inst.instance_id not in routable]
+            )
+
         return result
 
     @asynccontextmanager
     async def get_target(self, avoid=[], prefixes=None):
-        await self.clean_up_expired_connections()
         conn_id = str(uuid.uuid4())
-        now = time.time()
+        instance = None
         try:
-            targets = await self.get_targets(avoid=avoid, prefixes=prefixes)
-        except Exception as exc:
-            logger.error(f"Failed to sort chute targets: {exc}, using random order")
-            yield random.choice([inst for _id, inst in self.instances.items() if _id not in avoid])
-            return
-        if not targets:
-            yield None
-            return
-        instance = targets[0]
-        try:
-            await self.redis_client.zadd(f"conn:{instance.instance_id}", {conn_id: now})
-            await self.redis_client.expire(f"conn:{instance.instance_id}", self.connection_expiry)
-        except Exception as exc:
-            logger.warning(f"Error tracking connection counts: {exc}")
-        try:
-            yield instance
-        finally:
+            targets = await asyncio.wait_for(
+                self.get_targets(avoid=avoid, prefixes=prefixes), timeout=7.0
+            )
+            if not targets:
+                yield None
+                return
+            instance = targets[0]
             try:
-                await self.redis_client.zrem(f"conn:{instance.instance_id}", conn_id)
-            except Exception as exc:
-                logger.warning(f"Error cleaning up connection counts: {exc}")
-
-    async def clean_up_expired_connections(self):
-        now = time.time()
-        if now - self._last_cleanup < 60:
-            return
-        for instance_id in self.instances:
-            try:
-                removed_count = await self.redis_client.zremrangebyscore(
-                    f"conn:{instance_id}",
-                    0,
-                    now - self.connection_expiry,
+                key = f"conn:{self.chute_id}:{instance.instance_id}"
+                started_at = time.time()
+                count = await asyncio.wait_for(
+                    self.redis_client.eval(
+                        self.lua_add_connection,
+                        1,
+                        key,
+                        conn_id,
+                        int(time.time()),
+                        self.connection_expiry,
+                    ),
+                    timeout=3.0,
                 )
-                if removed_count:
-                    logger.info(
-                        f"Successfully cleared {removed_count} expired connections from {instance_id=}"
+                time_taken = time.time() - started_at
+                logger.info(
+                    f"Assigned {conn_id=} of {self.chute_id} to {instance.instance_id} {count=} {time_taken=}"
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Timeout adding connection to {instance.instance_id}, proceeding anyway"
+                )
+            except Exception as e:
+                logger.error(f"Error tracking connection: {e}")
+            yield instance
+        except asyncio.TimeoutError:
+            logger.error("Timeout getting targets")
+            # Fallback to random instance
+            available = [inst for iid, inst in self.instances.items() if iid not in avoid]
+            if available:
+                yield random.choice(available)
+            else:
+                yield None
+        except Exception as e:
+            logger.error(f"Error getting target: {e}", exc_info=True)
+            yield None
+        finally:
+            if instance:
+                try:
+                    key = f"conn:{self.chute_id}:{instance.instance_id}"
+                    await asyncio.wait_for(
+                        self.redis_client.eval(
+                            self.lua_remove_connection,
+                            1,
+                            key,
+                            conn_id,
+                            int(time.time()),
+                            self.connection_expiry,
+                        ),
+                        timeout=3.0,
                     )
-            except Exception as exc:
-                logger.warning(f"Error purging expired connection counts: {exc}")
-        self._last_cleanup = now
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout cleaning up connection {conn_id}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up connection {conn_id}: {e}")
+
+    def __del__(self):
+        if hasattr(self, "_cleanup_task") and self._cleanup_task:
+            self._cleanup_task.cancel()
 
 
 async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
