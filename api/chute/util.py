@@ -895,6 +895,9 @@ async def invoke(
                                 )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
+                    if balance_used and reroll:
+                        # Also apply fractional balance to reroll.
+                        balance_used = balance_used * settings.reroll_multiplier
                     try:
                         pipeline = settings.redis_client.pipeline()
                         key = f"balance:{user_id}:{chute.chute_id}"
@@ -907,7 +910,7 @@ async def invoke(
 
                     # Increment quota usage value.
                     try:
-                        value = 1.0 if not reroll else 0.1
+                        value = 1.0 if not reroll else settings.reroll_multiplier
                         key = quota_key(user, chute.chute_id)
                         quota_used = await settings.quota_client.incrbyfloat(key, value)
                         logger.info(
