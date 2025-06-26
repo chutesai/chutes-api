@@ -14,7 +14,6 @@ class UserResponse(BaseModel):
     username: str
     user_id: str
     logo_id: Optional[str] = None
-    quotas: Optional[dict] = settings.default_quotas
     created_at: datetime
 
     class Config:
