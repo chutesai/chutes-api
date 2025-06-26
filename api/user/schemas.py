@@ -4,11 +4,23 @@ ORM definitions for users.
 
 from typing import Self, Optional
 from pydantic import BaseModel
-from sqlalchemy import func, Column, String, DateTime, Double, Boolean, BigInteger, ForeignKey
+from sqlalchemy import (
+    func,
+    Column,
+    String,
+    DateTime,
+    Double,
+    Boolean,
+    BigInteger,
+    ForeignKey,
+    select,
+    case,
+)
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 import hashlib
+from api.database import get_session
+from api.config import settings
 from api.util import gen_random_token
 from api.user.util import validate_the_username
 from api.permissions import Permissioning, Role
@@ -76,9 +88,6 @@ class User(Base):
     # Squad enabled.
     squad_enabled = Column(Boolean, default=False)
 
-    # Quotas.
-    quotas = Column(JSONB, default=None)
-
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -124,3 +133,34 @@ class User(Base):
         Check if a user has a role/permission.
         """
         return Permissioning.enabled(self, role)
+
+
+class InvocationQuota(Base):
+    __tablename__ = "invocation_quotas"
+    user_id = Column(String, primary_key=True)
+    chute_id = Column(String, primary_key=True)
+    quota = Column(BigInteger, nullable=False, default=settings.default_quotas.get("*", 200))
+
+    @staticmethod
+    async def get(user_id: str, chute_id: str):
+        key = f"quota:{user_id}:{chute_id}".encode()
+        cached = (await settings.memcache.get(key) or b"").decode()
+        if cached and cached.isdigit():
+            return int(cached)
+        async with get_session() as session:
+            result = await session.execute(
+                select(InvocationQuota.quota)
+                .where(InvocationQuota.user_id == user_id)
+                .where(InvocationQuota.chute_id.in_([chute_id, "*"]))
+                .order_by(case((InvocationQuota.chute_id == chute_id, 0), else_=1))
+                .limit(1)
+            )
+            quota = result.scalar()
+            if quota is not None:
+                await settings.memcache.set(key, str(quota).encode(), exptime=3600)
+                return quota
+            default_quota = settings.default_quotas.get(
+                chute_id, settings.default_quota.get("*", 200)
+            )
+            await settings.memcache.set(key, str(default_quota).encode(), expire=3600)
+            return default_quota

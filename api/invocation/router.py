@@ -28,7 +28,7 @@ from api.chute.util import (
     count_prompt_tokens,
 )
 from api.util import quota_key
-from api.user.schemas import User
+from api.user.schemas import User, InvocationQuota
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
@@ -328,11 +328,10 @@ async def _invoke(
         or current_user.has_role(Permissioning.invoice_billing)
         or request.state_free_invocation
     ):
-        quotas = current_user.quotas or settings.default_quotas
-        quota = quotas.get(chute.chute_id, quotas.get("*", 200))
+        quota = await InvocationQuota.get(current_user.user_id, chute.chute_id)
         key = quota_key(current_user, chute.chute_id)
         request_count = (await settings.quota_client.get(key) or b"").decode()
-        if request_count and request_count.digit():
+        if request_count and request_count.isdigit():
             request_count = int(request_count)
 
             # Automatically switch to paygo when the quota is exceeded.

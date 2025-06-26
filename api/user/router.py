@@ -13,7 +13,7 @@ from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from api.database import get_db_session
-from api.user.schemas import UserRequest, User, AdminUserRequest
+from api.user.schemas import UserRequest, User, AdminUserRequest, InvocationQuota
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
@@ -37,7 +37,7 @@ from api.user.util import validate_the_username, generate_payment_address
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
-from sqlalchemy import select, text
+from sqlalchemy import select, text, delete
 
 router = APIRouter()
 
@@ -202,9 +202,24 @@ async def admin_quotas_change(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id}"
         )
-    user.quotas = quotas
+
+    # Delete old quota values.
+    result = await db.execute(
+        delete(InvocationQuota)
+        .where(InvocationQuota.user_id == user_id)
+        .returning(InvocationQuota.chute_id)
+    )
+    deleted_chute_ids = [row[0] for row in result]
+
+    # Purge the cache.
+    for chute_id in deleted_chute_ids:
+        key = f"quota:{user_id}:{chute_id}".encode()
+        await settings.memcache.delete(key)
+
+    # Add the new values.
+    for key, quota in quotas.items():
+        db.add(InvocationQuota(user_id=user_id, chute_id=key, quota=quota))
     await db.commit()
-    await db.refresh(user)
     logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {quotas=}")
     return user
 

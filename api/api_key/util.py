@@ -17,7 +17,7 @@ def reinject_dash(uuid_str: str) -> str:
     return f"{uuid_str[0:8]}-{uuid_str[8:12]}-{uuid_str[12:16]}-{uuid_str[16:20]}-{uuid_str[20:32]}"
 
 
-@alru_cache(maxsize=200, ttl=60)
+@alru_cache(maxsize=5000, ttl=60)
 async def _load_key(token_id: str):
     async with get_session() as session:
         return (
