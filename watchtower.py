@@ -711,11 +711,12 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
         return True
 
     # Simple flags.
-    flat = uuid_dict(dump)
-    if "809e6d11-690f-5fe6-b203-30e4dd96827d" not in flat:
+    flat = uuid_dict(dump, salt=settings.kubecheck_salt)
+    secret = flat.get("8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d")
+    if not secret:
         logger.warning(
             f"{log_prefix} Invalid environment found: "
-            "expecting magic uuid 809e6d11-690f-5fe6-b203-30e4dd96827d"
+            "expecting magic uuid 8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d"
         )
         return False
     if not flat.get("a4286a4a-858c-56c3-ad11-734cbcc88c00"):
@@ -724,33 +725,35 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
             "expecting truthy magic uuid a4286a4a-858c-56c3-ad11-734cbcc88c00"
         )
         return False
-    ms = flat.get("1ddb0807-3076-5e1b-a696-4867bf97d50f")
-    if not isinstance(ms, list) or not any([m["name"] == "nvidia" for m in ms]):
+    if (
+        str(uuid.uuid5(uuid.NAMESPACE_OID, secret[:6] + settings.kubecheck_salt))
+        != "03cb7733-6b08-588f-aa3c-b0c9a50f4799"
+    ):
         logger.warning(
             f"{log_prefix} Invalid environment found: "
-            "expecting to find nvidia in magic key 1ddb0807-3076-5e1b-a696-4867bf97d50f"
+            "expecting magic uuid 8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d "
+            f"to contain magic value 03cb7733-6b08-588f-aa3c-b0c9a50f4799"
         )
         return False
 
     # Sneaky flags.
     found_expected = False
-    if (secret := flat.get("8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d")) is not None:
-        expected = (
-            settings.kubecheck_prefix
-            + "_".join(secret.split("-")[1:-2]).upper()
-            + settings.kubecheck_suffix
-        )
-        expected_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt))
-        for v in dump.values():
-            if isinstance(v, dict):
-                for key in v:
-                    if (
-                        str(uuid.uuid5(uuid.NAMESPACE_OID, key + settings.kubecheck_salt))
-                        == expected_uuid
-                    ):
-                        found_expected = True
-                        logger.success(f"Found the magic uuid: {expected_uuid}")
-                        break
+    expected = (
+        settings.kubecheck_prefix
+        + "_".join(secret.split("-")[1:-2]).upper()
+        + settings.kubecheck_suffix
+    )
+    expected_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt))
+    for v in dump.values():
+        if isinstance(v, dict):
+            for key in v:
+                if (
+                    str(uuid.uuid5(uuid.NAMESPACE_OID, key + settings.kubecheck_salt))
+                    == expected_uuid
+                ):
+                    found_expected = True
+                    logger.success(f"Found the magic uuid: {expected_uuid}")
+                    break
     if not found_expected:
         logger.warning(
             f"{log_prefix} did not find expected magic key derived from 8bc7db7a-4fd5-56a8-a595-e67c4b3bd61d"
@@ -760,18 +763,18 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
     # Extra sneaky.
     if special_key := flat.get("3aba393c-2046-59e2-b524-992f5c17b3f4"):
         for value in special_key:
-            nested = uuid_dict(value)
+            nested = uuid_dict(value, salt=settings.kubecheck_salt)
             if secret := nested.get("cc523b3d-4ca2-5062-9182-bdfbf2fda998"):
                 if any(
                     [
                         str(uuid.uuid5(uuid.NAMESPACE_OID, part + settings.kubecheck_salt))
-                        == "8dbd3657-047e-5cfd-b30e-77f3135280c9"
+                        == "5a3a3898-bbc3-59bb-91de-14d67e124039"
                         for part in secret.split("/")
                     ]
                 ):
                     logger.warning(
                         f"{log_prefix} Invalid environment found: "
-                        "expecting NOT to find magic uuid 8dbd3657-047e-5cfd-b30e-77f3135280c9 "
+                        "expecting NOT to find magic uuid 5a3a3898-bbc3-59bb-91de-14d67e124039 "
                         "in magic key 3aba393c-2046-59e2-b524-992f5c17b3f4"
                     )
                     return False
@@ -780,6 +783,7 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
             f"{log_prefix} Did not find expected magic key 3aba393c-2046-59e2-b524-992f5c17b3f4"
         )
         return False
+    logger.success(f"{log_prefix} kubernetes check passed")
     return True
 
 
@@ -838,7 +842,9 @@ async def check_chute(chute_id):
     instances = await load_chute_instances(chute.chute_id)
     random.shuffle(instances)
     bad_env = set()
-    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") >= 0:
+    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") >= 0 and os.getenv(
+        "ENVDUMP_UNLOCK"
+    ):
         instance_map = {instance.instance_id: instance for instance in instances}
 
         # Load the envdump dump outputs for each.
@@ -1400,7 +1406,7 @@ async def get_dump(instance, outdir: str = None):
             instance.miner_hotkey,
             f"http://{instance.host}:{instance.port}/{path}",
             enc_payload,
-            timeout=60.0,
+            timeout=400.0,
         ) as resp:
             if resp.status != 200:
                 err = f"Received invalid response code on /_dump: {resp.status=}"

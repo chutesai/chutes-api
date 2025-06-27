@@ -734,7 +734,7 @@ async def check_live_code(instance: Instance) -> bool:
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
         payload,
-        timeout=12.0,
+        timeout=15.0,
     ) as resp:
         data = await resp.json()
         command_line = (

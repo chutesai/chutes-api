@@ -40,6 +40,7 @@ from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
 from api.image.util import get_image_by_id_or_name
+from api.permissions import Permissioning
 
 # XXX from api.instance.util import discover_chute_targets
 from api.database import get_db_session, get_session
@@ -459,7 +460,9 @@ async def _deploy_chute(
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
         chute_args.node_selector = NodeSelector(**chute_args.node_selector)
-    if current_user.user_id not in (await chutes_user_id(), "5bf8a979-ea71-54bf-8644-26a3411a3b58"):
+    if current_user.user_id != await chutes_user_id() and not current_user.has_role(
+        Permissioning.unlimited_dev
+    ):
         if (
             chute_args.node_selector
             and chute_args.node_selector.min_vram_gb_per_gpu

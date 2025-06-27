@@ -39,6 +39,7 @@ SUPPORTED_GPUS = {
             "estimate": 60,
         },
     },
+    # XXX Not enabled, supported by new graval but otherwise disabled.
     "5090": {
         "model_name_check": "RTX 5090",
         "memory": 32,
@@ -399,6 +400,7 @@ SUPPORTED_GPUS = {
             "estimate": 63,
         },
     },
+    # XXX Not enabled, supported by new graval but otherwise disabled.
     "mi300x": {
         "model_name_check": "gfx942:sramecc",
         "memory": 192,
@@ -411,6 +413,8 @@ SUPPORTED_GPUS = {
             "estimate": 65,
         },
     },
+    # XXX Likewise, b200 is not yet supported, but kept here as a stub for
+    # purpose of compute multiplier/scoring consistency.
     "b200": {
         "model_name_check": " B200",
         "memory": 192,

@@ -486,7 +486,7 @@ cmRedis:
   config:
     customArgs: []
 
-llmCacheRedis:
+quotaRedis:
   redis:
   image: redis:7
   imagePullPolicy: IfNotPresent
@@ -496,11 +496,11 @@ llmCacheRedis:
   tolerations: []
   resources:
     requests:
-      cpu: 1
-      memory: 2Gi
+      cpu: 2
+      memory: 8Gi
     limits:
-      cpu: 1
-      memory: 2Gi
+      cpu: 2
+      memory: 8Gi
   service:
     type: ClusterIP
     port: 6379
