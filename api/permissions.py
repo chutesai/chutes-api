@@ -47,6 +47,10 @@ class Permissioning:
         bitmask=1 << 8,
         description="Invoice billing option",
     )
+    stake_weight_quota = Role(
+        bitmask=1 << 9,
+        description="Enable stake weighted quota (signed message with the coldkey)",
+    )
 
     @classmethod
     def enabled(cls, user, role):
