@@ -1087,7 +1087,7 @@ async def get_vllm_models(request: Request):
     """
     Get the combined /v1/models return value for chutes that are public and belong to chutes user.
     """
-    cached = await settings.redis_client.get("llm_model_list")
+    cached = await settings.redis_client.get("_llm_model_list")
     if cached:
         return json.loads(cached)
 
@@ -1100,7 +1100,7 @@ async def get_vllm_models(request: Request):
     )
     async def _get_models_data(chute):
         nonlocal request
-        cached = await settings.redis_client.get(f"llminfo:{chute.chute_id}:{chute.version}")
+        cached = await settings.redis_client.get(f"_llminfo:{chute.chute_id}:{chute.version}")
         if cached:
             return json.loads(cached)
         async with get_session() as session:
@@ -1117,11 +1117,6 @@ async def get_vllm_models(request: Request):
         tao_usd = await get_fetcher().get_price("tao")
         if tao_usd:
             price["tao"] = per_million / tao_usd
-        if chute.discount:
-            for key in ("usd", "tao"):
-                if key not in price:
-                    continue
-                price[key] -= price[key] * chute.discount
 
         args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
@@ -1146,7 +1141,7 @@ async def get_vllm_models(request: Request):
                 data["price"] = price
                 return result
         await settings.redis_client.set(
-            f"llminfo:{chute.chute_id}:{chute.version}",
+            f"_llminfo:{chute.chute_id}:{chute.version}",
             json.dumps(result),
         )
         return result
@@ -1178,7 +1173,7 @@ async def get_vllm_models(request: Request):
             logger.info(f"Trying to add to vllm models data: {info}")
             data = info["json"]["data"][0]
             model_data["data"].append(data)
-    await settings.redis_client.set("llm_model_list", json.dumps(model_data), ex=600)
+    await settings.redis_client.set("_llm_model_list", json.dumps(model_data), ex=600)
     return model_data
 
 
