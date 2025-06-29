@@ -28,12 +28,6 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
-{{- define "reqHashDns.labels" -}}
-app.kubernetes.io/name: req-hash-dns
-redis-access: "true"
-db-access: "true"
-{{- end }}
-
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 redis-access: "true"
