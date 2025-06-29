@@ -202,3 +202,38 @@ class InvocationQuota(Base):
             return f"q:{date}:{user_id}:{chute_id}"
         else:
             return f"q:{date}:{user_id}:__default__"
+
+
+class InvocationDiscount(Base):
+    __tablename__ = "invocation_discounts"
+    user_id = Column(String, primary_key=True)
+    chute_id = Column(String, primary_key=True)
+    discount = Column(Double, nullable=False, default=settings.default_discounts.get("*", 0))
+
+    @staticmethod
+    async def get(user_id: str, chute_id: str):
+        key = f"idiscount:{user_id}:{chute_id}".encode()
+        cached = (await settings.memcache.get(key) or b"").decode()
+        if cached:
+            try:
+                return float(cached)
+            except ValueError:
+                await settings.memcache.delete(key)
+
+        async with get_session() as session:
+            result = await session.execute(
+                select(InvocationDiscount.discount)
+                .where(InvocationDiscount.user_id == user_id)
+                .where(InvocationDiscount.chute_id.in_([chute_id, "*"]))
+                .order_by(case((InvocationDiscount.chute_id == chute_id, 0), else_=1))
+                .limit(1)
+            )
+            discount = result.scalar()
+            if discount is not None:
+                await settings.memcache.set(key, str(discount).encode(), exptime=1800)
+                return discount
+            default_discount = settings.default_discounts.get(
+                chute_id, settings.default_discounts.get("*", 200)
+            )
+            await settings.memcache.set(key, str(default_discount).encode(), exptime=1800)
+            return default_discount

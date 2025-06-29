@@ -13,7 +13,13 @@ from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from api.database import get_db_session
-from api.user.schemas import UserRequest, User, AdminUserRequest, InvocationQuota
+from api.user.schemas import (
+    UserRequest,
+    User,
+    AdminUserRequest,
+    InvocationQuota,
+    InvocationDiscount,
+)
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
@@ -162,7 +168,7 @@ async def admin_balance_change(
     return {"new_balance": user.balance, "event_id": event_id}
 
 
-@router.post("/{user_id}/quotas", response_model=SelfResponse)
+@router.post("/{user_id}/quotas")
 async def admin_quotas_change(
     user_id: str,
     request: Request,
@@ -221,6 +227,101 @@ async def admin_quotas_change(
         db.add(InvocationQuota(user_id=user_id, chute_id=key, quota=quota))
     await db.commit()
     logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {quotas=}")
+    return quotas
+
+
+@router.post("/{user_id}/discounts")
+async def admin_discounts_change(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+
+    # Validate payload.
+    discounts = await request.json()
+    for key, value in discounts.items():
+        if not isinstance(value, float) or not 0.0 < value < 1.0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid discount value {key=} {value=}",
+            )
+        if key == "*":
+            continue
+        try:
+            uuid.UUID(key)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid chute_id specified: {key}",
+            )
+
+    user = (
+        (await db.execute(select(User).where(User.user_id == user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id}"
+        )
+
+    # Delete old discount values.
+    result = await db.execute(
+        delete(InvocationDiscount)
+        .where(InvocationDiscount.user_id == user_id)
+        .returning(InvocationDiscount.chute_id)
+    )
+    deleted_chute_ids = [row[0] for row in result]
+    for chute_id in deleted_chute_ids:
+        key = f"idiscount:{user_id}:{chute_id}".encode()
+        await settings.memcache.delete(key)
+
+    # Add the new values.
+    for key, discount in discounts.items():
+        db.add(InvocationDiscount(user_id=user_id, chute_id=key, discount=discount))
+    await db.commit()
+    logger.success(f"Updated discounts for {user.user_id=} [{user.username}] to {discounts=}")
+    return discounts
+
+
+@router.post("/{user_id}/enable_invoicing", response_model=SelfResponse)
+async def admin_enable_invoicing(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    unlimited = False
+    try:
+        if (await request.json()).get("unlimited"):
+            unlimited = True
+    except Exception:
+        ...
+    user = (
+        (await db.execute(select(User).where(User.user_id == user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id}"
+        )
+    Permissioning.enable(user, Permissioning.invoice_billing)
+    if unlimited:
+        Permissioning.enable(user, Permissioning.unlimited)
+    await db.commit()
+    await db.refresh(user)
     return user
 
 

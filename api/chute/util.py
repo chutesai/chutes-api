@@ -41,7 +41,7 @@ from api.util import (
     use_encrypted_path,
 )
 from api.chute.schemas import Chute, NodeSelector, ChuteShare
-from api.user.schemas import User, InvocationQuota
+from api.user.schemas import User, InvocationQuota, InvocationDiscount
 from api.user.service import chutes_user_id, chutes_user
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
@@ -898,6 +898,14 @@ async def invoke(
                     if balance_used and reroll:
                         # Also apply fractional balance to reroll.
                         balance_used = balance_used * settings.reroll_multiplier
+
+                    # User discounts.
+                    if balance_used:
+                        user_discount = await InvocationDiscount.get(user_id, chute.chute_id)
+                        if user_discount:
+                            balance_used -= balance_used * user_discount
+
+                    # Ship the data over to usage tracker which actually deducts/aggregates balance/etc.
                     try:
                         pipeline = settings.redis_client.pipeline()
                         key = f"balance:{user_id}:{chute.chute_id}"
