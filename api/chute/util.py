@@ -7,8 +7,6 @@ import aiohttp
 import asyncio
 import re
 import uuid
-import random
-import datetime
 import io
 import time
 import traceback
@@ -79,8 +77,6 @@ INSERT INTO invocations (
     started_at,
     completed_at,
     error_message,
-    request_path,
-    response_path,
     compute_multiplier,
     bounty
 ) VALUES (
@@ -98,8 +94,6 @@ INSERT INTO invocations (
     CURRENT_TIMESTAMP,
     NULL,
     NULL,
-    :request_path,
-    NULL,
     :compute_multiplier,
     0
 ) RETURNING to_char(date_trunc('week', started_at), 'IYYY_IW') AS suffix
@@ -113,7 +107,6 @@ WITH removed_bounty AS (
 )
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
-    response_path = CAST(:response_path AS TEXT),
     bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty),
     metrics = :metrics
 WHERE invocation_id = :invocation_id
@@ -700,23 +693,6 @@ async def _s3_upload(data: io.BytesIO, path: str):
         logger.error(f"failed to store: {path} -> {exc}")
 
 
-async def _sample_request(chute_id, parent_invocation_id, args, kwargs):
-    """
-    Randomly sample and store request data.
-    """
-    # XXX disabled
-    return None
-
-    request_path = None
-    if random.random() <= REQUEST_SAMPLE_RATIO:
-        today = datetime.date.today()
-        request_path = f"invocations/{today.year}/{today.month}/{today.day}/{chute_id}/request-{parent_invocation_id}.json"
-        asyncio.create_task(
-            _s3_upload(io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})), request_path)
-        )
-    return request_path
-
-
 async def invoke(
     chute: Chute,
     user: User,
@@ -749,9 +725,6 @@ async def invoke(
         }
     )
 
-    # Randomly sample for validation purposes.
-    request_path = await _sample_request(chute_id, parent_invocation_id, args, kwargs)
-
     partition_suffix = None
     rate_limited = 0
     avoid = []
@@ -778,7 +751,6 @@ async def invoke(
                         "instance_id": target.instance_id,
                         "miner_uid": target.miner_uid,
                         "miner_hotkey": target.miner_hotkey,
-                        "request_path": request_path,
                         "compute_multiplier": NodeSelector(
                             **chute.node_selector
                         ).compute_multiplier,
@@ -800,7 +772,6 @@ async def invoke(
                         },
                     }
                 )
-                response_data = []
                 async for data in _invoke_one(
                     chute, path, stream, args, kwargs, target, metrics, prefixes, manager
                 ):
@@ -812,25 +783,14 @@ async def invoke(
                     except Exception:
                         ...
                     yield sse({"result": data})
-                    if request_path:
-                        response_data.append(data)
 
                 async with get_session() as session:
-                    # Save the response if we're randomly sampling this one.
-                    response_path = None
-                    if request_path:
-                        response_path = request_path.replace("/request", "/response")
-                        asyncio.create_task(
-                            _s3_upload(io.BytesIO(json.dumps(response_data)), response_path)
-                        )
-
                     # Mark the invocation as complete.
                     result = await session.execute(
                         text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                         {
                             "chute_id": chute_id,
                             "invocation_id": invocation_id,
-                            "response_path": response_path,
                             "metrics": json.dumps(metrics).decode(),
                         },
                     )
