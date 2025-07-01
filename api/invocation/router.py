@@ -23,7 +23,7 @@ from api.config import settings
 from api.chute.util import (
     invoke,
     get_one,
-    get_vllm_models,
+    get_llms,
     is_shared,
     count_prompt_tokens,
 )
@@ -695,7 +695,7 @@ async def hostname_invocation(
         and request.url.path == "/v1/models"
         and request.method.lower() == "get"
     ):
-        return await get_vllm_models(request)
+        return await get_llms()
 
     # The /v1/models endpoint can be checked with no auth, but otherwise we need users.
     if not current_user:

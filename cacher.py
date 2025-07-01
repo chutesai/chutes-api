@@ -10,7 +10,7 @@ from api.config import settings
 from api.database import get_session
 from sqlalchemy import text
 import api.database.orms  # noqa
-from api.chute.util import update_chute_utilization
+from api.chute.util import update_chute_utilization, refresh_all_llm_details
 from api.invocation.util import generate_invocation_history_metrics
 
 
@@ -48,6 +48,8 @@ async def warm_up_cache():
     logger.success("Warmed up utilization per instance endpoint")
     await get_usage(request=None)
     logger.success("Warmed up usage metrics")
+    await refresh_all_llm_details()
+    logger.success("Warmed up LLM details")
 
 
 async def warm_up_chute_history():

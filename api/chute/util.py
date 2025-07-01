@@ -14,12 +14,13 @@ import orjson as json
 import base64
 import gzip
 import pickle
-import backoff
+import random
 from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, String, exists
+from sqlalchemy import and_, or_, text, String, exists, func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -38,12 +39,12 @@ from api.util import (
     use_encryption_v2,
     use_encrypted_path,
 )
-from api.chute.schemas import Chute, NodeSelector, ChuteShare
+from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount
-from api.user.service import chutes_user_id, chutes_user
+from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager, get_chute_target_manager
+from api.instance.util import LeastConnManager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
@@ -1051,30 +1052,66 @@ async def invoke(
         yield sse({"error": "exhausted all available targets to no avail"})
 
 
-async def get_vllm_models(request: Request):
+async def load_llm_details(chute, target):
     """
-    Get the combined /v1/models return value for chutes that are public and belong to chutes user.
+    Load the /v1/models endpoint for a chute from a single instance.
     """
-    cached = await settings.redis_client.get("_llm_model_list")
-    if cached:
-        return json.loads(cached)
+    path = "/get_models"
+    if use_encrypted_path(target.chutes_version):
+        path = aes_encrypt(path.ljust(24, "?"), target.symmetric_key, hex_encode=True)
+    payload = {
+        "args": base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode(),
+        "kwargs": base64.b64encode(gzip.compress(pickle.dumps({}))).decode(),
+    }
+    iv = None
+    if use_encryption_v2(target.chutes_version):
+        if not target.symmetric_key:
+            raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
+        payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
+        iv = bytes.fromhex(payload[:32])
 
-    @backoff.on_exception(
-        backoff.constant,
-        Exception,
-        jitter=None,
-        interval=3,
-        max_tries=5,
-    )
-    async def _get_models_data(chute):
-        nonlocal request
-        cached = await settings.redis_client.get(f"_llminfo:{chute.chute_id}:{chute.version}")
-        if cached:
-            return json.loads(cached)
-        async with get_session() as session:
-            target_manager = await get_chute_target_manager(session, chute.chute_id, max_wait=0)
-            if not target_manager or not target_manager.instances:
-                return None
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+        read_bufsize=8 * 1024 * 1024,
+        raise_for_status=True,
+    ) as session:
+        headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
+        if iv:
+            headers["X-Chutes-Serialized"] = "true"
+        async with session.post(
+            f"http://{target.host}:{target.port}/{path}", data=payload_string, headers=headers
+        ) as resp:
+            raw_data = await resp.json()
+            logger.info(
+                f"{target.chute_id=} {target.instance_id=} {target.miner_hotkey=}: {raw_data=}"
+            )
+            info = (
+                raw_data
+                if not iv
+                else json.loads(aes_decrypt(raw_data["json"], target.symmetric_key, iv))
+            )
+            return info["data"][0]
+
+
+async def get_and_store_llm_details(chute_id: str):
+    """
+    Load the data from /v1/models for a given LLM, cache it for later.
+    """
+    async with get_session() as session:
+        chute = (
+            (
+                await session.execute(
+                    select(Chute)
+                    .where(Chute.chute_id == chute_id)
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not chute:
+            logger.error(f"Chute not found: {chute_id}")
+            return
 
         # Calculate pricing.
         hourly = await selector_hourly_price(chute.node_selector)
@@ -1086,63 +1123,100 @@ async def get_vllm_models(request: Request):
         if tao_usd:
             price["tao"] = per_million / tao_usd
 
-        args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
-        kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
-        inv_id = str(uuid.uuid4())
-        result = None
-        async for chunk in invoke(
-            chute,
-            await chutes_user(),
-            "/get_models",
-            "get_models",
-            False,
-            args,
-            kwargs,
-            target_manager,
-            inv_id,
-            metrics={},
-            request=request,
-        ):
-            if chunk.startswith('data: {"result"'):
-                result = json.loads(chunk[6:])["result"]
-                data = result["json"]["data"][0]
-                data["price"] = price
-                return result
-        await settings.redis_client.set(
-            f"_llminfo:{chute.chute_id}:{chute.version}",
-            json.dumps(result),
+        instances = [inst for inst in chute.instances if inst.active and inst.verified]
+        random.shuffle(instances)
+
+        # Try to fetch /v1/models from instances until one succeeds.
+        model_info = None
+        for instance in instances:
+            try:
+                model_info = await load_llm_details(chute, instance)
+                model_info["price"] = price
+                break
+            except Exception as exc:
+                logger.error(
+                    f"Failed to load model info from {instance.instance_id=}: {exc=}\n{traceback.format_exc()}"
+                )
+        if not model_info:
+            logger.error(f"Failed to populate model info from any instance for {chute_id=}")
+            return None
+        stmt = insert(LLMDetail).values(
+            chute_id=chute_id, details=model_info, updated_at=func.now()
         )
-        return result
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["chute_id"],
+            set_={"details": stmt.excluded.details, "updated_at": stmt.excluded.updated_at},
+        )
+        logger.success(f"Retrieved model info for {chute_id=}: {model_info=}")
+        await session.execute(stmt)
+        await session.commit()
+        return model_info
+
+
+async def refresh_all_llm_details():
+    """
+    Refresh LLM details for all LLMs.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(Chute.chute_id).where(
+                Chute.standard_template == "vllm",
+                Chute.user_id == await chutes_user_id(),
+                Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
+                Chute.public.is_(True),
+            )
+        )
+        chute_ids = [row[0] for row in result]
+    if not chute_ids:
+        logger.info("No chutes found to refresh")
+        return
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def get_details_with_semaphore(chute_id: str):
+        async with semaphore:
+            try:
+                return await get_and_store_llm_details(chute_id)
+            except Exception as exc:
+                logger.error(f"Failed to refresh LLM details for {chute_id}: {exc}")
+                return None
+
+    results = await asyncio.gather(
+        *[get_details_with_semaphore(chute_id) for chute_id in chute_ids], return_exceptions=False
+    )
+    successful = [item for item in results if item is not None]
+    logger.info(f"Refreshed LLM details successfully for {len(successful)}/{len(chute_ids)} chutes")
+    return successful
+
+
+async def get_llms(refresh: bool = False):
+    """
+    Get the combined /v1/models return value for chutes that are public and belong to chutes user.
+    """
+    if not refresh:
+        cached = await settings.redis_client.get("all_llms")
+        if cached:
+            return json.loads(cached)
+    else:
+        await refresh_all_llm_details()
 
     async with get_session() as session:
-        chutes = (
-            (
-                await session.execute(
-                    select(Chute)
-                    .where(
-                        Chute.standard_template == "vllm",
-                        Chute.chutes_version >= "0.2.15",
-                        Chute.public.is_(True),
-                        Chute.user_id == await chutes_user_id(),
-                        Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
-                    )
-                    .options(selectinload(Chute.instances))
-                    .order_by(Chute.invocation_count.desc())
-                )
+        result = await session.execute(
+            select(LLMDetail.details)
+            .join(Chute, LLMDetail.chute_id == Chute.chute_id)
+            .where(
+                Chute.standard_template == "vllm",
+                Chute.public.is_(True),
+                Chute.user_id == await chutes_user_id(),
+                Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
+                LLMDetail.details.is_not(None),
             )
-            .unique()
-            .scalars()
+            .order_by(Chute.invocation_count.desc())
         )
-        model_data = {"object": "list", "data": []}
-        results = await asyncio.gather(*[_get_models_data(chute) for chute in chutes])
-        for info in results:
-            if not info:
-                continue
-            logger.info(f"Trying to add to vllm models data: {info}")
-            data = info["json"]["data"][0]
-            model_data["data"].append(data)
-    await settings.redis_client.set("_llm_model_list", json.dumps(model_data), ex=600)
-    return model_data
+        model_details = [row[0] for row in result if row[0] is not None]
+        return_value = {"object": "list", "data": model_details}
+        await settings.redis_client.set("all_llms", json.dumps(return_value), ex=300)
+        return return_value
 
 
 async def count_prompt_tokens(body):
