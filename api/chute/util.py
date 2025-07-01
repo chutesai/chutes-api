@@ -396,9 +396,10 @@ async def _invoke_one(
             data=payload_string,
             headers=headers,
         )
-        logger.info(
-            f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
-        )
+        if response.status != 200:
+            logger.info(
+                f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
+            )
 
         # Check if the instance restarted and is using encryption V2.
         if response.status == status.HTTP_426_UPGRADE_REQUIRED and iv:
@@ -544,7 +545,8 @@ async def _invoke_one(
                 )
                 metrics.update(ma_updates)
 
-                logger.info(f"Metrics for chute={chute.name} {metrics}")
+                if random.random() <= 0.1:
+                    logger.info(f"Metrics for chute={chute.name} {metrics}")
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 await track_prefix_hashes(prefixes, target.instance_id)
         else:
@@ -657,8 +659,8 @@ async def _invoke_one(
                         chute_id=chute.chute_id, duration=total_time, metrics=metrics
                     )
                     metrics.update(ma_updates)
-
-                    logger.info(f"Metrics for {chute.name}: {metrics}")
+                    if random.random() <= 0.1:
+                        logger.info(f"Metrics for {chute.name}: {metrics}")
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                     await track_prefix_hashes(prefixes, target.instance_id)
             elif (
@@ -831,9 +833,9 @@ async def invoke(
                                         * LLM_PRICE_MULT_PER_MILLION
                                     )
                                     balance_used -= balance_used * discount
-                                    logger.info(
-                                        f"BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
-                                    )
+                                    # logger.info(
+                                    #     f"BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
+                                    # )
 
                             # Diffusion per step pricing.
                             elif chute.standard_template == "diffusion":
@@ -842,18 +844,18 @@ async def invoke(
                                         steps * hourly_price * DIFFUSION_PRICE_MULT_PER_STEP
                                     )
                                     balance_used -= balance_used * discount
-                                    logger.info(
-                                        f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
-                                    )
+                                    # logger.info(
+                                    #     f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
+                                    # )
 
                             default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600.0
                             default_balance_used -= default_balance_used * discount
 
                             if not balance_used:
                                 balance_used = default_balance_used
-                                logger.info(
-                                    f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
-                                )
+                                # logger.info(
+                                #     f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
+                                # )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
                     if balance_used and reroll:
@@ -881,19 +883,19 @@ async def invoke(
                     try:
                         value = 1.0 if not reroll else settings.reroll_multiplier
                         key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
-                        quota_used = await settings.quota_client.incrbyfloat(key, value)
-                        logger.info(
-                            f"QUOTA: used {quota_used} of daily quota for {user_id=} for {chute.chute_id=} {chute.name}"
-                        )
+                        _ = await settings.quota_client.incrbyfloat(key, value)
+                        # logger.info(
+                        #     f"QUOTA: used {quota_used} of daily quota for {user_id=} for {chute.chute_id=} {chute.name}"
+                        # )
                     except Exception as exc:
                         logger.error(
                             f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
                         )
 
-                    if balance_used:
-                        logger.info(
-                            f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"
-                        )
+                    # if balance_used:
+                    #     logger.info(
+                    #         f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"
+                    #     )
 
                     await session.commit()
 

@@ -360,9 +360,6 @@ async def _invoke(
                 )
         else:
             # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
-            logger.info(
-                f"QUOTA: {request_count=} for {current_user.user_id=} of {chute.chute_id=} of {quota=}"
-            )
             request.state.free_invocation = True
 
     # Identify the cord that we'll trying to access by the public API path and method.
@@ -467,12 +464,6 @@ async def _invoke(
             "sps": 0,
             "steps": steps,
         }
-
-    # Ready to query the miners finally :)
-    logger.info(
-        f"Calling {selected_cord['path']} of {chute.name} with up to {len(manager.instances)} "
-        f"targets on behalf of {current_user.username} [{origin_ip}]"
-    )
 
     include_trace = request.headers.get("X-Chutes-Trace", "").lower() == "true"
     parent_invocation_id = str(uuid.uuid4())
