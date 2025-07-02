@@ -577,6 +577,18 @@ async def register(
         user.permissions_bitmask = 0
         Permissioning.enable(user, Permissioning.free_account)
     db.add(user)
+
+    # Create the quota object.
+    quota = InvocationQuota(
+        user_id=user.user_id,
+        chute_id="*",
+        quota=0.0,
+        is_default=True,
+        payment_refresh_date=None,
+        updated_at=None,
+    )
+    db.add(quota)
+
     await db.commit()
     await db.refresh(user)
 
@@ -645,9 +657,22 @@ async def admin_create_user(
     # Automatically create an API key for the user as well.
     api_key, one_time_secret = APIKey.create(user.user_id, APIKeyArgs(name="default", admin=True))
     db.add(api_key)
+
+    # Create the quota object.
+    quota = InvocationQuota(
+        user_id=user.user_id,
+        chute_id="*",
+        quota=0.0,
+        is_default=True,
+        payment_refresh_date=None,
+        updated_at=None,
+    )
+    db.add(quota)
+
     await db.commit()
     await db.refresh(user)
     await db.refresh(api_key)
+
     key_response = APIKeyCreationResponse.model_validate(api_key)
     key_response.secret_key = one_time_secret
     response = _registration_response(user, fingerprint)

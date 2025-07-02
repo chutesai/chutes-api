@@ -140,6 +140,9 @@ class InvocationQuota(Base):
     __tablename__ = "invocation_quotas"
     user_id = Column(String, primary_key=True)
     chute_id = Column(String, primary_key=True)
+    is_default = Column(Boolean, default=True)
+    payment_refresh_date = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=False, server_default=func.now())
     quota = Column(BigInteger, nullable=False, default=settings.default_quotas.get("*", 200))
 
     @staticmethod
