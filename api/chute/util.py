@@ -280,7 +280,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     )
     query = query.where(or_(*conditions))
     user_sort_id = current_user.user_id if current_user else await chutes_user_id()
-    query = query.order_by((Chute.user_id == user_sort_id).desc())
+    query = query.order_by((Chute.user_id == user_sort_id).desc()).limit(1)
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
 
