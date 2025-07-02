@@ -360,7 +360,7 @@ async def my_quotas(
     )
     if not quotas:
         return settings.default_quotas
-    return {quota.chute_id: quota.quota for quota in quotas}
+    return quotas
 
 
 @router.get("/me/quota_usage/{chute_id}")
@@ -571,6 +571,7 @@ async def register(
         coldkey=user_args.coldkey,
         hotkey=hotkey,
     )
+    generate_user_uid(None, None, user)
     user.payment_address, user.wallet_secret = await generate_payment_address()
     user.developer_payment_address, user.developer_wallet_secret = await generate_payment_address()
     if settings.all_accounts_free:

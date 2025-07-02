@@ -8,7 +8,7 @@ DECLARE
     v_quota_exists BOOLEAN;
     v_quota_is_zero BOOLEAN;
 BEGIN
-    IF p_amount <= 1.0 THEN
+    IF p_amount < 5.0 THEN
         RETURN;
     END IF;
 
@@ -27,11 +27,11 @@ BEGIN
 
     IF NOT v_quota_exists THEN
         INSERT INTO invocation_quotas (user_id, chute_id, quota, is_default, payment_refresh_date, updated_at)
-        VALUES (p_user_id, 'default', 100, true, NOW(), NOW())
+        VALUES (p_user_id, '*', 200, true, NOW(), NOW())
         ON CONFLICT (user_id, chute_id) DO NOTHING;
     ELSIF v_quota_is_zero THEN
         UPDATE invocation_quotas
-        SET quota = 100,
+        SET quota = 200,
             payment_refresh_date = NOW(),
             updated_at = NOW()
         WHERE user_id = p_user_id

@@ -147,7 +147,7 @@ class InvocationQuota(Base):
 
     @staticmethod
     async def get(user_id: str, chute_id: str):
-        key = f"quota:{user_id}:{chute_id}".encode()
+        key = f"qta:{user_id}:{chute_id}".encode()
         cached = (await settings.memcache.get(key) or b"").decode()
         if cached and cached.isdigit():
             return int(cached)
@@ -161,12 +161,12 @@ class InvocationQuota(Base):
             )
             quota = result.scalar()
             if quota is not None:
-                await settings.memcache.set(key, str(quota).encode(), exptime=3600)
+                await settings.memcache.set(key, str(quota).encode(), exptime=60)
                 return quota
             default_quota = settings.default_quotas.get(
                 chute_id, settings.default_quotas.get("*", 200)
             )
-            await settings.memcache.set(key, str(default_quota).encode(), exptime=3600)
+            await settings.memcache.set(key, str(default_quota).encode(), exptime=60)
             return default_quota
 
     @staticmethod
