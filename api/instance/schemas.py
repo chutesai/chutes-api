@@ -3,7 +3,7 @@ ORM definitions for instances (deployments of chutes and/or inventory announceme
 """
 
 import secrets
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, constr
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import (
@@ -41,10 +41,16 @@ class ActivateArgs(BaseModel):
     active: bool
 
 
+class PortMap(BaseModel):
+    internal_port: int = Field(..., ge=22, le=65535)
+    external_port: int = Field(..., ge=22, le=65535)
+    proto: str = constr(pattern=r"^(tcp|udp|http)$")
+
+
 class LaunchConfigArgs(BaseModel):
     gpus: list[dict]
     host: str
-    port: int
+    port_mappings: list[PortMap]
     env: str
 
 

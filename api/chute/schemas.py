@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
 from api.fmv.fetcher import get_fetcher
-from pydantic import BaseModel, Field, computed_field, validator, constr
+from pydantic import BaseModel, Field, computed_field, validator, constr, field_validator
 from typing import List, Optional, Dict, Any
 
 
@@ -38,8 +38,14 @@ class Cord(BaseModel):
 
 class Port(BaseModel):
     name: str
-    port: int = Field(..., ge=22, le=65535)
+    port: int = Field(...)
     proto: str = constr(pattern=r"^(tcp|udp|http)$")
+
+    @field_validator("port")
+    def validate_port(cls, v):
+        if v == 22 or (8001 < v <= 65535 and v != 8000):
+            return v
+        raise ValueError("Port must be 22 or in range 8002-65535 (excluding 8000)")
 
 
 class Job(BaseModel):

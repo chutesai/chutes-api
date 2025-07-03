@@ -3,7 +3,6 @@
 -- add the jobs column to chutes/history table
 ALTER TABLE chutes ADD COLUMN IF NOT EXISTS jobs JSONB;
 ALTER TABLE chutes_history ADD COLUMN IF NOT EXISTS jobs JSONB;
-ALTER TABLE users ADD COLUMN IF NOT EXISTS job_limits JSONB;
 
 -- job_id and config_id columns on instances
 ALTER TABLE instances ADD COLUMN job_id VARCHAR, config_id VARCHAR, cacert VARCHAR;
@@ -150,4 +149,3 @@ ALTER TABLE chutes_history DROP COLUMN IF EXISTS jobs;
 ALTER TABLE instances DROP CONSTRAINT IF EXISTS fk_instances_job_id;
 ALTER TABLE instances DROP COLUMN IF EXISTS job_id;
 ALTER TABLE instances DROP COLUMN IF EXISTS cacert;
-ALTER TABLE users DROP COLUMN IF EXISTS job_limits;

@@ -8,8 +8,9 @@ import traceback
 import random
 import secrets
 import base64
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from loguru import logger
+from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text, func
 from sqlalchemy.orm import joinedload
@@ -44,7 +45,7 @@ from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import is_valid_host, generate_ip_token, aes_decrypt
-from api.graval_worker import verify_instance, graval_encrypt
+from api.graval_worker import verify_instance, graval_encrypt, verify_proof
 from watchtower import is_kubernetes_env, verify_expected_command
 
 router = APIRouter()
@@ -65,6 +66,11 @@ async def _load_chute(db, chute_id: str):
 
 async def _check_blacklisted(db, hotkey):
     mgnode = await get_miner_by_hotkey(hotkey, db)
+    if not mgnode:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Miner with hotkey {hotkey} not found in metagraph",
+        )
     if mgnode.blacklist_reason:
         logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
         raise HTTPException(
@@ -220,7 +226,7 @@ async def _validate_host_port(db, host, port):
 @router.get("/launch_config")
 async def get_launch_config(
     chute_id: str,
-    job_id: str = None,
+    job_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
@@ -269,7 +275,6 @@ async def get_launch_config(
     try:
         launch_config = LaunchConfig(
             config_id=str(uuid.uuid4()),
-            seed=random.randint(1, 2**63 - 1),
             env_key=secrets.token_bytes(16).hex(),
             chute_id=chute_id,
             job_id=job_id,
@@ -338,6 +343,7 @@ async def claim_launch_config(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"You are not running the correct command, sneaky devil: {exc}",
         )
+
     # K8S check.
     log_prefix = f"ENVDUMP: {config_id=} {chute.chute_id=}"
     if not is_kubernetes_env(chute, dump, log_prefix=log_prefix):
@@ -354,7 +360,7 @@ async def claim_launch_config(
     instance = Instance(
         instance_id=generate_uuid(),
         host=args.host,
-        port=args.port,
+        port=args.port_mappings[0].external_port,
         chute_id=launch_config.chute_id,
         version=chute.version,
         miner_uid=launch_config.miner_uid,
@@ -384,6 +390,9 @@ async def claim_launch_config(
             )
         job.instance_id = instance.instance_id
 
+        # Update any port mappings.
+        job.port_mappings = [item.model_dump() for item in args.port_mappings]
+
     # Verify the GPUs are suitable.
     node_ids = [node["uuid"] for node in args.gpus]
     try:
@@ -411,23 +420,22 @@ async def claim_launch_config(
     node_idx = random.choice(list(range(len(nodes))))
     node = nodes[node_idx]
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
-    ciphertext = await graval_encrypt(
+    ciphertext, seed = await graval_encrypt(
         node,
         instance.symmetric_key,
         with_chutes=True,
         cuda=False,
-        seed=launch_config.seed,
         iterations=iterations,
     )
+    launch_config.seed = seed
     logger.success(
         f"Generated ciphertext for {node.uuid} "
-        f"with seed={launch_config.seed} "
+        f"with seed={seed} "
         f"instance_id={instance.instance_id} "
         f"for symmetric key validation/PovW check: {ciphertext=}"
     )
 
-    # Store the timestamp so we can verify the graval challenges completed in the expected time.
-    launch_config.retrieved_at = func.now()
+    # Store the launch config.
     await db.commit()
     await db.refresh(launch_config)
 
@@ -475,7 +483,7 @@ async def verify_launch_config_instance(
         )
 
     # Check decryption time.
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    now = await db.scalar(select(func.now()))
     start = launch_config.retrieved_at.replace(tzinfo=None)
     query = (
         select(Instance)
@@ -495,8 +503,9 @@ async def verify_launch_config_instance(
         )
 
     # Valid response cipher?
+    response_body = await request.json()
     try:
-        ciphertext = (await request.json())["response"]
+        ciphertext = response_body["response"]
         bytes_ = base64.b64decode(ciphertext[32:])
         iv = bytes.fromhex(ciphertext[:32])
         response = aes_decrypt(bytes_, instance.symmetric_key, iv)
@@ -504,6 +513,21 @@ async def verify_launch_config_instance(
     except Exception as exc:
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=launch_config.verification_error,
+        )
+
+    # Valid proof?
+    try:
+        node_idx = random.randint(0, len(instance.nodes))
+        node = instance.nodes[node_idx]
+        work_product = next(p for p in response_body["proof"] if p["device_uuid"] == node.uuid)
+        assert await verify_proof(node, launch_config.seed, work_product)
+    except Exception as exc:
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = f"PoVW proof verification failed: {exc}"
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

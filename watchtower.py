@@ -646,8 +646,6 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
             miner_hotkey,
             "--validator-ss58",
             settings.validator_ss58,
-            "--token",
-            "JWT_PLACEHOLDER",
         ]
         if tls:
             parts += [
@@ -684,7 +682,6 @@ def verify_expected_command(
     assert process["pid"] == 1, "Failed to find chutes comman as PID 1"
     assert process["username"] == "chutes", "Not running as chutes user"
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
-    command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
     expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed, tls=tls)
     assert command_line == expected, f"Unexpected command: {command_line=} vs {expected=}"
     logger.success(f"Verified command line: {miner_hotkey=} {command_line=}")

@@ -146,8 +146,9 @@ async def get_encryption_settings(
         headers["Authorization"] = settings.codecheck_key
     payload = {
         "device_info": node.graval_dict(),
-        "seed": seed if seed is not None else random.randint(0, 999999999999),
     }
+    if not cuda and seed:
+        payload["seed"] = seed
     if not cuda:
         payload["iterations"] = iterations or 1
     if path == "encrypt":
@@ -208,32 +209,28 @@ async def graval_encrypt(
     backoff.constant,
     Exception,
     jitter=None,
-    interval=10,
+    interval=3,
     max_tries=7,
 )
-async def graval_decrypt(
-    node, payload, with_chutes=True, cuda=True, iterations: int = None, seed: int = None
+async def verify_proof(
+    node,
+    seed,
+    work_product,
+    index: int = 0,
 ):
     """
-    Decrypt data via the GraVal PoW mechanism.
+    Verify a miner's proof.
     """
-    url, data, headers, chute = await get_encryption_settings(
-        node,
-        "decrypt",
-        payload,
-        with_chutes=with_chutes,
-        cuda=cuda,
-        seed=seed,
-        iterations=iterations,
-    )
-    logger.info(f"Using {url=} for graval decryption")
+    url = f"{settings.opencl_graval_url}/check_proof"
+    payload = {
+        "device_info": node.graval_dict(),
+        "seed": seed,
+        "work_product": work_product,
+        "check_index": index,
+    }
     async with aiohttp.ClientSession(raise_for_status=True) as session:
-        async with session.post(url, json=data, headers=headers) as resp:
-            logger.success(f"Decrypted ciphertext from node {node.uuid} via {url=}")
-            if chute:
-                text = (await resp.json())["plaintext"]
-                return decrypt_envdump_cipher(text, data["key"], "0.2.46")
-            return await resp.text()
+        async with session.post(url, json=payload, timeout=30) as resp:
+            return (await resp.json())["result"]
 
 
 async def generate_cipher(node):
@@ -247,7 +244,6 @@ async def generate_cipher(node):
         plaintext,
         with_chutes=False,
         cuda=False,
-        seed=node.seed,
         iterations=graval_config["iterations"],
     )
     logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {cipher=}")
@@ -534,12 +530,15 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     target_index = random.choice(list(range(len(instance.nodes))))
     target_node = instance.nodes[target_index]
     expected = str(uuid.uuid4())
+    seed = None
+    if semver.compare(instance.chutes_version or "0.0.0", "0.3.0") < 0:
+        seed = target_node.seed
     ciphertext = await graval_encrypt(
         target_node,
         expected,
         with_chutes=not instance.chute.slug.startswith("chutes-graval"),
         cuda=not use_opencl_graval(instance.chute.chutes_version),
-        seed=target_node.seed,
+        seed=seed,
     )
 
     # Format the payload to accomodate the old mechanism.
@@ -746,7 +745,6 @@ async def check_live_code(instance: Instance) -> bool:
             .strip()
         )
         command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
-        command_line = re.sub(r" --token [a-zA-Z0-9\.]+", " --token JWT_PLACEHOLDER", command_line)
         expected = get_expected_command(
             instance.chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
         )
