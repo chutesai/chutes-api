@@ -7,8 +7,6 @@ import aiohttp
 import asyncio
 import re
 import uuid
-import random
-import datetime
 import io
 import time
 import traceback
@@ -16,12 +14,13 @@ import orjson as json
 import base64
 import gzip
 import pickle
-import backoff
+import random
 from async_lru import alru_cache
 from fastapi import Request, status
 from loguru import logger
 from transformers import AutoTokenizer
-from sqlalchemy import and_, or_, text, String, exists
+from sqlalchemy import and_, or_, text, String, exists, func
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
@@ -30,6 +29,7 @@ from api.constants import (
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
 from api.database import get_session
+from api.fmv.fetcher import get_fetcher
 from api.exceptions import InstanceRateLimit, BadRequest, KeyExchangeRequired, EmptyLLMResponse
 from api.util import (
     sse,
@@ -39,15 +39,19 @@ from api.util import (
     use_encryption_v2,
     use_encrypted_path,
 )
-from api.chute.schemas import Chute, NodeSelector, ChuteShare
-from api.user.schemas import User, InvocationQuota
+from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
+from api.user.schemas import User, InvocationQuota, InvocationDiscount
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager, get_chute_target_manager
+from api.instance.util import LeastConnManager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
+
+# aiohttp sessions cache
+_session_cache: dict[tuple[str, int], aiohttp.ClientSession] = {}
+_session_lock = asyncio.Lock()
 
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
@@ -78,8 +82,6 @@ INSERT INTO invocations (
     started_at,
     completed_at,
     error_message,
-    request_path,
-    response_path,
     compute_multiplier,
     bounty
 ) VALUES (
@@ -97,8 +99,6 @@ INSERT INTO invocations (
     CURRENT_TIMESTAMP,
     NULL,
     NULL,
-    :request_path,
-    NULL,
     :compute_multiplier,
     0
 ) RETURNING to_char(date_trunc('week', started_at), 'IYYY_IW') AS suffix
@@ -112,7 +112,6 @@ WITH removed_bounty AS (
 )
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
-    response_path = CAST(:response_path AS TEXT),
     bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty),
     metrics = :metrics
 WHERE invocation_id = :invocation_id
@@ -182,6 +181,20 @@ LEFT JOIN chute_averages ca ON ca.chute_id = c.chute_id
 WHERE c.created_at <= now() - INTERVAL '1 day'
 ORDER BY avg_busy_ratio DESC;
 """
+
+
+async def get_miner_session(instance: Instance) -> aiohttp.ClientSession:
+    """
+    Get or create an aiohttp session for an instance.
+    """
+    async with _session_lock:
+        if instance.instance_id not in _session_cache:
+            _session_cache[instance.instance_id] = aiohttp.ClientSession(
+                base_url=f"http://{instance.host}:{instance.port}",
+                timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+                read_bufsize=8 * 1024 * 1024,
+            )
+        return _session_cache[instance.instance_id]
 
 
 async def selector_hourly_price(node_selector) -> float:
@@ -285,7 +298,7 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
     )
     query = query.where(or_(*conditions))
     user_sort_id = current_user.user_id if current_user else await chutes_user_id()
-    query = query.order_by((Chute.user_id == user_sort_id).desc())
+    query = query.order_by((Chute.user_id == user_sort_id).desc()).limit(1)
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
 
@@ -389,21 +402,20 @@ async def _invoke_one(
 
     session, response = None, None
     try:
-        session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
-        )
+        session = await get_miner_session(target)
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
         if iv:
             headers["X-Chutes-Serialized"] = "true"
         started_at = time.time()
         response = await session.post(
-            f"http://{target.host}:{target.port}/{path}",
+            f"/{path}",
             data=payload_string,
             headers=headers,
         )
-        logger.info(
-            f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
-        )
+        if response.status != 200:
+            logger.info(
+                f"Received response {response.status} from miner {target.miner_hotkey} instance_id={target.instance_id} of chute_id={target.chute_id}"
+            )
 
         # Check if the instance restarted and is using encryption V2.
         if response.status == status.HTTP_426_UPGRADE_REQUIRED and iv:
@@ -517,7 +529,8 @@ async def _invoke_one(
                         # Sanity check on prompt token counts.
                         if claimed_prompt_tokens > prompt_tokens * 6:
                             logger.warning(
-                                f"Prompt tokens exceeded expectations [stream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens}"
+                                f"Prompt tokens exceeded expectations [stream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens} "
+                                f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
                             )
                         else:
                             prompt_tokens = min(claimed_prompt_tokens, prompt_tokens)
@@ -528,7 +541,8 @@ async def _invoke_one(
                             # Some chutes do multi-token prediction, but even so let's make sure people don't do shenanigans.
                             if claimed_completion_tokens > completion_tokens * 6:
                                 logger.warning(
-                                    f"Completion tokens exceeded expectations [stream]: {claimed_completion_tokens=} vs estimated={completion_tokens}"
+                                    f"Completion tokens exceeded expectations [stream]: {claimed_completion_tokens=} vs estimated={completion_tokens} "
+                                    f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
                                 )
                             else:
                                 completion_tokens = claimed_completion_tokens
@@ -549,7 +563,8 @@ async def _invoke_one(
                 )
                 metrics.update(ma_updates)
 
-                logger.info(f"Metrics for chute={chute.name} {metrics}")
+                if random.random() <= 0.1:
+                    logger.info(f"Metrics for chute={chute.name} {metrics}")
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 await track_prefix_hashes(prefixes, target.instance_id)
         else:
@@ -635,14 +650,16 @@ async def _invoke_one(
                         if claimed_completion_tokens := usage.get("completion_tokens", 0):
                             if claimed_completion_tokens > completion_tokens * 4:
                                 logger.warning(
-                                    f"Completion tokens exceeded expectations [nostream]: {claimed_completion_tokens=} vs estimated={completion_tokens}"
+                                    f"Completion tokens exceeded expectations [nostream]: {claimed_completion_tokens=} vs estimated={completion_tokens} "
+                                    f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
                                 )
                             else:
                                 completion_tokens = claimed_completion_tokens
                         if claimed_prompt_tokens := usage.get("prompt_tokens", 0):
                             if claimed_prompt_tokens > prompt_tokens * 1.5:
                                 logger.warning(
-                                    f"Prompt tokens exceeded expectations [nostream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens}"
+                                    f"Prompt tokens exceeded expectations [nostream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens} "
+                                    f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
                                 )
                             else:
                                 prompt_tokens = claimed_prompt_tokens
@@ -662,8 +679,8 @@ async def _invoke_one(
                         chute_id=chute.chute_id, duration=total_time, metrics=metrics
                     )
                     metrics.update(ma_updates)
-
-                    logger.info(f"Metrics for {chute.name}: {metrics}")
+                    if random.random() <= 0.1:
+                        logger.info(f"Metrics for {chute.name}: {metrics}")
                     track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                     await track_prefix_hashes(prefixes, target.instance_id)
             elif (
@@ -684,8 +701,6 @@ async def _invoke_one(
     finally:
         if response:
             await response.release()
-        if session:
-            await session.close()
 
 
 async def _s3_upload(data: io.BytesIO, path: str):
@@ -697,23 +712,6 @@ async def _s3_upload(data: io.BytesIO, path: str):
             await s3.upload_fileobj(data, settings.storage_bucket, path)
     except Exception as exc:
         logger.error(f"failed to store: {path} -> {exc}")
-
-
-async def _sample_request(chute_id, parent_invocation_id, args, kwargs):
-    """
-    Randomly sample and store request data.
-    """
-    # XXX disabled
-    return None
-
-    request_path = None
-    if random.random() <= REQUEST_SAMPLE_RATIO:
-        today = datetime.date.today()
-        request_path = f"invocations/{today.year}/{today.month}/{today.day}/{chute_id}/request-{parent_invocation_id}.json"
-        asyncio.create_task(
-            _s3_upload(io.BytesIO(json.dumps({"args": args, "kwargs": kwargs})), request_path)
-        )
-    return request_path
 
 
 async def invoke(
@@ -748,18 +746,15 @@ async def invoke(
         }
     )
 
-    # Randomly sample for validation purposes.
-    request_path = await _sample_request(chute_id, parent_invocation_id, args, kwargs)
-
     partition_suffix = None
-    rate_limited = 0
+    infra_overload = False
     avoid = []
     for attempt_idx in range(5):
         async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
             if not target:
-                logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
-                await asyncio.sleep(0.5)
-                continue
+                logger.warning(f"No targets found for {chute_id=}")
+                yield sse({"error": "no_targets"})
+                return
 
             invocation_id = str(uuid.uuid4())
             async with get_session() as session:
@@ -777,7 +772,6 @@ async def invoke(
                         "instance_id": target.instance_id,
                         "miner_uid": target.miner_uid,
                         "miner_hotkey": target.miner_hotkey,
-                        "request_path": request_path,
                         "compute_multiplier": NodeSelector(
                             **chute.node_selector
                         ).compute_multiplier,
@@ -799,7 +793,6 @@ async def invoke(
                         },
                     }
                 )
-                response_data = []
                 async for data in _invoke_one(
                     chute, path, stream, args, kwargs, target, metrics, prefixes, manager
                 ):
@@ -811,25 +804,14 @@ async def invoke(
                     except Exception:
                         ...
                     yield sse({"result": data})
-                    if request_path:
-                        response_data.append(data)
 
                 async with get_session() as session:
-                    # Save the response if we're randomly sampling this one.
-                    response_path = None
-                    if request_path:
-                        response_path = request_path.replace("/request", "/response")
-                        asyncio.create_task(
-                            _s3_upload(io.BytesIO(json.dumps(response_data)), response_path)
-                        )
-
                     # Mark the invocation as complete.
                     result = await session.execute(
                         text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                         {
                             "chute_id": chute_id,
                             "invocation_id": invocation_id,
-                            "response_path": response_path,
                             "metrics": json.dumps(metrics).decode(),
                         },
                     )
@@ -869,9 +851,6 @@ async def invoke(
                                         * LLM_PRICE_MULT_PER_MILLION
                                     )
                                     balance_used -= balance_used * discount
-                                    logger.info(
-                                        f"BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
-                                    )
 
                             # Diffusion per step pricing.
                             elif chute.standard_template == "diffusion":
@@ -880,23 +859,25 @@ async def invoke(
                                         steps * hourly_price * DIFFUSION_PRICE_MULT_PER_STEP
                                     )
                                     balance_used -= balance_used * discount
-                                    logger.info(
-                                        f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
-                                    )
 
                             default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600.0
                             default_balance_used -= default_balance_used * discount
 
                             if not balance_used:
                                 balance_used = default_balance_used
-                                logger.info(
-                                    f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
-                                )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
                     if balance_used and reroll:
                         # Also apply fractional balance to reroll.
                         balance_used = balance_used * settings.reroll_multiplier
+
+                    # User discounts.
+                    if balance_used:
+                        user_discount = await InvocationDiscount.get(user_id, chute.chute_id)
+                        if user_discount:
+                            balance_used -= balance_used * user_discount
+
+                    # Ship the data over to usage tracker which actually deducts/aggregates balance/etc.
                     try:
                         pipeline = settings.redis_client.pipeline()
                         key = f"balance:{user_id}:{chute.chute_id}"
@@ -911,18 +892,10 @@ async def invoke(
                     try:
                         value = 1.0 if not reroll else settings.reroll_multiplier
                         key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
-                        quota_used = await settings.quota_client.incrbyfloat(key, value)
-                        logger.info(
-                            f"QUOTA: used {quota_used} of daily quota for {user_id=} for {chute.chute_id=} {chute.name}"
-                        )
+                        _ = await settings.quota_client.incrbyfloat(key, value)
                     except Exception as exc:
                         logger.error(
                             f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
-                        )
-
-                    if balance_used:
-                        logger.info(
-                            f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"
                         )
 
                     await session.commit()
@@ -950,8 +923,7 @@ async def invoke(
                 error_detail = None
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
-                    await asyncio.sleep(0.5)
-                    rate_limited += 1
+                    infra_overload = True
                 elif isinstance(exc, BadRequest):
                     error_message = "BAD_REQUEST"
                     error_detail = str(exc)
@@ -1056,7 +1028,9 @@ async def invoke(
                     logger.warning(
                         f"instance_id={target.instance_id} [chute_id={target.chute_id}]: bad request {error_detail}"
                     )
-                    yield sse({"error": f"Invalid request: {error_detail}"})
+                    yield sse(
+                        {"error": "bad_request", "detail": f"Invalid request: {error_detail}"}
+                    )
                     return
 
                 yield sse(
@@ -1074,91 +1048,184 @@ async def invoke(
                 logger.error(
                     f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
                 )
-    if rate_limited == attempt_idx - 1:
-        logger.warning(f"All miners are at max capacity: {rate_limited=} {chute.name=}")
-        yield sse({"error": "rate_limit", "detail": "All miners are all maximum capacity"})
+    if infra_overload:
+        logger.warning(f"All miners are at max capacity: {chute.name=}")
+        yield sse(
+            {
+                "error": "infra_overload",
+                "detail": "Infrastructure is at maximum capacity, try again later",
+            }
+        )
     else:
-        logger.error(f"Failed to query all miners after {attempt_idx + 1} attempts")
+        logger.error(f"Failed to query any miners after {attempt_idx + 1} attempts")
         yield sse({"error": "exhausted all available targets to no avail"})
 
 
-async def get_vllm_models(request: Request):
+async def load_llm_details(chute, target):
     """
-    Get the combined /v1/models return value for chutes that are public and belong to chutes user.
+    Load the /v1/models endpoint for a chute from a single instance.
     """
-    cached = await settings.redis_client.get("vllm_model_list")
-    if cached:
-        return json.loads(cached)
+    path = "/get_models"
+    if use_encrypted_path(target.chutes_version):
+        path = aes_encrypt(path.ljust(24, "?"), target.symmetric_key, hex_encode=True)
+    payload = {
+        "args": base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode(),
+        "kwargs": base64.b64encode(gzip.compress(pickle.dumps({}))).decode(),
+    }
+    iv = None
+    if use_encryption_v2(target.chutes_version):
+        if not target.symmetric_key:
+            raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
+        payload = aes_encrypt(json.dumps(payload), target.symmetric_key)
+        iv = bytes.fromhex(payload[:32])
 
-    @backoff.on_exception(
-        backoff.constant,
-        Exception,
-        jitter=None,
-        interval=3,
-        max_tries=5,
-    )
-    async def _get_models_data(chute):
-        nonlocal request
-        cached = await settings.redis_client.get(f"vllm_model_inf:{chute.chute_id}:{chute.version}")
-        if cached:
-            return json.loads(cached)
-        async with get_session() as session:
-            target_manager = await get_chute_target_manager(session, chute.chute_id, max_wait=0)
-            if not target_manager or not target_manager.instances:
-                return None
-        args = base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode()
-        kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
-        inv_id = str(uuid.uuid4())
-        result = None
-        async for chunk in invoke(
-            chute,
-            await chutes_user_id(),
-            "/get_models",
-            "get_models",
-            False,
-            args,
-            kwargs,
-            target_manager,
-            inv_id,
-            metrics={},
-            request=request,
-        ):
-            if chunk.startswith('data: {"result"'):
-                result = json.loads(chunk[6:])["result"]
-        await settings.redis_client.set(
-            f"vllm_model_inf:{chute.chute_id}:{chute.version}",
-            json.dumps(result),
-        )
-        return result
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+        read_bufsize=8 * 1024 * 1024,
+        raise_for_status=True,
+    ) as session:
+        headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
+        if iv:
+            headers["X-Chutes-Serialized"] = "true"
+        async with session.post(
+            f"http://{target.host}:{target.port}/{path}", data=payload_string, headers=headers
+        ) as resp:
+            raw_data = await resp.json()
+            logger.info(
+                f"{target.chute_id=} {target.instance_id=} {target.miner_hotkey=}: {raw_data=}"
+            )
+            info = (
+                raw_data
+                if not iv
+                else json.loads(aes_decrypt(raw_data["json"], target.symmetric_key, iv))
+            )
+            return info["data"][0]
 
+
+async def get_and_store_llm_details(chute_id: str):
+    """
+    Load the data from /v1/models for a given LLM, cache it for later.
+    """
     async with get_session() as session:
-        chutes = (
+        chute = (
             (
                 await session.execute(
                     select(Chute)
-                    .where(
-                        Chute.standard_template == "vllm",
-                        Chute.chutes_version >= "0.2.15",
-                        Chute.public.is_(True),
-                        Chute.user_id == await chutes_user_id(),
-                        Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
-                    )
+                    .where(Chute.chute_id == chute_id)
                     .options(selectinload(Chute.instances))
                 )
             )
             .unique()
-            .scalars()
+            .scalar_one_or_none()
         )
-        model_data = {"object": "list", "data": []}
-        results = await asyncio.gather(*[_get_models_data(chute) for chute in chutes])
-        for info in results:
-            if not info:
-                continue
-            logger.info(f"Trying to add to vllm models data: {info}")
-            data = info["json"]["data"][0]
-            model_data["data"].append(data)
-    await settings.redis_client.set("vllm_model_list", json.dumps(model_data), ex=300)
-    return model_data
+        if not chute:
+            logger.error(f"Chute not found: {chute_id}")
+            return
+
+        # Calculate pricing.
+        hourly = await selector_hourly_price(chute.node_selector)
+        per_million = hourly * LLM_PRICE_MULT_PER_MILLION
+        if chute.discount:
+            per_million -= per_million * chute.discount
+        price = {"usd": per_million}
+        tao_usd = await get_fetcher().get_price("tao")
+        if tao_usd:
+            price["tao"] = per_million / tao_usd
+
+        instances = [inst for inst in chute.instances if inst.active and inst.verified]
+        random.shuffle(instances)
+
+        # Try to fetch /v1/models from instances until one succeeds.
+        model_info = None
+        for instance in instances:
+            try:
+                model_info = await load_llm_details(chute, instance)
+                model_info["price"] = price
+                break
+            except Exception as exc:
+                logger.error(
+                    f"Failed to load model info from {instance.instance_id=}: {exc=}\n{traceback.format_exc()}"
+                )
+        if not model_info:
+            logger.error(f"Failed to populate model info from any instance for {chute_id=}")
+            return None
+        stmt = insert(LLMDetail).values(
+            chute_id=chute_id, details=model_info, updated_at=func.now()
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["chute_id"],
+            set_={"details": stmt.excluded.details, "updated_at": stmt.excluded.updated_at},
+        )
+        logger.success(f"Retrieved model info for {chute_id=}: {model_info=}")
+        await session.execute(stmt)
+        await session.commit()
+        return model_info
+
+
+async def refresh_all_llm_details():
+    """
+    Refresh LLM details for all LLMs.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            select(Chute.chute_id).where(
+                Chute.standard_template == "vllm",
+                Chute.user_id == await chutes_user_id(),
+                Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
+                Chute.public.is_(True),
+            )
+        )
+        chute_ids = [row[0] for row in result]
+    if not chute_ids:
+        logger.info("No chutes found to refresh")
+        return
+
+    semaphore = asyncio.Semaphore(8)
+
+    async def get_details_with_semaphore(chute_id: str):
+        async with semaphore:
+            try:
+                return await get_and_store_llm_details(chute_id)
+            except Exception as exc:
+                logger.error(f"Failed to refresh LLM details for {chute_id}: {exc}")
+                return None
+
+    results = await asyncio.gather(
+        *[get_details_with_semaphore(chute_id) for chute_id in chute_ids], return_exceptions=False
+    )
+    successful = [item for item in results if item is not None]
+    logger.info(f"Refreshed LLM details successfully for {len(successful)}/{len(chute_ids)} chutes")
+    return successful
+
+
+async def get_llms(refresh: bool = False):
+    """
+    Get the combined /v1/models return value for chutes that are public and belong to chutes user.
+    """
+    if not refresh:
+        cached = await settings.redis_client.get("all_llms")
+        if cached:
+            return json.loads(cached)
+    else:
+        await refresh_all_llm_details()
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(LLMDetail.details)
+            .join(Chute, LLMDetail.chute_id == Chute.chute_id)
+            .where(
+                Chute.standard_template == "vllm",
+                Chute.public.is_(True),
+                Chute.user_id == await chutes_user_id(),
+                Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
+                LLMDetail.details.is_not(None),
+            )
+            .order_by(Chute.invocation_count.desc())
+        )
+        model_details = [row[0] for row in result if row[0] is not None]
+        return_value = {"object": "list", "data": model_details}
+        await settings.redis_client.set("all_llms", json.dumps(return_value), ex=300)
+        return return_value
 
 
 async def count_prompt_tokens(body):

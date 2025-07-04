@@ -26,6 +26,20 @@ class ReturnDepositArgs(BaseModel):
     address: str
 
 
+@cache(expire=90)
+@router.get("/quota_unlock_amount")
+async def get_quota_unlock_amount():
+    """
+    Amount, in USD, of payment history that provides the "free" tier quota.
+    """
+    tao_usd = await get_fetcher().get_price("tao")
+    return {
+        "usd": settings.quota_unlock_amount,
+        # For tao, we'll add a bit onto the estimate to hopefully accomodate any instantaneous price fluctuations.
+        "tao": (settings.quota_unlock_amount / tao_usd) * 1.05,
+    }
+
+
 @cache(expire=60)
 @router.get("/fmv")
 async def get_fmv():

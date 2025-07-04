@@ -153,14 +153,9 @@ class LeastConnManager:
         now = int(time.time())
         try:
             pattern = f"conn:{self.chute_id}:*"
-            started_at = time.time()
-            total_removed = await self.redis_client.eval(
+            _ = await self.redis_client.eval(
                 self.lua_batch_cleanup, 0, pattern, now, self.connection_expiry
             )
-            if total_removed:
-                logger.info(
-                    f"Cleaned {total_removed} expired connections for chute {self.chute_id} in {time.time() - started_at} seconds"
-                )
         except Exception as e:
             logger.error(f"Error in batch cleanup: {e}", exc_info=True)
 
@@ -215,7 +210,6 @@ class LeastConnManager:
         grouped_by_count = {}
         for instance_id, count in counts.items():
             if count >= 25:
-                logger.warning(f"Instance {instance_id} has too many connections: {count}")
                 continue
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
@@ -293,8 +287,7 @@ class LeastConnManager:
             instance = targets[0]
             try:
                 key = f"conn:{self.chute_id}:{instance.instance_id}"
-                started_at = time.time()
-                count = await asyncio.wait_for(
+                _ = await asyncio.wait_for(
                     self.redis_client.eval(
                         self.lua_add_connection,
                         1,
@@ -304,10 +297,6 @@ class LeastConnManager:
                         self.connection_expiry,
                     ),
                     timeout=3.0,
-                )
-                time_taken = time.time() - started_at
-                logger.info(
-                    f"Assigned {conn_id=} of {self.chute_id} to {instance.instance_id} {count=} {time_taken=}"
                 )
             except asyncio.TimeoutError:
                 logger.warning(

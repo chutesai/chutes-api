@@ -213,6 +213,7 @@ class Chute(Base):
     shares = relationship(
         "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
+    llm_detail = relationship("LLMDetail", back_populates="chute", lazy="select", uselist=False)
 
     @validates("name")
     def validate_name(self, _, name):
@@ -377,3 +378,14 @@ class ChuteShare(Base):
     shared_at = Column(DateTime, server_default=func.now())
 
     chute = relationship("Chute", back_populates="shares", uselist=False)
+
+
+class LLMDetail(Base):
+    __tablename__ = "llm_details"
+    chute_id = Column(
+        String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    details = Column(JSONB, nullable=False)
+    updated_at = Column(DateTime, server_default=func.now())
+
+    chute = relationship("Chute", back_populates="llm_detail", uselist=False)

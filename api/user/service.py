@@ -180,3 +180,15 @@ async def chutes_user_id():
             .scalar_one_or_none()
         )
     return router._chutes_user_id
+
+
+async def chutes_user():
+    if (user := getattr(router, "_chutes_user", None)) is not None:
+        return user
+    async with get_session() as session:
+        router._chutes_user = (
+            (await session.execute(select(User).where(User.username == "chutes")))
+            .unique()
+            .scalar_one_or_none()
+        )
+    return router._chutes_user
