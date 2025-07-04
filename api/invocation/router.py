@@ -573,48 +573,124 @@ async def _invoke(
                 detail="Stop spamming this prompt, please...",
             )
 
+    # Handle streaming responses, either because the user asked for X-Chutes-Trace,
+    # or in the case of LLMs with stream: true in request.
     if stream or include_trace:
+        # We have to wait until we have the first chuck to determine whether or not we
+        # should return a successful response, otherwise for example we could return
+        # a 200 status but actually be overwhelmed and it should be a 429/503/etc.
+        async def _buffered_stream_response():
+            first_chunk_processed = False
+            buffered_chunks = []
 
-        async def _stream_response():
-            skip = False
-            async for chunk in invoke(
-                chute,
-                current_user,
-                selected_cord["path"],
-                selected_cord["function"],
-                stream,
-                args,
-                kwargs,
-                manager,
-                parent_invocation_id,
-                metrics=metrics,
-                request=request,
-                prefixes=prefix_hashes,
-                reroll=reroll,
-            ):
-                if include_trace:
-                    yield chunk
-                    continue
-                if skip:
-                    continue
-                if chunk.startswith('data: {"result"'):
-                    result_val = json.loads(chunk[6:])["result"]
-                    yield result_val
-                elif chunk.startswith('data: {"error"'):
-                    error = json.loads(chunk[6:])["error"]
+            try:
+                async for chunk in invoke(
+                    chute,
+                    current_user,
+                    selected_cord["path"],
+                    selected_cord["function"],
+                    stream,
+                    args,
+                    kwargs,
+                    manager,
+                    parent_invocation_id,
+                    metrics=metrics,
+                    request=request,
+                    prefixes=prefix_hashes,
+                    reroll=reroll,
+                ):
+                    if include_trace:
+                        if not first_chunk_processed:
+                            first_chunk_processed = True
+                        yield chunk
+                        continue
+
+                    # Handle errors.
+                    if chunk.startswith('data: {"error"'):
+                        chunk_data = json.loads(chunk[6:])
+                        error = chunk_data["error"]
+
+                        # If the error occurred on the first chunk, we can raise an HTTP exception.
+                        if not first_chunk_processed:
+                            if error == "rate_limit":
+                                raise HTTPException(
+                                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                                    detail=chunk_data.get("detail") or error,
+                                )
+                            elif error == "bad_request":
+                                raise HTTPException(
+                                    status_code=status.HTTP_400_BAD_REQUEST,
+                                    detail=chunk_data.get("detail") or error,
+                                )
+                            elif error == "no_targets":
+                                raise HTTPException(
+                                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    detail="No instances available to process request, try again later!",
+                                )
+                            raise HTTPException(
+                                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=error,
+                            )
+                        else:
+                            # If we've already started streaming, at this point we can't change the response
+                            # headers so we need to just include an error string in the stream.
+                            yield json.dumps(
+                                {
+                                    "error": f"Unhandled exception during response stream: {error}",
+                                }
+                            )
+                            return
+
+                    # Normal result chunks.
+                    elif chunk.startswith('data: {"result"'):
+                        result_val = json.loads(chunk[6:])["result"]
+                        if not first_chunk_processed:
+                            first_chunk_processed = True
+                            for buffered_chunk in buffered_chunks:
+                                yield buffered_chunk
+                            buffered_chunks = []
+                        yield result_val
+
+            except Exception as e:
+                if not first_chunk_processed:
+                    if isinstance(e, HTTPException):
+                        raise e
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+                        )
+                else:
                     yield json.dumps(
                         {
-                            "status": status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            "detail": error or "No result returned from upstream",
+                            "error": f"Unhandled exception during response stream: {error}",
                         }
                     )
-                    skip = True
 
-        return StreamingResponse(
-            _stream_response(),
-            media_type="text/event-stream",
-            headers={"X-Chutes-InvocationID": parent_invocation_id},
-        )
+        # Create the response generator, but wait for the first chunk before returning
+        # the StreamingResponse object so we don't incorrectly give a 200 response
+        # for failed requests.
+        try:
+            generator = _buffered_stream_response()
+            first_chunk = await generator.__anext__()
+
+            async def _stream_with_first_chunk():
+                yield first_chunk
+                async for chunk in generator:
+                    yield chunk
+
+            return StreamingResponse(
+                _stream_with_first_chunk(),
+                media_type="text/event-stream",
+                headers={"X-Chutes-InvocationID": parent_invocation_id},
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Unhandled error generating response: {e}",
+            )
 
     # Non-streamed (which we actually do stream but we'll just return the first item)
     error = None

@@ -49,6 +49,10 @@ from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
 
+# aiohttp sessions cache
+_session_cache: dict[tuple[str, int], aiohttp.ClientSession] = {}
+_session_lock = asyncio.Lock()
+
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
     os.path.join(
@@ -177,6 +181,20 @@ LEFT JOIN chute_averages ca ON ca.chute_id = c.chute_id
 WHERE c.created_at <= now() - INTERVAL '1 day'
 ORDER BY avg_busy_ratio DESC;
 """
+
+
+async def get_miner_session(instance: Instance) -> aiohttp.ClientSession:
+    """
+    Get or create an aiohttp session for an instance.
+    """
+    async with _session_lock:
+        if instance.instance_id not in _session_cache:
+            _session_cache[instance.instance_id] = aiohttp.ClientSession(
+                base_url=f"http://{instance.host}:{instance.port}",
+                timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+                read_bufsize=8 * 1024 * 1024,
+            )
+        return _session_cache[instance.instance_id]
 
 
 async def selector_hourly_price(node_selector) -> float:
@@ -384,15 +402,13 @@ async def _invoke_one(
 
     session, response = None, None
     try:
-        session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0), read_bufsize=8 * 1024 * 1024
-        )
+        session = await get_miner_session(target)
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
         if iv:
             headers["X-Chutes-Serialized"] = "true"
         started_at = time.time()
         response = await session.post(
-            f"http://{target.host}:{target.port}/{path}",
+            f"/{path}",
             data=payload_string,
             headers=headers,
         )
@@ -681,8 +697,6 @@ async def _invoke_one(
     finally:
         if response:
             await response.release()
-        if session:
-            await session.close()
 
 
 async def _s3_upload(data: io.BytesIO, path: str):
@@ -729,14 +743,14 @@ async def invoke(
     )
 
     partition_suffix = None
-    rate_limited = 0
+    infra_overload = False
     avoid = []
     for attempt_idx in range(5):
         async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
             if not target:
-                logger.warning(f"No targets found for {chute_id=}, sleeping and re-trying...")
-                await asyncio.sleep(0.5)
-                continue
+                logger.warning(f"No targets found for {chute_id=}")
+                yield sse({"error": "no_targets"})
+                return
 
             invocation_id = str(uuid.uuid4())
             async with get_session() as session:
@@ -833,9 +847,6 @@ async def invoke(
                                         * LLM_PRICE_MULT_PER_MILLION
                                     )
                                     balance_used -= balance_used * discount
-                                    # logger.info(
-                                    #     f"BALANCE: LLM token pricing: ${hourly_price * LLM_PRICE_MULT_PER_MILLION:.4f}/million for {chute.name}, {balance_used=} for {tokens=} {discount=}"
-                                    # )
 
                             # Diffusion per step pricing.
                             elif chute.standard_template == "diffusion":
@@ -844,18 +855,12 @@ async def invoke(
                                         steps * hourly_price * DIFFUSION_PRICE_MULT_PER_STEP
                                     )
                                     balance_used -= balance_used * discount
-                                    # logger.info(
-                                    #     f"BALANCE: Diffusion step pricing: ${hourly_price * DIFFUSION_PRICE_MULT_PER_STEP:.4f}/step for {chute.name}, {balance_used=} {discount=}"
-                                    # )
 
                             default_balance_used = compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600.0
                             default_balance_used -= default_balance_used * discount
 
                             if not balance_used:
                                 balance_used = default_balance_used
-                                # logger.info(
-                                #     f"BALANCE: Defaulting to standard compute hourly pricing balance deduction for {chute.name}: {balance_used=} {discount=}"
-                                # )
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
                     if balance_used and reroll:
@@ -884,18 +889,10 @@ async def invoke(
                         value = 1.0 if not reroll else settings.reroll_multiplier
                         key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
                         _ = await settings.quota_client.incrbyfloat(key, value)
-                        # logger.info(
-                        #     f"QUOTA: used {quota_used} of daily quota for {user_id=} for {chute.chute_id=} {chute.name}"
-                        # )
                     except Exception as exc:
                         logger.error(
                             f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
                         )
-
-                    # if balance_used:
-                    #     logger.info(
-                    #         f"Deducted (soon) ${balance_used:.12f} from {user_id=} for {chute.chute_id=} {chute.name}"
-                    #     )
 
                     await session.commit()
 
@@ -922,8 +919,7 @@ async def invoke(
                 error_detail = None
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
-                    await asyncio.sleep(0.5)
-                    rate_limited += 1
+                    infra_overload = True
                 elif isinstance(exc, BadRequest):
                     error_message = "BAD_REQUEST"
                     error_detail = str(exc)
@@ -1028,7 +1024,9 @@ async def invoke(
                     logger.warning(
                         f"instance_id={target.instance_id} [chute_id={target.chute_id}]: bad request {error_detail}"
                     )
-                    yield sse({"error": f"Invalid request: {error_detail}"})
+                    yield sse(
+                        {"error": "bad_request", "detail": f"Invalid request: {error_detail}"}
+                    )
                     return
 
                 yield sse(
@@ -1046,11 +1044,16 @@ async def invoke(
                 logger.error(
                     f"Error trying to call instance_id={target.instance_id} [chute_id={target.chute_id}]: {error_message}"
                 )
-    if rate_limited == attempt_idx - 1:
-        logger.warning(f"All miners are at max capacity: {rate_limited=} {chute.name=}")
-        yield sse({"error": "rate_limit", "detail": "All miners are all maximum capacity"})
+    if infra_overload:
+        logger.warning(f"All miners are at max capacity: {chute.name=}")
+        yield sse(
+            {
+                "error": "rate_limit",
+                "detail": "Infrastructure is at maximum capacity, try again later",
+            }
+        )
     else:
-        logger.error(f"Failed to query all miners after {attempt_idx + 1} attempts")
+        logger.error(f"Failed to query any miners after {attempt_idx + 1} attempts")
         yield sse({"error": "exhausted all available targets to no avail"})
 
 
