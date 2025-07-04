@@ -612,20 +612,15 @@ async def _invoke(
 
                         # If the error occurred on the first chunk, we can raise an HTTP exception.
                         if not first_chunk_processed:
-                            if error == "rate_limit":
+                            if error in ("infra_overload", "no_targets"):
                                 raise HTTPException(
-                                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                                     detail=chunk_data.get("detail") or error,
                                 )
                             elif error == "bad_request":
                                 raise HTTPException(
                                     status_code=status.HTTP_400_BAD_REQUEST,
                                     detail=chunk_data.get("detail") or error,
-                                )
-                            elif error == "no_targets":
-                                raise HTTPException(
-                                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                                    detail="No instances available to process request, try again later!",
                                 )
                             raise HTTPException(
                                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -740,7 +735,23 @@ async def _invoke(
                     },
                 )
         elif chunk.startswith('data: {"error"'):
-            error = json.loads(chunk[6:])["error"]
+            chunk_data = json.loads(chunk[6:])
+            error = chunk_data["error"]
+            if error in ("infra_overload", "no_targets"):
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=chunk_data.get("detail") or error,
+                )
+            elif error == "bad_request":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=chunk_data.get("detail") or error,
+                )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=error,
+            )
+
     if response:
         return response
     raise HTTPException(
