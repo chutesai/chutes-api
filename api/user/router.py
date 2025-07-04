@@ -363,6 +363,27 @@ async def my_quotas(
     return quotas
 
 
+@router.get("/me/discounts")
+async def my_discounts(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Load discounts for the current user.
+    """
+    discounts = (
+        (
+            await db.execute(
+                select(InvocationDiscount).where(InvocationDiscount.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalars()
+        .all()
+    )
+    return discounts
+
+
 @router.get("/me/quota_usage/{chute_id}")
 async def chute_quota_usage(
     chute_id: str,
