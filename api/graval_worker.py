@@ -277,7 +277,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
     # Send the challenge over to the miner.
     node = nodes[0]
     url = f"http://{node.verification_host}:{node.verification_port}/prove"
-    logger.info(f"Sending PoVW challenge to {url=}: {challenge=}")
+    logger.info(f"Sending PoVW challenge to {url=} for {node.miner_hotkey=}: {challenge=}")
     error_message = None
     started_at = time.time()
     try:
@@ -289,7 +289,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
         ) as response:
             if response.status != 200:
                 error_message = (
-                    "Miner failed to generate a proof and/or decrypt: "
+                    "Miner failed to generate a proof and/or decrypt from {url=} {node.miner_hotkey=}: "
                     f"{response.status=} {await response.text()}"
                 )
             else:
@@ -298,19 +298,22 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
                 if not all(
                     [data["plaintext"][idx] == plaintext[idx] for idx in range(len(plaintext))]
                 ):
-                    error_message = f"Miner responded with incorrect plaintext: expected={plaintext}, received={data['plaintext']}"
+                    error_message = (
+                        f"Miner responded with incorrect plaintext {url=} {node.miner_hotkey=}: "
+                        f"expected={plaintext}, received={data['plaintext']}"
+                    )
 
                 # Check if the time taken to generate the proof matches what we'd expect.
                 delta = time.time() - started_at
                 if not graval_config["estimate"] * 0.80 < delta < graval_config["estimate"] * 1.2:
                     error_message = (
                         f"GraVal decryption challenge completed in {int(delta)} seconds, "
-                        f"but estimate is {graval_config['estimate']} seconds"
+                        f"but estimate is {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"
                     )
                 else:
                     logger.success(
                         f"Miner successfully decrypted via PoVW in {delta} seconds, "
-                        f"expected {graval_config['estimate']} seconds"
+                        f"expected {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"
                     )
 
                 # Verify the proofs.
@@ -327,6 +330,10 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
                 )
                 if not all(verified):
                     error_message = "Miner proof verification failed!"
+                else:
+                    logger.success(
+                        f"All miner proofs verified successfully: {url=} {node.miner_hotkey=}"
+                    )
 
     except Exception as exc:
         error_message = (
