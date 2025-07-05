@@ -114,7 +114,6 @@ async def verify_device_info_challenge(devices, challenge, response, opencl: boo
 
 async def get_encryption_settings(
     node,
-    path,
     data,
     with_chutes: bool = True,
     cuda: bool = True,
@@ -135,12 +134,12 @@ async def get_encryption_settings(
         with_chutes = False
 
     # Encrypt the payload.
-    url = f"https://{slug}.{settings.base_domain}/{path}"
+    url = f"https://{slug}.{settings.base_domain}/encrypt"
     if not with_chutes:
         if cuda:
-            url = f"{settings.graval_url}/{path}"
+            url = f"{settings.graval_url}/encrypt"
         else:
-            url = f"{settings.opencl_graval_url}/{path}"
+            url = f"{settings.opencl_graval_url}/encrypt"
     headers = {}
     if with_chutes:
         headers["Authorization"] = settings.codecheck_key
@@ -151,19 +150,13 @@ async def get_encryption_settings(
         payload["seed"] = seed
     if not cuda:
         payload["iterations"] = iterations or 1
-    if path == "encrypt":
-        payload.update({"payload": data if isinstance(data, str) else json.dumps(data).decode()})
-        if with_chutes:
-            payload.update(
-                {
-                    "key": secrets.token_bytes(16).hex(),
-                }
-            )
-    else:
-        if with_chutes:
-            payload.update({"data": data})
-        else:
-            payload.update({"payload": data})
+    payload.update({"payload": data if isinstance(data, str) else json.dumps(data).decode()})
+    if with_chutes:
+        payload.update(
+            {
+                "key": secrets.token_bytes(16).hex(),
+            }
+        )
 
     return url, payload, headers, with_chutes
 
@@ -183,7 +176,6 @@ async def graval_encrypt(
     """
     url, data, headers, chute = await get_encryption_settings(
         node,
-        "encrypt",
         payload,
         with_chutes=with_chutes,
         cuda=cuda,
@@ -229,7 +221,7 @@ async def verify_proof(
         "check_index": index,
     }
     async with aiohttp.ClientSession(raise_for_status=True) as session:
-        async with session.post(url, json=payload, timeout=30) as resp:
+        async with session.post(url, json=payload, timeout=120) as resp:
             return (await resp.json())["result"]
 
 
@@ -244,75 +236,101 @@ async def generate_cipher(node):
         plaintext,
         with_chutes=False,
         cuda=False,
+        seed=node.seed,
         iterations=graval_config["iterations"],
     )
     logger.info(f"Generated ciphertext for {node.uuid} from {plaintext=} {cipher=}")
     return plaintext, cipher
 
 
-async def check_encryption_challenge(
-    node: Node, plaintext: str, ciphertext: str, uuids: list[str], timeout: int = None
-) -> bool:
+async def verify_povw_challenge(nodes: list[Node]) -> bool:
     """
-    Send a single device decryption challenge.
+    Generate a povw challenge for the miner and verify the proof.
     """
-    url = f"http://{node.verification_host}:{node.verification_port}/decrypt"
-    graval_config = SUPPORTED_GPUS[node.gpu_identifier]["graval"]
-    payload = {
-        "ciphertext": ciphertext,
-        "seed": node.seed,
+
+    # Generate the challenge.
+    graval_config = SUPPORTED_GPUS[nodes[0].gpu_identifier]["graval"]
+    cipher_data = await asyncio.gather(
+        *[
+            generate_cipher(
+                node,
+            )
+            for node in nodes
+        ]
+    )
+    ciphertexts = [c[1].split("|")[-1] for c in cipher_data]
+    plaintext = [c[0] for c in cipher_data]
+    challenge = {
+        "seed": nodes[0].seed,
         "iterations": graval_config["iterations"],
-        "device_index": node.device_index,
+        "ciphertext": [
+            {"device_index": idx, "data": ciphertexts[idx]} for idx in range(len(nodes))
+        ],
     }
 
-    # Send the request and verify the response.
+    # Send the challenge over to the miner.
+    node = nodes[0]
+    url = f"http://{node.verification_host}:{node.verification_port}/prove"
     error_message = None
     started_at = time.time()
     try:
         async with miner_client.post(
             node.miner_hotkey,
             url,
-            payload=payload,
-            timeout=timeout or int(graval_config["estimate"] * 1.35),
+            payload=challenge,
+            timeout=int(graval_config["estimate"] * 1.2),
         ) as response:
             if response.status != 200:
                 error_message = (
-                    "Failed to perform decryption challenge: "
+                    "Miner failed to generate a proof and/or decrypt: "
                     f"{response.status=} {await response.text()}"
                 )
             else:
-                response_text = (await response.json())["plaintext"]
-                if response_text != plaintext:
+                # Verify the decrypted responses are what we'd expect.
+                data = await response.json()
+                if not all(
+                    [data["plaintext"][idx] == plaintext[idx] for idx in range(len(plaintext))]
+                ):
+                    error_message = f"Miner responded with incorrect plaintext: expected={plaintext}, received={data['plaintext']}"
+
+                # Check if the time taken to generate the proof matches what we'd expect.
+                delta = time.time() - started_at
+                if not graval_config["estimate"] * 0.80 < delta < graval_config["estimate"] * 1.2:
                     error_message = (
-                        f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
+                        f"GraVal decryption challenge completed in {int(delta)} seconds, "
+                        f"but estimate is {graval_config['estimate']} seconds"
                     )
-                # XXX disabled for the time being.
-                # elif timeout is None:
-                #     delta = time.time() - started_at
-                #     if (
-                #         not graval_config["estimate"] * 0.70
-                #         < delta
-                #         < graval_config["estimate"] * 1.3
-                #     ):
-                #         error_message = (
-                #             f"GraVal decryption challenge completed in {int(delta)} seconds, "
-                #             f"but estimate is {graval_config['estimate']} seconds"
-                #         )
+
+                # Verify the proofs.
+                verified = await asyncio.gather(
+                    *[
+                        verify_proof(
+                            nodes[idx],
+                            nodes[0].seed,
+                            data["proof"][idx]["work_product"],
+                            index=0,
+                        )
+                        for idx in range(len(nodes))
+                    ]
+                )
+                if not all(verified):
+                    error_message = "Miner proof verification failed!"
+
     except Exception as exc:
         error_message = (
-            "Unhandled exception performing miner decryption challenge after "
+            "Unhandled exception gathering miner PoVW challenge after "
             f"{time.time() - started_at} seconds: {exc=}\n{traceback.format_exc()}"
         )
 
-    # Store the reason for the verification error, upon failure.
+    # On failure, store the reason and reset the seed.
     if error_message:
         logger.error(error_message)
+        new_seed = random.randint(1, 2**63 - 1)
         async with get_session() as session:
-            # On failure, mark all of the GPUs as failed.
             await session.execute(
                 update(Node)
-                .where(Node.uuid.in_(uuids))
-                .values({"verification_error": error_message})
+                .where(Node.uuid.in_([node.uuid for node in nodes]))
+                .values({"seed": new_seed, "verification_error": error_message})
             )
         await session.commit()
         return False
@@ -438,45 +456,20 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
 
-    # Check if the advertised IP matches outbound IP, disabled temporarily.
+    # XXX Check if the advertised IP matches outbound IP, disabled temporarily.
     # if not await verify_outbound_ip(nodes):
     #     return False, "Outbound IP address does not match advertised IP address"
 
-    # Fast pass, do simple device info challenges.
+    # Check the basic device info challenges first.
     for _ in range(settings.device_info_challenge_count):
         if not await check_device_info_challenge(nodes, opencl=True):
             error_message = "one or more device info challenges failed"
             logger.warning(error_message)
             return False, error_message
 
-    # Generate ciphertexts for each GPU for PoVW
-    challenges = await asyncio.gather(*[generate_cipher(node) for node in nodes])
-
-    # See if they decrypt properly - send one challenge first, which triggers the graval
-    # init for all GPUs, then if/when that passes we can call the decryption endpoint
-    # for all other GPUs concurrently and it will be virtually instant.
-    if not await check_encryption_challenge(
-        nodes[0], challenges[0][0], challenges[0][1], uuids=uuids
-    ):
-        error_message = "one or more decryption challenges failed"
-        logger.warning(error_message)
-        return False, error_message
-    if len(nodes) > 1:
-        successes = await asyncio.gather(
-            *[
-                check_encryption_challenge(
-                    nodes[idx],
-                    challenges[idx][0],
-                    challenges[idx][1],
-                    uuids=uuids,
-                )
-                for idx in range(1, len(nodes))
-            ]
-        )
-        if not all(successes):
-            error_message = "one or more decryption challenges failed"
-            logger.warning(error_message)
-            return False, error_message
+    # PoVW challenge.
+    if not await verify_povw_challenge(nodes):
+        return False, "failed povw challenge(s)"
 
     # Validation success.
     logger.success(
@@ -981,6 +974,10 @@ async def verify_instance(instance_id: str):
         instance.verified = True
         instance.last_verified_at = func.now()
         instance.verification_error = None
+
+        # If there is a job associated with the instance, start it.
+        # XXX START JOB
+
         await session.commit()
         await session.refresh(instance)
 
