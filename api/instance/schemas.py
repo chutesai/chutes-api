@@ -75,15 +75,17 @@ class Instance(Base):
     consecutive_failures = Column(Integer, default=0)
     chutes_version = Column(String, nullable=True)
     symmetric_key = Column(String, default=lambda: secrets.token_bytes(16).hex())
-    job_id = Column(String, ForeignKey("jobs.job_id", ondelete="SET NULL"), nullable=True)
     config_id = Column(
-        String, ForeignKey("launch_configs.config_id", ondelete="SET NULL"), nullable=True
+        String,
+        ForeignKey("launch_configs.config_id", ondelete="SET NULL"),
+        nullable=True,
+        unique=True,
     )
     cacert = Column(String, nullable=True)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
-    job = relationship("Job", back_populates="instance")
+    job = relationship("Job", back_populates="instance", uselist=False)
     config = relationship("LaunchConfig", back_populates="instance")
 
     __table_args__ = (
@@ -104,7 +106,9 @@ class LaunchConfig(Base):
     seed = Column(BigInteger, nullable=False)
     env_key = Column(String, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
-    job_id = Column(String, ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=True)
+    job_id = Column(
+        String, ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=True, unique=True
+    )
     host = Column(String, nullable=True)
     port = Column(Integer, nullable=True)
     miner_uid = Column(Integer, nullable=False)
@@ -115,10 +119,8 @@ class LaunchConfig(Base):
     verified_at = Column(DateTime, nullable=True)
     failed_at = Column(DateTime, nullable=True)
     verification_error = Column(String, nullable=True)
-    instance_id = Column(
-        String, ForeignKey("instances.instance_id", ondelete="SET NULL"), nullable=True
-    )
 
-    instance = relationship("Instance", back_populates="config")
+    instance = relationship("Instance", back_populates="config", uselist=False)
+    job = relationship("Job", back_populates="launch_config")
 
     __table_args__ = (UniqueConstraint("job_id", name="uq_job_launch_config"),)

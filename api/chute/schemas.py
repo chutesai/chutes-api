@@ -214,6 +214,7 @@ class Chute(Base):
         "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
     llm_detail = relationship("LLMDetail", back_populates="chute", lazy="select", uselist=False)
+    running_jobs = relationship("Job", back_populates="chute", lazy="select")
 
     @validates("name")
     def validate_name(self, _, name):

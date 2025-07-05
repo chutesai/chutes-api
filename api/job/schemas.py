@@ -31,7 +31,9 @@ class Job(Base):
     miner_uid = Column(Integer, nullable=True)
     miner_hotkey = Column(String, nullable=True)
     miner_coldkey = Column(String, nullable=True)
-    instance_id = Column(String, nullable=True)
+    instance_id = Column(
+        String, ForeignKey("instances.instance_id", ondelete="SET NULL"), nullable=True, unique=True
+    )
 
     # State info.
     active = Column(Boolean, default=False)
@@ -49,6 +51,7 @@ class Job(Base):
     port_mappings = Column(JSONB, nullable=True)
 
     # Relationships.
-    chute = relationship("Chute", back_populates="jobs", lazy="joined")
+    chute = relationship("Chute", back_populates="running_jobs", lazy="joined")
     user = relationship("User", back_populates="jobs", lazy="joined")
-    instance = relationship("Instance", back_populates="job", lazy="joined")
+    instance = relationship("Instance", back_populates="job", lazy="joined", uselist=False)
+    launch_config = relationship("LaunchConfig", back_populates="job", uselist=False)

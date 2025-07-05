@@ -1,15 +1,26 @@
 -- migrate:up
-
--- add the jobs column to chutes/history table
 ALTER TABLE chutes ADD COLUMN IF NOT EXISTS jobs JSONB;
-ALTER TABLE chutes_history ADD COLUMN IF NOT EXISTS jobs JSONB;
-
--- job_id and config_id columns on instances
-ALTER TABLE instances ADD COLUMN job_id VARCHAR, config_id VARCHAR, cacert VARCHAR;
-ALTER TABLE instances ADD CONSTRAINT fk_instances_job_id FOREIGN KEY (job_id) REFERENCES jobs(job_id) ON DELETE SET NULL;
+ALTER TABLE chute_history ADD COLUMN IF NOT EXISTS jobs JSONB;
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS config_id VARCHAR;
+ALTER TABLE instances ADD COLUMN IF NOT EXISTS cacert VARCHAR;
 ALTER TABLE instances ADD CONSTRAINT fk_instances_config_id FOREIGN KEY (config_id) REFERENCES launch_configs(config_id) ON DELETE SET NULL;
+ALTER TABLE instances ADD CONSTRAINT uq_instances_config_id UNIQUE (config_id);
 
--- update the history table functions to track jobs
+CREATE OR REPLACE FUNCTION fn_reset_job_assignment()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF OLD.job_id IS NOT NULL AND (NEW.failed_at IS NOT NULL OR NEW.verification_error IS NOT NULL) THEN
+        UPDATE jobs SET miner_hotkey = NULL, miner_coldkey = NULL, instance_id = NULL WHERE job_id = OLD.job_id;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER tr_reset_jobs_on_fail
+    AFTER UPDATE ON launch_configs
+    FOR EACH ROW
+    EXECUTE FUNCTION fn_reset_job_assignment();
+
 CREATE OR REPLACE FUNCTION fn_chute_history_insert()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -128,24 +139,12 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE OR REPLACE FUNCTION fn_reset_job_assignment()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF OLD.job_id IS NOT NULL AND (NEW.failed_at IS NOT NULL OR NEW.verification_error IS NOT NULL) THEN
-        UPDATE jobs SET miner_hotkey = NULL, miner_coldkey = NULL, instance_id = NULL WHERE job_id = OLD.job_id;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER tr_reset_jobs_on_fail
-    AFTER UPDATE ON launch_configs
-    FOR EACH ROW
-    EXECUTE FUNCTION fn_reset_job_assignment();
-
 -- migrate:down
 ALTER TABLE chutes DROP COLUMN IF EXISTS jobs;
-ALTER TABLE chutes_history DROP COLUMN IF EXISTS jobs;
-ALTER TABLE instances DROP CONSTRAINT IF EXISTS fk_instances_job_id;
-ALTER TABLE instances DROP COLUMN IF EXISTS job_id;
+ALTER TABLE chute_history DROP COLUMN IF EXISTS jobs;
+ALTER TABLE instances DROP CONSTRAINT IF EXISTS uq_instances_config_id;
+ALTER TABLE instances DROP CONSTRAINT IF EXISTS fk_instances_config_id;
+ALTER TABLE instances DROP COLUMN IF EXISTS config_id;
 ALTER TABLE instances DROP COLUMN IF EXISTS cacert;
+DROP TRIGGER IF EXISTS tr_reset_jobs_on_fail ON launch_configs;
+DROP FUNCTION IF EXISTS fn_reset_job_assignment();
