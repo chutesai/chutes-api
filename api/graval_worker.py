@@ -220,8 +220,14 @@ async def verify_proof(
         "work_product": work_product,
         "check_index": index,
     }
+    logger.info(f"Checking proof validity from {node.uuid=} {node.miner_hotkey=} using {seed=}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(url, json=payload, timeout=120) as resp:
+            verified = (await resp.json())["result"]
+            if verified:
+                logger.success(
+                    f"Successfully verified proof from {node.uuid=} [{node.name}] {node.miner_hotkey=} using {seed=}"
+                )
             return (await resp.json())["result"]
 
 
@@ -271,6 +277,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
     # Send the challenge over to the miner.
     node = nodes[0]
     url = f"http://{node.verification_host}:{node.verification_port}/prove"
+    logger.info(f"Sending PoVW challenge to {url=}: {challenge=}")
     error_message = None
     started_at = time.time()
     try:
@@ -299,6 +306,11 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
                     error_message = (
                         f"GraVal decryption challenge completed in {int(delta)} seconds, "
                         f"but estimate is {graval_config['estimate']} seconds"
+                    )
+                else:
+                    logger.success(
+                        f"Miner successfully decrypted via PoVW in {delta} seconds, "
+                        f"expected {graval_config['estimate']} seconds"
                     )
 
                 # Verify the proofs.
