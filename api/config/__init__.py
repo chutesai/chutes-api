@@ -170,7 +170,7 @@ class Settings(BaseSettings):
     chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.53")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
-    autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))
+    autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "1.0"))
 
 
 settings = Settings()
