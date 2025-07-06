@@ -124,6 +124,9 @@ async def get_encryption_settings(
     """
     Determine the chute to use for encryption with validator infra fallback/option.
     """
+    # XXX disabled, miners refuse to scale up apparently...
+    with_chutes = False
+
     # Determine which chute to call, if we are using chutes rather than a validator GPU.
     memory = SUPPORTED_GPUS.get(node.gpu_identifier, {}).get("memory", 140)
     suffix = "large" if memory > 48 else "small"
