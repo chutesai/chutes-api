@@ -115,9 +115,8 @@ async def create_job(
     return job
 
 
-@router.post("/{chute_id}/{job_id}", response_model=JobResponse)
+@router.post("/{job_id}", response_model=JobResponse)
 async def finish_job_and_get_upload_targets(
-    chute_id: str,
     job_id: str,
     token: str,
     request: Request,
@@ -141,11 +140,9 @@ async def finish_job_and_get_upload_targets(
     job.output_files = []
     for filename in output_filenames:
         date_str = job.created_at.strftime("%Y-%m-%d")
-        s3_key = f"jobs/{chute_id}/{date_str}/{job_id}/outputs/{filename}"
+        s3_key = f"jobs/{job.chute_id}/{date_str}/{job_id}/outputs/{filename}"
         file_jwt = create_job_jwt(job_id, filename=filename)
-        upload_url = (
-            f"https://api.{settings.base_domain}/jobs/{chute_id}/{job_id}/upload?token={file_jwt}"
-        )
+        upload_url = f"https://api.{settings.base_domain}/jobs/{job_id}/upload?token={file_jwt}"
         job.output_files.append(
             {
                 "filename": filename,
@@ -162,9 +159,8 @@ async def finish_job_and_get_upload_targets(
     return job_response
 
 
-@router.put("/{chute_id}/{job_id}/upload")
+@router.put("/{job_id}/upload")
 async def upload_job_file(
-    chute_id: str,
     job_id: str,
     token: str,
     file: UploadFile = File(...),
@@ -192,7 +188,7 @@ async def upload_job_file(
                     "ContentType": file.content_type or "application/octet-stream",
                     "Metadata": {
                         "job_id": job_id,
-                        "chute_id": chute_id,
+                        "chute_id": job.chute_id,
                         "original_filename": file.filename,
                     },
                 },
@@ -221,9 +217,8 @@ async def upload_job_file(
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 
-@router.put("/{chute_id}/{job_id}", response_model=JobResponse)
+@router.put("/{job_id}", response_model=JobResponse)
 async def complete_job(
-    chute_id: str,
     job_id: str,
     token: str,
     request: Request,

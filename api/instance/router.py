@@ -556,7 +556,7 @@ async def verify_launch_config_instance(
                 "job_id": instance.job_id,
                 "job_method": instance.job.method,
                 "job_data": instance.job.job_args,
-                "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.chute_id}/{instance.job_id}?token={job_token}",
+                "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.job_id}?token={job_token}",
             }
         )
     return return_value
