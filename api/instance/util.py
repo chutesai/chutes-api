@@ -444,6 +444,20 @@ def create_launch_jwt(launch_config) -> str:
     return encoded_jwt
 
 
+def create_job_jwt(job_id) -> str:
+    """
+    Create JWT for a single job.
+    """
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": job_id,
+        "iat": now.replace(tzinfo=None),
+        "iss": "chutes",
+    }
+    encoded_jwt = jwt.encode(payload, settings.launch_config_key, algorithm="HS256")
+    return encoded_jwt
+
+
 async def load_launch_config_from_jwt(
     db, config_id: str, token: str, allow_retrieved: bool = False
 ) -> str:

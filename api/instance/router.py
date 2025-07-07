@@ -39,6 +39,7 @@ from api.job.schemas import Job
 from api.instance.util import (
     get_instance_by_chute_and_id,
     create_launch_jwt,
+    create_job_jwt,
     load_launch_config_from_jwt,
 )
 from api.user.schemas import User
@@ -549,11 +550,13 @@ async def verify_launch_config_instance(
         "verified_at": launch_config.verified_at.isoformat(),
     }
     if job:
+        job_token = create_job_jwt(job.job_id)
         return_value.update(
             {
                 "job_id": instance.job_id,
                 "job_method": instance.job.method,
                 "job_data": instance.job.job_args,
+                "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.job_id}?token={job_token}",
             }
         )
     return return_value
