@@ -17,7 +17,7 @@ BEGIN
                 reason
             )
             SELECT 
-                i.invocation_id AS invocation_id,
+                i.parent_invocation_id AS invocation_id,
                 'dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f' AS user_id,
                 NOW() AS timestamp,
                 NOW() AS confirmed_at,
@@ -48,7 +48,7 @@ INSERT INTO reports (
     reason
 )
 SELECT 
-    i.invocation_id AS invocation_id,
+    i.parent_invocation_id AS invocation_id,
     'dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f' AS user_id,
     NOW() AS timestamp,
     NOW() AS confirmed_at,
