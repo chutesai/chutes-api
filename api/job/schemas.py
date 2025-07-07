@@ -47,6 +47,12 @@ class Job(Base):
     # Job args, e.g. ports, timeout, etc.
     job_args = Column(JSONB, nullable=False)
 
+    # Final result.
+    status = Column(String, nullable=False, default="pending")
+    result = Column(JSONB, nullable=True)
+    error_detail = Column(String, nullable=True)
+    output_files = Column(JSONB, nullable=True)
+
     # Port mappings.
     port_mappings = Column(JSONB, nullable=True)
 

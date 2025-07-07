@@ -16,6 +16,7 @@ from loguru import logger
 from contextlib import asynccontextmanager
 from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
+from api.job.schemas import Job
 from api.database import get_session
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -444,7 +445,7 @@ def create_launch_jwt(launch_config) -> str:
     return encoded_jwt
 
 
-def create_job_jwt(job_id) -> str:
+def create_job_jwt(job_id, filename: str = None) -> str:
     """
     Create JWT for a single job.
     """
@@ -454,6 +455,8 @@ def create_job_jwt(job_id) -> str:
         "iat": now.replace(tzinfo=None),
         "iss": "chutes",
     }
+    if filename:
+        payload["filename"] = filename
     encoded_jwt = jwt.encode(payload, settings.launch_config_key, algorithm="HS256")
     return encoded_jwt
 
@@ -497,6 +500,52 @@ async def load_launch_config_from_jwt(
         logger.warning(f"Attempted to use invalid token for launch config: {config_id=} {token=}")
     except Exception as exc:
         logger.warning(f"Unhandled exception checking launch config JWT: {exc}")
+
+    # If we got here, it failed somewhere.
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=detail,
+    )
+
+
+async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -> Job:
+    """
+    Load a job from a given JWT, ensuring the sub/chute/etc. match.
+    """
+    detail = "Missing or invalid JWT"
+    try:
+        payload = jwt.decode(
+            token,
+            settings.launch_config_key,
+            options={
+                "verify_signature": True,
+                "verify_exp": False,
+                "verify_iat": True,
+                "verify_iss": True,
+                "require": ["exp", "iat", "iss"],
+            },
+            issuer="chutes",
+        )
+        assert job_id == payload["sub"], "Job ID in JWT does not match!"
+        if filename:
+            assert filename == payload["filename"], "Filename mismatch!"
+        job = (
+            (await db.execute(select(Job).where(Job.job_id == job_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not job or job.finished_at:
+            detail = f"{job_id=} either does not exist or has already finished!"
+            logger.warning(detail)
+        elif filename and not any([f["filename"] == filename for f in job.output_files]):
+            detail = f"{job_id=} did not have any output file with {filename=}"
+            logger.warning(detail)
+        else:
+            return job
+    except jwt.InvalidTokenError:
+        logger.warning(f"Attempted to use invalid token for job: {job_id=} {token=}")
+    except Exception as exc:
+        logger.warning(f"Unhandled exception checking job config JWT: {exc}")
 
     # If we got here, it failed somewhere.
     raise HTTPException(
