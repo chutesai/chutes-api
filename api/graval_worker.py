@@ -900,6 +900,25 @@ async def available_verification_chutes():
     return available
 
 
+async def start_job(instance):
+    """
+    Start a job, once verified.
+    """
+    payload = aes_encrypt(json.dumps(instance.config.job.job_args), instance.symmetric_key)
+    path = aes_encrypt("/_start_job", instance.symmetric_key, hex_encode=True)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        f"http://{instance.host}:{instance.port}/{path}",
+        payload,
+        timeout=15.0,
+    ) as resp:
+        resp.raise_for_status()
+        logger.success(
+            f"Successfully started job {instance.config.job.job_id} "
+            f"on {instance.instance_id=} of {instance.miner_hotkey=}"
+        )
+
+
 @broker.task
 async def verify_instance(instance_id: str):
     """
@@ -995,11 +1014,12 @@ async def verify_instance(instance_id: str):
         instance.last_verified_at = func.now()
         instance.verification_error = None
 
-        # If there is a job associated with the instance, start it.
-        # XXX START JOB
-
         await session.commit()
         await session.refresh(instance)
+
+        # If there is a job associated with the instance, start it.
+        if instance.config and instance.config.job:
+            await start_job(instance)
 
         # Notify the miner.
         try:
