@@ -11,6 +11,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Integer,
+    Double,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base, generate_uuid
@@ -58,6 +59,9 @@ class Job(Base):
 
     # Track the hotkeys that have attempted a job.
     miner_history = Column(JSONB, nullable=True)
+
+    # Track the compute multiplier, which we could manually tweak to prioritize jobs.
+    compute_multiplier = Column(Double, nullable=False)
 
     # Relationships.
     chute = relationship("Chute", back_populates="running_jobs", lazy="joined")

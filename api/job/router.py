@@ -104,6 +104,20 @@ async def create_job(
             detail=f"Daily job quota exceeded: {chute_job_count=} {total_job_count=} of {job_quota=} and {total_quota=}",
         )
 
+    # Cleverly determine compute multiplier, such that jobs have equal priority to normal chutes.
+    node_selector = NodeSelector(chute.node_selector)
+    compute_multiplier = node_selector.compute_multiplier
+
+    # XXX for this version, we'll be.. not clever - ultimately needs a way
+    # to calculate the maximum any particular GPU is getting at any point in time.
+    if not set(node_selector.supported_gpus) - set(["h200"]):
+        # 2025-07-08: all h200 chutes are at max capacity really, so we need
+        # the multiplier to be quite aggressive. Each of those chutes have
+        # 16-20 concurrency specified, meaning each node can have far more
+        # compute units than just the baseline, i.e. they are getting
+        # 16-20x the compute units at any given time.
+        compute_multiplier *= 16
+
     # Create the job.
     job = Job(
         job_id=str(uuid.uuid4()),
@@ -121,6 +135,7 @@ async def create_job(
         last_queried_at=None,
         job_args=await request.json(),
         miner_history=None,
+        compute_multiplier=compute_multiplier,
     )
     db.add(job)
     await db.commit()
@@ -139,7 +154,7 @@ async def create_job(
                     "chute_id": chute_id,
                     "image_id": chute.image.image_id,
                     "gpu_count": node_selector.gpu_count,
-                    "compute_multiplier": node_selector.compute_multiplier,
+                    "compute_multiplier": compute_multiplier,
                 },
             }
         ).decode(),
