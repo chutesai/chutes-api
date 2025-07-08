@@ -47,7 +47,7 @@ SELECT
      bounty,
      metrics
  FROM invocations
-WHERE (started_at >= :start_time AND started_at < :end_time) OR (completed_at >= :start_time AND completed_at < :end_time)
+WHERE (started_at >= :start_time AND started_at < :end_time) OR (started_at >= :start_time - INTERVAL '1 day' AND completed_at >= :start_time AND completed_at < :end_time)
  ORDER BY started_at ASC
 """
 )
