@@ -56,6 +56,9 @@ class Job(Base):
     # Port mappings.
     port_mappings = Column(JSONB, nullable=True)
 
+    # Track the hotkeys that have attempted a job.
+    miner_history = Column(JSONB, nullable=True)
+
     # Relationships.
     chute = relationship("Chute", back_populates="running_jobs", lazy="joined")
     user = relationship("User", back_populates="jobs", lazy="joined")

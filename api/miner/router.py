@@ -18,6 +18,7 @@ from api.chute.schemas import Chute, NodeSelector
 from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance
+from api.job.schemas import Job
 from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
 from api.database import get_session, get_db_session
@@ -95,6 +96,15 @@ async def list_instances(
             Instance,
             selector=select(Instance).where(Instance.miner_hotkey == hotkey),
         )
+    )
+
+
+@router.get("/jobs/")
+async def list_available_jobs(
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+):
+    return StreamingResponse(
+        _stream_items(Job, selector=select(Job).where(Job.instance_id.is_(None)))
     )
 
 

@@ -165,6 +165,7 @@ class Settings(BaseSettings):
     # Default quotas/discounts.
     default_quotas: dict = json.loads(os.getenv("DEFAULT_QUOTAS", '{"*": 200}'))
     default_discounts: dict = json.loads(os.getenv("DEFAULT_DISCOUNTS", '{"*": 0.0}'))
+    default_job_quotas: dict = json.loads(os.getenv("DEFAULT_JOB_QUOTAS", '{"*": 0}'))
 
     # Quota unlock amount (requires replacing the trigger function to actually work though!)
     quota_unlock_amount: float = float(os.getenv("QUOTA_UNLOCK_AMOUNT", "5.0"))

@@ -255,7 +255,11 @@ async def get_launch_config(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Job {job_id} has already been claimed!",
             )
-
+        if hotkey in job.miner_history:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your hotkey has already attempted to claim {job_id=}",
+            )
         existing = (
             (await db.execute(select(LaunchConfig).where(LaunchConfig.job_id == job_id)))
             .unique()
@@ -271,6 +275,7 @@ async def get_launch_config(
         job.miner_uid = miner.node_id
         job.miner_hotkey = miner.hotkey
         job.miner_coldkey = miner.coldkey
+        job.miner_history.append(hotkey)
 
     # Create the launch config and JWT.
     try:

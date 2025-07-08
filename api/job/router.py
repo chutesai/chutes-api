@@ -4,6 +4,7 @@ Routes for jobs.
 
 import io
 import uuid
+import backoff
 import orjson as json
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi import File, UploadFile
@@ -11,7 +12,7 @@ from sqlalchemy import text, select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.database import get_db_session
-from api.chute.schemas import Chute
+from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import is_shared
 from api.job.schemas import Job
 from api.job.response import JobResponse
@@ -22,14 +23,43 @@ from api.instance.util import load_job_from_jwt, create_job_jwt
 router = APIRouter()
 
 
+@backoff.on_exception(
+    backoff.constant,
+    Exception,
+    jitter=None,
+    interval=10,
+    max_tries=7,
+)
+async def batch_delete_stored_files(job):
+    """
+    Helper to delete output files for a given job (in blob store) in batches.
+    """
+    if not job.output_files:
+        return
+    keys = [f["path"] for f in job.output_files]
+    async with settings.s3_client() as s3_client:
+        for i in range(0, len(keys), 100):
+            batch_keys = keys[i : i + 100]
+            await s3_client.delete_objects(
+                Bucket=settings.storage_bucket,
+                Delete={
+                    "Objects": [{"Key": key} for key in batch_keys],
+                    "Quiet": True,
+                },
+            )
+
+
 @router.post("/{chute_id}/{method}", response_model=JobResponse)
 async def create_job(
     chute_id: str,
     method: str,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(raise_not_found=False)),
+    current_user: User = Depends(get_current_user()),
 ):
+    """
+    Create a job.
+    """
     # Load the chute.
     chute = (
         (
@@ -66,7 +96,6 @@ async def create_job(
     counts = result.one()
     total_job_count = counts.total_jobs
     chute_job_count = counts.chute_jobs
-
     job_quota = await JobQuota.get(current_user.user_id, chute_id)
     total_quota = await JobQuota.get(current_user.user_id, "global")
     if not job_quota or chute_job_count >= job_quota or total_job_count >= total_quota:
@@ -91,12 +120,14 @@ async def create_job(
         verified=False,
         last_queried_at=None,
         job_args=await request.json(),
+        miner_history=None,
     )
     db.add(job)
     await db.commit()
     await db.refresh(job)
 
     # Notify the miners.
+    node_selector = NodeSelector(chute.node_selector)
     await settings.redis_client.publish(
         "miner_broadcast",
         json.dumps(
@@ -107,12 +138,58 @@ async def create_job(
                     "method": method,
                     "chute_id": chute_id,
                     "image_id": chute.image.image_id,
+                    "gpu_count": node_selector.gpu_count,
+                    "compute_multiplier": node_selector.compute_multiplier,
                 },
             }
         ).decode(),
     )
 
     return job
+
+
+@router.delete("/{job_id}", response_model=JobResponse)
+async def delete_job(
+    job_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Delete a job.
+    """
+    job = (
+        (
+            await db.execute(
+                select(Job).where(Job.job_id == job_id, Job.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id} not found or does not belong to you",
+        )
+    await batch_delete_stored_files(job)
+    await db.delete(job)
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "job_deleted",
+                "data": {
+                    "instance_id": job.instance_id,
+                    "job_id": job.job_id,
+                },
+            }
+        ).decode(),
+    )
+    return {
+        "deleted": True,
+        "job_id": job_id,
+    }
 
 
 @router.post("/{job_id}", response_model=JobResponse)
@@ -135,7 +212,7 @@ async def finish_job_and_get_upload_targets(
     job.result = payload.pop("result", "error")
     job.error_detail = payload.pop("detail", None)
 
-    # Create presigned URLs to upload all of the output files directly instead of through the API.
+    # Provide each output file a unique JWT/URL.
     upload_urls = []
     job.output_files = []
     for filename in output_filenames:
