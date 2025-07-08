@@ -142,7 +142,6 @@ async def create_job(
     await db.refresh(job)
 
     # Notify the miners.
-    node_selector = NodeSelector(chute.node_selector)
     await settings.redis_client.publish(
         "miner_broadcast",
         json.dumps(

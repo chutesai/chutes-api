@@ -108,6 +108,57 @@ async def list_available_jobs(
     )
 
 
+@router.delete("/jobs/{job_id}")
+async def release_job(
+    job_id: str,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+    db: AsyncSession = Depends(get_db_session),
+):
+    job = (
+        (
+            await db.execute(
+                select(Job).where(
+                    Job.miner_hotkey == hotkey, Job.finished_at.is_(None), Job.job_id == job_id
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"{job_id=} not found or is not associated with your miner",
+        )
+    job.miner_uid = None
+    job.miner_hotkey = None
+    job.miner_coldkey = None
+    job.instance_id = None
+    await db.commit()
+    await db.refresh(job)
+
+    # Send a new job_created notification.
+    node_selector = NodeSelector(job.chute.node_selector)
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "job_created",
+                "data": {
+                    "job_id": job.job_id,
+                    "method": job.method,
+                    "chute_id": job.chute_id,
+                    "image_id": job.chute.image.image_id,
+                    "gpu_count": node_selector.gpu_count,
+                    "compute_multiplier": job.compute_multiplier,
+                    "exclude": job.miner_history,
+                },
+            }
+        ).decode(),
+    )
+
+
 @router.get("/inventory")
 async def get_full_inventory(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
