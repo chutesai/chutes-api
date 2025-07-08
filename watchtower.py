@@ -502,10 +502,11 @@ async def check_live_code(instance, chute, encrypted_slurp) -> bool:
     # Compare to expected command.
     command_line = data.decode().replace("\x00", " ").strip()
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
+    command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
     expected = " ".join(
         [
             "python",
-            "/home/chutes/.local/bin/chutes",
+            "chutes",
             "run",
             chute.ref_str,
             "--port",
@@ -637,7 +638,7 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
     if semver.compare(chute.chutes_version or "0.0.0", "0.3.0") >= 0:
         parts = [
             "python",
-            "/home/chutes/.local/bin/chutes",
+            "chutes",
             "run",
             chute.ref_str,
             "--port",
@@ -660,7 +661,7 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
     return " ".join(
         [
             "python",
-            "/home/chutes/.local/bin/chutes",
+            "chutes",
             "run",
             chute.ref_str,
             "--port",
@@ -682,6 +683,7 @@ def verify_expected_command(
     assert process["pid"] == 1, "Failed to find chutes comman as PID 1"
     assert process["username"] == "chutes", "Not running as chutes user"
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+    command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
     expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed, tls=tls)
     assert command_line == expected, f"Unexpected command: {command_line=} vs {expected=}"
     logger.success(f"Verified command line: {miner_hotkey=} {command_line=}")
@@ -1326,7 +1328,7 @@ async def procs_check():
                         reason = None
                         if not cmdline and (not env or "CHUTES_EXECUTION_CONTEXT" not in env):
                             reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
-                        elif len(cmdline) <= 5 or cmdline[1] != "/home/chutes/.local/bin/chutes":
+                        elif len(cmdline) <= 5 or cmdline[1].split("/")[-1] != "chutes":
                             reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
                         if reason:
                             logger.warning(reason)

@@ -757,6 +757,7 @@ async def check_live_code(instance: Instance) -> bool:
             .strip()
         )
         command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
+        command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
         expected = get_expected_command(
             instance.chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
         )
