@@ -6,7 +6,7 @@ import io
 import uuid
 import backoff
 import orjson as json
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi import File, UploadFile
 from sqlalchemy import text, select, func, case, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +21,28 @@ from api.user.service import get_current_user
 from api.instance.util import load_job_from_jwt, create_job_jwt
 
 router = APIRouter()
+
+
+async def get_job_by_id(
+    db: AsyncSession,
+    job_id: str,
+    current_user: User,
+):
+    job = (
+        (
+            await db.execute(
+                select(Job).where(Job.job_id == job_id, Job.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found, or does not belong to you",
+        )
+    return job
 
 
 @backoff.on_exception(
@@ -340,3 +362,58 @@ async def complete_job(
     await db.commit()
     await db.refresh(job)
     return job
+
+
+@router.get("/{job_id}", response_model=JobResponse)
+async def get_job(
+    job_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Get a job.
+    """
+    job = (
+        (
+            await db.execute(
+                select(Job).where(Job.job_id == job_id, Job.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job not found, or does not belong to you",
+        )
+    return job
+
+
+@router.get("/{job_id}/download", response_model=JobResponse)
+async def download_output_file(
+    job_id: str,
+    filename: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Download a job's output file.
+    """
+    job = await get_job_by_id(db, job_id, current_user)
+    output_file = None
+    try:
+        output_file = next(f for f in job.output_files if f["filename"] == filename)
+    except StopIteration:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Job output file not found {job_id=} {filename=}",
+        )
+    data = io.BytesIO()
+    async with settings.s3_client() as client:
+        await client.download_fileobj(settings.storage_bucket, output_file["path"], data)
+    return Response(
+        content=data.getvalue(),
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
