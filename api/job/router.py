@@ -154,6 +154,7 @@ async def create_job(
                     "image_id": chute.image.image_id,
                     "gpu_count": node_selector.gpu_count,
                     "compute_multiplier": compute_multiplier,
+                    "exclude": [],
                 },
             }
         ).decode(),
