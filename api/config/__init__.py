@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     def validator_keypair(self) -> Optional[Keypair]:
         if not self._validator_keypair and os.getenv("VALIDATOR_SEED"):
             self._validator_keypair = Keypair.create_from_seed(
-                bytes.fromhex(os.environ["VALIDATOR_SEED"])
+                os.environ["VALIDATOR_SEED"]
             )
         return self._validator_keypair
 
@@ -177,7 +177,7 @@ class Settings(BaseSettings):
     chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.53")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
-    autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "0.03"))
+    autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "1.0"))
 
 
 settings = Settings()

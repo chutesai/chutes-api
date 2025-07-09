@@ -81,7 +81,7 @@ def _add_stake(
         staking_balance = staking_balance
 
     # Check enough to stake.
-    if staking_balance > old_balance or staking_balance <= 500000 + existential_deposit:
+    if staking_balance > old_balance or staking_balance <= 20000000 + existential_deposit:
         logger.error("Not enough stake:")
         logger.error(f"\t\tbalance:{old_balance}")
         logger.error(f"\t\tamount: {staking_balance}")
@@ -161,13 +161,13 @@ async def stake(user_id: str) -> None:
             await settings.redis_client.delete(f"autostake:{user_id}")
             break
         except Exception as exc:
-            await asyncio.sleep(5)
+            await asyncio.sleep(30)
             substrate = SubstrateInterface(url=settings.subtensor)
             logger.error(
                 f"Unhandled exception performing staking operation: {exc}\n{traceback.format_exc()}"
             )
             consecutive_failures += 1
-            if consecutive_failures >= 5:
+            if consecutive_failures >= 15:
                 logger.error(
                     "Giving up staking, max consecutive failures reached for {user.user_id=} {keypair.ss58_address=}"
                 )
