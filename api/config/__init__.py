@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     def validator_keypair(self) -> Optional[Keypair]:
         if not self._validator_keypair and os.getenv("VALIDATOR_SEED"):
             self._validator_keypair = Keypair.create_from_seed(
-                bytes.fromhex(os.environ["VALIDATOR_SEED"])
+                os.environ["VALIDATOR_SEED"]
             )
         return self._validator_keypair
 
