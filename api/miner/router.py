@@ -4,6 +4,7 @@ Endpoints specific to miners.
 
 import re
 import orjson as json
+from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, Header, status, HTTPException, Response, Request
 from starlette.responses import StreamingResponse
@@ -48,6 +49,8 @@ def model_to_dict(obj):
                 "supported_gpus": ns.supported_gpus,
             }
         )
+    if isinstance(data.get("seed"), Decimal):
+        data["seed"] = int(data["seed"])
     return data
 
 

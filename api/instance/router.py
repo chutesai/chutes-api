@@ -422,8 +422,9 @@ async def claim_launch_config(
                     "verification_error = 'invalid GPU/nodes configuration provided' "
                     "WHERE config_id = :config_id"
                 ),
-                {"config_id": launch_config.config_id},
+                {"config_id": config_id},
             )
+            await error_session.commit()
         raise
 
     # Generate a ciphertext for this instance to decrypt.
@@ -468,7 +469,7 @@ async def claim_launch_config(
         "symmetric_key": {
             "ciphertext": ciphertext,
             "device_index": node_idx,
-            "plaintext_response": f"secret is {launch_config.config_id} {launch_config.seed}",
+            "response_plaintext": f"secret is {launch_config.config_id} {launch_config.seed}",
         },
     }
 
@@ -501,10 +502,13 @@ async def verify_launch_config_instance(
     query = (
         select(Instance)
         .where(Instance.config_id == launch_config.config_id)
-        .options(joinedload(Instance.nodes).joinedload(Instance.job))
+        .options(
+            joinedload(Instance.nodes),
+            joinedload(Instance.job),
+        )
     )
     instance = (await db.execute(query)).unique().scalar_one_or_none()
-    estimate = SUPPORTED_GPUS[instance.gpu_identifier]["graval"]["estimate"]
+    estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
     max_duration = estimate * 1.3
     if (delta := now - start) >= timedelta(seconds=max_duration):
         launch_config.failed_at = func.now()

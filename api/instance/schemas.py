@@ -15,7 +15,7 @@ from sqlalchemy import (
     Integer,
     Index,
     Table,
-    BigInteger,
+    Numeric,
     UniqueConstraint,
 )
 from api.database import Base, generate_uuid
@@ -103,7 +103,7 @@ class Instance(Base):
 class LaunchConfig(Base):
     __tablename__ = "launch_configs"
     config_id = Column(String, primary_key=True, default=generate_uuid)
-    seed = Column(BigInteger, nullable=False)
+    seed = Column(Numeric, nullable=False)
     env_key = Column(String, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
     job_id = Column(

@@ -9,11 +9,12 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
-    BigInteger,
+    Numeric,
     Float,
     ForeignKey,
     DateTime,
     Boolean,
+    BigInteger,
     func,
 )
 from sqlalchemy.orm import validates, relationship
@@ -59,7 +60,7 @@ class Node(Base):
     max_threads_per_processor = Column(Integer, nullable=False)
     concurrent_kernels = Column(Boolean, nullable=True)
     ecc = Column(Boolean, nullable=True)
-    seed = Column(BigInteger, nullable=False)
+    seed = Column(Numeric, nullable=False)
 
     # Meta/app fields.
     miner_hotkey = Column(
