@@ -106,8 +106,8 @@ async def create_job(
 
     # User has quota for jobs?
     query = select(
-        func.count(Job.id).label("total_jobs"),
-        func.count(case((Job.chute_id == chute_id, Job.id))).label("chute_jobs"),
+        func.count(Job.job_id).label("total_jobs"),
+        func.count(case((Job.chute_id == chute_id, Job.job_id))).label("chute_jobs"),
     ).where(
         and_(
             Job.user_id == current_user.user_id,
@@ -127,7 +127,7 @@ async def create_job(
         )
 
     # Cleverly determine compute multiplier, such that jobs have equal priority to normal chutes.
-    node_selector = NodeSelector(chute.node_selector)
+    node_selector = NodeSelector(**chute.node_selector)
     compute_multiplier = node_selector.compute_multiplier
 
     # XXX for this version, we'll be.. not clever - ultimately needs a way

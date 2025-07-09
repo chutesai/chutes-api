@@ -302,6 +302,7 @@ class Chute(Base):
             return []
         job_dicts = []
         for job in jobs:
+            job_object = job
             if isinstance(job, dict):
                 job_object = Job(**job)
             job_dicts.append(job_object.model_dump())

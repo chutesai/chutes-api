@@ -617,6 +617,7 @@ async def _deploy_chute(
                     "data": {
                         "chute_id": chute.chute_id,
                         "version": chute.version,
+                        "job_only": not chute.cords,
                     },
                 }
             ).decode(),

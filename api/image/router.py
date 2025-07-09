@@ -4,7 +4,6 @@ Routes for images.
 
 import io
 import uuid
-import time
 import asyncio
 import orjson as json
 from loguru import logger
@@ -69,7 +68,6 @@ async def stream_build_logs(
     # Stream the logs in real-time.
     async def _stream():
         nonlocal offset, image_id
-        started_at = time.time()
         last_offset = offset
         while True:
             stream_result = None
@@ -93,9 +91,8 @@ async def stream_build_logs(
                     await settings.redis_client.delete(f"forge:{image_id}:stream")
                     yield "DONE\n"
                     break
-                sse_data = json.dumps(
-                    {"log": data[b"data"].decode(), "offset": last_offset}
-                ).decode()
+                log_obj = json.loads(data[b"data"])
+                sse_data = json.dumps({"log": log_obj, "offset": last_offset}).decode()
                 yield f"data: {sse_data}\n"
 
     return StreamingResponse(
