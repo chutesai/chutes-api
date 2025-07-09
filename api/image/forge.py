@@ -58,7 +58,7 @@ async def initialize(*_, **__):
         else:
             logger.warning(f"Failed authentication: {username=}")
 
-    for base_image in ("parachutes/base-python:3.12.7", "parachutes/base-python:3.12.9"):
+    for base_image in ("parachutes/python:3.12.9",):
         process = await asyncio.create_subprocess_exec(
             "buildah",
             "pull",
@@ -112,14 +112,27 @@ async def build_and_push_image(image):
 
     # Build.
     try:
-        process = await asyncio.create_subprocess_exec(
+        storage_driver = os.getenv("STORAGE_DRIVER", "overlay")
+        storage_opts = os.getenv("STORAGE_OPTS", "overlay.mount_program=/usr/bin/fuse-overlayfs")
+        build_cmd = [
             "buildah",
             "build",
+            "--isolation",
+            "chroot",
+            "--storage-driver",
+            storage_driver,
+            "--layers",
             "--tag",
             full_image_tag,
             "--tag",
             short_tag,
-            ".",
+        ]
+        if storage_driver == "overlay" and storage_opts:
+            for opt in storage_opts.split(","):
+                build_cmd.extend(["--storage-opt", opt.strip()])
+        build_cmd.append(".")
+        process = await asyncio.create_subprocess_exec(
+            *build_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -456,7 +469,7 @@ async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
-    os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -505,7 +518,8 @@ async def forge(image_id: str):
                 await s3.upload_file(log_path, settings.storage_bucket, destination)
 
     # Cache a sampling of filesystem challenges.
-    await generate_fs_challenges(image_id)
+    if short_tag:
+        await generate_fs_challenges(image_id)
 
     # Update status.
     async with get_session() as session:
@@ -537,4 +551,4 @@ async def forge(image_id: str):
     )
 
     # Cleanup.
-    os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    # os.system("bash /usr/local/bin/buildah_cleanup.sh")

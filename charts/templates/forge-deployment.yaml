@@ -31,13 +31,17 @@ spec:
                   name: docker-pull
                   key: password
             - name: STORAGE_DRIVER
-              value: "vfs"
+              value: "overlay"
+            - name: STORAGE_OPTS
+              value: "overlay.mount_program=/usr/bin/fuse-overlayfs"
             - name: BUILDAH_FORMAT
               value: "docker"
             - name: BUILDAH_ISOLATION
               value: "chroot"
             - name: PYTHONPATH
               value: "/forge"
+            - name: BUILDAH_LAYERS
+              value: "true"
             - name: BUILDAH_PARALLEL_PULL
               value: "1"
             - name: BUILDAH_LAYERS_PARALLEL_PULL
@@ -59,13 +63,25 @@ spec:
                 - SETUID
                 - SETGID
                 - SYS_ADMIN
+                - SYS_PTRACE
+                - MKNOD
             allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: fuse
+              mountPath: /dev/fuse
+            {{- with .Values.forge.volumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.forge.resources | nindent 12 }}
-          {{- with .Values.forge.volumeMounts }}
-          volumeMounts:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+      volumes:
+        - name: fuse
+          hostPath:
+            path: /dev/fuse
+            type: CharDevice
+        {{- with .Values.forge.volumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.forge.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -76,9 +92,5 @@ spec:
       {{- end }}
       {{- with .Values.forge.tolerations }}
       tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.forge.volumes }}
-      volumes:
         {{- toYaml . | nindent 8 }}
       {{- end }}
