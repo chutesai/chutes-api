@@ -81,7 +81,7 @@ def _add_stake(
         staking_balance = staking_balance
 
     # Check enough to stake.
-    if staking_balance > old_balance or staking_balance <= 500000 + existential_deposit:
+    if staking_balance > old_balance or staking_balance <= 20000000 + existential_deposit:
         logger.error("Not enough stake:")
         logger.error(f"\t\tbalance:{old_balance}")
         logger.error(f"\t\tamount: {staking_balance}")
