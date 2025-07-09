@@ -14,6 +14,7 @@ import time
 import secrets
 import orjson as json
 import base64
+import semver
 from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
@@ -384,3 +385,13 @@ def use_opencl_graval(chutes_version: str):
     if int(minor) >= 2 and int(bug) == 50 or int(minor) > 2:
         return True
     return False
+
+
+def semcomp(input_version: str, target_version: str):
+    """
+    Semver comparison with cleanup.
+    """
+    if not input_version:
+        input_version = "0.0.0"
+    clean_version = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+).*", input_version).group(1)
+    return semver.compare(clean_version, target_version)

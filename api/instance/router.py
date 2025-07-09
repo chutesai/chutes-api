@@ -321,11 +321,11 @@ async def claim_launch_config(
     # Load the launch config, verifying the token.
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
-    chute = await _load_chute(launch_config.chute_id)
+    chute = await _load_chute(db, launch_config.chute_id)
 
     # Verify, decrypt, parse the envdump payload.
     try:
-        dump = DUMPER.decrypt(launch_config.env_key, args.dump)
+        dump = DUMPER.decrypt(launch_config.env_key, args.env)
     except Exception as exc:
         logger.error(
             f"Attempt to claim {config_id=} failed, invalid envdump payload received: {exc}"

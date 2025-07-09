@@ -14,7 +14,6 @@ import time
 import base64
 import backoff
 import secrets
-import semver
 import orjson as json
 from async_lru import alru_cache
 from typing import List, Tuple
@@ -23,6 +22,7 @@ from loguru import logger
 from ipaddress import ip_address
 from api.config import settings
 from api.util import (
+    semcomp,
     aes_encrypt,
     aes_decrypt,
     use_encryption_v2,
@@ -546,7 +546,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     target_node = instance.nodes[target_index]
     expected = str(uuid.uuid4())
     seed = None
-    if semver.compare(instance.chutes_version or "0.0.0", "0.3.0") < 0:
+    if semcomp(instance.chutes_version or "0.0.0", "0.3.0") < 0:
         seed = target_node.seed
     ciphertext = await graval_encrypt(
         target_node,
@@ -700,7 +700,7 @@ async def check_envdump_command(instance):
     Check the running command via chutes envdump, for supported chutes versions.
     """
     chute = instance.chute
-    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") < 0:
+    if semcomp(chute.chutes_version or "0.0.0", "0.2.53") < 0:
         logger.warning(
             f"Unable to check envdump command line for {chute.chutes_version=} {chute.chute_id=}"
         )
@@ -944,7 +944,7 @@ async def verify_instance(instance_id: str):
             return
 
         # Legacy encryption/key exchange tests.
-        if semver.compare(instance.chutes_version or "0.0.0", "0.3.0") < 0:
+        if semcomp(instance.chutes_version or "0.0.0", "0.3.0") < 0:
             if not use_encryption_v2(instance.chutes_version):
                 # Legacy/encryption V1 tests.
                 try:

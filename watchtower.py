@@ -11,12 +11,11 @@ import json
 import secrets
 import traceback
 import tempfile
-import semver
 from contextlib import asynccontextmanager
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher
+from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher, semcomp
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
 from api.exceptions import EnvdumpMissing
@@ -635,7 +634,7 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
     Get the command line for a given instance.
     """
     # New chutes run format expects a JWT and TLS key/cert, but not graval seed.
-    if semver.compare(chute.chutes_version or "0.0.0", "0.3.0") >= 0:
+    if semcomp(chute.chutes_version or "0.0.0", "0.3.0") >= 0:
         parts = [
             "python",
             "chutes",
@@ -706,7 +705,7 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
     if not settings.kubecheck_salt:
         return True
     # Requires chutes SDK 0.2.53+
-    if semver.compare(instance.chutes_version or "0.0.0", "0.2.53") < 0:
+    if semcomp(instance.chutes_version or "0.0.0", "0.2.53") < 0:
         return True
 
     # Simple flags.
@@ -841,9 +840,7 @@ async def check_chute(chute_id):
     instances = await load_chute_instances(chute.chute_id)
     random.shuffle(instances)
     bad_env = set()
-    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") >= 0 and os.getenv(
-        "ENVDUMP_UNLOCK"
-    ):
+    if semcomp(chute.chutes_version or "0.0.0", "0.2.53") >= 0 and os.getenv("ENVDUMP_UNLOCK"):
         instance_map = {instance.instance_id: instance for instance in instances}
 
         # Load the envdump dump outputs for each.

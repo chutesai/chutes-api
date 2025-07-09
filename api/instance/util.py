@@ -430,11 +430,11 @@ def create_launch_jwt(launch_config) -> str:
     Create JWT for a given launch config (updated chutes lib with new graval etc).
     """
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(hours=1)
+    expires_at = now + timedelta(hours=2)
     payload = {
-        "exp": expires_at.replace(tzinfo=None),
+        "exp": int(expires_at.timestamp()),
         "sub": launch_config.config_id,
-        "iat": now.replace(tzinfo=None),
+        "iat": int(now.timestamp()),
         "url": f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}",
         "env_key": launch_config.env_key,
         "iss": "chutes",
@@ -452,7 +452,7 @@ def create_job_jwt(job_id, filename: str = None) -> str:
     now = datetime.now(timezone.utc)
     payload = {
         "sub": job_id,
-        "iat": now.replace(tzinfo=None),
+        "iat": int(now.timestamp()),
         "iss": "chutes",
     }
     if filename:
@@ -477,6 +477,7 @@ async def load_launch_config_from_jwt(
                 "require": ["exp", "iat", "iss"],
             },
             issuer="chutes",
+            algorithms=["HS256"],
         )
         if config_id == payload["sub"]:
             config = (
