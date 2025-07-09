@@ -675,7 +675,7 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
     ).strip()
 
 
-def verify_expected_command(
+async def verify_expected_command(
     dump: dict, chute: Chute, miner_hotkey: str, seed: int = None, tls: bool = False
 ):
     process = dump["all_processes"][0]

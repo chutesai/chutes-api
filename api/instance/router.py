@@ -382,7 +382,6 @@ async def claim_launch_config(
         verified=False,
         chutes_version=chute.chutes_version,
         symmetric_key=secrets.token_bytes(16).hex(),
-        job_id=launch_config.job_id,
         config_id=launch_config.config_id,
     )
     db.add(instance)
@@ -431,13 +430,16 @@ async def claim_launch_config(
     node_idx = random.choice(list(range(len(nodes))))
     node = nodes[node_idx]
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
-    ciphertext, seed = await graval_encrypt(
+    encrypted_payload = await graval_encrypt(
         node,
         instance.symmetric_key,
         with_chutes=True,
         cuda=False,
         iterations=iterations,
     )
+    parts = encrypted_payload.split("|")
+    seed = int(parts[0])
+    ciphertext = parts[1]
     launch_config.seed = seed
     logger.success(
         f"Generated ciphertext for {node.uuid} "
