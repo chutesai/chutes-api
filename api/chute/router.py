@@ -608,6 +608,19 @@ async def _deploy_chute(
 
     if old_version:
         await handle_rolling_update.kiq(chute.chute_id, chute.version)
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_updated",
+                    "data": {
+                        "chute_id": chute.chute_id,
+                        "version": chute.version,
+                        "job_only": not chute.cords,
+                    },
+                }
+            ).decode(),
+        )
     else:
         await settings.redis_client.publish(
             "miner_broadcast",

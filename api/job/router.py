@@ -9,6 +9,7 @@ import orjson as json
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi import File, UploadFile
 from sqlalchemy import text, select, func, case, and_
+from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.database import get_db_session
@@ -89,6 +90,7 @@ async def create_job(
                 select(Chute)
                 .where(Chute.chute_id == chute_id)
                 .where(Chute.jobs.op("@>")([{"name": method}]))
+                .options(selectinload(Chute.instances))
             )
         )
         .unique()
@@ -156,7 +158,7 @@ async def create_job(
         verified=False,
         last_queried_at=None,
         job_args=await request.json(),
-        miner_history=None,
+        miner_history=[],
         compute_multiplier=compute_multiplier,
     )
     db.add(job)

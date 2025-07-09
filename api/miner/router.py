@@ -139,7 +139,7 @@ async def release_job(
     await db.refresh(job)
 
     # Send a new job_created notification.
-    node_selector = NodeSelector(job.chute.node_selector)
+    node_selector = NodeSelector(**job.chute.node_selector)
     await settings.redis_client.publish(
         "miner_broadcast",
         json.dumps(

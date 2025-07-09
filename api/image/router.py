@@ -80,7 +80,7 @@ async def stream_build_logs(
                 yield f"data: ERROR: {exc}"
                 return
             if not stream_result:
-                yield "."
+                yield ".\n"
                 await asyncio.sleep(1.0)
                 continue
             for offset, data in stream_result:

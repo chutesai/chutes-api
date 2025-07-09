@@ -58,7 +58,7 @@ class Job(Base):
     port_mappings = Column(JSONB, nullable=True)
 
     # Track the hotkeys that have attempted a job.
-    miner_history = Column(JSONB, nullable=True)
+    miner_history = Column(JSONB, nullable=False, default=[])
 
     # Track the compute multiplier, which we could manually tweak to prioritize jobs.
     compute_multiplier = Column(Double, nullable=False)

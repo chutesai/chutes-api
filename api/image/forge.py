@@ -469,7 +469,8 @@ async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
-    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")
+
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -551,4 +552,4 @@ async def forge(image_id: str):
     )
 
     # Cleanup.
-    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")

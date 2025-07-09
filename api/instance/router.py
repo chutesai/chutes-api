@@ -63,6 +63,7 @@ async def _load_chute(db, chute_id: str):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chute {chute_id} not found",
         )
+    return chute
 
 
 async def _check_blacklisted(db, hotkey):
@@ -230,11 +231,14 @@ async def get_launch_config(
     job_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(
+        get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="launch")
+    ),
 ):
     miner = await _check_blacklisted(db, hotkey)
 
     # Load the chute and check if it's scalable.
+    logger.warning(f"CHECKING FOR CHUTE: {chute_id}")
     chute = await _load_chute(db, chute_id)
     await _check_scalable(db, chute, hotkey)
 
@@ -287,6 +291,7 @@ async def get_launch_config(
             miner_hotkey=hotkey,
             miner_uid=miner.node_id,
             miner_coldkey=miner.coldkey,
+            seed=0,
         )
         db.add(launch_config)
         await db.commit()
