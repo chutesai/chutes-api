@@ -29,9 +29,7 @@ class Settings(BaseSettings):
     @cached_property
     def validator_keypair(self) -> Optional[Keypair]:
         if not self._validator_keypair and os.getenv("VALIDATOR_SEED"):
-            self._validator_keypair = Keypair.create_from_seed(
-                os.environ["VALIDATOR_SEED"]
-            )
+            self._validator_keypair = Keypair.create_from_seed(os.environ["VALIDATOR_SEED"])
         return self._validator_keypair
 
     sqlalchemy: str = os.getenv(
