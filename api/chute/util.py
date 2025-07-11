@@ -1273,3 +1273,36 @@ async def update_chute_utilization():
         await session.execute(text(UTILIZATION_QUERY))
         await session.commit()
         logger.success("Successfully updated chute utilization ratios")
+
+
+async def update_llm_means():
+    logger.info("Updating LLM miner mean metrics...")
+    async with get_session() as session:
+        await session.execute(text("DROP TABLE IF EXISTS llm_means_temp"))
+        await session.execute(
+            text("""
+CREATE TABLE llm_means_temp AS
+SELECT
+    ins.chute_id,
+    invocations.miner_hotkey,
+    invocations.instance_id,
+    AVG((metrics->>'tps')::float) as avg_tps,
+    AVG((metrics->>'ot')::int) as avg_output_tokens
+FROM invocations
+JOIN instances ins ON invocations.instance_id = ins.instance_id
+JOIN chutes c ON ins.chute_id = c.chute_id
+WHERE
+    started_at >= NOW() - INTERVAL '1 day'
+    AND c.standard_template = 'vllm'
+GROUP BY
+    ins.chute_id,
+    invocations.instance_id,
+    invocations.miner_hotkey
+ORDER BY
+    ins.chute_id,
+    avg_tps DESC
+""")
+        )
+        await session.execute(text("DROP TABLE IF EXISTS llm_means"))
+        await session.execute(text("ALTER TABLE llm_means_temp RENAME TO llm_means"))
+        await session.commit()

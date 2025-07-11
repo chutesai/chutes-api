@@ -36,6 +36,7 @@ class ChuteResponse(BaseModel):
     logo_id: Optional[str]
     openrouter: Optional[bool] = False
     chutes_version: Optional[str] = None
+    concurrency: Optional[int] = None
 
     class Config:
         from_attributes = True

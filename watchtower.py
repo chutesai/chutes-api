@@ -763,7 +763,9 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
         return True
 
     processes = dump["all_processes"]
-    revision_match = re.search(r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code)
+    revision_match = re.search(
+        r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
+    )
     found_sglang = False
     for process in processes:
         if (
