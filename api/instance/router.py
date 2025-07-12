@@ -7,7 +7,6 @@ import orjson as json
 import traceback
 import random
 import secrets
-import base64
 from datetime import timedelta
 from loguru import logger
 from typing import Optional
@@ -486,18 +485,22 @@ async def verify_launch_config_instance(
 
     # Validate the launch config.
     if launch_config.verified_at:
+        logger.warning(f"Launch config {config_id} has already been verified!")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Launch config has already been verified: {config_id}",
         )
     if launch_config.failed_at:
+        logger.warning(
+            f"Launch config {config_id} has non-null failed_at: {launch_config.failed_at}"
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Launch config failed verification: {launch_config.failed_at=} {launch_config.verification_error=}",
         )
 
     # Check decryption time.
-    now = await db.scalar(select(func.now()))
+    now = (await db.scalar(select(func.now()))).replace(tzinfo=None)
     start = launch_config.retrieved_at.replace(tzinfo=None)
     query = (
         select(Instance)
@@ -511,6 +514,9 @@ async def verify_launch_config_instance(
     estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
     max_duration = estimate * 1.3
     if (delta := now - start) >= timedelta(seconds=max_duration):
+        logger.error(
+            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} took {delta} seconds, exceeding maximum estimate of {max_duration}"
+        )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"GraVal challenge took {delta}, expected completion time {estimate} with buffer of up to {max_duration}"
         await db.commit()
@@ -522,12 +528,15 @@ async def verify_launch_config_instance(
     # Valid response cipher?
     response_body = await request.json()
     try:
+        logger.info(f"GOT THIS RESPONSE TO CHECK: {response_body=}")
         ciphertext = response_body["response"]
-        bytes_ = base64.b64decode(ciphertext[32:])
-        iv = bytes.fromhex(ciphertext[:32])
-        response = aes_decrypt(bytes_, instance.symmetric_key, iv)
+        iv = response_body["iv"]
+        response = aes_decrypt(ciphertext, instance.symmetric_key, iv)
         assert response == f"secret is {launch_config.config_id} {launch_config.seed}"
     except Exception as exc:
+        logger.error(
+            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} was invalid: {exc}"
+        )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
         await db.commit()
@@ -543,6 +552,9 @@ async def verify_launch_config_instance(
         work_product = next(p for p in response_body["proof"] if p["device_uuid"] == node.uuid)
         assert await verify_proof(node, launch_config.seed, work_product)
     except Exception as exc:
+        logger.error(
+            f"PoVW proof failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}"
+        )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"PoVW proof verification failed: {exc}"
         await db.commit()

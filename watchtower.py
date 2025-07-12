@@ -736,21 +736,29 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
 
     # Sneaky flags.
     found_expected = False
-    expected = (
-        settings.kubecheck_prefix
-        + "_".join(secret.split("-")[1:-2]).upper()
-        + settings.kubecheck_suffix
-    )
-    expected_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt))
+    expected = [
+        (
+            settings.kubecheck_prefix
+            + "_".join(secret.split("-")[1:-2]).upper()
+            + settings.kubecheck_suffix
+        ),
+        (
+            settings.kubecheck_prefix
+            + "_".join(secret.split("-")[1:-1]).upper()
+            + settings.kubecheck_suffix
+        ),
+    ]
+    expected_uuids = [
+        str(uuid.uuid5(uuid.NAMESPACE_OID, e + settings.kubecheck_salt)) for e in expected
+    ]
     for v in dump.values():
         if isinstance(v, dict):
             for key in v:
                 if (
                     str(uuid.uuid5(uuid.NAMESPACE_OID, key + settings.kubecheck_salt))
-                    == expected_uuid
+                    in expected_uuids
                 ):
                     found_expected = True
-                    logger.success(f"Found the magic uuid: {expected_uuid}")
                     break
     if not found_expected:
         logger.warning(
