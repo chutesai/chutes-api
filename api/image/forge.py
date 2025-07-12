@@ -390,6 +390,7 @@ async def inject_cfsv_stages(dockerfile_path: str, cfsv_binary_path: str) -> str
     else:
         base_alias = "base_layer"
         lines[last_from_idx] = f"{from_line} AS {base_alias}"
+    envdump_unlock = os.getenv("ENVDUMP_UNLOCK", "")
     new_dockerfile_lines = []
     new_dockerfile_lines.extend(lines[: last_from_idx + 1])
     new_dockerfile_lines.extend(lines[last_from_idx + 1 :])
@@ -399,8 +400,8 @@ async def inject_cfsv_stages(dockerfile_path: str, cfsv_binary_path: str) -> str
             f"FROM {base_alias} AS filesystemverificationmanager",
             f"COPY {os.path.basename(cfsv_binary_path)} /tmp/cfsv",
             "RUN chmod +x /tmp/cfsv",
-            "RUN /tmp/cfsv index / /tmp/chutesfs.index",
-            "RUN /tmp/cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data",
+            f"RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv index / /tmp/chutesfs.index",
+            f"RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data",
             "",
             f"FROM {base_alias} AS final_layer",
             "COPY --from=filesystemverificationmanager /tmp/chutesfs.index /etc/chutesfs.index",
@@ -593,14 +594,15 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
         try:
             build_cfsv_path = os.path.join(build_dir, "cvfs")
             shutil.copy2(CFSV_PATH, build_cfsv_path)
+            envdump_unlock = os.getenv("ENVDUMP_UNLOCK", "")
             dockerfile_content = f"""FROM {full_source_tag} AS base_layer
 RUN pip install --upgrade chutes=={chutes_version}
 
 FROM base_layer AS filesystemverificationmanager
 COPY cvfs /tmp/cvfs
 RUN chmod +x /tmp/cvfs
-RUN /tmp/cvfs index / /tmp/chutesfs.index
-RUN /tmp/cvfs collect / /tmp/chutesfs.index /tmp/chutesfs.data
+RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cvfs index / /tmp/chutesfs.index
+RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cvfs collect / /tmp/chutesfs.index /tmp/chutesfs.data
 
 FROM base_layer AS final_layer
 COPY --from=filesystemverificationmanager /tmp/chutesfs.index /etc/chutesfs.index
