@@ -45,7 +45,7 @@ from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import is_valid_host, generate_ip_token, aes_decrypt
-from api.graval_worker import verify_instance, graval_encrypt, verify_proof
+from api.graval_worker import verify_instance, graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
 
 router = APIRouter()
@@ -508,6 +508,7 @@ async def verify_launch_config_instance(
         .options(
             joinedload(Instance.nodes),
             joinedload(Instance.job),
+            joinedload(Instance.chute),
         )
     )
     instance = (await db.execute(query)).unique().scalar_one_or_none()
@@ -557,6 +558,24 @@ async def verify_launch_config_instance(
         )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"PoVW proof verification failed: {exc}"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=launch_config.verification_error,
+        )
+
+    # Valid filesystem/integrity?
+    image_id = instance.chute.image_id
+    patch_version = instance.chute.image.patch_version
+    task = await generate_fs_hash.kiq(image_id, patch_version, launch_config.seed)
+    expected_hash = await task.wait_result()
+    if expected_hash != response_body["fsv"]:
+        logger.error(
+            f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
+            f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
+        )
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = "File system verification failure, mismatched hash"
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

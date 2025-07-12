@@ -106,6 +106,10 @@ async def create_job(
             detail=f"Chute {chute_id} not found",
         )
 
+    # Check disk requirements for the chute.
+    job_obj = next(j for j in chute.jobs if j["name"] == method)
+    disk_gb = job_obj.get("disk_gb", 10)
+
     # User has quota for jobs?
     query = select(
         func.count(Job.job_id).label("total_jobs"),
@@ -178,6 +182,7 @@ async def create_job(
                     "image_id": chute.image.image_id,
                     "gpu_count": node_selector.gpu_count,
                     "compute_multiplier": compute_multiplier,
+                    "disk_gb": disk_gb,
                     "exclude": [],
                 },
             }

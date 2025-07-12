@@ -53,6 +53,7 @@ class Job(BaseModel):
     upload: Optional[bool] = False
     timeout: Optional[int] = None
     ports: list[Port] = []
+    disk_gb: Optional[int] = Field(10, ge=10, le=1000)
 
 
 class NodeSelector(BaseModel):

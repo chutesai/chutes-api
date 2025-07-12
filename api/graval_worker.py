@@ -2,6 +2,9 @@
 GraVal node validation worker.
 """
 
+import os
+import subprocess
+import tempfile
 import asyncio
 import aiohttp
 import binascii
@@ -15,6 +18,7 @@ import base64
 import backoff
 import secrets
 import orjson as json
+import pkg_resources
 from async_lru import alru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -903,25 +907,6 @@ async def available_verification_chutes():
     return available
 
 
-async def start_job(instance):
-    """
-    Start a job, once verified.
-    """
-    payload = aes_encrypt(json.dumps(instance.config.job.job_args), instance.symmetric_key)
-    path = aes_encrypt("/_start_job", instance.symmetric_key, hex_encode=True)
-    async with miner_client.post(
-        instance.miner_hotkey,
-        f"http://{instance.host}:{instance.port}/{path}",
-        payload,
-        timeout=15.0,
-    ) as resp:
-        resp.raise_for_status()
-        logger.success(
-            f"Successfully started job {instance.config.job.job_id} "
-            f"on {instance.instance_id=} of {instance.miner_hotkey=}"
-        )
-
-
 @broker.task
 async def verify_instance(instance_id: str):
     """
@@ -944,36 +929,39 @@ async def verify_instance(instance_id: str):
             return
 
         # Legacy encryption/key exchange tests.
-        if semcomp(instance.chutes_version or "0.0.0", "0.3.0") < 0:
-            if not use_encryption_v2(instance.chutes_version):
-                # Legacy/encryption V1 tests.
-                try:
-                    if not await _verify_instance_graval(instance):
-                        logger.warning(f"{instance_id=} failed GraVal verification!")
-                        instance.verification_error = (
-                            "Failed one or more GraVal encryption challenges."
-                        )
-                        await session.commit()
-                        await settings.redis_client.delete(f"verify:lock:{instance_id}")
-                        return
-                except Exception as exc:
-                    error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
-                    logger.error(error_message)
-                    instance.verification_error = error_message
+        if semcomp(instance.chutes_version or "0.0.0", "0.3.0") >= 0:
+            logger.warning(f"Verification flow unused for chutes version >= 0.3.0")
+            return
+
+        if not use_encryption_v2(instance.chutes_version):
+            # Legacy/encryption V1 tests.
+            try:
+                if not await _verify_instance_graval(instance):
+                    logger.warning(f"{instance_id=} failed GraVal verification!")
+                    instance.verification_error = (
+                        "Failed one or more GraVal encryption challenges."
+                    )
                     await session.commit()
                     await settings.redis_client.delete(f"verify:lock:{instance_id}")
                     return
-            else:
-                # Encryption V2, create and exchange an AES key.
-                try:
-                    await exchange_symmetric_key(instance)
-                except Exception as exc:
-                    error_message = f"Failed to exchange symmetric key via GraVal encryption for {instance_id=}: {exc}\n{traceback.format_exc()}"
-                    logger.error(error_message)
-                    instance.verification_error = error_message
-                    await session.commit()
-                    await settings.redis_client.delete(f"verify:lock:{instance_id}")
-                    return
+            except Exception as exc:
+                error_message = f"Failed to perform GraVal validation for {instance_id=}: {exc}\n{traceback.format_exc()}"
+                logger.error(error_message)
+                instance.verification_error = error_message
+                await session.commit()
+                await settings.redis_client.delete(f"verify:lock:{instance_id}")
+                return
+        else:
+            # Encryption V2, create and exchange an AES key.
+            try:
+                await exchange_symmetric_key(instance)
+            except Exception as exc:
+                error_message = f"Failed to exchange symmetric key via GraVal encryption for {instance_id=}: {exc}\n{traceback.format_exc()}"
+                logger.error(error_message)
+                instance.verification_error = error_message
+                await session.commit()
+                await settings.redis_client.delete(f"verify:lock:{instance_id}")
+                return
 
         # Filesystem test.
         try:
@@ -1019,10 +1007,6 @@ async def verify_instance(instance_id: str):
 
         await session.commit()
         await session.refresh(instance)
-
-        # If there is a job associated with the instance, start it.
-        if instance.config and instance.config.job:
-            await start_job(instance)
 
         # Notify the miner.
         try:
@@ -1199,3 +1183,66 @@ async def handle_rolling_update(chute_id: str, version: str):
                     f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"
                 )
         await session.delete(rolling_update)
+
+
+@broker.task
+async def generate_fs_hash(image_id: str, patch_version: str, seed: int, sparse: bool = False):
+    """
+    Use the new cfsv mechanism to generate the expected filesystem hash for a given image/seed pair.
+    """
+    chutes_location = pkg_resources.get_distribution("chutes").location
+    cvfs_path = os.path.join(chutes_location, "chutes", "cvfs")
+    mode = "sparse" if sparse else "full"
+    seed_str = str(seed)
+
+    # Make sure our FS datamap is cached.
+    cache_path = f"/tmp/{image_id}.{patch_version}.data"
+    if not os.path.exists(cache_path):
+        logger.info(f"Downloading data file for image_id={image_id}, patch_version={patch_version}")
+        s3_key = f"image_hash_blobs/{image_id}/{patch_version}.data"
+        try:
+            temp_fd, temp_path = tempfile.mkstemp(dir="/tmp", prefix=f"{image_id}.{patch_version}.")
+            os.close(temp_fd)
+            try:
+                async with settings.s3_client() as s3:
+                    await s3.download_file(settings.storage_bucket, s3_key, temp_path)
+                os.rename(temp_path, cache_path)
+                logger.info(
+                    f"Successfully cached data file to {cache_path} for {image_id=} {patch_version=}"
+                )
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+        except Exception as e:
+            logger.error(f"Failed to download data file from S3: {e}")
+            raise Exception(f"Failed to download image data from S3: {e}")
+    else:
+        logger.info(f"Using cached data file at {cache_path}")
+
+    # Now generate the hash.
+    cmd = [cvfs_path, "validate", seed_str, mode, cache_path]
+    logger.info(
+        f"Generating filesystem hash for {image_id=} {patch_version=} using seed={seed_str} and mode={mode}"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.error(f"cfsv validate failed: {stderr.decode()}")
+        raise subprocess.CalledProcessError(proc.returncode, cmd, stderr.decode())
+
+    # Extract the hash from the output.
+    fsv_hash = None
+    for line in stdout.decode().strip().split("\n"):
+        if line.startswith("RESULT:"):
+            fsv_hash = line.split("RESULT:")[1].strip()
+            logger.info(f"Filesystem verification hash: {fsv_hash}")
+            break
+    if not fsv_hash:
+        logger.warning(
+            "Failed to extract filesystem verification hash from cfsv output: {stdout.decode()}"
+        )
+        raise Exception("No RESULT line found in cfsv output: {stdout.decode()}")
+    return fsv_hash
