@@ -42,6 +42,8 @@ def model_to_dict(obj):
             data[name] = getattr(obj, name)
     if isinstance(obj, Chute):
         data["image"] = f"{obj.image.user.username}/{obj.image.name}:{obj.image.tag}"
+        if obj.image.patch_version not in (None, "initial"):
+            data["image"] += f"-{obj.image.patch_version}"
         ns = NodeSelector(**obj.node_selector)
         data["node_selector"].update(
             {
