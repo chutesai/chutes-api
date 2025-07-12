@@ -24,8 +24,9 @@ from api.exceptions import (
     PushTimeout,
 )
 from api.image.schemas import Image
-from api.chute.schemas import Chute
-from sqlalchemy import func
+from api.chute.schemas import Chute, RollingUpdate
+from sqlalchemy import func, text
+from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
 from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
@@ -462,7 +463,9 @@ async def upload_filesystem_verification_data(image, data_file_path: str):
     """
     Upload the filesystem verification data to S3 with the correct path structure.
     """
-    s3_key = f"image_hash_blobs/{image.image_id}/{image.patch_version}.data"
+    # Handle None patch_version by defaulting to "initial"
+    patch_version = image.patch_version if image.patch_version is not None else "initial"
+    s3_key = f"image_hash_blobs/{image.image_id}/{patch_version}.data"
     async with settings.s3_client() as s3:
         await s3.upload_file(data_file_path, settings.storage_bucket, s3_key)
     logger.success(f"Uploaded filesystem verification data to {s3_key}")
@@ -703,11 +706,12 @@ RUN pip install --upgrade chutes=={chutes_version}
             error_message = str(exc)
 
     # Update the image with the new patch version, tag, etc.
+    affected_chute_ids = []
     if success:
-        affected_chute_ids = []
         async with get_session() as session:
             result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
             image = result.scalar_one_or_none()
+            chutes = []
             if image:
                 image.patch_version = patch_version
                 image.chutes_version = chutes_version
@@ -716,34 +720,66 @@ RUN pip install --upgrade chutes=={chutes_version}
                 logger.success(
                     f"Updated image {image_id} to chutes version {chutes_version}, patch version {patch_version}"
                 )
-                chutes_result = await session.execute(
-                    select(Chute.chute_id, Chute.chutes_version).where(Chute.image_id == image_id)
-                )
-                affected_chute_ids = []
-                for row in chutes_result.fetchall():
-                    await handle_rolling_update.kiq(
-                        row[0], row[1], reason="image updated due to chutes lib upgrade"
-                    )
-                logger.info(f"Found {len(affected_chute_ids)} chutes affected by image update")
 
-                # Notify miners of the update
-                image_path = f"{image.user.username}/{image.name}:{image.tag}-{patch_version}"
-                await settings.redis_client.publish(
-                    "miner_broadcast",
-                    json.dumps(
-                        {
-                            "reason": "image_updated",
-                            "data": {
-                                "image_id": image_id,
-                                "short_tag": image.short_tag,
-                                "patch_version": patch_version,
-                                "chutes_version": chutes_version,
-                                "chute_ids": affected_chute_ids,
-                                "image": image_path,
-                            },
-                        }
-                    ).decode(),
+                # Update the associated chutes with the new version.
+                chutes_result = await session.execute(
+                    select(Chute)
+                    .where(Chute.image_id == image_id)
+                    .options(selectinload(Chute.instances))
                 )
+                chutes = chutes_result.scalars().all()
+                permitted = {}
+                for chute in chutes:
+                    for instance in chute.instances:
+                        if instance.miner_hotkey not in permitted:
+                            permitted[instance.miner_hotkey] = 0
+                        permitted[instance.miner_hotkey] += 1
+                    chute.chutes_version = chutes_version
+                    affected_chute_ids.append(chute.chute_id)
+
+                    # Create the rolling update record.
+                    await session.execute(
+                        text(
+                            "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
+                        ),
+                        {"chute_id": chute.chute_id},
+                    )
+                    if permitted:
+                        rolling_update = RollingUpdate(
+                            chute_id=chute.chute_id,
+                            old_version=chute.version,
+                            new_version=chute.version,
+                            permitted=permitted,
+                        )
+                        session.add(rolling_update)
+
+                # Commit the chute updates
+                await session.commit()
+
+            # Trigger the rolling update tasks.
+            for chute in chutes:
+                await handle_rolling_update.kiq(
+                    chute.chute_id, chutes_version, reason="image updated due to chutes lib upgrade"
+                )
+
+            # Notify miners of the update
+            image_path = f"{image.user.username}/{image.name}:{image.tag}-{patch_version}"
+            await settings.redis_client.publish(
+                "miner_broadcast",
+                json.dumps(
+                    {
+                        "reason": "image_updated",
+                        "data": {
+                            "image_id": image_id,
+                            "short_tag": image.short_tag,
+                            "patch_version": patch_version,
+                            "chutes_version": chutes_version,
+                            "chute_ids": affected_chute_ids,
+                            "image": image_path,
+                        },
+                    }
+                ).decode(),
+            )
     else:
         logger.error(f"Failed to update chutes lib for image {image_id}: {error_message}")
 
