@@ -24,11 +24,13 @@ from api.exceptions import (
     PushTimeout,
 )
 from api.image.schemas import Image
+from api.chute.schemas import Chute
 from sqlalchemy import func
 from sqlalchemy.future import select
 from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from api.database import orms  # noqa
+from api.graval_worker import handle_rolling_update
 
 broker = ListQueueBroker(url=settings.redis_url, queue_name="forge").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
@@ -702,6 +704,7 @@ RUN pip install --upgrade chutes=={chutes_version}
 
     # Update the image with the new patch version, tag, etc.
     if success:
+        affected_chute_ids = []
         async with get_session() as session:
             result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
             image = result.scalar_one_or_none()
@@ -713,22 +716,34 @@ RUN pip install --upgrade chutes=={chutes_version}
                 logger.success(
                     f"Updated image {image_id} to chutes version {chutes_version}, patch version {patch_version}"
                 )
+                chutes_result = await session.execute(
+                    select(Chute.chute_id, Chute.chutes_version).where(Chute.image_id == image_id)
+                )
+                affected_chute_ids = []
+                for row in chutes_result.fetchall():
+                    await handle_rolling_update.kiq(
+                        row[0], row[1], reason="image updated due to chutes lib upgrade"
+                    )
+                logger.info(f"Found {len(affected_chute_ids)} chutes affected by image update")
 
-        # Notify miners of the update
-        await settings.redis_client.publish(
-            "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "image_updated",
-                    "data": {
-                        "image_id": image_id,
-                        "short_tag": image.short_tag,
-                        "patch_version": patch_version,
-                        "chutes_version": chutes_version,
-                    },
-                }
-            ).decode(),
-        )
+                # Notify miners of the update
+                image_path = f"{image.user.username}/{image.name}:{image.tag}-{patch_version}"
+                await settings.redis_client.publish(
+                    "miner_broadcast",
+                    json.dumps(
+                        {
+                            "reason": "image_updated",
+                            "data": {
+                                "image_id": image_id,
+                                "short_tag": image.short_tag,
+                                "patch_version": patch_version,
+                                "chutes_version": chutes_version,
+                                "chute_ids": affected_chute_ids,
+                                "image": image_path,
+                            },
+                        }
+                    ).decode(),
+                )
     else:
         logger.error(f"Failed to update chutes lib for image {image_id}: {error_message}")
 

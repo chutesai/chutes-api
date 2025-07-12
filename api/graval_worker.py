@@ -1044,7 +1044,7 @@ async def verify_instance(instance_id: str):
 
 
 @broker.task
-async def handle_rolling_update(chute_id: str, version: str):
+async def handle_rolling_update(chute_id: str, version: str, reason: str = "code change"):
     """
     Handle a rolling update event.
     """
@@ -1121,6 +1121,7 @@ async def handle_rolling_update(chute_id: str, version: str):
                     "miner_hotkey": instance.miner_hotkey,
                     "old_version": rolling_update.old_version,
                     "new_version": rolling_update.new_version,
+                    "reason": reason,
                 },
                 "filter_recipients": [instance.miner_hotkey],
             }
