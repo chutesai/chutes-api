@@ -36,7 +36,7 @@ from api.graval_worker import handle_rolling_update
 broker = ListQueueBroker(url=settings.redis_url, queue_name="forge").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
 )
-CFSV_PATH = os.path.join(os.path.dirname(chutes.__file__), "cvfs")
+CFSV_PATH = os.path.join(os.path.dirname(chutes.__file__), "cfsv")
 
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
@@ -96,8 +96,9 @@ async def build_and_push_image(image, build_dir):
     full_image_tag = f"{settings.registry_host.rstrip('/')}/{short_tag}"
 
     # Copy cfsv binary to build directory
-    build_cfsv_path = os.path.join(build_dir, "cvfs")
+    build_cfsv_path = os.path.join(build_dir, "cfsv")
     shutil.copy2(CFSV_PATH, build_cfsv_path)
+    os.chmod(build_cfsv_path, 0o755)
 
     # Modify the Dockerfile to include filesystem verification stages
     original_dockerfile = os.path.join(build_dir, "Dockerfile")
@@ -137,7 +138,7 @@ async def build_and_push_image(image, build_dir):
             storage_driver,
             "--layers",
             "--tag",
-            f"{short_tag}:filesystemverificationmanager",
+            f"{short_tag}-cfsv",
             "--target",
             "filesystemverificationmanager",
             "-f",
@@ -399,7 +400,6 @@ async def inject_cfsv_stages(dockerfile_path: str, cfsv_binary_path: str) -> str
             "",
             f"FROM {base_alias} AS filesystemverificationmanager",
             f"COPY {os.path.basename(cfsv_binary_path)} /tmp/cfsv",
-            "RUN chmod +x /tmp/cfsv",
             f"RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv index / /tmp/chutesfs.index",
             f"RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data",
             "",
@@ -592,17 +592,17 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
     success = False
     with tempfile.TemporaryDirectory() as build_dir:
         try:
-            build_cfsv_path = os.path.join(build_dir, "cvfs")
+            build_cfsv_path = os.path.join(build_dir, "cfsv")
             shutil.copy2(CFSV_PATH, build_cfsv_path)
+            os.chmod(build_cfsv_path, 0o755)
             envdump_unlock = os.getenv("ENVDUMP_UNLOCK", "")
             dockerfile_content = f"""FROM {full_source_tag} AS base_layer
 RUN pip install --upgrade chutes=={chutes_version}
 
 FROM base_layer AS filesystemverificationmanager
-COPY cvfs /tmp/cvfs
-RUN chmod +x /tmp/cvfs
-RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cvfs index / /tmp/chutesfs.index
-RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cvfs collect / /tmp/chutesfs.index /tmp/chutesfs.data
+COPY cfsv /tmp/cfsv
+RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv index / /tmp/chutesfs.index
+RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
 
 FROM base_layer AS final_layer
 COPY --from=filesystemverificationmanager /tmp/chutesfs.index /etc/chutesfs.index
@@ -628,7 +628,7 @@ RUN pip install --upgrade chutes=={chutes_version}
                 storage_driver,
                 "--layers",
                 "--tag",
-                f"{target_tag}:filesystemverificationmanager",
+                f"{target_tag}-cfsv",
                 "--target",
                 "filesystemverificationmanager",
                 "-f",

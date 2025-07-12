@@ -1190,7 +1190,7 @@ async def generate_fs_hash(image_id: str, patch_version: str, seed: int, sparse:
     Use the new cfsv mechanism to generate the expected filesystem hash for a given image/seed pair.
     """
     chutes_location = pkg_resources.get_distribution("chutes").location
-    cvfs_path = os.path.join(chutes_location, "chutes", "cvfs")
+    cfsv_path = os.path.join(chutes_location, "chutes", "cfsv")
     mode = "sparse" if sparse else "full"
     seed_str = str(seed)
 
@@ -1220,7 +1220,7 @@ async def generate_fs_hash(image_id: str, patch_version: str, seed: int, sparse:
         logger.info(f"Using cached data file at {cache_path}")
 
     # Now generate the hash.
-    cmd = [cvfs_path, "validate", seed_str, mode, cache_path]
+    cmd = [cfsv_path, "validate", seed_str, mode, cache_path]
     logger.info(
         f"Generating filesystem hash for {image_id=} {patch_version=} using seed={seed_str} and mode={mode}"
     )

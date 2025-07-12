@@ -53,16 +53,22 @@ async def stream_build_logs(
     if image.status.startswith(("built and pushed", "error:")):
         async with settings.s3_client() as s3:
             log_path = f"forge/{image.user_id}/{image.image_id}.log"
-            async with settings.s3_client() as s3:
-                data = io.BytesIO()
-                await s3.download_fileobj(settings.storage_bucket, log_path, data)
-                headers = {
-                    "Content-Disposition": f'inline; filename="{image_id}.log"',
-                    "Content-Type": "text/plain; charset=utf-8",
-                }
+            try:
+                async with settings.s3_client() as s3:
+                    data = io.BytesIO()
+                    await s3.download_fileobj(settings.storage_bucket, log_path, data)
+                    headers = {
+                        "Content-Disposition": f'inline; filename="{image_id}.log"',
+                        "Content-Type": "text/plain; charset=utf-8",
+                    }
+                    return Response(
+                        content=data.getvalue(),
+                        headers=headers,
+                    )
+            except Exception:
                 return Response(
-                    content=data.getvalue(),
-                    headers=headers,
+                    content=image.status,
+                    headers={"Content-Type": "text/plain"},
                 )
 
     # Stream the logs in real-time.
