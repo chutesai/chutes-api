@@ -752,8 +752,17 @@ async def invoke(
     for attempt_idx in range(5):
         async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
             if not target:
-                logger.warning(f"No targets found for {chute_id=}")
-                yield sse({"error": "no_targets"})
+                if infra_overload:
+                    logger.warning(f"All miners are at max capacity: {chute.name=}")
+                    yield sse(
+                        {
+                            "error": "infra_overload",
+                            "detail": "Infrastructure is at maximum capacity, try again later",
+                        }
+                    )
+                else:
+                    logger.warning(f"No targets found for {chute_id=}")
+                    yield sse({"error": "no_targets"})
                 return
 
             invocation_id = str(uuid.uuid4())
