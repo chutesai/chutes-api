@@ -930,7 +930,7 @@ async def verify_instance(instance_id: str):
 
         # Legacy encryption/key exchange tests.
         if semcomp(instance.chutes_version or "0.0.0", "0.3.0") >= 0:
-            logger.warning(f"Verification flow unused for chutes version >= 0.3.0")
+            logger.warning("Verification flow unused for chutes version >= 0.3.0")
             return
 
         if not use_encryption_v2(instance.chutes_version):
@@ -938,9 +938,7 @@ async def verify_instance(instance_id: str):
             try:
                 if not await _verify_instance_graval(instance):
                     logger.warning(f"{instance_id=} failed GraVal verification!")
-                    instance.verification_error = (
-                        "Failed one or more GraVal encryption challenges."
-                    )
+                    instance.verification_error = "Failed one or more GraVal encryption challenges."
                     await session.commit()
                     await settings.redis_client.delete(f"verify:lock:{instance_id}")
                     return
