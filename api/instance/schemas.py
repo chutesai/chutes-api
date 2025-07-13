@@ -52,6 +52,7 @@ class LaunchConfigArgs(BaseModel):
     host: str
     port_mappings: list[PortMap]
     env: str
+    code: str
 
 
 class Instance(Base):

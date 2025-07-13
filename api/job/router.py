@@ -5,13 +5,17 @@ Routes for jobs.
 import io
 import uuid
 import backoff
+import traceback
 import orjson as json
+from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from fastapi import File, UploadFile
 from sqlalchemy import text, select, func, case, and_
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
+import api.miner_client as miner_client
+from api.util import aes_encrypt
 from api.database import get_db_session
 from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import is_shared
@@ -218,18 +222,41 @@ async def delete_job(
         )
     await batch_delete_stored_files(job)
     await db.delete(job)
-    await settings.redis_client.publish(
-        "miner_broadcast",
-        json.dumps(
-            {
-                "reason": "job_deleted",
-                "data": {
-                    "instance_id": job.instance_id,
-                    "job_id": job.job_id,
-                },
-            }
-        ).decode(),
-    )
+
+    # Notify the miner.
+    miner_notified = False
+    if job.instance:
+        instance = job.instance
+        try:
+            payload = {"reason": "user initiated"}
+            enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
+            path = aes_encrypt("/_shutdown", instance.symmetric_key, hex_encode=True)
+            async with miner_client.post(
+                instance.miner_hotkey,
+                f"http://{instance.host}:{instance.port}/{path}",
+                enc_payload,
+                timeout=30.0,
+            ) as resp:
+                resp.raise_for_status()
+                miner_notified = True
+        except Exception as exc:
+            logger.error(f"Error calling job shutdown endpoint: {exc}\n{traceback.format_exc()}")
+
+    # If we didn't notify the specific miner running the job (if any), broadcast the event.
+    if not miner_notified:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "job_deleted",
+                    "data": {
+                        "instance_id": job.instance_id,
+                        "job_id": job.job_id,
+                    },
+                }
+            ).decode(),
+        )
+
     return {
         "deleted": True,
         "job_id": job_id,
@@ -254,7 +281,6 @@ async def finish_job_and_get_upload_targets(
         )
 
     payload = await request.json()
-    job.finished_at = func.now()
     job.status = payload.pop("status", "error")
     output_filenames = payload.pop("output_filenames", [])
     if job.status == "complete" and output_filenames:
@@ -282,7 +308,7 @@ async def finish_job_and_get_upload_targets(
     await db.commit()
     await db.refresh(job)
     job_response = JobResponse.from_orm(job)
-    job_response.upload_urls = upload_urls
+    job_response.output_storage_urls = upload_urls
     return job_response
 
 
@@ -366,22 +392,21 @@ async def complete_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Job alread finished",
         )
-    if not job.output_files:
-        return job
-
-    # Mark partial failures if some files failed to be uploaded.
-    all_uploaded = all(f["uploaded"] for f in job.output_files)
-    if not all_uploaded:
-        failed_files = [f["filename"] for f in job.output_files if not f["uploaded"]]
-        if job.status.startswith("complete"):
-            job.status = "partial_failure"
-            job.error_detail = f"Failed to upload files: {', '.join(failed_files)}"
-        else:
-            job.error_detail += f"\nFailed to upload files: {', '.join(failed_files)}"
-    elif job.status.startswith("complete"):
-        job.status = "complete"
+    if job.output_files:
+        # Mark partial failures if some files failed to be uploaded.
+        all_uploaded = all(f["uploaded"] for f in job.output_files)
+        if not all_uploaded:
+            failed_files = [f["filename"] for f in job.output_files if not f["uploaded"]]
+            if job.status.startswith("complete"):
+                job.status = "partial_failure"
+                job.error_detail = f"Failed to upload files: {', '.join(failed_files)}"
+            else:
+                job.error_detail += f"\nFailed to upload files: {', '.join(failed_files)}"
+        elif job.status.startswith("complete"):
+            job.status = "complete"
 
     job.updated_at = func.now()
+    job.finished_at = func.now()
 
     await db.commit()
     await db.refresh(job)

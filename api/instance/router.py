@@ -3,6 +3,7 @@ Routes for instances.
 """
 
 import uuid
+import base64
 import orjson as json
 import traceback
 import random
@@ -237,7 +238,6 @@ async def get_launch_config(
     miner = await _check_blacklisted(db, hotkey)
 
     # Load the chute and check if it's scalable.
-    logger.warning(f"CHECKING FOR CHUTE: {chute_id}")
     chute = await _load_chute(db, chute_id)
     await _check_scalable(db, chute, hotkey)
 
@@ -323,8 +323,11 @@ async def claim_launch_config(
     chute = await _load_chute(db, launch_config.chute_id)
 
     # Verify, decrypt, parse the envdump payload.
+    code = None
     try:
         dump = DUMPER.decrypt(launch_config.env_key, args.env)
+        code_data = DUMPER.decrypt(launch_config.env_key, args.code)
+        code = base64.b64decode(code_data["content"]).decode()
     except Exception as exc:
         logger.error(
             f"Attempt to claim {config_id=} failed, invalid envdump payload received: {exc}"
@@ -344,6 +347,7 @@ async def claim_launch_config(
             chute,
             miner_hotkey=launch_config.miner_hotkey,
         )
+        assert code == chute.code
     except AssertionError as exc:
         logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
         launch_config.failed_at = func.now()

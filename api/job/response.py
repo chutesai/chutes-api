@@ -34,7 +34,7 @@ class JobResponse(BaseModel):
     chute: MinimalChuteResponse
     instance: Optional[MinimalInstanceResponse] = None
 
-    upload_urls: Optional[list[str]] = []
+    output_storage_urls: Optional[list[str]] = []
 
     class Config:
         from_attributes = True
