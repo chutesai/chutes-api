@@ -662,7 +662,7 @@ async def _deploy_chute(
         )
         chute.chutes_version = image.chutes_version
         chute.cords = chute_args.cords
-        chute.concurrency = (chute_args.concurrency,)
+        chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
     else:
         try:

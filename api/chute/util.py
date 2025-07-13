@@ -49,10 +49,6 @@ from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
 
-# aiohttp sessions cache
-_session_cache: dict[tuple[str, int], aiohttp.ClientSession] = {}
-_session_lock = asyncio.Lock()
-
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
     os.path.join(
@@ -187,14 +183,11 @@ async def get_miner_session(instance: Instance) -> aiohttp.ClientSession:
     """
     Get or create an aiohttp session for an instance.
     """
-    async with _session_lock:
-        if instance.instance_id not in _session_cache:
-            _session_cache[instance.instance_id] = aiohttp.ClientSession(
-                base_url=f"http://{instance.host}:{instance.port}",
-                timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
-                read_bufsize=8 * 1024 * 1024,
-            )
-        return _session_cache[instance.instance_id]
+    return aiohttp.ClientSession(
+        base_url=f"http://{instance.host}:{instance.port}",
+        timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+        read_bufsize=8 * 1024 * 1024,
+    )
 
 
 async def selector_hourly_price(node_selector) -> float:
@@ -699,6 +692,8 @@ async def _invoke_one(
 
             yield data
     finally:
+        if session:
+            await session.close()
         if response:
             await response.release()
 
