@@ -246,7 +246,13 @@ async def finish_job_and_get_upload_targets(
     """
     Mark a job as complete (which could be failed; "done" either way)
     """
-    job = await load_job_from_jwt(db, job_id)
+    job = await load_job_from_jwt(db, job_id, token)
+    if job.finished_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job alread finished",
+        )
+
     payload = await request.json()
     job.finished_at = func.now()
     job.status = payload.pop("status", "error")
@@ -291,6 +297,12 @@ async def upload_job_file(
     Upload a job's output file.
     """
     job = await load_job_from_jwt(db, job_id, token, filename=file.filename)
+    if job.finished_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job alread finished",
+        )
+
     file_index = None
     s3_key = None
     for i, output_file in enumerate(job.output_files or []):
@@ -348,7 +360,12 @@ async def complete_job(
     """
     Final update, which checks the file uploads to see which were successfully transferred etc.
     """
-    job = await load_job_from_jwt(db, job_id)
+    job = await load_job_from_jwt(db, job_id, token)
+    if job.finished_at:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Job alread finished",
+        )
     if not job.output_files:
         return job
 

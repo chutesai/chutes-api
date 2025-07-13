@@ -5,7 +5,7 @@ Safer response class for user.
 from typing import Optional, Any
 from pydantic import BaseModel
 from datetime import datetime
-from api.chute.response import ChuteResponse
+from api.chute.response import MinimalChuteResponse
 from api.instance.response import MinimalInstanceResponse
 
 
@@ -27,11 +27,14 @@ class JobResponse(BaseModel):
 
     job_args: dict
     final_result: Optional[dict] = None
-    output_files: Optional[list[str]] = []
+    output_files: Optional[list[dict[str, Any]]] = []
 
     port_mappings: Optional[list[dict[str, Any]]] = []
 
-    chute: ChuteResponse
+    chute: MinimalChuteResponse
     instance: Optional[MinimalInstanceResponse] = None
 
     upload_urls: Optional[list[str]] = []
+
+    class Config:
+        from_attributes = True

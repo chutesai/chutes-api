@@ -9,6 +9,16 @@ from api.user.response import UserResponse
 from api.config import settings
 
 
+class MinimalImageResponse(BaseModel):
+    image_id: str
+    name: str
+    tag: str
+    public: bool
+
+    class Config:
+        from_attributes = True
+
+
 class ImageResponse(BaseModel):
     image_id: str
     name: str

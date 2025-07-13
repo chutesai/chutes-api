@@ -523,9 +523,10 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
                 "verify_exp": False,
                 "verify_iat": True,
                 "verify_iss": True,
-                "require": ["exp", "iat", "iss"],
+                "require": ["iat", "iss"],
             },
             issuer="chutes",
+            algorithms=["HS256"],
         )
         assert job_id == payload["sub"], "Job ID in JWT does not match!"
         if filename:
@@ -535,8 +536,8 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
             .unique()
             .scalar_one_or_none()
         )
-        if not job or job.finished_at:
-            detail = f"{job_id=} either does not exist or has already finished!"
+        if not job:
+            detail = f"{job_id=} not found!"
             logger.warning(detail)
         elif filename and not any([f["filename"] == filename for f in job.output_files]):
             detail = f"{job_id=} did not have any output file with {filename=}"

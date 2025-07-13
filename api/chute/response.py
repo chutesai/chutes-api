@@ -6,10 +6,23 @@ from pydantic import BaseModel, computed_field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 from api.user.response import UserResponse
-from api.image.response import ImageResponse
+from api.image.response import MinimalImageResponse, ImageResponse
 from api.instance.response import MinimalInstanceResponse
 from api.chute.schemas import Cord, Job
 from api.config import settings
+
+
+class MinimalChuteResponse(BaseModel):
+    chute_id: str
+    name: str
+    public: bool
+    version: str
+    slug: str
+    chutes_version: str
+    image: MinimalImageResponse
+
+    class Config:
+        from_attributes = True
 
 
 class ChuteResponse(BaseModel):
