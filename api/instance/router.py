@@ -573,7 +573,13 @@ async def verify_launch_config_instance(
     # Valid filesystem/integrity?
     image_id = instance.chute.image_id
     patch_version = instance.chute.image.patch_version
-    task = await generate_fs_hash.kiq(image_id, patch_version, launch_config.seed)
+    task = await generate_fs_hash.kiq(
+        image_id,
+        patch_version,
+        launch_config.seed,
+        sparse=False,
+        exclude_path=f"/app/{instance.chute.filename}",
+    )
     result = await task.wait_result()
     expected_hash = result.return_value
     if expected_hash != response_body["fsv"]:

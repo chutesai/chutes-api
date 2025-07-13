@@ -1185,7 +1185,9 @@ async def handle_rolling_update(chute_id: str, version: str, reason: str = "code
 
 
 @broker.task
-async def generate_fs_hash(image_id: str, patch_version: str, seed: int, sparse: bool = False):
+async def generate_fs_hash(
+    image_id: str, patch_version: str, seed: int, sparse: bool, exclude_path: str
+):
     """
     Use the new cfsv mechanism to generate the expected filesystem hash for a given image/seed pair.
     """
@@ -1220,7 +1222,7 @@ async def generate_fs_hash(image_id: str, patch_version: str, seed: int, sparse:
         logger.info(f"Using cached data file at {cache_path}")
 
     # Now generate the hash.
-    cmd = [cfsv_path, "validate", seed_str, mode, cache_path]
+    cmd = [cfsv_path, "validate", seed_str, mode, cache_path, exclude_path]
     logger.info(
         f"Generating filesystem hash for {image_id=} {patch_version=} using seed={seed_str} and mode={mode}"
     )
