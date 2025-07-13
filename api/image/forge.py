@@ -152,6 +152,8 @@ async def build_and_push_image(image, build_dir):
         if storage_driver == "overlay" and storage_opts:
             for opt in storage_opts.split(","):
                 build_cmd.extend(["--storage-opt", opt.strip()])
+        if settings.registry_insecure:
+            build_cmd.extend(["--tls-verify=false"])
         build_cmd.append(".")
 
         process = await asyncio.create_subprocess_exec(
@@ -204,6 +206,8 @@ RUN /cfsv index / /tmp/chutesfs.index && \\
         if storage_driver == "overlay" and storage_opts:
             for opt in storage_opts.split(","):
                 build_cmd.extend(["--storage-opt", opt.strip()])
+        if settings.registry_insecure:
+            build_cmd.extend(["--tls-verify=false"])
         build_cmd.append(build_dir)
 
         process = await asyncio.create_subprocess_exec(
@@ -257,6 +261,8 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         if storage_driver == "overlay" and storage_opts:
             for opt in storage_opts.split(","):
                 build_cmd.extend(["--storage-opt", opt.strip()])
+        if settings.registry_insecure:
+            build_cmd.extend(["--tls-verify=false"])
         build_cmd.append(build_dir)
 
         process = await asyncio.create_subprocess_exec(
@@ -695,6 +701,8 @@ RUN pip install --upgrade chutes=={chutes_version}
             if storage_driver == "overlay" and storage_opts:
                 for opt in storage_opts.split(","):
                     build_cmd.extend(["--storage-opt", opt.strip()])
+            if settings.registry_insecure:
+                build_cmd.extend(["--tls-verify=false"])
             build_cmd.append(build_dir)
 
             process = await asyncio.create_subprocess_exec(
@@ -748,6 +756,8 @@ RUN /cfsv index / /tmp/chutesfs.index && \\
             if storage_driver == "overlay" and storage_opts:
                 for opt in storage_opts.split(","):
                     build_cmd.extend(["--storage-opt", opt.strip()])
+            if settings.registry_insecure:
+                build_cmd.extend(["--tls-verify=false"])
             build_cmd.append(build_dir)
 
             process = await asyncio.create_subprocess_exec(
@@ -807,6 +817,8 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
             if storage_driver == "overlay" and storage_opts:
                 for opt in storage_opts.split(","):
                     build_cmd.extend(["--storage-opt", opt.strip()])
+            if settings.registry_insecure:
+                build_cmd.extend(["--tls-verify=false"])
             build_cmd.append(build_dir)
 
             process = await asyncio.create_subprocess_exec(
