@@ -86,7 +86,7 @@ def safe_extract(zip_path):
 
 async def build_and_push_image(image, build_dir):
     """
-    Perform the actual image build via buildah with filesystem verification.
+    Perform the actual image build via buildah.
     """
     base_tag = f"{image.user.username}/{image.name}:{image.tag}"
     if image.patch_version and image.patch_version != "initial":
@@ -100,14 +100,19 @@ async def build_and_push_image(image, build_dir):
     shutil.copy2(CFSV_PATH, build_cfsv_path)
     os.chmod(build_cfsv_path, 0o755)
 
-    # Modify the Dockerfile to include filesystem verification stages
-    original_dockerfile = os.path.join(build_dir, "Dockerfile")
-    modified_dockerfile = await inject_cfsv_stages(original_dockerfile, build_cfsv_path)
-
-    # Helper to capture and stream logs (same as before)
+    # Helper to capture and stream logs
     started_at = time.time()
 
-    async def _capture_logs(stream, name):
+    async def _capture_logs(stream, name, capture=True):
+        """Helper to capture logs. Set capture=False to suppress logs."""
+        if not capture:
+            # Just consume the stream without logging
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+            return
+
         log_method = logger.info if name == "stdout" else logger.warning
         while True:
             line = await stream.readline()
@@ -123,12 +128,14 @@ async def build_and_push_image(image, build_dir):
             else:
                 break
 
-    # Build with buildah.
     try:
         storage_driver = os.getenv("STORAGE_DRIVER", "overlay")
         storage_opts = os.getenv("STORAGE_OPTS", "overlay.mount_program=/usr/bin/fuse-overlayfs")
 
-        # Build all stages including the intermediate one
+        # Stage 1: Build the original image with a precise tag
+        original_tag = f"{short_tag}-original-{uuid.uuid4().hex[:8]}"
+        logger.info(f"Stage 1: Building original image as {original_tag}")
+
         build_cmd = [
             "buildah",
             "build",
@@ -138,18 +145,15 @@ async def build_and_push_image(image, build_dir):
             storage_driver,
             "--layers",
             "--tag",
-            f"{short_tag}-cfsv",
-            "--target",
-            "filesystemverificationmanager",
+            original_tag,
             "-f",
-            modified_dockerfile,
+            os.path.join(build_dir, "Dockerfile"),
         ]
         if storage_driver == "overlay" and storage_opts:
             for opt in storage_opts.split(","):
                 build_cmd.extend(["--storage-opt", opt.strip()])
         build_cmd.append(".")
 
-        # First build the intermediate stage
         process = await asyncio.create_subprocess_exec(
             *build_cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -166,13 +170,75 @@ async def build_and_push_image(image, build_dir):
         )
 
         if process.returncode != 0:
-            raise BuildFailure("Build of intermediate stage failed!")
+            raise BuildFailure("Build of original image failed!")
 
-        # Extract the filesystem data
-        data_file_path = await extract_cfsv_data(short_tag, build_dir)
+        # Stage 2: Build filesystem verification image from the original
+        verification_tag = f"{short_tag}-fsv-{uuid.uuid4().hex[:8]}"
+        logger.info(f"Stage 2: Building filesystem verification image as {verification_tag}")
+        fsv_dockerfile_content = f"""FROM {original_tag}
+ARG CFSV_OP
+COPY cfsv /cfsv
+RUN /cfsv index / /tmp/chutesfs.index && \\
+    CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data && \\
+    ls -la /tmp/chutesfs.*
+"""
+        fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
+        with open(fsv_dockerfile_path, "w") as f:
+            f.write(fsv_dockerfile_content)
+
+        build_cmd = [
+            "buildah",
+            "build",
+            "--isolation",
+            "chroot",
+            "--build-arg",
+            f"CFSV_OP={os.getenv('CFSV_OP', str(uuid.uuid4()))}",
+            "--storage-driver",
+            storage_driver,
+            "--layers",
+            "--tag",
+            verification_tag,
+            "-f",
+            fsv_dockerfile_path,
+        ]
+        if storage_driver == "overlay" and storage_opts:
+            for opt in storage_opts.split(","):
+                build_cmd.extend(["--storage-opt", opt.strip()])
+        build_cmd.append(build_dir)
+
+        process = await asyncio.create_subprocess_exec(
+            *build_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout", capture=False),
+                _capture_logs(process.stderr, "stderr", capture=False),
+                process.wait(),
+            ),
+            timeout=settings.build_timeout,
+        )
+        if process.returncode != 0:
+            raise BuildFailure("Build of filesystem verification image failed!")
+
+        # Extract the data file from the verification image
+        data_file_path = await extract_cfsv_data_from_verification_image(
+            verification_tag, build_dir
+        )
         await upload_filesystem_verification_data(image, data_file_path)
 
-        # Now build the final image
+        # Stage 3: Build final image that combines original + index file
+        logger.info(f"Stage 3: Building final image as {short_tag}")
+
+        final_dockerfile_content = f"""FROM {verification_tag} as fsv
+FROM {original_tag} as base
+COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
+"""
+        final_dockerfile_path = os.path.join(build_dir, "Dockerfile.final")
+        with open(final_dockerfile_path, "w") as f:
+            f.write(final_dockerfile_content)
+
         build_cmd = [
             "buildah",
             "build",
@@ -185,15 +251,13 @@ async def build_and_push_image(image, build_dir):
             full_image_tag,
             "--tag",
             short_tag,
-            "--target",
-            "final_layer",
             "-f",
-            modified_dockerfile,
+            final_dockerfile_path,
         ]
         if storage_driver == "overlay" and storage_opts:
             for opt in storage_opts.split(","):
                 build_cmd.extend(["--storage-opt", opt.strip()])
-        build_cmd.append(".")
+        build_cmd.append(build_dir)
 
         process = await asyncio.create_subprocess_exec(
             *build_cmd,
@@ -221,14 +285,7 @@ async def build_and_push_image(image, build_dir):
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
         else:
-            message = "Image build failed, check logs for more details!"
-            logger.error(message)
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream",
-                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-            )
-            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
-            raise BuildFailure(f"Build of {full_image_tag} failed!")
+            raise BuildFailure(f"Final build of {full_image_tag} failed!")
 
     except asyncio.TimeoutError:
         message = f"Build of {full_image_tag} timed out after {settings.build_timeout} seconds."
@@ -242,7 +299,7 @@ async def build_and_push_image(image, build_dir):
         await process.communicate()
         raise BuildTimeout(message)
 
-    # Scan with trivy.
+    # Scan with trivy
     await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {
@@ -295,7 +352,7 @@ async def build_and_push_image(image, build_dir):
         await process.communicate()
         raise BuildTimeout(message)
 
-    # Push.
+    # Push
     await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {
@@ -372,92 +429,85 @@ async def build_and_push_image(image, build_dir):
     return short_tag
 
 
-async def inject_cfsv_stages(dockerfile_path: str, cfsv_binary_path: str) -> str:
+async def extract_cfsv_data_from_verification_image(verification_tag: str, build_dir: str) -> str:
     """
-    Update the dockerfile to use the three-stage build to generate filesystem challenge data/index.
+    Extract the data file from the filesystem verification image.
+    Uses mount to directly access the filesystem.
     """
-    with open(dockerfile_path, "r") as f:
-        original_dockerfile = f.read()
-    lines = original_dockerfile.strip().split("\n")
-    last_from_idx = -1
-    for i, line in enumerate(lines):
-        if line.strip().upper().startswith("FROM"):
-            last_from_idx = i
-    if last_from_idx == -1:
-        raise ValueError("No FROM statement found in Dockerfile")
-    from_line = lines[last_from_idx]
-    if " AS " in from_line.upper():
-        base_alias = from_line.split()[-1]
-    else:
-        base_alias = "base_layer"
-        lines[last_from_idx] = f"{from_line} AS {base_alias}"
-    envdump_unlock = os.getenv("ENVDUMP_UNLOCK", "")
-    new_dockerfile_lines = []
-    new_dockerfile_lines.extend(lines[: last_from_idx + 1])
-    new_dockerfile_lines.extend(lines[last_from_idx + 1 :])
-    new_dockerfile_lines.extend(
-        [
-            "",
-            f"FROM {base_alias} AS filesystemverificationmanager",
-            f"COPY {os.path.basename(cfsv_binary_path)} /tmp/cfsv",
-            f"RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv index / /tmp/chutesfs.index",
-            f"RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data",
-            "",
-            f"FROM {base_alias} AS final_layer",
-            "COPY --from=filesystemverificationmanager /tmp/chutesfs.index /etc/chutesfs.index",
-        ]
-    )
-    modified_dockerfile_path = dockerfile_path + ".modified"
-    with open(modified_dockerfile_path, "w") as f:
-        f.write("\n".join(new_dockerfile_lines))
-    return modified_dockerfile_path
-
-
-async def extract_cfsv_data(image_tag: str, build_dir: str) -> str:
-    """
-    Extract the filesystem verification data from the filesystemverificationmanager stage.
-    Returns the path to the extracted data file.
-    """
-    container_name = f"cfsv-extract-{uuid.uuid4().hex[:8]}"
+    container_id = None
+    mount_path = None
     try:
+        # Create container from the verification image
         process = await asyncio.create_subprocess_exec(
             "buildah",
             "from",
-            "--name",
-            container_name,
-            f"{image_tag}:filesystemverificationmanager",
+            verification_tag,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
         if process.returncode != 0:
-            raise Exception(
-                f"Failed to create container from intermediate stage: {stderr.decode()}"
-            )
-        data_file_path = os.path.join(build_dir, "chutesfs.data")
+            raise Exception(f"Failed to create container: {stderr.decode()}")
+
+        container_id = stdout.decode().strip()
+        logger.info(f"Created container {container_id} from {verification_tag}")
+
+        # Mount the container filesystem to access files directly
         process = await asyncio.create_subprocess_exec(
             "buildah",
-            "copy",
-            "--from",
-            container_name,
-            "/tmp/chutesfs.data",
-            data_file_path,
+            "mount",
+            container_id,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate()
         if process.returncode != 0:
-            raise Exception(f"Failed to copy data file: {stderr.decode()}")
+            raise Exception(f"Failed to mount container: {stderr.decode()}")
+
+        mount_path = stdout.decode().strip()
+        logger.info(f"Mounted container at {mount_path}")
+
+        # Copy the file directly from the mounted filesystem
+        source_path = os.path.join(mount_path, "tmp", "chutesfs.data")
+        data_file_path = os.path.join(build_dir, "chutesfs.data")
+
+        # Check if source file exists
+        if not os.path.exists(source_path):
+            tmp_path = os.path.join(mount_path, "tmp")
+            if os.path.exists(tmp_path):
+                files = os.listdir(tmp_path)
+                logger.warning(f"Files in /tmp: {files}")
+            raise Exception(f"Data file not found at {source_path}")
+
+        # Use shutil to copy the file
+        shutil.copy2(source_path, data_file_path)
+        logger.info(f"Successfully copied data file from {source_path} to {data_file_path}")
+
         return data_file_path
     finally:
-        process = await asyncio.create_subprocess_exec(
-            "buildah",
-            "rm",
-            container_name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await process.communicate()
+        # Unmount if we mounted
+        if mount_path and container_id:
+            process = await asyncio.create_subprocess_exec(
+                "buildah",
+                "umount",
+                container_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await process.communicate()
+            logger.info(f"Unmounted container {container_id}")
+
+        # Clean up the container
+        if container_id:
+            process = await asyncio.create_subprocess_exec(
+                "buildah",
+                "rm",
+                container_id,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            await process.communicate()
+            logger.info(f"Removed container {container_id}")
 
 
 async def upload_filesystem_verification_data(image, data_file_path: str):
@@ -485,15 +535,12 @@ async def forge(image_id: str):
         if not image:
             logger.error(f"Image does not exist: {image_id=}")
             return
-        if image.status != "pending build":
-            logger.error(f"Image status is not pending: {image_id=} status={image.status}")
-            return
         image.status = "building"
         image.build_started_at = func.now()
         await session.commit()
         await session.refresh(image)
 
-    # Download the build context.
+    # Download the build context
     short_tag = None
     error_message = None
     with tempfile.TemporaryDirectory() as build_dir:
@@ -520,13 +567,13 @@ async def forge(image_id: str):
         finally:
             os.chdir(starting_dir)
 
-        # Upload logs.
+        # Upload logs
         if os.path.exists(log_path := os.path.join(build_dir, "build.log")):
             destination = f"forge/{image.user_id}/{image.image_id}.log"
             async with settings.s3_client() as s3:
                 await s3.upload_file(log_path, settings.storage_bucket, destination)
 
-    # Update status.
+    # Update status
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -555,7 +602,7 @@ async def forge(image_id: str):
         ).decode(),
     )
 
-    # Cleanup.
+    # Cleanup
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
 
 
@@ -587,7 +634,27 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
     full_source_tag = f"{settings.registry_host.rstrip('/')}/{source_tag}"
     full_target_tag = f"{settings.registry_host.rstrip('/')}/{target_tag}"
 
-    # Rebuild the image with the updated chutes lib.
+    # Helper to capture and stream logs
+    async def _capture_logs(stream, name, capture=True):
+        """Helper to capture logs. Set capture=False to suppress logs."""
+        if not capture:
+            # Just consume the stream without logging
+            while True:
+                line = await stream.readline()
+                if not line:
+                    break
+            return
+
+        log_method = logger.info if name == "stdout" else logger.warning
+        while True:
+            line = await stream.readline()
+            if line:
+                decoded_line = line.decode().strip()
+                log_method(f"[update {target_tag}]: {decoded_line}")
+            else:
+                break
+
+    # Rebuild the image with the updated chutes lib
     error_message = None
     success = False
     with tempfile.TemporaryDirectory() as build_dir:
@@ -595,30 +662,23 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
             build_cfsv_path = os.path.join(build_dir, "cfsv")
             shutil.copy2(CFSV_PATH, build_cfsv_path)
             os.chmod(build_cfsv_path, 0o755)
-            envdump_unlock = os.getenv("ENVDUMP_UNLOCK", "")
-            dockerfile_content = f"""FROM {full_source_tag} AS base_layer
-RUN pip install --upgrade chutes=={chutes_version}
-
-FROM base_layer AS filesystemverificationmanager
-COPY cfsv /tmp/cfsv
-RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv index / /tmp/chutesfs.index
-RUN ENVDUMP_UNLOCK={envdump_unlock} /tmp/cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
-
-FROM base_layer AS final_layer
-COPY --from=filesystemverificationmanager /tmp/chutesfs.index /etc/chutesfs.index
-RUN pip install --upgrade chutes=={chutes_version}
-"""
-
-            dockerfile_path = os.path.join(build_dir, "Dockerfile")
-            with open(dockerfile_path, "w") as f:
-                f.write(dockerfile_content)
-
-            logger.info(f"Updating chutes library in {source_tag} to version {chutes_version}")
 
             storage_driver = os.getenv("STORAGE_DRIVER", "overlay")
             storage_opts = os.getenv(
                 "STORAGE_OPTS", "overlay.mount_program=/usr/bin/fuse-overlayfs"
             )
+
+            # Stage 1: Build updated base image with a precise tag
+            updated_tag = f"{target_tag}-updated-{uuid.uuid4().hex[:8]}"
+            logger.info(f"Stage 1: Building updated image as {updated_tag}")
+
+            dockerfile_content = f"""FROM {full_source_tag}
+RUN pip install --upgrade chutes=={chutes_version}
+"""
+            dockerfile_path = os.path.join(build_dir, "Dockerfile.update")
+            with open(dockerfile_path, "w") as f:
+                f.write(dockerfile_content)
+
             build_cmd = [
                 "buildah",
                 "build",
@@ -628,9 +688,7 @@ RUN pip install --upgrade chutes=={chutes_version}
                 storage_driver,
                 "--layers",
                 "--tag",
-                f"{target_tag}-cfsv",
-                "--target",
-                "filesystemverificationmanager",
+                updated_tag,
                 "-f",
                 dockerfile_path,
             ]
@@ -638,24 +696,99 @@ RUN pip install --upgrade chutes=={chutes_version}
                 for opt in storage_opts.split(","):
                     build_cmd.extend(["--storage-opt", opt.strip()])
             build_cmd.append(build_dir)
+
             process = await asyncio.create_subprocess_exec(
                 *build_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
+
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _capture_logs(process.stdout, "stdout"),
+                    _capture_logs(process.stderr, "stderr"),
+                    process.wait(),
+                ),
+                timeout=settings.build_timeout,
+            )
+
             if process.returncode != 0:
-                raise BuildFailure(f"Failed to build intermediate stage: {stderr.decode()}")
+                raise BuildFailure("Failed to build updated image!")
 
-            data_file_path = await extract_cfsv_data(target_tag, build_dir)
+            # Stage 2: Build filesystem verification image from the updated image
+            verification_tag = f"{target_tag}-fsv-{uuid.uuid4().hex[:8]}"
+            logger.info(f"Stage 2: Building filesystem verification image as {verification_tag}")
 
-            # Upload to S3
+            fsv_dockerfile_content = f"""FROM {updated_tag}
+ARG CFSV_OP
+COPY cfsv /cfsv
+RUN /cfsv index / /tmp/chutesfs.index && \\
+    CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data && \\
+    ls -la /tmp/chutesfs.*
+"""
+            fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
+            with open(fsv_dockerfile_path, "w") as f:
+                f.write(fsv_dockerfile_content)
+
+            build_cmd = [
+                "buildah",
+                "build",
+                "--isolation",
+                "chroot",
+                "--build-arg",
+                f"CFSV_OP={os.getenv('CFSV_OP', str(uuid.uuid4()))}",
+                "--storage-driver",
+                storage_driver,
+                "--layers",
+                "--tag",
+                verification_tag,
+                "-f",
+                fsv_dockerfile_path,
+            ]
+            if storage_driver == "overlay" and storage_opts:
+                for opt in storage_opts.split(","):
+                    build_cmd.extend(["--storage-opt", opt.strip()])
+            build_cmd.append(build_dir)
+
+            process = await asyncio.create_subprocess_exec(
+                *build_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # Run without capturing logs to avoid noise
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _capture_logs(process.stdout, "stdout", capture=False),
+                    _capture_logs(process.stderr, "stderr", capture=False),
+                    process.wait(),
+                ),
+                timeout=settings.build_timeout,
+            )
+
+            if process.returncode != 0:
+                raise BuildFailure("Failed to build filesystem verification image!")
+
+            # Extract and upload data file
+            data_file_path = await extract_cfsv_data_from_verification_image(
+                verification_tag, build_dir
+            )
             s3_key = f"image_hash_blobs/{image_id}/{patch_version}.data"
             async with settings.s3_client() as s3:
                 await s3.upload_file(data_file_path, settings.storage_bucket, s3_key)
             logger.success(f"Uploaded filesystem verification data to {s3_key}")
 
-            # Build final image
+            # Stage 3: Build final image that combines updated + index file
+            logger.info(f"Stage 3: Building final image as {target_tag}")
+
+            final_dockerfile_content = f"""FROM {verification_tag} as fsv
+FROM {updated_tag} as base
+COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
+"""
+            final_dockerfile_path = os.path.join(build_dir, "Dockerfile.final")
+            with open(final_dockerfile_path, "w") as f:
+                f.write(final_dockerfile_content)
+
             build_cmd = [
                 "buildah",
                 "build",
@@ -668,25 +801,34 @@ RUN pip install --upgrade chutes=={chutes_version}
                 full_target_tag,
                 "--tag",
                 target_tag,
-                "--target",
-                "final_layer",
                 "-f",
-                dockerfile_path,
+                final_dockerfile_path,
             ]
             if storage_driver == "overlay" and storage_opts:
                 for opt in storage_opts.split(","):
                     build_cmd.extend(["--storage-opt", opt.strip()])
             build_cmd.append(build_dir)
+
             process = await asyncio.create_subprocess_exec(
                 *build_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
+
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _capture_logs(process.stdout, "stdout"),
+                    _capture_logs(process.stderr, "stderr"),
+                    process.wait(),
+                ),
+                timeout=settings.build_timeout,
+            )
+
             if process.returncode != 0:
-                raise BuildFailure(f"Failed to build final image: {stderr.decode()}")
+                raise BuildFailure("Failed to build final image!")
 
             # Push to registry
+            logger.info("Pushing updated image to registry...")
             verify = str(not settings.registry_insecure).lower()
             process = await asyncio.create_subprocess_exec(
                 "buildah",
@@ -696,11 +838,28 @@ RUN pip install --upgrade chutes=={chutes_version}
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, stderr = await process.communicate()
+
+            await asyncio.wait_for(
+                asyncio.gather(
+                    _capture_logs(process.stdout, "stdout"),
+                    _capture_logs(process.stderr, "stderr"),
+                    process.wait(),
+                ),
+                timeout=settings.push_timeout,
+            )
+
             if process.returncode != 0:
-                raise PushFailure(f"Failed to push image: {stderr.decode()}")
+                raise PushFailure("Failed to push image!")
+
             logger.success(f"Successfully pushed updated image {full_target_tag}")
             success = True
+
+        except asyncio.TimeoutError:
+            message = f"Update of {full_target_tag} timed out"
+            logger.error(message)
+            process.kill()
+            await process.communicate()
+            raise BuildTimeout(message)
         except Exception as exc:
             logger.error(
                 f"Error updating chutes lib for {image_id}: {exc}\n{traceback.format_exc()}"
@@ -723,7 +882,7 @@ RUN pip install --upgrade chutes=={chutes_version}
                     f"Updated image {image_id} to chutes version {chutes_version}, patch version {patch_version}"
                 )
 
-                # Update the associated chutes with the new version.
+                # Update the associated chutes with the new version
                 chutes_result = await session.execute(
                     select(Chute)
                     .where(Chute.image_id == image_id)
@@ -739,7 +898,7 @@ RUN pip install --upgrade chutes=={chutes_version}
                     chute.chutes_version = chutes_version
                     affected_chute_ids.append(chute.chute_id)
 
-                    # Create the rolling update record.
+                    # Create the rolling update record
                     await session.execute(
                         text(
                             "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
@@ -758,7 +917,7 @@ RUN pip install --upgrade chutes=={chutes_version}
                 # Commit the chute updates
                 await session.commit()
 
-            # Trigger the rolling update tasks.
+            # Trigger the rolling update tasks
             for chute in chutes:
                 await handle_rolling_update.kiq(
                     chute.chute_id, chutes_version, reason="image updated due to chutes lib upgrade"
