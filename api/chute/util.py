@@ -762,6 +762,9 @@ async def invoke(
 
             invocation_id = str(uuid.uuid4())
             async with get_session() as session:
+                multiplier = NodeSelector(**chute.node_selector).compute_multiplier
+                if chute.boost:
+                    multiplier *= chute.boost
                 result = await session.execute(
                     TRACK_INVOCATION,
                     {
@@ -776,9 +779,7 @@ async def invoke(
                         "instance_id": target.instance_id,
                         "miner_uid": target.miner_uid,
                         "miner_hotkey": target.miner_hotkey,
-                        "compute_multiplier": NodeSelector(
-                            **chute.node_selector
-                        ).compute_multiplier,
+                        "compute_multiplier": multiplier,
                     },
                 )
                 partition_suffix = result.scalar()

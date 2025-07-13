@@ -174,6 +174,7 @@ class Chute(Base):
     ref_str = Column(String, nullable=False)
     version = Column(String)
     concurrency = Column(Integer, nullable=True)
+    boost = Column(Float, nullable=True)
     chutes_version = Column(String, nullable=True)
     openrouter = Column(Boolean, default=False)
     discount = Column(Float, nullable=True, default=0.0)
