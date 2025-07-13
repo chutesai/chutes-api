@@ -154,7 +154,7 @@ async def get_encryption_settings(
         "device_info": node.graval_dict(),
     }
     if not cuda and seed:
-        payload["seed"] = seed
+        payload["seed"] = int(seed)
     if not cuda:
         payload["iterations"] = iterations or 1
     payload.update({"payload": data if isinstance(data, str) else json.dumps(data).decode()})
@@ -223,7 +223,7 @@ async def verify_proof(
     url = f"{settings.opencl_graval_url}/check_proof"
     payload = {
         "device_info": node.graval_dict(),
-        "seed": seed,
+        "seed": int(seed),
         "work_product": work_product,
         "check_index": index,
     }
@@ -274,7 +274,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
     ciphertexts = [c[1].split("|")[-1] for c in cipher_data]
     plaintext = [c[0] for c in cipher_data]
     challenge = {
-        "seed": nodes[0].seed,
+        "seed": int(nodes[0].seed),
         "iterations": graval_config["iterations"],
         "ciphertext": [
             {"device_index": idx, "data": ciphertexts[idx]} for idx in range(len(nodes))
@@ -570,7 +570,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
             "iv": iv.hex(),
             "length": len(cipher),
             "device_id": target_index,
-            "seed": target_node.seed,
+            "seed": int(target_node.seed),
         },
     }
 
@@ -622,7 +622,7 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
             "iv": iv.hex(),
             "length": len(cipher),
             "device_id": target_index,
-            "seed": target_node.seed,
+            "seed": int(target_node.seed),
         },
     }
 

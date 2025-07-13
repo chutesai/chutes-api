@@ -520,6 +520,7 @@ async def verify_launch_config_instance(
         )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"GraVal challenge took {delta}, expected completion time {estimate} with buffer of up to {max_duration}"
+        await db.delete(instance)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -533,13 +534,15 @@ async def verify_launch_config_instance(
         ciphertext = response_body["response"]
         iv = response_body["iv"]
         response = aes_decrypt(ciphertext, instance.symmetric_key, iv)
-        assert response == f"secret is {launch_config.config_id} {launch_config.seed}"
+        logger.info(f"The miner response was: {response=}")
+        assert response == f"secret is {launch_config.config_id} {launch_config.seed}".encode()
     except Exception as exc:
         logger.error(
-            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} was invalid: {exc}"
+            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} was invalid: {exc}\n{traceback.format_exc()}"
         )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
+        await db.delete(instance)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -548,16 +551,19 @@ async def verify_launch_config_instance(
 
     # Valid proof?
     try:
-        node_idx = random.randint(0, len(instance.nodes))
+        node_idx = random.randint(0, len(instance.nodes) - 1)
         node = instance.nodes[node_idx]
-        work_product = next(p for p in response_body["proof"] if p["device_uuid"] == node.uuid)
+        work_product = next(
+            p["work_product"] for p in response_body["proof"] if p["device_uuid"] == node.uuid
+        )
         assert await verify_proof(node, launch_config.seed, work_product)
     except Exception as exc:
         logger.error(
-            f"PoVW proof failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}"
+            f"PoVW proof failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}: {exc}\n{traceback.format_exc()}"
         )
         launch_config.failed_at = func.now()
         launch_config.verification_error = f"PoVW proof verification failed: {exc}"
+        await db.delete(instance)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -568,7 +574,8 @@ async def verify_launch_config_instance(
     image_id = instance.chute.image_id
     patch_version = instance.chute.image.patch_version
     task = await generate_fs_hash.kiq(image_id, patch_version, launch_config.seed)
-    expected_hash = await task.wait_result()
+    result = await task.wait_result()
+    expected_hash = result.return_value
     if expected_hash != response_body["fsv"]:
         logger.error(
             f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
@@ -576,6 +583,7 @@ async def verify_launch_config_instance(
         )
         launch_config.failed_at = func.now()
         launch_config.verification_error = "File system verification failure, mismatched hash"
+        await db.delete(instance)
         await db.commit()
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
