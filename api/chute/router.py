@@ -664,6 +664,7 @@ async def _deploy_chute(
         chute.cords = chute_args.cords
         chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
+        chute.boost = None
     else:
         try:
             chute = Chute(
@@ -689,6 +690,7 @@ async def _deploy_chute(
                 standard_template=chute_args.standard_template,
                 chutes_version=image.chutes_version,
                 concurrency=chute_args.concurrency,
+                boost=None,
             )
         except ValueError as exc:
             raise HTTPException(

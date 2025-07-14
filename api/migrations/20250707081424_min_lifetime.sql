@@ -5,6 +5,9 @@ DECLARE
     lifetime_seconds NUMERIC;
     invocation RECORD;
 BEGIN
+    IF NEW.chute_id = '35cfa8b4-13a2-5382-b19a-e849f73c5d6a' THEN
+        RETURN NEW;
+    END IF;
     IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL AND NEW.verified_at IS NOT NULL THEN
         lifetime_seconds := EXTRACT(EPOCH FROM (NEW.deleted_at - NEW.verified_at));
         IF lifetime_seconds < 3600 THEN
