@@ -8,6 +8,7 @@ import orjson as json
 import traceback
 import random
 import secrets
+import asyncio
 from datetime import timedelta
 from loguru import logger
 from typing import Optional
@@ -45,7 +46,14 @@ from api.instance.util import (
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
-from api.util import is_valid_host, generate_ip_token, aes_decrypt
+from api.util import (
+    is_valid_host,
+    generate_ip_token,
+    aes_decrypt,
+    notify_created,
+    notify_deleted,
+    notify_verified,
+)
 from api.graval_worker import verify_instance, graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
 
@@ -312,6 +320,7 @@ async def get_launch_config(
 async def claim_launch_config(
     config_id: str,
     args: LaunchConfigArgs,
+    request: Request,
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
 ):
@@ -321,6 +330,15 @@ async def claim_launch_config(
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
+
+    # IP matches?
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+    if launch_config.job_id and actual_ip != args.host:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Egress and ingress IPs much match for jobs: {actual_ip} vs {args.host}",
+        )
 
     # Verify, decrypt, parse the envdump payload.
     code = None
@@ -463,6 +481,10 @@ async def claim_launch_config(
             {"config_id": config_id},
         )
 
+    # Send event.
+    await db.refresh(instance)
+    asyncio.create_task(notify_created(instance))
+
     # The miner must decrypt the proposed symmetric key from this response payload,
     # then encrypt something using this symmetric key within the expected graval timeout.
     return {
@@ -516,6 +538,17 @@ async def verify_launch_config_instance(
         )
     )
     instance = (await db.execute(query)).unique().scalar_one_or_none()
+    if not instance:
+        logger.error(
+            f"Instance associated with lauch config has been deleted! {launch_config.config_id=}"
+        )
+        launch_config.failed_at = func.now()
+        launch_config.verification_error = "Instance was deleted"
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Instance disappeared (did you update gepetto reconcile?)",
+        )
     estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
     max_duration = estimate * 1.3
     if (delta := now - start) >= timedelta(seconds=max_duration):
@@ -526,6 +559,7 @@ async def verify_launch_config_instance(
         launch_config.verification_error = f"GraVal challenge took {delta}, expected completion time {estimate} with buffer of up to {max_duration}"
         await db.delete(instance)
         await db.commit()
+        asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
@@ -534,11 +568,9 @@ async def verify_launch_config_instance(
     # Valid response cipher?
     response_body = await request.json()
     try:
-        logger.info(f"GOT THIS RESPONSE TO CHECK: {response_body=}")
         ciphertext = response_body["response"]
         iv = response_body["iv"]
         response = aes_decrypt(ciphertext, instance.symmetric_key, iv)
-        logger.info(f"The miner response was: {response=}")
         assert response == f"secret is {launch_config.config_id} {launch_config.seed}".encode()
     except Exception as exc:
         logger.error(
@@ -548,6 +580,7 @@ async def verify_launch_config_instance(
         launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
         await db.delete(instance)
         await db.commit()
+        asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
@@ -569,6 +602,7 @@ async def verify_launch_config_instance(
         launch_config.verification_error = f"PoVW proof verification failed: {exc}"
         await db.delete(instance)
         await db.commit()
+        asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
@@ -595,16 +629,19 @@ async def verify_launch_config_instance(
         launch_config.verification_error = "File system verification failure, mismatched hash"
         await db.delete(instance)
         await db.commit()
+        asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
         )
 
-    # Everything checks out (so far).
+    # Everything checks out.
     launch_config.verified_at = func.now()
     job = instance.job
     if job:
         job.started_at = func.now()
+    instance.verified = True
+    instance.last_verified_at = func.now()
     await db.commit()
     await db.refresh(launch_config)
     if job:
@@ -624,6 +661,8 @@ async def verify_launch_config_instance(
                 "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.job.job_id}?token={job_token}",
             }
         )
+    await db.refresh(instance)
+    asyncio.create_task(notify_verified(instance))
     return return_value
 
 
@@ -656,8 +695,6 @@ async def create_instance(
     if chute.rolling_update:
         chute.rolling_update.permitted[hotkey] -= 1
 
-    gpu_type = None
-    gpu_count = chute.node_selector.get("gpu_count", 1)
     try:
         # Load the miner.
         miner = await get_miner_by_hotkey(hotkey, db)
@@ -685,9 +722,7 @@ async def create_instance(
         db.add(instance)
 
         # Verify the GPUs are suitable.
-        nodes = await _validate_nodes(db, chute, instance_args.node_ids, hotkey, instance)
-        gpu_type = nodes[0].gpu_identifier
-
+        _ = await _validate_nodes(db, chute, instance_args.node_ids, hotkey, instance)
         await db.commit()
     except IntegrityError as exc:
         detail = f"INTEGRITYERROR {hotkey=}: {exc}\n{traceback.format_exc()}"
@@ -703,27 +738,7 @@ async def create_instance(
             detail=f"Unhandled DB integrity error: {detail}",
         )
     await db.refresh(instance)
-
-    # Broadcast the event.
-    try:
-        await settings.redis_client.publish(
-            "events",
-            json.dumps(
-                {
-                    "reason": "instance_created",
-                    "message": f"Miner {instance.miner_hotkey} has provisioned an instance of chute {chute.chute_id} on {gpu_count}x{gpu_type}",
-                    "data": {
-                        "chute_id": instance.chute_id,
-                        "gpu_count": gpu_count,
-                        "gpu_model_name": gpu_type,
-                        "miner_hotkey": instance.miner_hotkey,
-                    },
-                }
-            ).decode(),
-        )
-    except Exception as exc:
-        logger.warning(f"Error broadcasting instance event: {exc}")
-
+    asyncio.create_task(notify_created(instance))
     return instance
 
 
@@ -826,19 +841,6 @@ async def delete_instance(
         {"instance_id": instance_id},
     )
     await db.commit()
-
-    await settings.redis_client.publish(
-        "events",
-        json.dumps(
-            {
-                "reason": "instance_deleted",
-                "message": f"Miner {instance.miner_hotkey} has deleted instance an instance of chute {chute_id}.",
-                "data": {
-                    "chute_id": chute_id,
-                    "miner_hotkey": hotkey,
-                },
-            }
-        ).decode(),
-    )
-
+    await db.refresh(instance)
+    await notify_deleted(instance)
     return {"instance_id": instance_id, "deleted": True}

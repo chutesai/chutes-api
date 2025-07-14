@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher, semcomp
+from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher, semcomp, notify_deleted
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
 from api.exceptions import EnvdumpMissing
@@ -202,18 +202,10 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
             {"instance_id": target.instance_id, "reason": reason},
         )
         await session.commit()
-        event_data = {
-            "reason": "instance_deleted",
-            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
-            "data": {
-                "chute_id": target.chute_id,
-                "instance_id": target.instance_id,
-                "miner_hotkey": target.miner_hotkey,
-            },
-        }
-        await settings.redis_client.publish("events", json.dumps(event_data))
-        event_data["filter_recipients"] = [target.miner_hotkey]
-        await settings.redis_client.publish("miner_broadcast", json.dumps(event_data))
+        await notify_deleted(
+            target,
+            message=f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
+        )
 
 
 async def do_slurp(instance, payload, encrypted_slurp):

@@ -36,6 +36,8 @@ from api.util import (
     get_resolved_ips,
     generate_ip_token,
     use_opencl_graval,
+    notify_deleted,
+    notify_verified,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_session
@@ -1006,40 +1008,8 @@ async def verify_instance(instance_id: str):
         await session.commit()
         await session.refresh(instance)
 
-        # Notify the miner.
-        try:
-            event_data = {
-                "reason": "instance_verified",
-                "data": {
-                    "instance_id": instance_id,
-                    "miner_hotkey": instance.miner_hotkey,
-                },
-                "filter_recipients": [instance.miner_hotkey],
-            }
-            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
-        except Exception as exc:
-            # Allow exceptions here since the miner can also check.
-            logger.warning(
-                f"Error notifying miner that instance/deployment is verified: {exc}\n{traceback.format_exc()}"
-            )
+        await notify_verified(instance)
 
-        # Broadcast the event.
-        try:
-            await settings.redis_client.publish(
-                "events",
-                json.dumps(
-                    {
-                        "reason": "instance_hot",
-                        "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} chute {instance.chute_id} has been verified, now 'hot'!",
-                        "data": {
-                            "chute_id": instance.chute_id,
-                            "miner_hotkey": instance.miner_hotkey,
-                        },
-                    }
-                ).decode(),
-            )
-        except Exception as exc:
-            logger.warning(f"Error broadcasting instance event: {exc}")
         await settings.redis_client.delete(f"verify:lock:{instance_id}")
 
 
@@ -1163,20 +1133,9 @@ async def handle_rolling_update(chute_id: str, version: str, reason: str = "code
         for instance in chute.instances:
             if instance.version != version:
                 await session.delete(instance)
-                event_data = {
-                    "reason": "instance_deleted",
-                    "message": f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
-                    "data": {
-                        "chute_id": instance.chute_id,
-                        "instance_id": instance.instance_id,
-                        "miner_hotkey": instance.miner_hotkey,
-                    },
-                    "filter_recipients": [instance.miner_hotkey],
-                }
-                asyncio.create_task(
-                    settings.redis_client.publish(
-                        "miner_broadcast", json.dumps(event_data).decode()
-                    )
+                await notify_deleted(
+                    instance,
+                    message=f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
                 )
                 logger.warning(
                     f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"

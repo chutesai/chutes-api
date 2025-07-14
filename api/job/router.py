@@ -374,6 +374,7 @@ async def upload_job_file(
                 "uploaded": True,
             }
     except Exception as e:
+        logger.error(f"Failed to upload the file: {e}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
 
 
