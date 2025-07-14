@@ -8,7 +8,7 @@ import backoff
 import traceback
 import orjson as json
 from loguru import logger
-from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Response, Form
 from fastapi import File, UploadFile
 from sqlalchemy import text, select, func, case, and_
 from sqlalchemy.orm import selectinload
@@ -317,12 +317,13 @@ async def upload_job_file(
     job_id: str,
     token: str,
     file: UploadFile = File(...),
+    path: str = Form(...),
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     Upload a job's output file.
     """
-    job = await load_job_from_jwt(db, job_id, token, filename=file.filename)
+    job = await load_job_from_jwt(db, job_id, token, filename=path)
     if job.finished_at:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -332,7 +333,7 @@ async def upload_job_file(
     file_index = None
     s3_key = None
     for i, output_file in enumerate(job.output_files or []):
-        if output_file["filename"] == file.filename:
+        if output_file["filename"] == path:
             file_index = i
             s3_key = output_file["path"]
             break
@@ -348,7 +349,7 @@ async def upload_job_file(
                     "Metadata": {
                         "job_id": job_id,
                         "chute_id": job.chute_id,
-                        "original_filename": file.filename,
+                        "original_filename": path,
                     },
                 },
             )
@@ -368,7 +369,7 @@ async def upload_job_file(
             await db.commit()
             return {
                 "status": "success",
-                "filename": file.filename,
+                "filename": path,
                 "path": s3_key,
                 "uploaded": True,
             }
@@ -407,7 +408,8 @@ async def complete_job(
 
     job.updated_at = func.now()
     job.finished_at = func.now()
-
+    if job.instance:
+        await db.delete(job.instance)
     await db.commit()
     await db.refresh(job)
     return job
