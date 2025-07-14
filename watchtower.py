@@ -15,15 +15,24 @@ from contextlib import asynccontextmanager
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher, semcomp, notify_deleted
+from api.util import (
+    aes_encrypt,
+    aes_decrypt,
+    decrypt_envdump_cipher,
+    semcomp,
+    notify_deleted,
+    use_encryption_v2,
+    use_encrypted_path,
+    notify_job_deleted,
+)
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
+from api.job.schemas import Job
 from api.exceptions import EnvdumpMissing
 from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
 import api.miner_client as miner_client
-from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
 
@@ -201,6 +210,20 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
             ),
             {"instance_id": target.instance_id, "reason": reason},
         )
+
+        # Fail associated jobs.
+        job = (
+            (await session.execute(select(Job).where(Job.instance_id == target.instance_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if job and not job.finished_at:
+            job.status = "error"
+            job.error_detail = f"Instance failed monitoring probes: {reason=}"
+            job.miner_terminated = True
+            job.finished_at = func.now()
+            await notify_job_deleted(job)
+
         await session.commit()
         await notify_deleted(
             target,

@@ -847,6 +847,19 @@ async def delete_instance(
         )
     origin_ip = request.headers.get("x-forwarded-for")
     logger.info(f"INSTANCE DELETION INITIALIZED: {instance_id=} {hotkey=} {origin_ip=}")
+
+    # Fail the job.
+    job = (
+        (await db.execute(select(Job).where(Job.instance_id == instance_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if job and not job.finished_at:
+        job.status = "error"
+        job.error_detail = f"Instance was terminated by miner: {hotkey=}"
+        job.miner_terminated = True
+        job.finished_at = func.now()
+
     await db.delete(instance)
     await db.execute(
         text(
@@ -855,6 +868,6 @@ async def delete_instance(
         {"instance_id": instance_id},
     )
     await db.commit()
-    await db.refresh(instance)
     await notify_deleted(instance)
+
     return {"instance_id": instance_id, "deleted": True}

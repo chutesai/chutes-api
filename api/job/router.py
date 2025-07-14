@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 import api.miner_client as miner_client
-from api.util import aes_encrypt
+from api.util import aes_encrypt, notify_job_deleted
 from api.database import get_db_session
 from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import is_shared
@@ -254,18 +254,7 @@ async def delete_job(
 
     # If we didn't notify the specific miner running the job (if any), broadcast the event.
     if not miner_notified:
-        await settings.redis_client.publish(
-            "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "job_deleted",
-                    "data": {
-                        "instance_id": job.instance_id,
-                        "job_id": job.job_id,
-                    },
-                }
-            ).decode(),
-        )
+        await notify_job_deleted(job)
 
     return {
         "deleted": True,
@@ -300,7 +289,7 @@ async def finish_job_and_get_upload_targets(
 
     # Provide each output file a unique JWT/URL.
     # Now storing as a dict with filename as key
-    upload_urls = []
+    upload_urls = {}
     job.output_files = {}
     for filename in output_filenames:
         date_str = job.created_at.strftime("%Y-%m-%d")
@@ -311,7 +300,7 @@ async def finish_job_and_get_upload_targets(
             "path": s3_key,
             "uploaded": False,
         }
-        upload_urls.append(upload_url)
+        upload_urls[filename] = upload_url
 
     await db.commit()
     await db.refresh(job)

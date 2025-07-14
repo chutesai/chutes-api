@@ -541,7 +541,7 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
         if not job:
             detail = f"{job_id=} not found!"
             logger.warning(detail)
-        elif filename and not any([f["filename"] == filename for f in job.output_files]):
+        elif filename and job.output_files and filename not in job.output_files:
             detail = f"{job_id=} did not have any output file with {filename=}"
             logger.warning(detail)
         else:

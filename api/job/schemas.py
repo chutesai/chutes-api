@@ -53,6 +53,7 @@ class Job(Base):
     result = Column(JSONB, nullable=True)
     error_detail = Column(String, nullable=True)
     output_files = Column(JSONB, nullable=True)
+    miner_terminated = Column(Boolean, nullable=True, default=False)
 
     # Port mappings.
     port_mappings = Column(JSONB, nullable=True)

@@ -480,3 +480,21 @@ async def notify_verified(instance):
         )
     except Exception:
         ...
+
+
+async def notify_job_deleted(job):
+    try:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "job_deleted",
+                    "data": {
+                        "instance_id": job.instance_id,
+                        "job_id": job.job_id,
+                    },
+                }
+            ).decode(),
+        )
+    except Exception:
+        ...

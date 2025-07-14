@@ -27,14 +27,14 @@ class JobResponse(BaseModel):
 
     job_args: dict
     final_result: Optional[dict] = None
-    output_files: Optional[list[dict[str, Any]]] = []
+    output_files: Optional[dict[str, Any]] = []
 
     port_mappings: Optional[list[dict[str, Any]]] = []
 
     chute: MinimalChuteResponse
     instance: Optional[MinimalInstanceResponse] = None
 
-    output_storage_urls: Optional[list[str]] = []
+    output_storage_urls: Optional[dict[str, str]] = {}
 
     class Config:
         from_attributes = True

@@ -56,15 +56,19 @@ def model_to_dict(obj):
     return data
 
 
-async def _stream_items(clazz: Any, selector: Any = None):
+async def _stream_items(clazz: Any, selector: Any = None, explicit_null: bool = False):
     """
     Streaming results helper.
     """
     async with get_session() as db:
         query = selector if selector is not None else select(clazz)
         result = await db.stream(query)
+        any_found = False
         async for row in result.unique():
             yield f"data: {json.dumps(model_to_dict(row[0])).decode()}\n\n"
+            any_found = True
+        if explicit_null and not any_found:
+            yield "data: NO_ITEMS\n"
 
 
 @router.get("/chutes/")
@@ -100,6 +104,7 @@ async def list_instances(
         _stream_items(
             Instance,
             selector=select(Instance).where(Instance.miner_hotkey == hotkey),
+            explicit_null=True,
         )
     )
 
