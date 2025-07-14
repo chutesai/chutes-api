@@ -483,7 +483,9 @@ async def claim_launch_config(
 
     # Send event.
     await db.refresh(instance)
-    asyncio.create_task(notify_created(instance))
+    gpu_count = len(nodes)
+    gpu_type = nodes[0].gpu_identifier
+    asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
 
     # The miner must decrypt the proposed symmetric key from this response payload,
     # then encrypt something using this symmetric key within the expected graval timeout.
@@ -695,6 +697,7 @@ async def create_instance(
     if chute.rolling_update:
         chute.rolling_update.permitted[hotkey] -= 1
 
+    nodes = None
     try:
         # Load the miner.
         miner = await get_miner_by_hotkey(hotkey, db)
@@ -722,7 +725,7 @@ async def create_instance(
         db.add(instance)
 
         # Verify the GPUs are suitable.
-        _ = await _validate_nodes(db, chute, instance_args.node_ids, hotkey, instance)
+        nodes = await _validate_nodes(db, chute, instance_args.node_ids, hotkey, instance)
         await db.commit()
     except IntegrityError as exc:
         detail = f"INTEGRITYERROR {hotkey=}: {exc}\n{traceback.format_exc()}"
@@ -738,7 +741,9 @@ async def create_instance(
             detail=f"Unhandled DB integrity error: {detail}",
         )
     await db.refresh(instance)
-    asyncio.create_task(notify_created(instance))
+    gpu_count = len(nodes)
+    gpu_type = nodes[0].gpu_identifier
+    asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
     return instance
 
 

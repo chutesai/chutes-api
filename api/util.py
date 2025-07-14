@@ -397,13 +397,7 @@ def semcomp(input_version: str, target_version: str):
     return semver.compare(clean_version, target_version)
 
 
-async def notify_created(instance):
-    gpu_count, gpu_type = None, None
-    try:
-        gpu_count = len(instance.nodes)
-        gpu_type = instance.nodes[0].gpu_identifier
-    except Exception:
-        ...
+async def notify_created(instance, gpu_count: int = None, gpu_type: str = None):
     message = f"Instance created: {instance.miner_hotkey=} {instance.instance_id=}"
     if gpu_count:
         message += f" {gpu_count=} {gpu_type=}"
@@ -421,6 +415,7 @@ async def notify_created(instance):
                 "gpu_count": gpu_count,
                 "gpu_model_name": gpu_type,
                 "miner_hotkey": instance.miner_hotkey,
+                "instance_id": instance.instance_id,
             },
         }
         await settings.redis_client.publish("events", json.dumps(event_data).decode())
