@@ -415,6 +415,25 @@ async def _invoke(
             if "temperature" not in request_body:
                 request_body["temperature"] = 0.05
 
+        # XXX Bug with Kimi-K2-Instruct logit bias dimensionality, likely from function calling,
+        # structured outputs, etc.
+        if chute.name == "moonshotai/Kimi-K2-Instruct":
+            problematic = set(request_body) & set(
+                [
+                    "logit_bias",
+                    "response_format",
+                    "tools",
+                    "tool_choice",
+                    "regex",
+                    "grammar",
+                ]
+            )
+            if problematic:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{chute.name} on chutes does not currently support: {list(problematic)}",
+                )
+
         # Make sure the model name is correct.
         if (requested_model := request_body.get("model")) != chute.name:
             logger.warning(
