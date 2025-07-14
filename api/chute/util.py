@@ -49,10 +49,6 @@ from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
 
-# aiohttp sessions cache
-_session_cache: dict[tuple[str, int], aiohttp.ClientSession] = {}
-_session_lock = asyncio.Lock()
-
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
     os.path.join(
@@ -187,14 +183,11 @@ async def get_miner_session(instance: Instance) -> aiohttp.ClientSession:
     """
     Get or create an aiohttp session for an instance.
     """
-    async with _session_lock:
-        if instance.instance_id not in _session_cache:
-            _session_cache[instance.instance_id] = aiohttp.ClientSession(
-                base_url=f"http://{instance.host}:{instance.port}",
-                timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
-                read_bufsize=8 * 1024 * 1024,
-            )
-        return _session_cache[instance.instance_id]
+    return aiohttp.ClientSession(
+        base_url=f"http://{instance.host}:{instance.port}",
+        timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
+        read_bufsize=8 * 1024 * 1024,
+    )
 
 
 async def selector_hourly_price(node_selector) -> float:
@@ -699,6 +692,8 @@ async def _invoke_one(
 
             yield data
     finally:
+        if session:
+            await session.close()
         if response:
             await response.release()
 
@@ -752,12 +747,24 @@ async def invoke(
     for attempt_idx in range(5):
         async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
             if not target:
-                logger.warning(f"No targets found for {chute_id=}")
-                yield sse({"error": "no_targets"})
+                if infra_overload:
+                    logger.warning(f"All miners are at max capacity: {chute.name=}")
+                    yield sse(
+                        {
+                            "error": "infra_overload",
+                            "detail": "Infrastructure is at maximum capacity, try again later",
+                        }
+                    )
+                else:
+                    logger.warning(f"No targets found for {chute_id=}")
+                    yield sse({"error": "no_targets"})
                 return
 
             invocation_id = str(uuid.uuid4())
             async with get_session() as session:
+                multiplier = NodeSelector(**chute.node_selector).compute_multiplier
+                if chute.boost:
+                    multiplier *= chute.boost
                 result = await session.execute(
                     TRACK_INVOCATION,
                     {
@@ -772,9 +779,7 @@ async def invoke(
                         "instance_id": target.instance_id,
                         "miner_uid": target.miner_uid,
                         "miner_hotkey": target.miner_hotkey,
-                        "compute_multiplier": NodeSelector(
-                            **chute.node_selector
-                        ).compute_multiplier,
+                        "compute_multiplier": multiplier,
                     },
                 )
                 partition_suffix = result.scalar()
@@ -1273,3 +1278,36 @@ async def update_chute_utilization():
         await session.execute(text(UTILIZATION_QUERY))
         await session.commit()
         logger.success("Successfully updated chute utilization ratios")
+
+
+async def update_llm_means():
+    logger.info("Updating LLM miner mean metrics...")
+    async with get_session() as session:
+        await session.execute(text("DROP TABLE IF EXISTS llm_means_temp"))
+        await session.execute(
+            text("""
+CREATE TABLE llm_means_temp AS
+SELECT
+    ins.chute_id,
+    invocations.miner_hotkey,
+    invocations.instance_id,
+    AVG((metrics->>'tps')::float) as avg_tps,
+    AVG((metrics->>'ot')::int) as avg_output_tokens
+FROM invocations
+JOIN instances ins ON invocations.instance_id = ins.instance_id
+JOIN chutes c ON ins.chute_id = c.chute_id
+WHERE
+    started_at >= NOW() - INTERVAL '1 day'
+    AND c.standard_template = 'vllm'
+GROUP BY
+    ins.chute_id,
+    invocations.instance_id,
+    invocations.miner_hotkey
+ORDER BY
+    ins.chute_id,
+    avg_tps DESC
+""")
+        )
+        await session.execute(text("DROP TABLE IF EXISTS llm_means"))
+        await session.execute(text("ALTER TABLE llm_means_temp RENAME TO llm_means"))
+        await session.commit()

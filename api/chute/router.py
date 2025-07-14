@@ -11,6 +11,7 @@ import aiohttp
 from loguru import logger
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -243,6 +244,137 @@ async def get_gpu_count_history():
     async with get_session(readonly=True) as session:
         results = (await session.execute(text(query))).unique().all()
         return [dict(zip(["chute_id", "gpu_count"], row)) for row in results]
+
+
+@router.get("/miner_means")
+async def get_chute_miner_mean_index(db: AsyncSession = Depends(get_db_session)):
+    query = """
+        SELECT c.chute_id, c.name
+        FROM chutes c
+        WHERE c.standard_template = 'vllm'
+        ORDER BY invocation_count DESC
+    """
+    result = await db.execute(text(query))
+    chutes = result.fetchall()
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Chute LLM outlier index</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            h1 { color: #333; }
+            ul { list-style-type: none; padding: 0; }
+            li { margin: 10px 0; }
+            a { text-decoration: none; color: #0066cc; }
+            a:hover { text-decoration: underline; }
+        </style>
+    </head>
+    <body>
+        <h1>Metrics</h1>
+        <ul>
+    """
+    for chute in chutes:
+        link = f"https://api.{settings.base_domain}/chutes/miner_means/{chute.chute_id}"
+        html_content += f'        <li><a href="{link}">{chute.name}</a></li>\n'
+    html_content += """
+        </ul>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@router.get("/miner_means/{chute_id}")
+@router.get("/miner_means/{chute_id}.{ext}")
+async def get_chute_miner_means(
+    chute_id: str,
+    ext: Optional[str] = None,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Load a chute's mean TPS and output token count by miner ID.
+    """
+    query = """
+        SELECT
+            miner_hotkey,
+            instance_id,
+            avg_tps,
+            avg_output_tokens
+        FROM llm_means
+        WHERE chute_id = :chute_id
+        ORDER BY avg_output_tokens DESC
+    """
+    result = await db.execute(text(query), {"chute_id": chute_id})
+    rows = result.fetchall()
+
+    # JSON response.
+    if ext == "json":
+        miner_means = [
+            {
+                "miner_hotkey": row.miner_hotkey,
+                "instance_id": row.instance_id,
+                "avg_tps": float(row.avg_tps),
+                "avg_output_tokens": float(row.avg_output_tokens),
+            }
+            for row in rows
+        ]
+        return JSONResponse(content=miner_means)
+
+    # CSV response.
+    if ext == "csv":
+        csv_content = "instance_id,miner_hotkey,avg_tps,avg_output_tokens\n"
+        for row in rows:
+            csv_content += (
+                f"{row.instance_id},{row.miner_hotkey},{row.avg_tps},{row.avg_output_tokens}\n"
+            )
+        return Response(content=csv_content, media_type="text/csv")
+
+    # Default return an ugly hacky HTML page to make it easier to read.
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Chute metrics</title>
+        <style>
+            body { font-family: Arial, sans-serif; margin: 20px; }
+            table { border-collapse: collapse; width: 100%; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #4CAF50; color: white; }
+            tr:nth-child(even) { background-color: #f2f2f2; }
+            tr:hover { background-color: #ddd; }
+            .number { text-align: right; }
+        </style>
+    </head>
+    <body>
+        <h1>Metrics</h1>
+        <table>
+            <thead>
+                <tr>
+                    <th>Hotkey</th>
+                    <th>Instance ID</th>
+                    <th class="number">Avg TPS</th>
+                    <th class="number">Avg Output Tokens</th>
+                </tr>
+            </thead>
+            <tbody>
+    """
+    for row in rows:
+        html_content += f"""
+                <tr>
+                    <td>{row.miner_hotkey}</td>
+                    <td>{row.instance_id}</td>
+                    <td class="number">{row.avg_tps:.2f}</td>
+                    <td class="number">{row.avg_output_tokens:.2f}</td>
+                </tr>
+        """
+    html_content += """
+            </tbody>
+        </table>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
 
 
 @router.get("/code/{chute_id}")
@@ -531,7 +663,9 @@ async def _deploy_chute(
         chute.chutes_version = image.chutes_version
         chute.cords = chute_args.cords
         chute.jobs = chute_args.jobs
+        chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
+        chute.boost = None
     else:
         try:
             chute = Chute(
@@ -557,6 +691,8 @@ async def _deploy_chute(
                 node_selector=chute_args.node_selector,
                 standard_template=chute_args.standard_template,
                 chutes_version=image.chutes_version,
+                concurrency=chute_args.concurrency,
+                boost=None,
             )
         except ValueError as exc:
             raise HTTPException(

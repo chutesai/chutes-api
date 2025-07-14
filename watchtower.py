@@ -392,9 +392,15 @@ async def check_llm_weights(chute, instances):
         return [], []
     chute_id = chute.chute_id
 
+    # XXX disabled for now, chute name mismatch (intentional)
+    if chute_id == "561e4875-254d-588f-a36f-57c9cdef8961":
+        return
+
     # Revision will need to be a requirement in the future, and at that point
     # it can be an attribute on the chute object rather than this janky regex.
-    revision_match = re.search(r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code)
+    revision_match = re.search(
+        r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
+    )
     if not revision_match:
         # Need to fetch remote revisions and allow a range of them.
         logger.warning(f"No revision to check: {chute.name}")
@@ -802,7 +808,9 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
         return True
 
     processes = dump["all_processes"]
-    revision_match = re.search(r"(?:--revision |^\s+revision=)([a-f0-9]{40})", chute.code)
+    revision_match = re.search(
+        r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
+    )
     found_sglang = False
     for process in processes:
         if (
@@ -857,6 +865,7 @@ async def check_chute(chute_id):
             for path in paths:
                 failed_envdump = False
                 if not path:
+                    failed_envdump = True
                     continue
                 instance_id = path.split("dump-")[-1].split(".")[0]
                 missing.discard(instance_id)
@@ -1347,7 +1356,7 @@ async def procs_check():
                             await settings.memcache.set(skip_key, b"y")
                 except Exception as exc:
                     logger.warning(
-                        f"Couldn't check procs, must be bad? {exc}\n{traceback.format_exc()}"
+                        f"Couldn't check procs for {instance.miner_hotkey=} {instance.instance_id=}, must be bad? {exc}\n{traceback.format_exc()}"
                     )
         logger.info("Finished proc check loop...")
         await asyncio.sleep(10)

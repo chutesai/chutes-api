@@ -6,7 +6,7 @@ import re
 import ast
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey, BigInteger
+from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey, BigInteger, Integer
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
@@ -166,6 +166,7 @@ class ChuteArgs(BaseModel):
     node_selector: NodeSelector
     cords: Optional[List[Cord]] = []
     jobs: Optional[List[Job]] = []
+    concurrency: int = Field(gt=1, le=256)
 
 
 class InvocationArgs(BaseModel):
@@ -193,6 +194,8 @@ class Chute(Base):
     filename = Column(String, nullable=False)
     ref_str = Column(String, nullable=False)
     version = Column(String)
+    concurrency = Column(Integer, nullable=True)
+    boost = Column(Float, nullable=True)
     chutes_version = Column(String, nullable=True)
     openrouter = Column(Boolean, default=False)
     discount = Column(Float, nullable=True, default=0.0)

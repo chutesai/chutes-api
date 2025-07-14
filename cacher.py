@@ -10,7 +10,7 @@ from api.config import settings
 from api.database import get_session
 from sqlalchemy import text
 import api.database.orms  # noqa
-from api.chute.util import update_chute_utilization, refresh_all_llm_details
+from api.chute.util import update_chute_utilization, refresh_all_llm_details, update_llm_means
 from api.invocation.util import generate_invocation_history_metrics
 
 
@@ -90,6 +90,7 @@ async def main():
     """
     Warm up all heavy cache endpoints/invocation count for past day.
     """
+    await update_llm_means()
     await update_past_day_metrics()
     await warm_up_chute_history()
     await warm_up_cache()

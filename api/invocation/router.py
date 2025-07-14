@@ -614,7 +614,7 @@ async def _invoke(
                         if not first_chunk_processed:
                             if error in ("infra_overload", "no_targets"):
                                 raise HTTPException(
-                                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                                     detail=chunk_data.get("detail") or error,
                                 )
                             elif error == "bad_request":
@@ -739,7 +739,7 @@ async def _invoke(
             error = chunk_data["error"]
             if error in ("infra_overload", "no_targets"):
                 raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                     detail=chunk_data.get("detail") or error,
                 )
             elif error == "bad_request":
