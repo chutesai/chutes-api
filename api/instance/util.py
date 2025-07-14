@@ -538,10 +538,12 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
             .unique()
             .scalar_one_or_none()
         )
+        job_namespace = uuid.UUID(job_id)
+        file_id = str(uuid.uuid5(job_namespace, filename)) if filename else None
         if not job:
             detail = f"{job_id=} not found!"
             logger.warning(detail)
-        elif filename and job.output_files and filename not in job.output_files:
+        elif filename and job.output_files and file_id not in job.output_files:
             detail = f"{job_id=} did not have any output file with {filename=}"
             logger.warning(detail)
         else:

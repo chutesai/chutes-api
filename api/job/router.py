@@ -276,7 +276,7 @@ async def finish_job_and_get_upload_targets(
     if job.finished_at:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Job alread finished",
+            detail="Job already finished",
         )
 
     payload = await request.json()
@@ -286,17 +286,17 @@ async def finish_job_and_get_upload_targets(
         job.status = "complete_pending_uploads"
     job.result = payload.pop("result", "error")
     job.error_detail = payload.pop("detail", None)
-
-    # Provide each output file a unique JWT/URL.
-    # Now storing as a dict with filename as key
     upload_urls = {}
     job.output_files = {}
+    job_namespace = uuid.UUID(job_id)
     for filename in output_filenames:
+        file_id = str(uuid.uuid5(job_namespace, filename))
         date_str = job.created_at.strftime("%Y-%m-%d")
         s3_key = f"jobs/{job.chute_id}/{date_str}/{job_id}/outputs/{filename}"
         file_jwt = create_job_jwt(job_id, filename=filename)
         upload_url = f"https://api.{settings.base_domain}/jobs/{job_id}/upload?token={file_jwt}"
-        job.output_files[filename] = {
+        job.output_files[file_id] = {
+            "filename": filename,
             "path": s3_key,
             "uploaded": False,
         }
@@ -324,61 +324,56 @@ async def upload_job_file(
     if job.finished_at:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Job alread finished",
+            detail="Job already finished",
         )
-
-    # Check if the file exists in our output_files dict
-    if path not in job.output_files:
+    job_namespace = uuid.UUID(job_id)
+    file_id = str(uuid.uuid5(job_namespace, path))
+    if file_id not in job.output_files:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"File {path} not found in job output files",
         )
 
-    s3_key = job.output_files[path]["path"]
+    s3_key = job.output_files[file_id]["path"]
 
-    try:
-        async with settings.s3_client() as s3:
-            file_content = await file.read()
-            await s3.upload_fileobj(
-                io.BytesIO(file_content),
-                settings.storage_bucket,
-                s3_key,
-                ExtraArgs={
-                    "ContentType": file.content_type or "application/octet-stream",
-                    "Metadata": {
-                        "job_id": job_id,
-                        "chute_id": job.chute_id,
-                        "original_filename": path,
-                    },
+    async with settings.s3_client() as s3:
+        file_content = await file.read()
+        await s3.upload_fileobj(
+            io.BytesIO(file_content),
+            settings.storage_bucket,
+            s3_key,
+            ExtraArgs={
+                "ContentType": file.content_type or "application/octet-stream",
+                "Metadata": {
+                    "job_id": job_id,
+                    "chute_id": job.chute_id,
+                    "original_filename": path,
                 },
-            )
-            # Update the uploaded status using jsonb_set with the filename as key
-            await db.execute(
-                text("""
-                    UPDATE jobs
-                    SET output_files = jsonb_set(
-                        output_files,
-                        :path,
-                        jsonb_set(
-                            COALESCE(output_files -> :filename, '{}'),
-                            '{uploaded}',
-                            'true'
-                        )
-                    )
-                    WHERE job_id = :job_id
-                """),
-                {"path": f"{{{path}}}", "filename": path, "job_id": job_id},
-            )
-            await db.commit()
-            return {
-                "status": "success",
-                "filename": path,
-                "path": s3_key,
-                "uploaded": True,
-            }
-    except Exception as e:
-        logger.error(f"Failed to upload the file: {e}\n{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+            },
+        )
+
+        await db.execute(
+            text("""
+                UPDATE jobs
+                SET output_files = jsonb_set(
+                    output_files,
+                    :path,
+                    (output_files #> :path) || jsonb_build_object('uploaded', true),
+                    true
+                )
+                WHERE job_id = :job_id
+            """),
+            {"path": [file_id], "job_id": job_id},
+        )
+
+        await db.commit()
+        return {
+            "status": "success",
+            "filename": path,
+            "file_id": file_id,
+            "path": s3_key,
+            "uploaded": True,
+        }
 
 
 @router.put("/{job_id}", response_model=JobResponse)
@@ -395,17 +390,14 @@ async def complete_job(
     if job.finished_at:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Job alread finished",
+            detail="Job already finished",
         )
     if job.output_files:
-        # Mark partial failures if some files failed to be uploaded.
-        # Now iterating over the dict values
         all_uploaded = all(file_info["uploaded"] for file_info in job.output_files.values())
         if not all_uploaded:
-            # Get filenames where uploaded is False
             failed_files = [
-                filename
-                for filename, file_info in job.output_files.items()
+                file_info["filename"]
+                for file_info in job.output_files.values()
                 if not file_info["uploaded"]
             ]
             if job.status.startswith("complete"):
@@ -462,15 +454,14 @@ async def download_output_file(
     Download a job's output file.
     """
     job = await get_job_by_id(db, job_id, current_user)
-
-    # Now checking the dict directly
-    if filename not in job.output_files:
+    job_namespace = uuid.UUID(job_id)
+    file_id = str(uuid.uuid5(job_namespace, filename))
+    if file_id not in job.output_files:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job output file not found {job_id=} {filename=}",
         )
-
-    output_file = job.output_files[filename]
+    output_file = job.output_files[file_id]
     data = io.BytesIO()
     async with settings.s3_client() as client:
         await client.download_fileobj(settings.storage_bucket, output_file["path"], data)
