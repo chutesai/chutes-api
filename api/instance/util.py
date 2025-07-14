@@ -425,7 +425,7 @@ async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
     return result.unique().scalar_one_or_none()
 
 
-def create_launch_jwt(launch_config) -> str:
+def create_launch_jwt(launch_config, disk_gb: int = None) -> str:
     """
     Create JWT for a given launch config (updated chutes lib with new graval etc).
     """
@@ -441,6 +441,8 @@ def create_launch_jwt(launch_config) -> str:
     }
     if launch_config.job_id:
         payload["job_id"] = launch_config.job_id
+    if disk_gb:
+        payload["disk_gb"] = disk_gb
     encoded_jwt = jwt.encode(payload, settings.launch_config_key, algorithm="HS256")
     return encoded_jwt
 

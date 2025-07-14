@@ -250,6 +250,7 @@ async def get_launch_config(
     await _check_scalable(db, chute, hotkey)
 
     # Associated with a job?
+    disk_gb = None
     if job_id:
         job = (
             (await db.execute(select(Job).where(Job.chute_id == chute_id, Job.job_id == job_id)))
@@ -287,6 +288,7 @@ async def get_launch_config(
         job.miner_hotkey = miner.hotkey
         job.miner_coldkey = miner.coldkey
         job.miner_history.append(hotkey)
+        disk_gb = job.job_args["_disk_gb"]
 
     # Create the launch config and JWT.
     try:
@@ -311,7 +313,7 @@ async def get_launch_config(
 
     # Generate the JWT.
     return {
-        "token": create_launch_jwt(launch_config),
+        "token": create_launch_jwt(launch_config, disk_gb=disk_gb),
         "config_id": launch_config.config_id,
     }
 
@@ -642,8 +644,15 @@ async def verify_launch_config_instance(
     job = instance.job
     if job:
         job.started_at = func.now()
-    instance.verified = True
-    instance.last_verified_at = func.now()
+
+    # Can't do this via the instance attrs directly, circular dependency :/
+    await db.execute(
+        text(
+            "UPDATE instances SET verified = true, verification_error = null, last_verified_at = now() WHERE instance_id = :instance_id"
+        ),
+        {"instance_id": instance.instance_id},
+    )
+
     await db.commit()
     await db.refresh(launch_config)
     if job:

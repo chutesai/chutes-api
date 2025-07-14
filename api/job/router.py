@@ -63,7 +63,8 @@ async def batch_delete_stored_files(job):
     """
     if not job.output_files:
         return
-    keys = [f["path"] for f in job.output_files]
+    # output_files is now a dict, so we extract the paths from the values
+    keys = [file_info["path"] for file_info in job.output_files.values()]
     async with settings.s3_client() as s3_client:
         for i in range(0, len(keys), 100):
             batch_keys = keys[i : i + 100]
@@ -110,10 +111,6 @@ async def create_job(
             detail=f"Chute {chute_id} not found",
         )
 
-    # Check disk requirements for the chute.
-    job_obj = next(j for j in chute.jobs if j["name"] == method)
-    disk_gb = job_obj.get("disk_gb", 10)
-
     # User has quota for jobs?
     query = select(
         func.count(Job.job_id).label("total_jobs"),
@@ -140,6 +137,19 @@ async def create_job(
     node_selector = NodeSelector(**chute.node_selector)
     compute_multiplier = node_selector.compute_multiplier
 
+    # Disk requirements?
+    job_args = await request.json()
+    disk_gb = job_args.get("_disk_gb")
+    if disk_gb is not None:
+        if not isinstance(disk_gb, (int, float)) or not 10 < disk_gb < 1000:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid disk size specified: {disk_gb}",
+            )
+    if not disk_gb:
+        disk_gb = 10
+    job_args["_disk_gb"] = int(disk_gb)
+
     # XXX for this version, we'll be.. not clever - ultimately needs a way
     # to calculate the maximum any particular GPU is getting at any point in time.
     if not set(node_selector.supported_gpus) - set(["h200"]):
@@ -165,7 +175,7 @@ async def create_job(
         active=False,
         verified=False,
         last_queried_at=None,
-        job_args=await request.json(),
+        job_args=job_args,
         miner_history=[],
         compute_multiplier=compute_multiplier,
     )
@@ -186,8 +196,8 @@ async def create_job(
                     "image_id": chute.image.image_id,
                     "gpu_count": node_selector.gpu_count,
                     "compute_multiplier": compute_multiplier,
-                    "disk_gb": disk_gb,
                     "exclude": [],
+                    "disk_gb": disk_gb,
                 },
             }
         ).decode(),
@@ -289,20 +299,18 @@ async def finish_job_and_get_upload_targets(
     job.error_detail = payload.pop("detail", None)
 
     # Provide each output file a unique JWT/URL.
+    # Now storing as a dict with filename as key
     upload_urls = []
-    job.output_files = []
+    job.output_files = {}
     for filename in output_filenames:
         date_str = job.created_at.strftime("%Y-%m-%d")
         s3_key = f"jobs/{job.chute_id}/{date_str}/{job_id}/outputs/{filename}"
         file_jwt = create_job_jwt(job_id, filename=filename)
         upload_url = f"https://api.{settings.base_domain}/jobs/{job_id}/upload?token={file_jwt}"
-        job.output_files.append(
-            {
-                "filename": filename,
-                "path": s3_key,
-                "uploaded": False,
-            }
-        )
+        job.output_files[filename] = {
+            "path": s3_key,
+            "uploaded": False,
+        }
         upload_urls.append(upload_url)
 
     await db.commit()
@@ -330,13 +338,15 @@ async def upload_job_file(
             detail="Job alread finished",
         )
 
-    file_index = None
-    s3_key = None
-    for i, output_file in enumerate(job.output_files or []):
-        if output_file["filename"] == path:
-            file_index = i
-            s3_key = output_file["path"]
-            break
+    # Check if the file exists in our output_files dict
+    if path not in job.output_files:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"File {path} not found in job output files",
+        )
+
+    s3_key = job.output_files[path]["path"]
+
     try:
         async with settings.s3_client() as s3:
             file_content = await file.read()
@@ -353,18 +363,22 @@ async def upload_job_file(
                     },
                 },
             )
+            # Update the uploaded status using jsonb_set with the filename as key
             await db.execute(
                 text("""
                     UPDATE jobs
                     SET output_files = jsonb_set(
                         output_files,
                         :path,
-                        'true',
-                        false
+                        jsonb_set(
+                            COALESCE(output_files -> :filename, '{}'),
+                            '{uploaded}',
+                            'true'
+                        )
                     )
-                    WHERE id = :job_id
+                    WHERE job_id = :job_id
                 """),
-                {"path": f"{{{file_index},uploaded}}", "job_id": job_id},
+                {"path": f"{{{path}}}", "filename": path, "job_id": job_id},
             )
             await db.commit()
             return {
@@ -396,9 +410,15 @@ async def complete_job(
         )
     if job.output_files:
         # Mark partial failures if some files failed to be uploaded.
-        all_uploaded = all(f["uploaded"] for f in job.output_files)
+        # Now iterating over the dict values
+        all_uploaded = all(file_info["uploaded"] for file_info in job.output_files.values())
         if not all_uploaded:
-            failed_files = [f["filename"] for f in job.output_files if not f["uploaded"]]
+            # Get filenames where uploaded is False
+            failed_files = [
+                filename
+                for filename, file_info in job.output_files.items()
+                if not file_info["uploaded"]
+            ]
             if job.status.startswith("complete"):
                 job.status = "partial_failure"
                 job.error_detail = f"Failed to upload files: {', '.join(failed_files)}"
@@ -453,14 +473,15 @@ async def download_output_file(
     Download a job's output file.
     """
     job = await get_job_by_id(db, job_id, current_user)
-    output_file = None
-    try:
-        output_file = next(f for f in job.output_files if f["filename"] == filename)
-    except StopIteration:
+
+    # Now checking the dict directly
+    if filename not in job.output_files:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Job output file not found {job_id=} {filename=}",
+            detail=f"Job output file not found {job_id=} {filename=}",
         )
+
+    output_file = job.output_files[filename]
     data = io.BytesIO()
     async with settings.s3_client() as client:
         await client.download_fileobj(settings.storage_bucket, output_file["path"], data)
