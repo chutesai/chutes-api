@@ -155,7 +155,7 @@ async def get_encryption_settings(
     payload = {
         "device_info": node.graval_dict(),
     }
-    if not cuda and seed:
+    if seed:
         payload["seed"] = int(seed)
     if not cuda:
         payload["iterations"] = iterations or 1
@@ -191,7 +191,7 @@ async def graval_encrypt(
         seed=seed,
         iterations=iterations,
     )
-    logger.info(f"Using {url=} for graval encryption")
+    logger.info(f"Using {url=} for graval encryption with {payload=}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(url, json=data, headers=headers, timeout=300) as resp:
             logger.success(f"Generated ciphertext for {node.uuid} via {url=}")
@@ -298,7 +298,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
         ) as response:
             if response.status != 200:
                 error_message = (
-                    "Miner failed to generate a proof and/or decrypt from {url=} {node.miner_hotkey=}: "
+                    f"Miner failed to generate a proof and/or decrypt from {url=} {node.miner_hotkey=}: "
                     f"{response.status=} {await response.text()}"
                 )
             else:
@@ -636,6 +636,7 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
         timeout=12.0,
     ) as resp:
         if resp.status != 404:
+            logger.error(f"GOT ERROR: {await resp.text()}")
             resp.raise_for_status()
 
         # Make sure the encryption/decryption flow works properly.
@@ -1150,6 +1151,9 @@ async def generate_fs_hash(
     """
     Use the new cfsv mechanism to generate the expected filesystem hash for a given image/seed pair.
     """
+    if not os.getenv("CFSV_OP"):
+        return "__disabled__"
+
     chutes_location = pkg_resources.get_distribution("chutes").location
     cfsv_path = os.path.join(chutes_location, "chutes", "cfsv")
     mode = "sparse" if sparse else "full"

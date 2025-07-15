@@ -2,6 +2,7 @@
 Routes for instances.
 """
 
+import os
 import uuid
 import base64
 import traceback
@@ -343,52 +344,55 @@ async def claim_launch_config(
         )
 
     # Verify, decrypt, parse the envdump payload.
-    code = None
-    try:
-        dump = DUMPER.decrypt(launch_config.env_key, args.env)
-        code_data = DUMPER.decrypt(launch_config.env_key, args.code)
-        code = base64.b64decode(code_data["content"]).decode()
-    except Exception as exc:
-        logger.error(
-            f"Attempt to claim {config_id=} failed, invalid envdump payload received: {exc}"
-        )
-        launch_config.failed_at = func.now()
-        launch_config.verification_error = f"Unable to verify: {exc=} {args=}"
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=launch_config.verification_error,
-        )
+    if "ENVDUMP_UNLOCK" in os.environ:
+        code = None
+        try:
+            dump = DUMPER.decrypt(launch_config.env_key, args.env)
+            code_data = DUMPER.decrypt(launch_config.env_key, args.code)
+            code = base64.b64decode(code_data["content"]).decode()
+        except Exception as exc:
+            logger.error(
+                f"Attempt to claim {config_id=} failed, invalid envdump payload received: {exc}"
+            )
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = f"Unable to verify: {exc=} {args=}"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
 
-    # Check the environment.
-    try:
-        await verify_expected_command(
-            dump,
-            chute,
-            miner_hotkey=launch_config.miner_hotkey,
-        )
-        assert code == chute.code
-    except AssertionError as exc:
-        logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
-        launch_config.failed_at = func.now()
-        launch_config.verification_error = f"Invalid command: {exc}"
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"You are not running the correct command, sneaky devil: {exc}",
-        )
+        # Check the environment.
+        try:
+            await verify_expected_command(
+                dump,
+                chute,
+                miner_hotkey=launch_config.miner_hotkey,
+            )
+            assert code == chute.code
+        except AssertionError as exc:
+            logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = f"Invalid command: {exc}"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"You are not running the correct command, sneaky devil: {exc}",
+            )
 
-    # K8S check.
-    log_prefix = f"ENVDUMP: {config_id=} {chute.chute_id=}"
-    if not is_kubernetes_env(chute, dump, log_prefix=log_prefix):
-        logger.error(f"{log_prefix} is not running a valid kubernetes environment")
-        launch_config.failed_at = func.now()
-        launch_config.verification_error = "Failed kubernetes environment check."
-        await db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=launch_config.verification_error,
-        )
+        # K8S check.
+        log_prefix = f"ENVDUMP: {config_id=} {chute.chute_id=}"
+        if not is_kubernetes_env(chute, dump, log_prefix=log_prefix):
+            logger.error(f"{log_prefix} is not running a valid kubernetes environment")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Failed kubernetes environment check."
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+    else:
+        logger.warning("Unable to perform extended validation, skipping...")
 
     # Create the instance now that we've verified the envdump/k8s env.
     instance = Instance(
@@ -460,6 +464,7 @@ async def claim_launch_config(
         with_chutes=True,
         cuda=False,
         iterations=iterations,
+        seed=None,
     )
     parts = encrypted_payload.split("|")
     seed = int(parts[0])
@@ -637,29 +642,32 @@ async def verify_launch_config_instance(
     # Valid filesystem/integrity?
     image_id = instance.chute.image_id
     patch_version = instance.chute.image.patch_version
-    task = await generate_fs_hash.kiq(
-        image_id,
-        patch_version,
-        launch_config.seed,
-        sparse=False,
-        exclude_path=f"/app/{instance.chute.filename}",
-    )
-    result = await task.wait_result()
-    expected_hash = result.return_value
-    if expected_hash != response_body["fsv"]:
-        logger.error(
-            f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
-            f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
+    if "CFSV_OS" in os.environ:
+        task = await generate_fs_hash.kiq(
+            image_id,
+            patch_version,
+            launch_config.seed,
+            sparse=False,
+            exclude_path=f"/app/{instance.chute.filename}",
         )
-        launch_config.failed_at = func.now()
-        launch_config.verification_error = "File system verification failure, mismatched hash"
-        await db.delete(instance)
-        await db.commit()
-        asyncio.create_task(notify_deleted(instance))
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=launch_config.verification_error,
-        )
+        result = await task.wait_result()
+        expected_hash = result.return_value
+        if expected_hash != response_body["fsv"]:
+            logger.error(
+                f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
+                f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
+            )
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "File system verification failure, mismatched hash"
+            await db.delete(instance)
+            await db.commit()
+            asyncio.create_task(notify_deleted(instance))
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+    else:
+        logger.warning("Extended filesystem verification disabled, skipping...")
 
     # Everything checks out.
     launch_config.verified_at = func.now()

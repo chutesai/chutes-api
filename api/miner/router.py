@@ -51,6 +51,8 @@ def model_to_dict(obj):
                 "supported_gpus": ns.supported_gpus,
             }
         )
+    if isinstance(obj, Image):
+        data["username"] = obj.user.username
     if isinstance(data.get("seed"), Decimal):
         data["seed"] = int(data["seed"])
     return data
@@ -97,6 +99,7 @@ async def list_nodes(
 
 @router.get("/instances/")
 async def list_instances(
+    explicit_null: Optional[bool] = False,
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
@@ -104,7 +107,7 @@ async def list_instances(
         _stream_items(
             Instance,
             selector=select(Instance).where(Instance.miner_hotkey == hotkey),
-            explicit_null=True,
+            explicit_null=explicit_null,
         )
     )
 
