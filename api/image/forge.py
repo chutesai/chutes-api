@@ -890,6 +890,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                 image.chutes_version = chutes_version
                 image.short_tag = target_tag
                 await session.commit()
+                await session.refresh(image)
                 logger.success(
                     f"Updated image {image_id} to chutes version {chutes_version}, patch version {patch_version}"
                 )
@@ -903,7 +904,13 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                 chutes = chutes_result.scalars().all()
                 permitted = {}
                 for chute in chutes:
+                    logger.warning(
+                        f"Need to trigger rolling update for {chute.chute_id=} to use new image",
+                    )
                     for instance in chute.instances:
+                        logger.warning(
+                            f"Need to update {instance.instance_id=} {instance.miner_hotkey=} for {instance.chute_id=} to use new image"
+                        )
                         if instance.miner_hotkey not in permitted:
                             permitted[instance.miner_hotkey] = 0
                         permitted[instance.miner_hotkey] += 1
@@ -918,21 +925,23 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                         {"chute_id": chute.chute_id},
                     )
                     if permitted:
-                        rolling_update = RollingUpdate(
-                            chute_id=chute.chute_id,
-                            old_version=chute.version,
-                            new_version=chute.version,
-                            permitted=permitted,
+                        session.add(
+                            RollingUpdate(
+                                chute_id=chute.chute_id,
+                                old_version=chute.version,
+                                new_version=chute.version,
+                                permitted=permitted,
+                            )
                         )
-                        session.add(rolling_update)
 
                 # Commit the chute updates
                 await session.commit()
 
             # Trigger the rolling update tasks
             for chute in chutes:
+                logger.warning(f"Triggering rolling update task: {chute.chute_id=}")
                 await handle_rolling_update.kiq(
-                    chute.chute_id, chutes_version, reason="image updated due to chutes lib upgrade"
+                    chute.chute_id, chute.version, reason="image updated due to chutes lib upgrade"
                 )
 
             # Notify miners of the update

@@ -180,6 +180,7 @@ async def get_full_inventory(
       nodes.uuid AS gpu_id,
       instances.last_verified_at,
       instances.verification_error,
+      instances.active,
       chutes.chute_id,
       chutes.name AS chute_name
     FROM nodes

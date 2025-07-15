@@ -4,7 +4,6 @@ Routes for instances.
 
 import uuid
 import base64
-import orjson as json
 import traceback
 import random
 import secrets
@@ -53,6 +52,7 @@ from api.util import (
     notify_created,
     notify_deleted,
     notify_verified,
+    notify_activated,
 )
 from api.graval_worker import verify_instance, graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -503,6 +503,28 @@ async def claim_launch_config(
     }
 
 
+@router.get("/launch_config/{config_id}/activate")
+async def activate_launch_config_instance(
+    config_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
+):
+    token = authorization.strip().split(" ")[-1]
+    launch_config = await load_launch_config_from_jwt(db, config_id, token, allow_retrieved=True)
+    if not launch_config.verified_at:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Launch config has not been verified.",
+        )
+    instance = launch_config.instance
+    if not instance.active:
+        instance.active = True
+        await db.commit()
+        asyncio.create_task(notify_activated(instance))
+    return {"ok": True}
+
+
 @router.put("/launch_config/{config_id}")
 async def verify_launch_config_instance(
     config_id: str,
@@ -672,6 +694,11 @@ async def verify_launch_config_instance(
                 "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.job.job_id}?token={job_token}",
             }
         )
+    else:
+        return_value["activation_url"] = (
+            f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
+        )
+
     await db.refresh(instance)
     asyncio.create_task(notify_verified(instance))
     return return_value
@@ -788,24 +815,7 @@ async def activate_instance(
         instance.active = True
         await db.commit()
         await db.refresh(instance)
-
-        # Broadcast the event.
-        try:
-            await settings.redis_client.publish(
-                "events",
-                json.dumps(
-                    {
-                        "reason": "instance_activated",
-                        "message": f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}, waiting for verification...",
-                        "data": {
-                            "chute_id": instance.chute_id,
-                            "miner_hotkey": instance.miner_hotkey,
-                        },
-                    }
-                ).decode(),
-            )
-        except Exception as exc:
-            logger.warning(f"Error broadcasting instance event: {exc}")
+        asyncio.create_task(notify_activated(instance))
 
     # Kick off validation.
     if await settings.redis_client.get(f"verify:lock:{instance_id}"):

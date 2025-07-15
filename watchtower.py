@@ -523,22 +523,10 @@ async def check_live_code(instance, chute, encrypted_slurp) -> bool:
     command_line = data.decode().replace("\x00", " ").strip()
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
     command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
-    expected = " ".join(
-        [
-            "python",
-            "chutes",
-            "run",
-            chute.ref_str,
-            "--port",
-            "8000",
-            "--graval-seed",
-            str(instance.nodes[0].seed),
-            "--miner-ss58",
-            instance.miner_hotkey,
-            "--validator-ss58",
-            settings.validator_ss58,
-        ]
-    ).strip()
+    seed = (
+        None if semcomp(chute.chutes_version or "0.0.0", "0.3.0") >= 0 else instance.nodes[0].seed
+    )
+    expected = get_expected_command(chute, instance.miner_hotkey, seed, tls=False)
     if command_line != expected:
         logger.error(
             f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"
