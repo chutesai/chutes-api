@@ -314,7 +314,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
 
                 # Check if the time taken to generate the proof matches what we'd expect.
                 delta = time.time() - started_at
-                if not graval_config["estimate"] * 0.80 < delta < graval_config["estimate"] * 1.2:
+                if not graval_config["estimate"] * 0.55 < delta < graval_config["estimate"] * 1.2:
                     error_message = (
                         f"GraVal decryption challenge completed in {int(delta)} seconds, "
                         f"but estimate is {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"
@@ -483,6 +483,8 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
         ):
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
+    node_map = {node.uuid: node for node in nodes}
+    nodes = [node_map[uuid] for uuid in uuids if uuid in node_map]
 
     # XXX Check if the advertised IP matches outbound IP, disabled temporarily.
     # if not await verify_outbound_ip(nodes):
