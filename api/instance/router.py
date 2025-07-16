@@ -620,7 +620,8 @@ async def verify_launch_config_instance(
     try:
         node_idx = random.randint(0, len(instance.nodes) - 1)
         node = instance.nodes[node_idx]
-        work_product = response_body["proof"][node.uuid]
+        work_product = response_body["proof"][node.uuid]["work_product"]
+        logger.info(f"CHECKING PROOF: {work_product=}\n{response_body=}")
         assert await verify_proof(node, launch_config.seed, work_product)
     except Exception as exc:
         logger.error(
