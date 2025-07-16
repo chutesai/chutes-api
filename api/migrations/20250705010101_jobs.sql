@@ -3,8 +3,36 @@ ALTER TABLE chutes ADD COLUMN IF NOT EXISTS jobs JSONB;
 ALTER TABLE chute_history ADD COLUMN IF NOT EXISTS jobs JSONB;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS config_id VARCHAR;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS cacert VARCHAR;
-ALTER TABLE instances ADD CONSTRAINT fk_instances_config_id FOREIGN KEY (config_id) REFERENCES launch_configs(config_id) ON DELETE SET NULL;
-ALTER TABLE instances ADD CONSTRAINT uq_instances_config_id UNIQUE (config_id);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE constraint_name = 'fk_instances_config_id'
+        AND table_name = 'instances'
+    ) THEN
+        ALTER TABLE instances
+        ADD CONSTRAINT fk_instances_config_id
+        FOREIGN KEY (config_id)
+        REFERENCES launch_configs(config_id)
+        ON DELETE SET NULL;
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.table_constraints
+        WHERE constraint_name = 'uq_instances_config_id'
+        AND table_name = 'instances'
+    ) THEN
+        ALTER TABLE instances
+        ADD CONSTRAINT uq_instances_config_id
+        UNIQUE (config_id);
+    END IF;
+END $$;
 
 CREATE OR REPLACE FUNCTION fn_reset_job_assignment()
 RETURNS TRIGGER AS $$
