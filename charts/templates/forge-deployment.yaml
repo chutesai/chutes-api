@@ -20,6 +20,11 @@ spec:
           imagePullPolicy: {{ .Values.forge.imagePullPolicy | default "IfNotPresent" }}
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: CFSV_OP
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: cfsvop
             - name: DOCKER_PULL_USERNAME
               valueFrom:
                 secretKeyRef:
