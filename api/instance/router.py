@@ -455,9 +455,7 @@ async def claim_launch_config(
         raise
 
     # Generate a ciphertext for this instance to decrypt.
-    node_map = {node.uuid: node for node in nodes}
-    nodes = [node_map[uuid] for uuid in node_ids]
-    node = nodes[0]
+    node = random.choice(nodes)
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
     encrypted_payload = await graval_encrypt(
         node,
@@ -503,7 +501,7 @@ async def claim_launch_config(
         "job_id": launch_config.job_id,
         "symmetric_key": {
             "ciphertext": ciphertext,
-            "device_index": 0,
+            "uuid": node.uuid,
             "response_plaintext": f"secret is {launch_config.config_id} {launch_config.seed}",
         },
     }
@@ -622,9 +620,7 @@ async def verify_launch_config_instance(
     try:
         node_idx = random.randint(0, len(instance.nodes) - 1)
         node = instance.nodes[node_idx]
-        work_product = next(
-            p["work_product"] for p in response_body["proof"] if p["device_uuid"] == node.uuid
-        )
+        work_product = response_body["proof"][node.uuid]
         assert await verify_proof(node, launch_config.seed, work_product)
     except Exception as exc:
         logger.error(

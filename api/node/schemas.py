@@ -43,6 +43,7 @@ class NodeArgs(BaseModel):
 
 
 class MultiNodeArgs(BaseModel):
+    server_id: str
     nodes: List[NodeArgs]
 
 
@@ -68,6 +69,7 @@ class Node(Base):
     )
     gpu_identifier = Column(String, nullable=False)
     device_index = Column(Integer, nullable=False)
+    server_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verification_host = Column(String, nullable=False)
     verification_port = Column(Integer, nullable=False)

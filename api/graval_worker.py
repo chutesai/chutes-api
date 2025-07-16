@@ -274,13 +274,12 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
         ]
     )
     ciphertexts = [c[1].split("|")[-1] for c in cipher_data]
-    plaintext = [c[0] for c in cipher_data]
+    cipher_map = {node.uuid: ciphertext for node, ciphertext in zip(nodes, ciphertexts)}
+    plaintext = {node.uuid: c[0] for node, c in zip(nodes, cipher_data)}
     challenge = {
         "seed": int(nodes[0].seed),
         "iterations": graval_config["iterations"],
-        "ciphertext": [
-            {"device_index": idx, "data": ciphertexts[idx]} for idx in range(len(nodes))
-        ],
+        "ciphertext": {gpu_uuid: ciphertext for gpu_uuid, ciphertext in cipher_map.items()},
     }
 
     # Send the challenge over to the miner.
@@ -305,7 +304,10 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
                 # Verify the decrypted responses are what we'd expect.
                 data = await response.json()
                 if not all(
-                    [data["plaintext"][idx] == plaintext[idx] for idx in range(len(plaintext))]
+                    [
+                        data["plaintext"].get(gpu_uuid) == plaintext[gpu_uuid]
+                        for gpu_uuid in plaintext
+                    ]
                 ):
                     error_message = (
                         f"Miner responded with incorrect plaintext {url=} {node.miner_hotkey=}: "
@@ -331,7 +333,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
                         verify_proof(
                             nodes[idx],
                             nodes[0].seed,
-                            data["proof"][idx]["work_product"],
+                            data["proof"][nodes[idx].uuid]["work_product"],
                             index=0,
                         )
                         for idx in range(len(nodes))
@@ -483,8 +485,6 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
         ):
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
-    node_map = {node.uuid: node for node in nodes}
-    nodes = [node_map[uuid] for uuid in uuids if uuid in node_map]
 
     # XXX Check if the advertised IP matches outbound IP, disabled temporarily.
     # if not await verify_outbound_ip(nodes):
@@ -638,7 +638,6 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
         timeout=12.0,
     ) as resp:
         if resp.status != 404:
-            logger.error(f"GOT ERROR: {await resp.text()}")
             resp.raise_for_status()
 
         # Make sure the encryption/decryption flow works properly.
