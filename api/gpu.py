@@ -39,7 +39,6 @@ SUPPORTED_GPUS = {
             "estimate": 65,
         },
     },
-    # XXX Not enabled, supported by new graval but otherwise disabled.
     "5090": {
         "model_name_check": "RTX 5090",
         "memory": 32,
@@ -54,7 +53,7 @@ SUPPORTED_GPUS = {
         "clock_rate": {"base": 2017, "boost": 2407},
         "hourly_rate": 0.7,
         "graval": {
-            "iteration": 2,
+            "iterations": 2,
             "estimate": 60,
         },
     },

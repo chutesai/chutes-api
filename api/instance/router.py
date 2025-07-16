@@ -455,8 +455,9 @@ async def claim_launch_config(
         raise
 
     # Generate a ciphertext for this instance to decrypt.
-    node_idx = random.choice(list(range(len(nodes))))
-    node = nodes[node_idx]
+    node_map = {node.uuid: node for node in nodes}
+    nodes = [node_map[uuid] for uuid in node_ids]
+    node = nodes[0]
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
     encrypted_payload = await graval_encrypt(
         node,
@@ -502,7 +503,7 @@ async def claim_launch_config(
         "job_id": launch_config.job_id,
         "symmetric_key": {
             "ciphertext": ciphertext,
-            "device_index": node_idx,
+            "device_index": 0,
             "response_plaintext": f"secret is {launch_config.config_id} {launch_config.seed}",
         },
     }
