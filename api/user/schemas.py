@@ -98,6 +98,7 @@ class User(Base):
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
+    jobs = relationship("Job", back_populates="user")
 
     @validates("username")
     def validate_username(self, _, value):
@@ -240,3 +241,30 @@ class InvocationDiscount(Base):
             )
             await settings.memcache.set(key, str(default_discount).encode(), exptime=1800)
             return default_discount
+
+
+class JobQuota(Base):
+    __tablename__ = "job_quotas"
+    user_id = Column(String, primary_key=True)
+    chute_id = Column(String, primary_key=True)
+    is_default = Column(Boolean, default=True)
+    payment_refresh_date = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=False, server_default=func.now())
+    quota = Column(BigInteger, nullable=False, default=settings.default_job_quotas.get("*", 0))
+
+    @staticmethod
+    async def get(user_id: str, chute_id: str):
+        async with get_session() as session:
+            result = await session.execute(
+                select(JobQuota.quota)
+                .where(JobQuota.user_id == user_id)
+                .where(JobQuota.chute_id.in_([chute_id, "*"]))
+                .order_by(case((JobQuota.chute_id == chute_id, 0), else_=1))
+                .limit(1)
+            )
+            quota = result.scalar()
+            if quota is not None:
+                return quota
+            return settings.default_job_quotas.get(
+                chute_id, settings.default_job_quotas.get("*", 0)
+            )

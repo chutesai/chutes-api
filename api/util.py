@@ -14,6 +14,7 @@ import time
 import secrets
 import orjson as json
 import base64
+import semver
 from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
@@ -384,3 +385,138 @@ def use_opencl_graval(chutes_version: str):
     if int(minor) >= 2 and int(bug) == 50 or int(minor) > 2:
         return True
     return False
+
+
+def semcomp(input_version: str, target_version: str):
+    """
+    Semver comparison with cleanup.
+    """
+    if not input_version:
+        input_version = "0.0.0"
+    clean_version = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+).*", input_version).group(1)
+    return semver.compare(clean_version, target_version)
+
+
+async def notify_created(instance, gpu_count: int = None, gpu_type: str = None):
+    message = f"Instance created: {instance.miner_hotkey=} {instance.instance_id=}"
+    if gpu_count:
+        message += f" {gpu_count=} {gpu_type=}"
+    message += ", broadcasting"
+    logger.success(message)
+    try:
+        log_suffix = ""
+        if gpu_count:
+            log_suffix = f" on {gpu_count}x{gpu_type}"
+        event_data = {
+            "reason": "instance_created",
+            "message": f"Miner {instance.miner_hotkey} has provisioned an instance of chute {instance.chute_id}{log_suffix}",
+            "data": {
+                "chute_id": instance.chute_id,
+                "gpu_count": gpu_count,
+                "gpu_model_name": gpu_type,
+                "miner_hotkey": instance.miner_hotkey,
+                "instance_id": instance.instance_id,
+            },
+        }
+        await settings.redis_client.publish("events", json.dumps(event_data).decode())
+        if instance.config_id:
+            event_data["filter_recipients"] = [instance.miner_hotkey]
+            event_data["data"]["config_id"] = instance.config_id
+            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+    except Exception:
+        ...
+
+
+async def notify_deleted(instance, message: str = None):
+    logger.warning(
+        f"Instance deleted: {instance.miner_hotkey=} {instance.instance_id=}, broadcasting"
+    )
+    if not message:
+        message = f"Miner {instance.miner_hotkey} has deleted instance an instance of chute {instance.chute_id}."
+    try:
+        event_data = {
+            "reason": "instance_deleted",
+            "message": message,
+            "data": {
+                "chute_id": instance.chute_id,
+                "miner_hotkey": instance.miner_hotkey,
+                "instance_id": instance.instance_id,
+                "config_id": instance.config_id,
+            },
+        }
+        await settings.redis_client.publish("events", json.dumps(event_data).decode())
+        event_data["filter_recipients"] = [instance.miner_hotkey]
+        await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+    except Exception:
+        ...
+
+
+async def notify_verified(instance):
+    logger.success(
+        f"Instance verified: {instance.miner_hotkey=} {instance.instance_id=}, broadcasting"
+    )
+    try:
+        event_data = {
+            "reason": "instance_verified",
+            "data": {
+                "instance_id": instance.instance_id,
+                "miner_hotkey": instance.miner_hotkey,
+            },
+            "filter_recipients": [instance.miner_hotkey],
+        }
+        await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+        await settings.redis_client.publish(
+            "events",
+            json.dumps(
+                {
+                    "reason": "instance_hot",
+                    "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} chute {instance.chute_id} has been verified, now 'hot'!",
+                    "data": {
+                        "chute_id": instance.chute_id,
+                        "miner_hotkey": instance.miner_hotkey,
+                    },
+                }
+            ).decode(),
+        )
+    except Exception:
+        ...
+
+
+async def notify_job_deleted(job):
+    try:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "job_deleted",
+                    "data": {
+                        "instance_id": job.instance_id,
+                        "job_id": job.job_id,
+                    },
+                }
+            ).decode(),
+        )
+    except Exception:
+        ...
+
+
+async def notify_activated(instance):
+    try:
+        message = f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}"
+        logger.success(message)
+        event_data = {
+            "reason": "instance_activated",
+            "message": message,
+            "data": {
+                "chute_id": instance.chute_id,
+                "miner_hotkey": instance.miner_hotkey,
+                "instance_id": instance.instance_id,
+                "config_id": instance.config_id,
+            },
+        }
+        await settings.redis_client.publish("events", json.dumps(event_data).decode())
+        if instance.config_id:
+            event_data["filter_recipient"] = [instance.miner_hotkey]
+            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
+    except Exception as exc:
+        logger.warning(f"Error broadcasting instance event: {exc}")

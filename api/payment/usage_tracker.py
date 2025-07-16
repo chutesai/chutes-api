@@ -108,6 +108,7 @@ async def main():
     while True:
         try:
             await process_balance_changes()
+            logger.success("Successfully updated usage data/balances, waiting for next interval...")
         except Exception as exc:
             logger.error(f"Error processing balance changes: {exc}")
         await asyncio.sleep(60)

@@ -218,7 +218,12 @@ async def create_nodes(
             node = Node(
                 **{
                     **node_args.dict(),
-                    **{"miner_hotkey": hotkey, "seed": seed, "verified_at": verified_at},
+                    **{
+                        "miner_hotkey": hotkey,
+                        "seed": seed,
+                        "verified_at": verified_at,
+                        "server_id": args.server_id,
+                    },
                 }
             )
             # Legacy flags for backwards graval compatibility.

@@ -9,11 +9,12 @@ from sqlalchemy import (
     Column,
     String,
     Integer,
-    BigInteger,
+    Numeric,
     Float,
     ForeignKey,
     DateTime,
     Boolean,
+    BigInteger,
     func,
 )
 from sqlalchemy.orm import validates, relationship
@@ -42,6 +43,7 @@ class NodeArgs(BaseModel):
 
 
 class MultiNodeArgs(BaseModel):
+    server_id: str
     nodes: List[NodeArgs]
 
 
@@ -59,7 +61,7 @@ class Node(Base):
     max_threads_per_processor = Column(Integer, nullable=False)
     concurrent_kernels = Column(Boolean, nullable=True)
     ecc = Column(Boolean, nullable=True)
-    seed = Column(BigInteger, nullable=False)
+    seed = Column(Numeric, nullable=False)
 
     # Meta/app fields.
     miner_hotkey = Column(
@@ -67,6 +69,7 @@ class Node(Base):
     )
     gpu_identifier = Column(String, nullable=False)
     device_index = Column(Integer, nullable=False)
+    server_id = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verification_host = Column(String, nullable=False)
     verification_port = Column(Integer, nullable=False)

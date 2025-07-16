@@ -11,20 +11,28 @@ import json
 import secrets
 import traceback
 import tempfile
-import semver
 from contextlib import asynccontextmanager
 from loguru import logger
 from datetime import timedelta, datetime
 from api.config import settings
-from api.util import aes_encrypt, aes_decrypt, decrypt_envdump_cipher
+from api.util import (
+    aes_encrypt,
+    aes_decrypt,
+    decrypt_envdump_cipher,
+    semcomp,
+    notify_deleted,
+    use_encryption_v2,
+    use_encrypted_path,
+    notify_job_deleted,
+)
 from api.database import get_session
 from api.chute.schemas import Chute, RollingUpdate
+from api.job.schemas import Job
 from api.exceptions import EnvdumpMissing
 from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
 import api.miner_client as miner_client
-from api.util import use_encryption_v2, use_encrypted_path
 from api.instance.schemas import Instance
 from api.chute.codecheck import is_bad_code
 
@@ -202,19 +210,25 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
             ),
             {"instance_id": target.instance_id, "reason": reason},
         )
+
+        # Fail associated jobs.
+        job = (
+            (await session.execute(select(Job).where(Job.instance_id == target.instance_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if job and not job.finished_at:
+            job.status = "error"
+            job.error_detail = f"Instance failed monitoring probes: {reason=}"
+            job.miner_terminated = True
+            job.finished_at = func.now()
+            await notify_job_deleted(job)
+
         await session.commit()
-        event_data = {
-            "reason": "instance_deleted",
-            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
-            "data": {
-                "chute_id": target.chute_id,
-                "instance_id": target.instance_id,
-                "miner_hotkey": target.miner_hotkey,
-            },
-        }
-        await settings.redis_client.publish("events", json.dumps(event_data))
-        event_data["filter_recipients"] = [target.miner_hotkey]
-        await settings.redis_client.publish("miner_broadcast", json.dumps(event_data))
+        await notify_deleted(
+            target,
+            message=f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
+        )
 
 
 async def do_slurp(instance, payload, encrypted_slurp):
@@ -508,22 +522,11 @@ async def check_live_code(instance, chute, encrypted_slurp) -> bool:
     # Compare to expected command.
     command_line = data.decode().replace("\x00", " ").strip()
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
-    expected = " ".join(
-        [
-            "python",
-            "/home/chutes/.local/bin/chutes",
-            "run",
-            chute.ref_str,
-            "--port",
-            "8000",
-            "--graval-seed",
-            str(instance.nodes[0].seed),
-            "--miner-ss58",
-            instance.miner_hotkey,
-            "--validator-ss58",
-            settings.validator_ss58,
-        ]
-    ).strip()
+    command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
+    seed = (
+        None if semcomp(chute.chutes_version or "0.0.0", "0.3.0") >= 0 else instance.nodes[0].seed
+    )
+    expected = get_expected_command(chute, instance.miner_hotkey, seed, tls=False)
     if command_line != expected:
         logger.error(
             f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"
@@ -635,26 +638,63 @@ async def increment_soft_fail(instance, chute):
         await purge_and_notify(instance)
 
 
-def get_expected_command(instance, chute):
+def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool = False):
     """
     Get the command line for a given instance.
     """
+    # New chutes run format expects a JWT and TLS key/cert, but not graval seed.
+    if semcomp(chute.chutes_version or "0.0.0", "0.3.0") >= 0:
+        parts = [
+            "python",
+            "chutes",
+            "run",
+            chute.ref_str,
+            "--port",
+            "8000",
+            "--miner-ss58",
+            miner_hotkey,
+            "--validator-ss58",
+            settings.validator_ss58,
+        ]
+        if tls:
+            parts += [
+                "--keyfile",
+                "/app/.chutetls/key.pem",
+                "--certfile",
+                "/app/.chutetls/cert.pem",
+            ]
+        return " ".join(parts).strip()
+
+    # Legacy format.
     return " ".join(
         [
             "python",
-            "/home/chutes/.local/bin/chutes",
+            "chutes",
             "run",
             chute.ref_str,
             "--port",
             "8000",
             "--graval-seed",
-            str(instance.nodes[0].seed),
+            str(seed),
             "--miner-ss58",
-            instance.miner_hotkey,
+            miner_hotkey,
             "--validator-ss58",
             settings.validator_ss58,
         ]
     ).strip()
+
+
+async def verify_expected_command(
+    dump: dict, chute: Chute, miner_hotkey: str, seed: int = None, tls: bool = False
+):
+    process = dump["all_processes"][0]
+    assert process["pid"] == 1, "Failed to find chutes comman as PID 1"
+    assert process["username"] == "chutes", "Not running as chutes user"
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+    command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
+    expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed, tls=tls)
+    assert command_line == expected, f"Unexpected command: {command_line=} vs {expected=}"
+    logger.success(f"Verified command line: {miner_hotkey=} {command_line=}")
 
 
 def uuid_dict(data, current_path=[], salt=settings.envcheck_52_salt):
@@ -674,7 +714,7 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
     if not settings.kubecheck_salt:
         return True
     # Requires chutes SDK 0.2.53+
-    if semver.compare(instance.chutes_version or "0.0.0", "0.2.53") < 0:
+    if semcomp(instance.chutes_version or "0.0.0", "0.2.53") < 0:
         return True
 
     # Simple flags.
@@ -705,21 +745,29 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
 
     # Sneaky flags.
     found_expected = False
-    expected = (
-        settings.kubecheck_prefix
-        + "_".join(secret.split("-")[1:-2]).upper()
-        + settings.kubecheck_suffix
-    )
-    expected_uuid = str(uuid.uuid5(uuid.NAMESPACE_OID, expected + settings.kubecheck_salt))
+    expected = [
+        (
+            settings.kubecheck_prefix
+            + "_".join(secret.split("-")[1:-2]).upper()
+            + settings.kubecheck_suffix
+        ),
+        (
+            settings.kubecheck_prefix
+            + "_".join(secret.split("-")[1:-1]).upper()
+            + settings.kubecheck_suffix
+        ),
+    ]
+    expected_uuids = [
+        str(uuid.uuid5(uuid.NAMESPACE_OID, e + settings.kubecheck_salt)) for e in expected
+    ]
     for v in dump.values():
         if isinstance(v, dict):
             for key in v:
                 if (
                     str(uuid.uuid5(uuid.NAMESPACE_OID, key + settings.kubecheck_salt))
-                    == expected_uuid
+                    in expected_uuids
                 ):
                     found_expected = True
-                    logger.success(f"Found the magic uuid: {expected_uuid}")
                     break
     if not found_expected:
         logger.warning(
@@ -811,9 +859,7 @@ async def check_chute(chute_id):
     instances = await load_chute_instances(chute.chute_id)
     random.shuffle(instances)
     bad_env = set()
-    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") >= 0 and os.getenv(
-        "ENVDUMP_UNLOCK"
-    ):
+    if semcomp(chute.chutes_version or "0.0.0", "0.2.53") >= 0 and os.getenv("ENVDUMP_UNLOCK"):
         instance_map = {instance.instance_id: instance for instance in instances}
 
         # Load the envdump dump outputs for each.
@@ -843,19 +889,16 @@ async def check_chute(chute_id):
 
                 # Check the running command.
                 try:
-                    process = dump["all_processes"][0]
-                    assert process["pid"] == 1
-                    assert process["username"] == "chutes"
-                    command_line = re.sub(
-                        r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]
-                    ).strip()
-                    if command_line != get_expected_command(instance, chute):
-                        logger.error(f"{log_prefix} running invalid process: {command_line=}")
-                        failed_envdump = True
-                    else:
-                        logger.success(
-                            f"{log_prefix} successfully validated expected runtime command: {command_line=}"
-                        )
+                    await verify_expected_command(
+                        dump,
+                        chute,
+                        miner_hotkey=instance.miner_hotkey,
+                        seed=instance.nodes[0].seed,
+                        tls=False,
+                    )
+                except AssertionError as exc:
+                    logger.error(f"{log_prefix} failed running command check: {exc=}")
+                    failed_envdump = True
                 except Exception as exc:
                     logger.error(
                         f"{log_prefix} unhandled exception checking env dump: {exc=}\n{traceback.format_exc()}"
@@ -1302,7 +1345,7 @@ async def procs_check():
                         reason = None
                         if not cmdline and (not env or "CHUTES_EXECUTION_CONTEXT" not in env):
                             reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
-                        elif len(cmdline) <= 5 or cmdline[1] != "/home/chutes/.local/bin/chutes":
+                        elif len(cmdline) <= 5 or cmdline[1].split("/")[-1] != "chutes":
                             reason = f"Running an invalid process [{instance.instance_id=} {instance.miner_hotkey=}]: {cmdline=} {env=}"
                         if reason:
                             logger.warning(reason)
@@ -1338,7 +1381,7 @@ async def get_env_dump(instance):
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(
-                f"Received invalid response code on /_env_dump: {instance.instance_id=}"
+                f"Received invalid response code on /_env_dump: {instance.instance_id=} {resp.status=} {await resp.text()}"
             )
         return json.loads(decrypt_envdump_cipher(await resp.text(), key, instance.chutes_version))
 
@@ -1358,7 +1401,7 @@ async def get_env_sig(instance, salt):
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(
-                f"Received invalid response code on /_env_sig: {instance.instance_id=}"
+                f"Received invalid response code on /_env_sig: {instance.instance_id=} {resp.status=} {await resp.text()}"
             )
         return await resp.text()
 

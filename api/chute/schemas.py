@@ -11,7 +11,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
 from api.fmv.fetcher import get_fetcher
-from pydantic import BaseModel, Field, computed_field, validator
+from pydantic import BaseModel, Field, computed_field, validator, constr, field_validator
 from typing import List, Optional, Dict, Any
 
 
@@ -34,6 +34,26 @@ class Cord(BaseModel):
     output_schema: Optional[Dict[str, Any]] = {}
     output_content_type: Optional[str] = None
     minimal_input_schema: Optional[Dict[str, Any]] = {}
+
+
+class Port(BaseModel):
+    name: str
+    port: int = Field(...)
+    proto: str = constr(pattern=r"^(tcp|udp|http)$")
+
+    @field_validator("port")
+    def validate_port(cls, v):
+        if v == 22 or (8001 < v <= 65535):
+            return v
+        raise ValueError("Port must be 22 or in range 8002-65535")
+
+
+class Job(BaseModel):
+    name: str
+    upload: Optional[bool] = False
+    timeout: Optional[int] = None
+    ports: list[Port] = []
+    disk_gb: Optional[int] = Field(10, ge=10, le=1000)
 
 
 class NodeSelector(BaseModel):
@@ -72,7 +92,6 @@ class NodeSelector(BaseModel):
             raise ValueError(f"Invalid GPU identifiers `exclude`: {extra}")
         return gpus
 
-    @computed_field
     @property
     def compute_multiplier(self) -> float:
         """
@@ -145,7 +164,8 @@ class ChuteArgs(BaseModel):
     ref_str: str
     standard_template: Optional[str] = None
     node_selector: NodeSelector
-    cords: List[Cord]
+    cords: Optional[List[Cord]] = []
+    jobs: Optional[List[Job]] = []
     concurrency: int = Field(gt=1, le=256)
 
 
@@ -167,6 +187,7 @@ class Chute(Base):
     public = Column(Boolean, default=False)
     standard_template = Column(String)
     cords = Column(JSONB, nullable=False)
+    jobs = Column(JSONB, nullable=True)
     node_selector = Column(JSONB, nullable=False)
     slug = Column(String)
     code = Column(String, nullable=False)
@@ -197,6 +218,7 @@ class Chute(Base):
         "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
     llm_detail = relationship("LLMDetail", back_populates="chute", lazy="select", uselist=False)
+    running_jobs = relationship("Job", back_populates="chute", lazy="select")
 
     @validates("name")
     def validate_name(self, _, name):
@@ -257,7 +279,7 @@ class Chute(Base):
         Basic validation on the cords, i.e. methods that can be called for this chute.
         """
         if not cords or not isinstance(cords, list):
-            raise ValueError("Must include between 1 and 25 valid cords to create a chute")
+            return []
         for cord in cords:
             path = cord.path
             if not isinstance(path, str) or not re.match(r"^(/[a-z][a-z0-9_]*)+$", path, re.I):
@@ -275,6 +297,21 @@ class Chute(Base):
                 raise ValueError(f"Invalid cord stream value: {stream}")
         return [cord.dict() for cord in cords]
 
+    @validates("jobs")
+    def validate_jobs(self, _, jobs):
+        """
+        Basic validation of job definitions.
+        """
+        if not jobs:
+            return []
+        job_dicts = []
+        for job in jobs:
+            job_object = job
+            if isinstance(job, dict):
+                job_object = Job(**job)
+            job_dicts.append(job_object.model_dump())
+        return job_dicts
+
     @validates("node_selector")
     def validate_node_selector(self, _, node_selector):
         """
@@ -288,9 +325,7 @@ class Chute(Base):
     @computed_field
     @property
     def supported_gpus(self) -> List[str]:
-        node_selector = NodeSelector(**self.node_selector)
-        node_selector.exclude = list(set(node_selector.exclude or [] + ["b200", "mi300x"]))
-        return node_selector.supported_gpus
+        return NodeSelector(**self.node_selector).supported_gpus
 
 
 class ChuteHistory(Base):

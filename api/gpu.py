@@ -17,7 +17,7 @@ SUPPORTED_GPUS = {
         "max_threads_per_processor": 1536,
         "hourly_rate": 0.3,
         "graval": {
-            "estimate": 75,
+            "estimate": 70,
             "iterations": 1,
         },
     },
@@ -36,10 +36,9 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.50,
         "graval": {
             "iterations": 2,
-            "estimate": 60,
+            "estimate": 65,
         },
     },
-    # XXX Not enabled, supported by new graval but otherwise disabled.
     "5090": {
         "model_name_check": "RTX 5090",
         "memory": 32,
@@ -54,7 +53,7 @@ SUPPORTED_GPUS = {
         "clock_rate": {"base": 2017, "boost": 2407},
         "hourly_rate": 0.7,
         "graval": {
-            "iteration": 2,
+            "iterations": 2,
             "estimate": 60,
         },
     },
@@ -109,7 +108,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.23,
         "graval": {
             "iterations": 1,
-            "estimate": 90,
+            "estimate": 92,
         },
     },
     "a6000": {
@@ -167,7 +166,7 @@ SUPPORTED_GPUS = {
         },
     },
     "a10": {
-        "model_name_check": "A10(?!0)",
+        "model_name_check": "A10(?!0)(?!G)",
         "memory": 24,
         "major": 8,
         "minor": 6,
@@ -181,7 +180,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.5,
         "graval": {
             "iterations": 1,
-            "estimate": 75,
+            "estimate": 82,
         },
     },
     "a40": {
@@ -199,7 +198,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.27,
         "graval": {
             "iterations": 1,
-            "estimate": 140,
+            "estimate": 142,
         },
     },
     "l40": {
@@ -253,7 +252,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.8,
         "graval": {
             "iterations": 4,
-            "estimate": 45,
+            "estimate": 60,
         },
     },
     "a100_40gb_sxm": {
@@ -271,7 +270,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.85,
         "graval": {
             "iterations": 4,
-            "estimate": 45,
+            "estimate": 60,
         },
     },
     "a100": {
@@ -289,7 +288,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.9,
         "graval": {
             "iterations": 2,
-            "estimate": 54,
+            "estimate": 58,
         },
     },
     "a100_sxm": {
@@ -307,7 +306,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 0.95,
         "graval": {
             "iterations": 3,
-            "estimate": 63,
+            "estimate": 70,
         },
     },
     "h100": {
@@ -324,8 +323,8 @@ SUPPORTED_GPUS = {
         "max_threads_per_processor": 2048,
         "hourly_rate": 1.4,
         "graval": {
-            "iterations": 4,
-            "estimate": 70,
+            "iterations": 2,
+            "estimate": 62,
         },
     },
     "h100_nvl": {
@@ -343,7 +342,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 1.5,
         "graval": {
             "iterations": 3,
-            "estimate": 63,
+            "estimate": 75,
         },
     },
     "h100_sxm": {
@@ -360,8 +359,8 @@ SUPPORTED_GPUS = {
         "max_threads_per_processor": 2048,
         "hourly_rate": 1.6,
         "graval": {
-            "iterations": 4,
-            "estimate": 48,
+            "iterations": 5,
+            "estimate": 70,
         },
     },
     "h800": {
@@ -379,7 +378,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 1.8,
         "graval": {
             "iterations": 3,
-            "estimate": 65,
+            "estimate": 75,
         },
     },
     "h200": {
@@ -397,7 +396,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 2.7,
         "graval": {
             "iterations": 3,
-            "estimate": 63,
+            "estimate": 70,
         },
     },
     # XXX Not enabled, supported by new graval but otherwise disabled.
@@ -410,7 +409,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 2.5,
         "graval": {
             "iterations": 2,
-            "estimate": 65,
+            "estimate": 75,
         },
     },
     # XXX Likewise, b200 is not yet supported, but kept here as a stub for
@@ -424,7 +423,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 4.0,
         "graval": {
             "iterations": 2,
-            "estimate": 50,
+            "estimate": 55,
         },
     },
 }

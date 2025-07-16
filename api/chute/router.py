@@ -662,6 +662,7 @@ async def _deploy_chute(
         )
         chute.chutes_version = image.chutes_version
         chute.cords = chute_args.cords
+        chute.jobs = chute_args.jobs
         chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
         chute.boost = None
@@ -686,6 +687,7 @@ async def _deploy_chute(
                 version=version,
                 public=chute_args.public,
                 cords=chute_args.cords,
+                jobs=chute_args.jobs,
                 node_selector=chute_args.node_selector,
                 standard_template=chute_args.standard_template,
                 chutes_version=image.chutes_version,
@@ -719,11 +721,42 @@ async def _deploy_chute(
 
         db.add(chute)
 
+    # Make sure we have at least one cord or one job definition.
+    if not chute.cords and not chute.jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A chute must define at least one cord() or job() function!",
+        )
+
+    # Limit h/b 200 access for now.
+    supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
+    if (
+        not (supported_gpus - set(["b200", "h200", "mi300x"]))
+        and chute.user_id != await chutes_user_id()
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to require h200, b200 or mi300x at this time.",
+        )
+
     await db.commit()
     await db.refresh(chute)
 
     if old_version:
         await handle_rolling_update.kiq(chute.chute_id, chute.version)
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_updated",
+                    "data": {
+                        "chute_id": chute.chute_id,
+                        "version": chute.version,
+                        "job_only": not chute.cords,
+                    },
+                }
+            ).decode(),
+        )
     else:
         await settings.redis_client.publish(
             "miner_broadcast",
@@ -733,6 +766,7 @@ async def _deploy_chute(
                     "data": {
                         "chute_id": chute.chute_id,
                         "version": chute.version,
+                        "job_only": not chute.cords,
                     },
                 }
             ).decode(),
@@ -925,6 +959,7 @@ async def easy_deploy_vllm_chute(
         standard_template="vllm",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
+        jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
 
@@ -963,6 +998,7 @@ async def easy_deploy_diffusion_chute(
         standard_template="diffusion",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
+        jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
 
@@ -1008,6 +1044,7 @@ async def easy_deploy_tei_chute(
         standard_template="tei",
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
+        jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
 

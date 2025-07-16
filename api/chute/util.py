@@ -38,6 +38,7 @@ from api.util import (
     aes_decrypt,
     use_encryption_v2,
     use_encrypted_path,
+    notify_deleted,
 )
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount
@@ -960,22 +961,10 @@ async def invoke(
                             {"instance_id": target.instance_id},
                         )
                         await session.commit()
-                        event_data = {
-                            "reason": "instance_deleted",
-                            "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} responded with a 426 error, indicating a new key exchange is required.",
-                            "data": {
-                                "chute_id": target.chute_id,
-                                "instance_id": target.instance_id,
-                                "miner_hotkey": target.miner_hotkey,
-                            },
-                        }
                         asyncio.create_task(
-                            settings.redis_client.publish("events", json.dumps(event_data).decode())
-                        )
-                        event_data["filter_recipients"] = [target.miner_hotkey]
-                        asyncio.create_task(
-                            settings.redis_client.publish(
-                                "miner_broadcast", json.dumps(event_data).decode()
+                            notify_deleted(
+                                target,
+                                message=f"Instance {target.instance_id} of miner {target.miner_hotkey} responded with a 426 error, indicating a new key exchange is required.",
                             )
                         )
 
@@ -1007,28 +996,13 @@ async def invoke(
                                 {"instance_id": target.instance_id},
                             )
                             await session.commit()
-                            event_data = {
-                                "reason": "instance_deleted",
-                                "message": f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
-                                "data": {
-                                    "chute_id": target.chute_id,
-                                    "instance_id": target.instance_id,
-                                    "miner_hotkey": target.miner_hotkey,
-                                },
-                            }
                             asyncio.create_task(
-                                settings.redis_client.publish(
-                                    "events", json.dumps(event_data).decode()
+                                notify_deleted(
+                                    target,
+                                    message=f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
                                 )
                             )
 
-                            # Miner notification.
-                            event_data["filter_recipients"] = [target.miner_hotkey]
-                            asyncio.create_task(
-                                settings.redis_client.publish(
-                                    "miner_broadcast", json.dumps(event_data).decode()
-                                )
-                            )
                 if error_message == "BAD_REQUEST":
                     logger.warning(
                         f"instance_id={target.instance_id} [chute_id={target.chute_id}]: bad request {error_detail}"

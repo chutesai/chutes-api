@@ -37,8 +37,11 @@ def create_token(user: User) -> str:
         "exp": expires_at.replace(tzinfo=None),
         "sub": user.user_id,
         "iat": now.replace(tzinfo=None),
+        "salted": True,
     }
-    signing_key = hashlib.sha256(user.fingerprint_hash.encode()).hexdigest()
+    signing_key = hashlib.sha256(
+        (user.fingerprint_hash + settings.pg_encryption_key).encode()
+    ).hexdigest()
     encoded_jwt = jwt.encode(payload, signing_key, algorithm="HS256")
     return encoded_jwt
 
@@ -107,8 +110,11 @@ async def get_user_from_token(token: str, request: Request) -> User:
     fingerprint_hash = await get_user_fingerprint_hash(user_id)
     if fingerprint_hash:
         try:
+            sign_str = fingerprint_hash
+            if payload.get("salted"):
+                sign_str += settings.pg_encryption_key
             payload = jwt.decode(
-                token, hashlib.sha256(fingerprint_hash.encode()).hexdigest(), algorithms=["HS256"]
+                token, hashlib.sha256(sign_str.encode()).hexdigest(), algorithms=["HS256"]
             )
             async with get_session() as session:
                 return (

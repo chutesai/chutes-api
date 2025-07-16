@@ -18,6 +18,7 @@ from fiber.chain.chain_utils import query_substrate
 from metasync.constants import (
     UNIQUE_CHUTE_AVERAGE_QUERY,
     NORMALIZED_COMPUTE_QUERY,
+    JOBS_QUERY,
     SCORING_INTERVAL,
     FEATURE_WEIGHTS,
 )
@@ -54,6 +55,7 @@ async def _get_weights_to_set(
 
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
+    jobs_query = text(JOBS_QUERY.format(interval=SCORING_INTERVAL))
     raw_compute_values = {}
     highest_unique = 0.0
     async with get_session() as session:
@@ -65,6 +67,7 @@ async def _get_weights_to_set(
 
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
+        job_result = await session.execute(jobs_query)
 
         # Compute units, invocation counts, and bounties.
         for hotkey, invocation_count, bounty_count, compute_units in compute_result:
@@ -82,6 +85,28 @@ async def _get_weights_to_set(
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
             if average_active_chutes > highest_unique:
                 highest_unique = average_active_chutes
+
+        # Jobs.
+        for (
+            miner_hotkey,
+            terminated_jobs,
+            running_jobs,
+            completed_jobs,
+            total_jobs,
+            current_compute_units,
+            completed_compute_units,
+            total_compute_units,
+        ) in job_result:
+            logger.info(
+                f"Job stats: {miner_hotkey=} {running_jobs=} {completed_jobs=} {total_jobs=} "
+                f"{current_compute_units=} {completed_compute_units} {total_compute_units=}"
+            )
+
+            # Need to have normal chutes to run jobs, so we can skip scoring here.
+            if miner_hotkey not in raw_compute_values:
+                continue
+            raw_compute_values[miner_hotkey]["bounty_count"] += total_jobs
+            raw_compute_values[miner_hotkey]["compute_units"] += total_compute_units
 
     # Logging.
     for hotkey, values in raw_compute_values.items():
@@ -267,7 +292,7 @@ async def set_weights_periodically() -> None:
             [settings.netuid],
             return_value=False,
         )
-        updated: float = current_block - last_updated_value[uid]
+        updated: float = current_block - int(last_updated_value[uid])
         logger.info(f"Last updated: {updated} for my uid: {uid}")
         if updated < set_weights_interval_blocks:
             blocks_to_sleep = set_weights_interval_blocks - updated + 1

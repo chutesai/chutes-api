@@ -2,6 +2,9 @@
 GraVal node validation worker.
 """
 
+import os
+import subprocess
+import tempfile
 import asyncio
 import aiohttp
 import binascii
@@ -14,8 +17,8 @@ import time
 import base64
 import backoff
 import secrets
-import semver
 import orjson as json
+import pkg_resources
 from async_lru import alru_cache
 from typing import List, Tuple
 from pydantic import BaseModel
@@ -23,6 +26,7 @@ from loguru import logger
 from ipaddress import ip_address
 from api.config import settings
 from api.util import (
+    semcomp,
     aes_encrypt,
     aes_decrypt,
     use_encryption_v2,
@@ -32,6 +36,8 @@ from api.util import (
     get_resolved_ips,
     generate_ip_token,
     use_opencl_graval,
+    notify_deleted,
+    notify_verified,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_session
@@ -44,7 +50,7 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import joinedload, selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
-from watchtower import get_expected_command, is_kubernetes_env, get_dump
+from watchtower import get_expected_command, verify_expected_command, is_kubernetes_env, get_dump
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 
@@ -114,7 +120,6 @@ async def verify_device_info_challenge(devices, challenge, response, opencl: boo
 
 async def get_encryption_settings(
     node,
-    path,
     data,
     with_chutes: bool = True,
     cuda: bool = True,
@@ -138,34 +143,29 @@ async def get_encryption_settings(
         with_chutes = False
 
     # Encrypt the payload.
-    url = f"https://{slug}.{settings.base_domain}/{path}"
+    url = f"https://{slug}.{settings.base_domain}/encrypt"
     if not with_chutes:
         if cuda:
-            url = f"{settings.graval_url}/{path}"
+            url = f"{settings.graval_url}/encrypt"
         else:
-            url = f"{settings.opencl_graval_url}/{path}"
+            url = f"{settings.opencl_graval_url}/encrypt"
     headers = {}
     if with_chutes:
         headers["Authorization"] = settings.codecheck_key
     payload = {
         "device_info": node.graval_dict(),
-        "seed": seed if seed is not None else random.randint(0, 999999999999),
     }
+    if seed:
+        payload["seed"] = int(seed)
     if not cuda:
         payload["iterations"] = iterations or 1
-    if path == "encrypt":
-        payload.update({"payload": data if isinstance(data, str) else json.dumps(data).decode()})
-        if with_chutes:
-            payload.update(
-                {
-                    "key": secrets.token_bytes(16).hex(),
-                }
-            )
-    else:
-        if with_chutes:
-            payload.update({"data": data})
-        else:
-            payload.update({"payload": data})
+    payload.update({"payload": data if isinstance(data, str) else json.dumps(data).decode()})
+    if with_chutes:
+        payload.update(
+            {
+                "key": secrets.token_bytes(16).hex(),
+            }
+        )
 
     return url, payload, headers, with_chutes
 
@@ -185,14 +185,13 @@ async def graval_encrypt(
     """
     url, data, headers, chute = await get_encryption_settings(
         node,
-        "encrypt",
         payload,
         with_chutes=with_chutes,
         cuda=cuda,
         seed=seed,
         iterations=iterations,
     )
-    logger.info(f"Using {url=} for graval encryption")
+    logger.info(f"Using {url=} for graval encryption with {payload=}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
         async with session.post(url, json=data, headers=headers, timeout=300) as resp:
             logger.success(f"Generated ciphertext for {node.uuid} via {url=}")
@@ -211,32 +210,34 @@ async def graval_encrypt(
     backoff.constant,
     Exception,
     jitter=None,
-    interval=10,
+    interval=3,
     max_tries=7,
 )
-async def graval_decrypt(
-    node, payload, with_chutes=True, cuda=True, iterations: int = None, seed: int = None
+async def verify_proof(
+    node,
+    seed,
+    work_product,
+    index: int = 0,
 ):
     """
-    Decrypt data via the GraVal PoW mechanism.
+    Verify a miner's proof.
     """
-    url, data, headers, chute = await get_encryption_settings(
-        node,
-        "decrypt",
-        payload,
-        with_chutes=with_chutes,
-        cuda=cuda,
-        seed=seed,
-        iterations=iterations,
-    )
-    logger.info(f"Using {url=} for graval decryption")
+    url = f"{settings.opencl_graval_url}/check_proof"
+    payload = {
+        "device_info": node.graval_dict(),
+        "seed": int(seed),
+        "work_product": work_product,
+        "check_index": index,
+    }
+    logger.info(f"Checking proof validity from {node.uuid=} {node.miner_hotkey=} using {seed=}")
     async with aiohttp.ClientSession(raise_for_status=True) as session:
-        async with session.post(url, json=data, headers=headers) as resp:
-            logger.success(f"Decrypted ciphertext from node {node.uuid} via {url=}")
-            if chute:
-                text = (await resp.json())["plaintext"]
-                return decrypt_envdump_cipher(text, data["key"], "0.2.46")
-            return await resp.text()
+        async with session.post(url, json=payload, timeout=120) as resp:
+            verified = (await resp.json())["result"]
+            if verified:
+                logger.success(
+                    f"Successfully verified proof from {node.uuid=} [{node.name}] {node.miner_hotkey=} using {seed=}"
+                )
+            return (await resp.json())["result"]
 
 
 async def generate_cipher(node):
@@ -257,69 +258,109 @@ async def generate_cipher(node):
     return plaintext, cipher
 
 
-async def check_encryption_challenge(
-    node: Node, plaintext: str, ciphertext: str, uuids: list[str], timeout: int = None
-) -> bool:
+async def verify_povw_challenge(nodes: list[Node]) -> bool:
     """
-    Send a single device decryption challenge.
+    Generate a povw challenge for the miner and verify the proof.
     """
-    url = f"http://{node.verification_host}:{node.verification_port}/decrypt"
-    graval_config = SUPPORTED_GPUS[node.gpu_identifier]["graval"]
-    payload = {
-        "ciphertext": ciphertext,
-        "seed": node.seed,
+
+    # Generate the challenge.
+    graval_config = SUPPORTED_GPUS[nodes[0].gpu_identifier]["graval"]
+    cipher_data = await asyncio.gather(
+        *[
+            generate_cipher(
+                node,
+            )
+            for node in nodes
+        ]
+    )
+    ciphertexts = [c[1].split("|")[-1] for c in cipher_data]
+    cipher_map = {node.uuid: ciphertext for node, ciphertext in zip(nodes, ciphertexts)}
+    plaintext = {node.uuid: c[0] for node, c in zip(nodes, cipher_data)}
+    challenge = {
+        "seed": int(nodes[0].seed),
         "iterations": graval_config["iterations"],
-        "device_index": node.device_index,
+        "ciphertext": {gpu_uuid: ciphertext for gpu_uuid, ciphertext in cipher_map.items()},
     }
 
-    # Send the request and verify the response.
+    # Send the challenge over to the miner.
+    node = nodes[0]
+    url = f"http://{node.verification_host}:{node.verification_port}/prove"
+    logger.info(f"Sending PoVW challenge to {url=} for {node.miner_hotkey=}: {challenge=}")
     error_message = None
     started_at = time.time()
     try:
         async with miner_client.post(
             node.miner_hotkey,
             url,
-            payload=payload,
-            timeout=timeout or int(graval_config["estimate"] * 1.35),
+            payload=challenge,
+            timeout=int(graval_config["estimate"] * 1.2),
         ) as response:
             if response.status != 200:
                 error_message = (
-                    "Failed to perform decryption challenge: "
+                    f"Miner failed to generate a proof and/or decrypt from {url=} {node.miner_hotkey=}: "
                     f"{response.status=} {await response.text()}"
                 )
             else:
-                response_text = (await response.json())["plaintext"]
-                if response_text != plaintext:
+                # Verify the decrypted responses are what we'd expect.
+                data = await response.json()
+                if not all(
+                    [
+                        data["plaintext"].get(gpu_uuid) == plaintext[gpu_uuid]
+                        for gpu_uuid in plaintext
+                    ]
+                ):
                     error_message = (
-                        f"Miner response '{response_text}' does not match ciphertext: '{plaintext}'"
+                        f"Miner responded with incorrect plaintext {url=} {node.miner_hotkey=}: "
+                        f"expected={plaintext}, received={data['plaintext']}"
                     )
-                # XXX disabled for the time being.
-                # elif timeout is None:
-                #     delta = time.time() - started_at
-                #     if (
-                #         not graval_config["estimate"] * 0.70
-                #         < delta
-                #         < graval_config["estimate"] * 1.3
-                #     ):
-                #         error_message = (
-                #             f"GraVal decryption challenge completed in {int(delta)} seconds, "
-                #             f"but estimate is {graval_config['estimate']} seconds"
-                #         )
+
+                # Check if the time taken to generate the proof matches what we'd expect.
+                delta = time.time() - started_at
+                if not graval_config["estimate"] * 0.55 < delta < graval_config["estimate"] * 1.2:
+                    error_message = (
+                        f"GraVal decryption challenge completed in {int(delta)} seconds, "
+                        f"but estimate is {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"
+                    )
+                else:
+                    logger.success(
+                        f"Miner successfully decrypted via PoVW in {delta} seconds, "
+                        f"expected {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"
+                    )
+
+                # Verify the proofs.
+                verified = await asyncio.gather(
+                    *[
+                        verify_proof(
+                            nodes[idx],
+                            nodes[0].seed,
+                            data["proof"][nodes[idx].uuid]["work_product"],
+                            index=0,
+                        )
+                        for idx in range(len(nodes))
+                    ]
+                )
+                if not all(verified):
+                    error_message = "Miner proof verification failed!"
+                else:
+                    logger.success(
+                        f"All miner proofs verified successfully: {url=} {node.miner_hotkey=}"
+                    )
+
     except Exception as exc:
         error_message = (
-            "Unhandled exception performing miner decryption challenge after "
+            "Unhandled exception gathering miner PoVW challenge after "
             f"{time.time() - started_at} seconds: {exc=}\n{traceback.format_exc()}"
         )
 
-    # Store the reason for the verification error, upon failure.
+    # On failure, store the reason and reset the seed.
     if error_message:
         logger.error(error_message)
+        new_seed = random.randint(1, 2**63 - 1)
         async with get_session() as session:
-            # On failure, mark all of the GPUs as failed.
             await session.execute(
                 update(Node)
-                .where(Node.uuid.in_(uuids))
-                .values({"verification_error": error_message})
+                .where(Node.uuid.in_([node.uuid for node in nodes]))
+                .values({"seed": new_seed, "verification_error": error_message})
             )
         await session.commit()
         return False
@@ -445,45 +486,20 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
 
-    # Check if the advertised IP matches outbound IP, disabled temporarily.
+    # XXX Check if the advertised IP matches outbound IP, disabled temporarily.
     # if not await verify_outbound_ip(nodes):
     #     return False, "Outbound IP address does not match advertised IP address"
 
-    # Fast pass, do simple device info challenges.
+    # Check the basic device info challenges first.
     for _ in range(settings.device_info_challenge_count):
         if not await check_device_info_challenge(nodes, opencl=True):
             error_message = "one or more device info challenges failed"
             logger.warning(error_message)
             return False, error_message
 
-    # Generate ciphertexts for each GPU for PoVW
-    challenges = await asyncio.gather(*[generate_cipher(node) for node in nodes])
-
-    # See if they decrypt properly - send one challenge first, which triggers the graval
-    # init for all GPUs, then if/when that passes we can call the decryption endpoint
-    # for all other GPUs concurrently and it will be virtually instant.
-    if not await check_encryption_challenge(
-        nodes[0], challenges[0][0], challenges[0][1], uuids=uuids
-    ):
-        error_message = "one or more decryption challenges failed"
-        logger.warning(error_message)
-        return False, error_message
-    if len(nodes) > 1:
-        successes = await asyncio.gather(
-            *[
-                check_encryption_challenge(
-                    nodes[idx],
-                    challenges[idx][0],
-                    challenges[idx][1],
-                    uuids=uuids,
-                )
-                for idx in range(1, len(nodes))
-            ]
-        )
-        if not all(successes):
-            error_message = "one or more decryption challenges failed"
-            logger.warning(error_message)
-            return False, error_message
+    # PoVW challenge.
+    if not await verify_povw_challenge(nodes):
+        return False, "failed povw challenge(s)"
 
     # Validation success.
     logger.success(
@@ -537,12 +553,15 @@ async def _verify_instance_graval(instance: Instance) -> bool:
     target_index = random.choice(list(range(len(instance.nodes))))
     target_node = instance.nodes[target_index]
     expected = str(uuid.uuid4())
+    seed = None
+    if semcomp(instance.chutes_version or "0.0.0", "0.3.0") < 0:
+        seed = target_node.seed
     ciphertext = await graval_encrypt(
         target_node,
         expected,
         with_chutes=not instance.chute.slug.startswith("chutes-graval"),
         cuda=not use_opencl_graval(instance.chute.chutes_version),
-        seed=target_node.seed,
+        seed=seed,
     )
 
     # Format the payload to accomodate the old mechanism.
@@ -555,7 +574,7 @@ async def _verify_instance_graval(instance: Instance) -> bool:
             "iv": iv.hex(),
             "length": len(cipher),
             "device_id": target_index,
-            "seed": target_node.seed,
+            "seed": int(target_node.seed),
         },
     }
 
@@ -607,7 +626,7 @@ async def exchange_symmetric_key(instance: Instance) -> bool:
             "iv": iv.hex(),
             "length": len(cipher),
             "device_id": target_index,
-            "seed": target_node.seed,
+            "seed": int(target_node.seed),
         },
     }
 
@@ -689,7 +708,7 @@ async def check_envdump_command(instance):
     Check the running command via chutes envdump, for supported chutes versions.
     """
     chute = instance.chute
-    if semver.compare(chute.chutes_version or "0.0.0", "0.2.53") < 0:
+    if semcomp(chute.chutes_version or "0.0.0", "0.2.53") < 0:
         logger.warning(
             f"Unable to check envdump command line for {chute.chutes_version=} {chute.chute_id=}"
         )
@@ -703,19 +722,14 @@ async def check_envdump_command(instance):
         return False
 
     # Check the running command.
-    process = dump["all_processes"][0]
-    assert process["pid"] == 1
-    assert process["username"] == "chutes"
-    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
-    if command_line != get_expected_command(instance, chute):
-        logger.error(
-            f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} running invalid process: {command_line}"
+    try:
+        await verify_expected_command(
+            dump, chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed, tls=False
         )
+    except AssertionError as exc:
+        logger.error(f"{log_prefix} running invalid process: {exc=}")
         return False
 
-    logger.success(
-        f"ENVDUMP: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} code validation success: {command_line=}"
-    )
     return True
 
 
@@ -754,7 +768,10 @@ async def check_live_code(instance: Instance) -> bool:
             .strip()
         )
         command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
-        expected = get_expected_command(instance, instance.chute)
+        command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
+        expected = get_expected_command(
+            instance.chute, miner_hotkey=instance.miner_hotkey, seed=instance.nodes[0].seed
+        )
         if command_line != expected:
             logger.error(
                 f"Failed PID 1 lookup evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n\t{command_line}\n\t{expected}"
@@ -915,6 +932,11 @@ async def verify_instance(instance_id: str):
             await settings.redis_client.delete(f"verify:lock:{instance_id}")
             return
 
+        # Legacy encryption/key exchange tests.
+        if semcomp(instance.chutes_version or "0.0.0", "0.3.0") >= 0:
+            logger.warning("Verification flow unused for chutes version >= 0.3.0")
+            return
+
         if not use_encryption_v2(instance.chutes_version):
             # Legacy/encryption V1 tests.
             try:
@@ -984,48 +1006,17 @@ async def verify_instance(instance_id: str):
         instance.verified = True
         instance.last_verified_at = func.now()
         instance.verification_error = None
+
         await session.commit()
         await session.refresh(instance)
 
-        # Notify the miner.
-        try:
-            event_data = {
-                "reason": "instance_verified",
-                "data": {
-                    "instance_id": instance_id,
-                    "miner_hotkey": instance.miner_hotkey,
-                },
-                "filter_recipients": [instance.miner_hotkey],
-            }
-            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
-        except Exception as exc:
-            # Allow exceptions here since the miner can also check.
-            logger.warning(
-                f"Error notifying miner that instance/deployment is verified: {exc}\n{traceback.format_exc()}"
-            )
+        await notify_verified(instance)
 
-        # Broadcast the event.
-        try:
-            await settings.redis_client.publish(
-                "events",
-                json.dumps(
-                    {
-                        "reason": "instance_hot",
-                        "message": f"Miner {instance.miner_hotkey} instance {instance.instance_id} chute {instance.chute_id} has been verified, now 'hot'!",
-                        "data": {
-                            "chute_id": instance.chute_id,
-                            "miner_hotkey": instance.miner_hotkey,
-                        },
-                    }
-                ).decode(),
-            )
-        except Exception as exc:
-            logger.warning(f"Error broadcasting instance event: {exc}")
         await settings.redis_client.delete(f"verify:lock:{instance_id}")
 
 
 @broker.task
-async def handle_rolling_update(chute_id: str, version: str):
+async def handle_rolling_update(chute_id: str, version: str, reason: str = "code change"):
     """
     Handle a rolling update event.
     """
@@ -1102,6 +1093,7 @@ async def handle_rolling_update(chute_id: str, version: str):
                     "miner_hotkey": instance.miner_hotkey,
                     "old_version": rolling_update.old_version,
                     "new_version": rolling_update.new_version,
+                    "reason": reason,
                 },
                 "filter_recipients": [instance.miner_hotkey],
             }
@@ -1143,22 +1135,79 @@ async def handle_rolling_update(chute_id: str, version: str):
         for instance in chute.instances:
             if instance.version != version:
                 await session.delete(instance)
-                event_data = {
-                    "reason": "instance_deleted",
-                    "message": f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
-                    "data": {
-                        "chute_id": instance.chute_id,
-                        "instance_id": instance.instance_id,
-                        "miner_hotkey": instance.miner_hotkey,
-                    },
-                    "filter_recipients": [instance.miner_hotkey],
-                }
-                asyncio.create_task(
-                    settings.redis_client.publish(
-                        "miner_broadcast", json.dumps(event_data).decode()
-                    )
+                await notify_deleted(
+                    instance,
+                    message=f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
                 )
                 logger.warning(
                     f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"
                 )
         await session.delete(rolling_update)
+
+
+@broker.task
+async def generate_fs_hash(
+    image_id: str, patch_version: str, seed: int, sparse: bool, exclude_path: str
+):
+    """
+    Use the new cfsv mechanism to generate the expected filesystem hash for a given image/seed pair.
+    """
+    if not os.getenv("CFSV_OP"):
+        return "__disabled__"
+
+    chutes_location = pkg_resources.get_distribution("chutes").location
+    cfsv_path = os.path.join(chutes_location, "chutes", "cfsv")
+    mode = "sparse" if sparse else "full"
+    seed_str = str(seed)
+
+    # Make sure our FS datamap is cached.
+    cache_path = f"/tmp/{image_id}.{patch_version}.data"
+    if not os.path.exists(cache_path):
+        logger.info(f"Downloading data file for image_id={image_id}, patch_version={patch_version}")
+        s3_key = f"image_hash_blobs/{image_id}/{patch_version}.data"
+        try:
+            temp_fd, temp_path = tempfile.mkstemp(dir="/tmp", prefix=f"{image_id}.{patch_version}.")
+            os.close(temp_fd)
+            try:
+                async with settings.s3_client() as s3:
+                    await s3.download_file(settings.storage_bucket, s3_key, temp_path)
+                os.rename(temp_path, cache_path)
+                logger.info(
+                    f"Successfully cached data file to {cache_path} for {image_id=} {patch_version=}"
+                )
+            except Exception:
+                if os.path.exists(temp_path):
+                    os.unlink(temp_path)
+                raise
+        except Exception as e:
+            logger.error(f"Failed to download data file from S3: {e}")
+            raise Exception(f"Failed to download image data from S3: {e}")
+    else:
+        logger.info(f"Using cached data file at {cache_path}")
+
+    # Now generate the hash.
+    cmd = [cfsv_path, "validate", seed_str, mode, cache_path, exclude_path]
+    logger.info(
+        f"Generating filesystem hash for {image_id=} {patch_version=} using seed={seed_str} and mode={mode}"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        logger.error(f"cfsv validate failed: {stderr.decode()}")
+        raise subprocess.CalledProcessError(proc.returncode, cmd, stderr.decode())
+
+    # Extract the hash from the output.
+    fsv_hash = None
+    for line in stdout.decode().strip().split("\n"):
+        if line.startswith("RESULT:"):
+            fsv_hash = line.split("RESULT:")[1].strip()
+            logger.info(f"Filesystem verification hash: {fsv_hash}")
+            break
+    if not fsv_hash:
+        logger.warning(
+            "Failed to extract filesystem verification hash from cfsv output: {stdout.decode()}"
+        )
+        raise Exception("No RESULT line found in cfsv output: {stdout.decode()}")
+    return fsv_hash

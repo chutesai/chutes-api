@@ -651,6 +651,7 @@ async def admin_create_user(
             detail="Too may registration requests from this IP.",
         )
 
+    # Only admins can create users.
     if not current_user.has_role(Permissioning.create_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,

@@ -158,6 +158,74 @@ GROUP BY miner_hotkey
 ORDER BY avg_gpu_weighted_chutes DESC;
 """
 
+# Jobs.
+JOBS_QUERY = """
+WITH
+
+-- Count of miner-terminated jobs in the past 7 days
+miner_terminated_counts AS (
+    SELECT
+        miner_hotkey,
+        COUNT(*) as terminated_job_count
+    FROM jobs
+    WHERE (started_at >= now() - interval '{interval}' OR finished_at >= now() - interval '{interval}')
+      AND miner_terminated = true
+      AND miner_hotkey IS NOT NULL
+    GROUP BY miner_hotkey
+),
+
+-- Compute units/counts for currently in-progress jobs.
+running_jobs_cus AS (
+    SELECT
+        miner_hotkey,
+        SUM(extract(epoch from (now() - started_at)) * compute_multiplier) as running_cus,
+        COUNT(*) as running_job_count
+    FROM jobs
+    WHERE started_at IS NOT NULL
+      AND finished_at IS NULL
+      AND miner_hotkey IS NOT NULL
+      AND EXISTS (SELECT 1 FROM instances WHERE instance_id = jobs.instance_id)
+    GROUP BY miner_hotkey
+),
+
+-- Compute units/counts for jobs completed within the interval.
+completed_jobs_cus AS (
+    SELECT
+        miner_hotkey,
+        SUM(extract(epoch from (finished_at - started_at)) * compute_multiplier) as completed_cus,
+        COUNT(*) as completed_job_count
+    FROM jobs
+    WHERE finished_at >= now() - interval '{interval}'
+      AND miner_terminated = false
+      AND started_at IS NOT NULL
+      AND miner_hotkey IS NOT NULL
+    GROUP BY miner_hotkey
+),
+
+-- Combine the results aggregated by hotkeys.
+all_miners AS (
+    SELECT miner_hotkey FROM miner_terminated_counts
+    UNION
+    SELECT miner_hotkey FROM running_jobs_cus
+    UNION
+    SELECT miner_hotkey FROM completed_jobs_cus
+)
+SELECT
+    am.miner_hotkey,
+    COALESCE(mt.terminated_job_count, 0) as terminated_jobs,
+    COALESCE(rj.running_job_count, 0) as running_jobs,
+    COALESCE(cj.completed_job_count, 0) as completed_jobs,
+    COALESCE(rj.running_job_count, 0) + COALESCE(cj.completed_job_count, 0) as total_jobs,
+    COALESCE(rj.running_cus, 0) as current_running_cus,
+    COALESCE(cj.completed_cus, 0) as completed_cus,
+    COALESCE(rj.running_cus, 0) + COALESCE(cj.completed_cus, 0) as total_cus
+FROM all_miners am
+LEFT JOIN miner_terminated_counts mt ON am.miner_hotkey = mt.miner_hotkey
+LEFT JOIN running_jobs_cus rj ON am.miner_hotkey = rj.miner_hotkey
+LEFT JOIN completed_jobs_cus cj ON am.miner_hotkey = cj.miner_hotkey
+ORDER BY terminated_jobs DESC, total_cus DESC;
+"""
+
 # Unique chute history.
 UNIQUE_CHUTE_HISTORY_QUERY = (
     UNIQUE_CHUTE_AVERAGE_QUERY.replace(
