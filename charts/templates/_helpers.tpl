@@ -111,6 +111,11 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: CFSV_OP
+   valueFrom:
+     secretKeyRef:
+       key: key
+       name: cfsvop
 - name: LAUNCH_CONFIG_KEY
   valueFrom:
     secretKeyRef:
