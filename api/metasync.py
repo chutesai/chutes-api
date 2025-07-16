@@ -76,6 +76,7 @@ async def get_scoring_data():
                 continue
             raw_compute_values[miner_hotkey]["bounty_count"] += total_jobs
             raw_compute_values[miner_hotkey]["compute_units"] += total_compute_units
+            # XXX need to consider how to set invocation count, if at all.
             raw_compute_values[miner_hotkey].update(
                 {
                     "terminated_jobs": terminated_jobs,
