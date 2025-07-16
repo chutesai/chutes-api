@@ -59,6 +59,29 @@ SELECT *
  ORDER BY timestamp ASC
 """
 )
+JOB_QUERY = text(
+    """
+SELECT
+    job_id,
+    chute_id,
+    version,
+    chutes_version,
+    method,
+    miner_uid,
+    miner_hotkey,
+    miner_coldkey,
+    instance_id,
+    created_at,
+    updated_at,
+    started_at,
+    finished_at,
+    status,
+    compute_multiplier,
+    miner_terminated
+FROM jobs
+WHERE (started_at >= :start_time AND started_at < :end_time) OR (finished_at >= :start_time AND finished_at < :end_time)
+"""
+)
 
 
 async def get_instance_audit(start_time, end_time) -> list:
@@ -117,7 +140,11 @@ async def generate_invocation_report_data(start_time, end_time) -> dict:
     tracking the blob storage paths and checksums.
     """
     async with get_session() as session:
-        for type_, query in (("invocations", INVOCATION_QUERY), ("reports", REPORT_QUERY)):
+        for type_, query in (
+            ("invocations", INVOCATION_QUERY),
+            ("reports", REPORT_QUERY),
+            ("jobs", JOB_QUERY),
+        ):
             result = await session.stream(
                 query,
                 {
@@ -140,6 +167,7 @@ async def generate_invocation_report_data(start_time, end_time) -> dict:
     paths = {
         "invocations": f"{base_path}.csv",
         "reports": f"{base_path}-reports.csv",
+        "jobs": f"{base_path}-jobs.csv",
     }
     async with settings.s3_client() as s3:
         for type_, destination in paths.items():

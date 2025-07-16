@@ -4,6 +4,7 @@ from metasync.shared import create_metagraph_node_class
 from metasync.constants import (
     FEATURE_WEIGHTS,
     SCORING_INTERVAL,
+    JOBS_QUERY,
     NORMALIZED_COMPUTE_QUERY,
     UNIQUE_CHUTE_AVERAGE_QUERY,
     UNIQUE_CHUTE_HISTORY_QUERY,
@@ -31,6 +32,8 @@ async def get_miner_by_hotkey(hotkey, db):
 async def get_scoring_data():
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
     unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
+    jobs_query = text(JOBS_QUERY.format(interval=SCORING_INTERVAL))
+
     raw_compute_values = {}
     highest_unique = 0
     async with get_session() as session:
@@ -40,6 +43,7 @@ async def get_scoring_data():
         hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
         compute_result = await session.execute(compute_query)
         unique_result = await session.execute(unique_query)
+        job_result = await session.execute(jobs_query)
         for hotkey, invocation_count, bounty_count, compute_units in compute_result:
             if not hotkey:
                 continue
@@ -57,6 +61,33 @@ async def get_scoring_data():
             raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
             if average_active_chutes > highest_unique:
                 highest_unique = average_active_chutes
+
+        for (
+            miner_hotkey,
+            terminated_jobs,
+            running_jobs,
+            completed_jobs,
+            total_jobs,
+            current_compute_units,
+            completed_compute_units,
+            total_compute_units,
+        ) in job_result:
+            if miner_hotkey not in raw_compute_values:
+                continue
+            raw_compute_values[miner_hotkey]["bounty_count"] += total_jobs
+            raw_compute_values[miner_hotkey]["compute_units"] += total_compute_units
+            raw_compute_values[miner_hotkey].update(
+                {
+                    "terminated_jobs": terminated_jobs,
+                    "running_jobs": running_jobs,
+                    "completed_jobs": completed_jobs,
+                    "total_jobs": total_jobs,
+                    "job_current_compute_units": current_compute_units,
+                    "job_completed_compute_units": completed_compute_units,
+                    "job_total_compute_units": total_compute_units,
+                }
+            )
+
     totals = {
         key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
     }
