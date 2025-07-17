@@ -521,7 +521,7 @@ async def check_live_code(instance, chute, encrypted_slurp) -> bool:
 
     # Compare to expected command.
     command_line = data.decode().replace("\x00", " ").strip()
-    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", command_line)
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", command_line.strip())
     command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
     seed = (
         None if semcomp(chute.chutes_version or "0.0.0", "0.3.0") >= 0 else instance.nodes[0].seed
@@ -690,7 +690,7 @@ async def verify_expected_command(
     process = dump["all_processes"][0]
     assert process["pid"] == 1, "Failed to find chutes comman as PID 1"
     assert process["username"] == "chutes", "Not running as chutes user"
-    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)", "python", process["cmdline"]).strip()
+    command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["cmdline"]).strip()
     command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
     expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed, tls=tls)
     assert command_line == expected, f"Unexpected command: {command_line=} vs {expected=}"
@@ -816,8 +816,9 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
     )
     found_sglang = False
     for process in processes:
+        clean_exe = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["exe"].strip())
         if (
-            process["exe"] == "/opt/python/bin/python3.12"
+            (process["exe"] == "/opt/python/bin/python3.12" or clean_exe == "python")
             and process["username"] == "chutes"
             and process["cmdline"].startswith(
                 f"python -m sglang.launch_server --host 127.0.0.1 --port 10101 --model-path {chute.name}"

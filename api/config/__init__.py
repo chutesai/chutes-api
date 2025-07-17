@@ -6,7 +6,7 @@ import os
 import hashlib
 import aioboto3
 import aiomcache
-import orjson as json
+import json
 from functools import cached_property
 import redis.asyncio as redis
 from boto3.session import Config
@@ -172,7 +172,7 @@ class Settings(BaseSettings):
     reroll_multiplier: float = float(os.getenv("REROLL_MULTIPLIER", "0.1"))
 
     # Chutes pinned version.
-    chutes_version: str = os.getenv("CHUTES_VERSION", "0.2.53")
+    chutes_version: str = os.getenv("CHUTES_VERSION", "0.3.0")
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "1.0"))
