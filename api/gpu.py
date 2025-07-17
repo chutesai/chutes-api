@@ -423,7 +423,7 @@ SUPPORTED_GPUS = {
         "hourly_rate": 4.0,
         "graval": {
             "iterations": 2,
-            "estimate": 55,
+            "estimate": 75,
         },
     },
 }

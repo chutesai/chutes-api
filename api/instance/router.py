@@ -47,6 +47,7 @@ from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metasync import get_miner_by_hotkey
 from api.util import (
+    semcomp,
     is_valid_host,
     generate_ip_token,
     aes_decrypt,
@@ -394,6 +395,37 @@ async def claim_launch_config(
     else:
         logger.warning("Unable to perform extended validation, skipping...")
 
+    # Valid filesystem/integrity?
+    if semcomp(chute.chutes_version, "0.3.1") >= 0:
+        image_id = chute.image_id
+        patch_version = chute.image.patch_version
+        if "CFSV_OS" in os.environ:
+            task = await generate_fs_hash.kiq(
+                image_id,
+                patch_version,
+                launch_config.config_id,
+                sparse=False,
+                exclude_path=f"/app/{chute.filename}",
+            )
+            result = await task.wait_result()
+            expected_hash = result.return_value
+            if expected_hash != args.fsv:
+                logger.error(
+                    f"Filesystem challenge failed for {launch_config.config_id=} {launch_config.miner_hotkey=}, "
+                    f"{expected_hash=} for {chute.image_id=} {patch_version=} but received {args.fsv}"
+                )
+                launch_config.failed_at = func.now()
+                launch_config.verification_error = (
+                    "File system verification failure, mismatched hash"
+                )
+                await db.commit()
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=launch_config.verification_error,
+                )
+        else:
+            logger.warning("Extended filesystem verification disabled, skipping...")
+
     # Create the instance now that we've verified the envdump/k8s env.
     instance = Instance(
         instance_id=generate_uuid(),
@@ -638,34 +670,37 @@ async def verify_launch_config_instance(
         )
 
     # Valid filesystem/integrity?
-    image_id = instance.chute.image_id
-    patch_version = instance.chute.image.patch_version
-    if "CFSV_OS" in os.environ:
-        task = await generate_fs_hash.kiq(
-            image_id,
-            patch_version,
-            launch_config.seed,
-            sparse=False,
-            exclude_path=f"/app/{instance.chute.filename}",
-        )
-        result = await task.wait_result()
-        expected_hash = result.return_value
-        if expected_hash != response_body["fsv"]:
-            logger.error(
-                f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
-                f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
+    if semcomp(instance.chute.chutes_version, "0.3.1") < 0:
+        image_id = instance.chute.image_id
+        patch_version = instance.chute.image.patch_version
+        if "CFSV_OS" in os.environ:
+            task = await generate_fs_hash.kiq(
+                image_id,
+                patch_version,
+                launch_config.seed,
+                sparse=False,
+                exclude_path=f"/app/{instance.chute.filename}",
             )
-            launch_config.failed_at = func.now()
-            launch_config.verification_error = "File system verification failure, mismatched hash"
-            await db.delete(instance)
-            await db.commit()
-            asyncio.create_task(notify_deleted(instance))
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=launch_config.verification_error,
-            )
-    else:
-        logger.warning("Extended filesystem verification disabled, skipping...")
+            result = await task.wait_result()
+            expected_hash = result.return_value
+            if expected_hash != response_body["fsv"]:
+                logger.error(
+                    f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
+                    f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
+                )
+                launch_config.failed_at = func.now()
+                launch_config.verification_error = (
+                    "File system verification failure, mismatched hash"
+                )
+                await db.delete(instance)
+                await db.commit()
+                asyncio.create_task(notify_deleted(instance))
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=launch_config.verification_error,
+                )
+        else:
+            logger.warning("Extended filesystem verification disabled, skipping...")
 
     # Everything checks out.
     launch_config.verified_at = func.now()

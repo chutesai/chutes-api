@@ -18,6 +18,7 @@ from sqlalchemy import (
     Numeric,
     UniqueConstraint,
 )
+from typing import Optional
 from api.database import Base, generate_uuid
 
 # Association table.
@@ -53,6 +54,7 @@ class LaunchConfigArgs(BaseModel):
     port_mappings: list[PortMap]
     env: str
     code: str
+    fsv: Optional[str] = None
 
 
 class Instance(Base):
