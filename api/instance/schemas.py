@@ -4,6 +4,7 @@ ORM definitions for instances (deployments of chutes and/or inventory announceme
 
 import secrets
 from pydantic import BaseModel, Field, constr
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import (
@@ -85,6 +86,7 @@ class Instance(Base):
         unique=True,
     )
     cacert = Column(String, nullable=True)
+    port_mappings = Column(JSONB, nullable=True)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")

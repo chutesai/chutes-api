@@ -11,6 +11,17 @@ BEGIN
         ALTER TABLE chutes ADD COLUMN jobs JSONB;
     END IF;
 END $$;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'instances'
+        AND column_name = 'port_mappings'
+    ) THEN
+        ALTER TABLE instances ADD COLUMN port_mappings JSONB;
+    END IF;
+END $$;
 
 ALTER TABLE chute_history ADD COLUMN IF NOT EXISTS jobs JSONB;
 ALTER TABLE instances ADD COLUMN IF NOT EXISTS config_id VARCHAR;

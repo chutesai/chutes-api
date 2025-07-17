@@ -442,6 +442,7 @@ async def claim_launch_config(
         chutes_version=chute.chutes_version,
         symmetric_key=secrets.token_bytes(16).hex(),
         config_id=launch_config.config_id,
+        port_mappings=[item.model_dump() for item in args.port_mappings],
     )
     db.add(instance)
 
