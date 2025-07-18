@@ -516,7 +516,7 @@ async def notify_activated(instance):
         }
         await settings.redis_client.publish("events", json.dumps(event_data).decode())
         if instance.config_id:
-            event_data["filter_recipient"] = [instance.miner_hotkey]
+            event_data["filter_recipients"] = [instance.miner_hotkey]
             await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
     except Exception as exc:
         logger.warning(f"Error broadcasting instance event: {exc}")
