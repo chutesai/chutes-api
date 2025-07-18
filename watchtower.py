@@ -409,7 +409,7 @@ async def check_llm_weights(chute, instances):
 
     # XXX disabled for now, chute name mismatch (intentional)
     if chute_id == "561e4875-254d-588f-a36f-57c9cdef8961":
-        return
+        return [], []
 
     # Revision will need to be a requirement in the future, and at that point
     # it can be an attribute on the chute object rather than this janky regex.
@@ -430,7 +430,7 @@ async def check_llm_weights(chute, instances):
     soft_failed = []
     instances = await load_chute_instances(chute_id)
     if not instances:
-        return
+        return [], []
 
     # First we'll check the primary config files, then we'll test the weights from the map.
     target_paths = [

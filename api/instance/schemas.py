@@ -126,6 +126,6 @@ class LaunchConfig(Base):
     verification_error = Column(String, nullable=True)
 
     instance = relationship("Instance", back_populates="config", uselist=False, lazy="joined")
-    job = relationship("Job", back_populates="launch_config", lazy="joined")
+    job = relationship("Job", back_populates="launch_config")
 
     __table_args__ = (UniqueConstraint("job_id", name="uq_job_launch_config"),)

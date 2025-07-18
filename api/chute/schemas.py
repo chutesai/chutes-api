@@ -166,7 +166,7 @@ class ChuteArgs(BaseModel):
     node_selector: NodeSelector
     cords: Optional[List[Cord]] = []
     jobs: Optional[List[Job]] = []
-    concurrency: int = Field(gt=1, le=256)
+    concurrency: Optional[int] = Field(None, gte=0, le=256)
 
 
 class InvocationArgs(BaseModel):
@@ -217,8 +217,21 @@ class Chute(Base):
     shares = relationship(
         "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
-    llm_detail = relationship("LLMDetail", back_populates="chute", lazy="select", uselist=False)
-    running_jobs = relationship("Job", back_populates="chute", lazy="select")
+    llm_detail = relationship(
+        "LLMDetail",
+        back_populates="chute",
+        lazy="select",
+        uselist=False,
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    running_jobs = relationship(
+        "Job",
+        primaryjoin="Chute.chute_id == foreign(Job.chute_id)",
+        back_populates="chute",
+        lazy="select",
+        viewonly=True,
+    )
 
     @validates("name")
     def validate_name(self, _, name):

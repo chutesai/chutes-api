@@ -22,8 +22,8 @@ class Job(Base):
 
     # Base metadata.
     job_id = Column(String, primary_key=True, default=generate_uuid)
-    user_id = Column(String, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=False)
-    chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="SET NULL"), nullable=False)
+    user_id = Column(String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    chute_id = Column(String, nullable=False)
     version = Column(String, nullable=False)
     chutes_version = Column(String, nullable=True)
     method = Column(String, nullable=False)
@@ -65,7 +65,13 @@ class Job(Base):
     compute_multiplier = Column(Double, nullable=False)
 
     # Relationships.
-    chute = relationship("Chute", back_populates="running_jobs", lazy="joined")
+    chute = relationship(
+        "Chute",
+        primaryjoin="foreign(Job.chute_id) == Chute.chute_id",
+        back_populates="running_jobs",
+        lazy="joined",
+        viewonly=True,
+    )
     user = relationship("User", back_populates="jobs", lazy="joined")
     instance = relationship("Instance", back_populates="job", lazy="joined", uselist=False)
     launch_config = relationship("LaunchConfig", back_populates="job", uselist=False)

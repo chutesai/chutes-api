@@ -86,7 +86,7 @@ class Node(Base):
         lazy="joined",
         uselist=False,
     )
-    miner = relationship("MetagraphNode", back_populates="nodes", lazy="joined")
+    miner = relationship("MetagraphNode", back_populates="nodes")
     challenges = relationship("Challenge", back_populates="node", cascade="all, delete-orphan")
     challenge_results = relationship(
         "ChallengeResult", back_populates="node", cascade="all, delete-orphan"

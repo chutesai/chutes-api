@@ -415,25 +415,6 @@ async def _invoke(
             if "temperature" not in request_body:
                 request_body["temperature"] = 0.05
 
-        # XXX Bug with Kimi-K2-Instruct logit bias dimensionality, likely from function calling,
-        # structured outputs, etc.
-        if chute.name == "moonshotai/Kimi-K2-Instruct":
-            problematic = set(request_body) & set(
-                [
-                    "logit_bias",
-                    "response_format",
-                    "tools",
-                    "tool_choice",
-                    "regex",
-                    "grammar",
-                ]
-            )
-            if problematic:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"{chute.name} on chutes does not currently support: {list(problematic)}",
-                )
-
         # Make sure the model name is correct.
         if (requested_model := request_body.get("model")) != chute.name:
             logger.warning(
@@ -806,8 +787,27 @@ async def hostname_invocation(
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
         payload = await request.json()
         # MistralAI gated this model for some reason.......
-        if payload.get("model") == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
+        model = payload.get("model")
+        if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
+
+        # vLLM on b200 is too slow to support all traffic, but SGLang variant
+        # doesn't support structured outputs/tool use, etc.
+        # We can route to the different variants based on the request.
+        elif model == "moonshotai/Kimi-K2-Instruct":
+            problematic = set(payload) & set(
+                [
+                    "logit_bias",
+                    "response_format",
+                    "tools",
+                    "tool_choice",
+                    "regex",
+                    "grammar",
+                ]
+            )
+            if problematic:
+                payload["model"] = "moonshotai/Kimi-K2-Instruct-tools"
+
         model = payload.get("model")
         chute = None
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"
