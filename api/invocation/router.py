@@ -422,6 +422,23 @@ async def _invoke(
             )
             request_body["model"] = chute.name
 
+        if chute.name == "moonshotai/Kimi-K2-Instruct":
+            problematic = set(request_body) & set(
+                [
+                    "logit_bias",
+                    "response_format",
+                    "tools",
+                    "tool_choice",
+                    "regex",
+                    "grammar",
+                ]
+            )
+            if problematic:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{chute.name} does not current support {problematic}",
+                )
+
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
 
