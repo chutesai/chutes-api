@@ -132,7 +132,11 @@ async def _check_scalable(db, chute, hotkey):
         count_result = (
             (await db.execute(query, {"chute_id": chute_id, "hotkey": hotkey})).mappings().first()
         )
-        if count_result["total_count"] >= UNDERUTILIZED_CAP or count_result.hotkey_count:
+        if (
+            count_result["total_count"] >= UNDERUTILIZED_CAP
+            or count_result.hotkey_count
+            and chute_id != "35cfa8b4-13a2-5382-b19a-e849f73c5d6a"
+        ):
             logger.warning(
                 f"SCALELOCK: chute {chute_id=} {chute.name} is currently capped: {count_result}"
             )
@@ -765,6 +769,11 @@ async def create_instance(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Chute {chute_id} not found",
+        )
+    if semcomp(chute.chutes_version, "0.3.0") >= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your miner is outdated, you must upgrade to support launch configs.",
         )
 
     # Host port already used?
