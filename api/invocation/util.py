@@ -159,7 +159,7 @@ GROUP BY i.chute_id"""
         async for row in result:
             item = dict(row._mapping)
             item["per_second_price_usd"] = (
-                float(item.pop("compute_multiplier")) * COMPUTE_UNIT_PRICE_BASIS / 3600
+                float(item["compute_multiplier"]) * COMPUTE_UNIT_PRICE_BASIS / 3600
             )
             item["total_compute_time"] = (
                 float(item["total_compute_time"]) if item.get("total_compute_time") else 0
