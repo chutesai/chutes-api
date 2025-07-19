@@ -9,7 +9,6 @@ import traceback
 import random
 import secrets
 import asyncio
-from datetime import timedelta
 from loguru import logger
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
@@ -617,8 +616,8 @@ async def verify_launch_config_instance(
             detail="Instance disappeared (did you update gepetto reconcile?)",
         )
     estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
-    max_duration = estimate * 1.3
-    if (delta := now - start) >= timedelta(seconds=max_duration):
+    max_duration = estimate * 2.15
+    if (delta := (now - start).total_seconds()) >= max_duration:
         logger.error(
             f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} took {delta} seconds, exceeding maximum estimate of {max_duration}"
         )
