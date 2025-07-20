@@ -8,7 +8,6 @@ import gzip
 import orjson as json
 import csv
 import uuid
-import random
 import decimal
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
@@ -823,7 +822,7 @@ async def hostname_invocation(
                     "grammar",
                 ]
             )
-            if problematic or random.random() <= 0.25:
+            if problematic:
                 payload["model"] = "moonshotai/Kimi-K2-Instruct-tools"
 
         model = payload.get("model")

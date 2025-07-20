@@ -1,5 +1,5 @@
 """
-Routes for instances.
+Routes for instances with updated job assignment logic.
 """
 
 import os
@@ -12,7 +12,7 @@ import asyncio
 from loguru import logger
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
-from sqlalchemy import select, text, func
+from sqlalchemy import select, text, func, update
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -93,20 +93,8 @@ async def _check_blacklisted(db, hotkey):
 
 async def _check_scalable(db, chute, hotkey):
     chute_id = chute.chute_id
-    if chute.rolling_update:
-        limit = chute.rolling_update.permitted.get(hotkey, 0)
-        if not limit and chute.rolling_update.permitted:
-            logger.warning(
-                f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
-            )
-        elif limit:
-            chute.rolling_update.permitted[hotkey] -= 1
 
-    # Limit underutilized chutes.
+    # Check utilization.
     query = text("""
         SELECT * FROM chute_utilization
         WHERE chute_id = :chute_id
@@ -118,6 +106,27 @@ async def _check_scalable(db, chute, hotkey):
     """)
     results = await db.execute(query, {"chute_id": chute_id})
     utilization = results.mappings().first()
+    low_utilization = False
+    if utilization and utilization["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD:
+        low_utilization = True
+
+    # When there is a rolling update in progress (and it's not low utilization),
+    # only allow the miner hotkeys that had instances before the event was triggered.
+    if chute.rolling_update and not low_utilization:
+        limit = chute.rolling_update.permitted.get(hotkey, 0) or 0
+        if limit <= 0 and chute.rolling_update.permitted:
+            logger.warning(
+                f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
+            )
+        elif limit:
+            chute.rolling_update.permitted[hotkey] -= 1
+        return
+
+    # When there's no rolling update, just use the utilization ratios.
     if (
         utilization
         and utilization["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD
@@ -126,16 +135,12 @@ async def _check_scalable(db, chute, hotkey):
         query = text(
             "SELECT COUNT(*) AS total_count, "
             "COUNT(CASE WHEN miner_hotkey = :hotkey THEN 1 ELSE NULL END) AS hotkey_count "
-            "FROM instances WHERE chute_id = :chute_id"
+            "FROM instances WHERE chute_id = :chute_id AND active = true AND verified = true"
         )
         count_result = (
             (await db.execute(query, {"chute_id": chute_id, "hotkey": hotkey})).mappings().first()
         )
-        if (
-            count_result["total_count"] >= UNDERUTILIZED_CAP
-            or count_result.hotkey_count
-            and chute_id != "35cfa8b4-13a2-5382-b19a-e849f73c5d6a"
-        ):
+        if count_result["total_count"] >= UNDERUTILIZED_CAP or count_result.hotkey_count:
             logger.warning(
                 f"SCALELOCK: chute {chute_id=} {chute.name} is currently capped: {count_result}"
             )
@@ -267,32 +272,21 @@ async def get_launch_config(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} for chute {chute_id} not found",
             )
-        if job.miner_hotkey:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Job {job_id} has already been claimed!",
-            )
+        # Don't allow miners to try claiming a job more than once.
         if hotkey in job.miner_history:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Your hotkey has already attempted to claim {job_id=}",
             )
-        existing = (
-            (await db.execute(select(LaunchConfig).where(LaunchConfig.job_id == job_id)))
-            .unique()
-            .scalar_one_or_none()
-        )
-        if existing:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Job {job_id} has already been claimed!",
-            )
 
-        # Update job with miner info.
-        job.miner_uid = miner.node_id
-        job.miner_hotkey = miner.hotkey
-        job.miner_coldkey = miner.coldkey
-        job.miner_history.append(hotkey)
+        # Track this miner in the job history.
+        await db.execute(
+            text(
+                "UPDATE jobs SET miner_history = miner_history || jsonb_build_array(:hotkey) "
+                "WHERE job_id = :job_id"
+            ),
+            {"job_id": job_id, "hotkey": hotkey}
+        )
         disk_gb = job.job_args["_disk_gb"]
 
     # Create the launch config and JWT.
@@ -429,6 +423,35 @@ async def claim_launch_config(
         else:
             logger.warning("Extended filesystem verification disabled, skipping...")
 
+    # Assign the job to this launch config.
+    if launch_config.job_id:
+        stmt = (
+            update(Job)
+            .where(
+                Job.job_id == launch_config.job_id,
+                Job.miner_hotkey.is_(None),
+            )
+            .values(
+                miner_uid=launch_config.miner_uid,
+                miner_hotkey=launch_config.miner_hotkey,
+                miner_coldkey=launch_config.miner_coldkey,
+            )
+        )
+        result = await db.execute(stmt)
+        if result.rowcount == 0:
+            # Job was already claimed by another miner
+            logger.warning(
+                f"Job {launch_config.job_id=} via {launch_config.config_id=} was already "
+                f"claimed when miner {launch_config.miner_hotkey=} tried to claim it."
+            )
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Job was already claimed by another miner"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Job {launch_config.job_id} has already been claimed by another miner!",
+            )
+
     # Create the instance now that we've verified the envdump/k8s env.
     instance = Instance(
         instance_id=generate_uuid(),
@@ -451,20 +474,20 @@ async def claim_launch_config(
 
     # Mark the job as associated with this instance.
     if launch_config.job_id:
-        job = (
-            (await db.execute(select(Job).where(Job.job_id == launch_config.job_id)))
-            .unique()
-            .scalar_one_or_none()
+        stmt = (
+            update(Job)
+            .where(Job.job_id == launch_config.job_id)
+            .values(
+                instance_id=instance.instance_id,
+                port_mappings=[item.model_dump() for item in args.port_mappings],
+            )
         )
-        if not job:
+        result = await db.execute(stmt)
+        if result.rowcount == 0:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {launch_config.job_id} no longer exists!",
             )
-        job.instance_id = instance.instance_id
-
-        # Update any port mappings.
-        job.port_mappings = [item.model_dump() for item in args.port_mappings]
 
     # Verify the GPUs are suitable.
     node_ids = [node["uuid"] for node in args.gpus]

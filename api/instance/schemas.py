@@ -112,7 +112,9 @@ class LaunchConfig(Base):
     env_key = Column(String, nullable=False)
     chute_id = Column(String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False)
     job_id = Column(
-        String, ForeignKey("jobs.job_id", ondelete="CASCADE"), nullable=True, unique=True
+        String,
+        ForeignKey("jobs.job_id", ondelete="CASCADE"),
+        nullable=True,
     )
     host = Column(String, nullable=True)
     port = Column(Integer, nullable=True)
