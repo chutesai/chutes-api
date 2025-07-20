@@ -290,7 +290,7 @@ async def get_launch_config(
         # Track this miner in the job history.
         await db.execute(
             text(
-                "UPDATE jobs SET miner_history = miner_history || jsonb_build_array(:hotkey) "
+                "UPDATE jobs SET miner_history = miner_history || jsonb_build_array(CAST(:hotkey AS TEXT))"
                 "WHERE job_id = :job_id"
             ),
             {"job_id": job_id, "hotkey": hotkey},
