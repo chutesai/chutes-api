@@ -133,7 +133,7 @@ async def _check_scalable(db, chute, hotkey):
         and not utilization["total_rate_limit_errors"]
     ):
         query = text(
-            "SELECT COUNT(*) AS total_count, "
+            "SELECT COUNT(CASE WHEN active AND verified THEN 1 ELSE NULL END) AS total_count, "
             "COUNT(CASE WHEN miner_hotkey = :hotkey THEN 1 ELSE NULL END) AS hotkey_count "
             "FROM instances WHERE chute_id = :chute_id AND active = true AND verified = true"
         )
@@ -649,11 +649,13 @@ async def verify_launch_config_instance(
     estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
     max_duration = estimate * 2.15
     if (delta := (now - start).total_seconds()) >= max_duration:
-        logger.error(
-            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} took {delta} seconds, exceeding maximum estimate of {max_duration}"
+        message = (
+            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} "
+            f"{instance.miner_hotkey=} took {delta} seconds, exceeding maximum estimate of {max_duration}"
         )
+        logger.error(message)
         launch_config.failed_at = func.now()
-        launch_config.verification_error = f"GraVal challenge took {delta}, expected completion time {estimate} with buffer of up to {max_duration}"
+        launch_config.verification_error = message
         await db.delete(instance)
         await db.commit()
         asyncio.create_task(notify_deleted(instance))

@@ -316,7 +316,7 @@ async def create_image(
 
     # Stream logs for clients who set the "wait" flag.
     async def _stream_redirect_for_old_chutes():
-        yield f'data: {"redirect": /images/{image_id}/stream -- log streaming is now a separate endpoint, please update chutes library"}\n'
+        yield f'data: {"redirect": "/images/{image_id}/stream", "reason": "log streaming is now a separate endpoint, please update chutes library"}\n'
 
     if wait:
         return StreamingResponse(_stream_redirect_for_old_chutes())
