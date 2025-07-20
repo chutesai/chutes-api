@@ -272,6 +272,14 @@ async def get_launch_config(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {job_id} for chute {chute_id} not found",
             )
+
+        # Don't allow too many miners to try to claim the job...
+        if len(job.miner_history) >= 3:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Job {job_id} for chute {chute_id} is already in a race between {len(job.miner_history)} miners",
+            )
+
         # Don't allow miners to try claiming a job more than once.
         if hotkey in job.miner_history:
             raise HTTPException(
@@ -285,7 +293,7 @@ async def get_launch_config(
                 "UPDATE jobs SET miner_history = miner_history || jsonb_build_array(:hotkey) "
                 "WHERE job_id = :job_id"
             ),
-            {"job_id": job_id, "hotkey": hotkey}
+            {"job_id": job_id, "hotkey": hotkey},
         )
         disk_gb = job.job_args["_disk_gb"]
 
