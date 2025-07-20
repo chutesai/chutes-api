@@ -26,9 +26,10 @@ class JobResponse(BaseModel):
     finished_at: Optional[datetime] = None
 
     job_args: dict
-    final_result: Optional[dict] = None
+    result: Optional[dict] = None
     output_files: Optional[dict[str, Any]] = []
 
+    host: Optional[str] = None
     port_mappings: Optional[list[dict[str, Any]]] = []
 
     chute: MinimalChuteResponse

@@ -440,13 +440,16 @@ async def get_job(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Job not found, or does not belong to you",
         )
+    job_response = JobResponse.from_orm(job)
+    if job.instance:
+        job_response.host = job.instance.host
     return job
 
 
-@router.get("/{job_id}/download", response_model=JobResponse)
+@router.get("/{job_id}/download/{file_id}", response_model=JobResponse)
 async def download_output_file(
     job_id: str,
-    filename: str,
+    file_id: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -454,14 +457,13 @@ async def download_output_file(
     Download a job's output file.
     """
     job = await get_job_by_id(db, job_id, current_user)
-    job_namespace = uuid.UUID(job_id)
-    file_id = str(uuid.uuid5(job_namespace, filename))
     if file_id not in job.output_files:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Job output file not found {job_id=} {filename=}",
+            detail=f"Job output file not found {job_id=} {file_id=}",
         )
     output_file = job.output_files[file_id]
+    filename = output_file["filename"]
     data = io.BytesIO()
     async with settings.s3_client() as client:
         await client.download_fileobj(settings.storage_bucket, output_file["path"], data)
