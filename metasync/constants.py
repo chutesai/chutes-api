@@ -37,7 +37,7 @@ SELECT
     ) AS compute_units
 FROM invocations i
 JOIN metagraph_nodes mn ON i.miner_hotkey = mn.hotkey AND mn.netuid = 64
-WHERE i.started_at > NOW() - INTERVAL '7 days'
+WHERE i.started_at > NOW() - INTERVAL '{interval}'
 AND i.error_message IS NULL
 AND i.miner_uid >= 0
 AND i.completed_at IS NOT NULL
