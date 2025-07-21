@@ -9,6 +9,7 @@ import orjson as json
 import csv
 import uuid
 import decimal
+import random
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -435,7 +436,7 @@ async def _invoke(
                     "grammar",
                 ]
             )
-            if problematic:
+            if problematic or random.random() <= 0.15:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"{chute.name} does not current support {problematic}",

@@ -895,14 +895,15 @@ async def invoke(
                         logger.error(f"Error updating usage pipeline: {exc}")
 
                     # Increment quota usage value.
-                    try:
-                        value = 1.0 if not reroll else settings.reroll_multiplier
-                        key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
-                        _ = await settings.quota_client.incrbyfloat(key, value)
-                    except Exception as exc:
-                        logger.error(
-                            f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
-                        )
+                    if chute.discount < 1.0:
+                        try:
+                            value = 1.0 if not reroll else settings.reroll_multiplier
+                            key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
+                            _ = await settings.quota_client.incrbyfloat(key, value)
+                        except Exception as exc:
+                            logger.error(
+                                f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
+                            )
 
                     await session.commit()
 
