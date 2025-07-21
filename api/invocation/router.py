@@ -2,6 +2,7 @@
 Invocations router.
 """
 
+import re
 import base64
 import pickle
 import gzip
@@ -126,27 +127,13 @@ async def get_export(
     """
     Get invocation exports (and reports) for a particular hour.
     """
-    is_reports = False
-    if hour_format.endswith(".csv"):
-        hour_part = hour_format[:-4]
-        if hour_part.endswith("-reports"):
-            hour_str = hour_part[:-8]
-            is_reports = True
-        else:
-            hour_str = hour_part
-            is_reports = False
-        try:
-            hour = int(hour_str)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid hour format: {hour_format}",
-            )
-    else:
+    format_match = re.match(r"^(\d+)((?:-(reports|jobs))?\.csv)$", hour_format)
+    if not format_match:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid format: {hour_format}, must end with .csv",
+            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid format: {hour_format}"
         )
+    hour = int(format_match.group(1))
+    suffix = format_match.group(2)
 
     # Sanity check the dates.
     valid = True
@@ -173,10 +160,7 @@ async def get_export(
         )
 
     # Construct the S3 key based on whether this is a reports request
-    if is_reports:
-        key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}-reports.csv"
-    else:
-        key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}.csv"
+    key = f"invocations/{year}/{month:02d}/{day:02d}/{hour:02d}{suffix}"
 
     # Check if the file exists
     exists = False
