@@ -2,6 +2,7 @@ import json
 import asyncio
 from loguru import logger
 from sqlalchemy import text, select
+from sqlalchemy.orm import selectinload
 import api.database.orms  # noqa
 from api.config import settings
 from api.database import get_session
@@ -9,40 +10,44 @@ from api.chute.schemas import Chute
 
 
 QUERY = """
-SELECT 
-    chutes.name,
-    chutes.chute_id,
-    chutes.version,
-    chutes.created_at,
-    NOT EXISTS (
-        SELECT 1 
-        FROM instance_audit 
-        WHERE instance_audit.chute_id = chutes.chute_id 
-        AND instance_audit.version = chutes.version
-        AND verified_at IS NOT NULL
-    ) as never_deployed,
-    (
-        SELECT COUNT(DISTINCT miner_hotkey)
-        FROM instance_audit
-        WHERE instance_audit.chute_id = chutes.chute_id
-        AND instance_audit.version = chutes.version
-        AND created_at < NOW() - INTERVAL '3 hours'
-    ) >= 5 as has_five_miners
-FROM chutes
-WHERE NOT EXISTS (
-    SELECT 1 
-    FROM instance_audit 
-    WHERE instance_audit.chute_id = chutes.chute_id 
-    AND instance_audit.version = chutes.version
-    AND verified_at IS NOT NULL
-)
-AND (
-    SELECT COUNT(DISTINCT miner_hotkey)
+WITH verified_deployments AS (
+    SELECT DISTINCT chute_id, version
     FROM instance_audit
-    WHERE instance_audit.chute_id = chutes.chute_id
-    AND instance_audit.version = chutes.version
-    AND created_at < NOW() - INTERVAL '90 minutes'
-) >= 5
+    WHERE verified_at IS NOT NULL
+),
+miner_counts AS (
+    SELECT
+        chute_id,
+        version,
+        COUNT(DISTINCT miner_hotkey) as miner_count
+    FROM instance_audit
+    WHERE created_at < NOW() - INTERVAL '90 minutes'
+    GROUP BY chute_id, version
+),
+active_instances AS (
+    SELECT DISTINCT instance_id
+    FROM instances
+)
+SELECT
+    c.name,
+    c.chute_id,
+    c.version,
+    c.created_at,
+    TRUE as never_deployed,
+    mc.miner_count >= 5 as has_five_miners
+FROM chutes c
+LEFT JOIN verified_deployments vd
+    ON c.chute_id = vd.chute_id
+    AND c.version = vd.version
+LEFT JOIN miner_counts mc
+    ON c.chute_id = mc.chute_id
+    AND c.version = mc.version
+LEFT JOIN active_instances ai
+    ON c.chute_id = ai.instance_id
+WHERE (c.jobs IS NULL OR c.jobs = '{}' OR c.jobs = '[]')
+    AND vd.chute_id IS NULL
+    AND ai.instance_id IS NULL
+    AND COALESCE(mc.miner_count, 0) >= 5;
 """
 
 
@@ -59,7 +64,9 @@ async def clean_failed_chutes():
             chute = (
                 (
                     await session.execute(
-                        select(Chute).where(Chute.chute_id == chute_id, Chute.version == version)
+                        select(Chute)
+                        .where(Chute.chute_id == chute_id, Chute.version == version)
+                        .options(selectinload(Chute.instances))
                     )
                 )
                 .unique()
@@ -67,6 +74,11 @@ async def clean_failed_chutes():
             )
             if not chute:
                 continue  # how would it possibly get here?
+            if chute.instances:
+                logger.warning(
+                    f"{chute.chute_id=} {chute.name=} has instances, refusing to clean up..."
+                )
+                continue
             logger.warning(
                 f"Chute {name} {chute_id} created {created_at} failed to deploy, wiping..."
             )
