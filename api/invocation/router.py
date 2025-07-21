@@ -317,6 +317,8 @@ async def _invoke(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
             )
+    if chute.discount == 1.0:
+        request.state.free_invocation = True
 
     # Check account balance.
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
