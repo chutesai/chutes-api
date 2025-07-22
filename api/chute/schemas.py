@@ -43,9 +43,9 @@ class Port(BaseModel):
 
     @field_validator("port")
     def validate_port(cls, v):
-        if v == 22 or (8001 < v <= 65535):
+        if v == 2202 or (8001 < v <= 65535):
             return v
-        raise ValueError("Port must be 22 or in range 8002-65535")
+        raise ValueError("Port must be 2202 (ssh) or in range 8002-65535")
 
 
 class Job(BaseModel):
