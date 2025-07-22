@@ -772,10 +772,9 @@ async def verify_launch_config_instance(
                 "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.job.job_id}?token={job_token}",
             }
         )
-    else:
-        return_value["activation_url"] = (
-            f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
-        )
+    return_value["activation_url"] = (
+        f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
+    )
 
     await db.refresh(instance)
     asyncio.create_task(notify_verified(instance))

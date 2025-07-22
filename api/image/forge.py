@@ -58,7 +58,7 @@ async def initialize(*_, **__):
         else:
             logger.warning(f"Failed authentication: {username=}")
 
-    for base_image in ("parachutes/python:3.12.9",):
+    for base_image in ("parachutes/python:3.12.9", "parachutes/python:3.12"):
         process = await asyncio.create_subprocess_exec(
             "buildah",
             "pull",
