@@ -20,9 +20,7 @@ class VLLMEngineArgs(BaseModel):
     tokenizer: Optional[str] = None
     max_model_len: Optional[int] = 16384
     enforce_eager: Optional[bool] = False
-    num_scheduler_steps: Optional[int] = 16
     trust_remote_code: Optional[bool] = True
-    revision: Optional[str] = None
 
     @validator("tokenizer")
     def validate_hf_format(cls, v):
@@ -31,14 +29,6 @@ class VLLMEngineArgs(BaseModel):
         if re.match(r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$", v):
             return v
         raise ValueError('Model must be a valid Hugging Face repo (e.g., "org/model")')
-
-    @validator("revision")
-    def validate_revision(cls, v):
-        if v is None:
-            return v
-        if re.match(r"^[a-fA-F0-9]{40}$", v):
-            return v
-        raise ValueError("Revision must be a valid git commit hex digest")
 
 
 class VLLMChuteArgs(BaseModel):
@@ -50,12 +40,22 @@ class VLLMChuteArgs(BaseModel):
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
     engine_args: Optional[VLLMEngineArgs] = None
+    revision: Optional[str] = None
+    concurrency: Optional[int] = 8
 
     @validator("model")
     def validate_hf_format(cls, v):
         if re.match(r"^[a-zA-Z0-9_\.-]+/[a-zA-Z0-9_\.-]+$", v):
             return v
         raise ValueError('Model must be a valid Hugging Face repo (e.g., "org/model")')
+
+    @validator("revision")
+    def validate_revision(cls, v):
+        if v is None:
+            return v
+        if re.match(r"^[a-fA-F0-9]{40}", v):
+            return v
+        raise ValueError("Invalid revision specified.")
 
 
 class DiffusionPipelineArgs(BaseModel):
@@ -73,6 +73,7 @@ class DiffusionChuteArgs(BaseModel):
     readme: Optional[str] = ""
     public: Optional[bool] = True
     node_selector: Optional[NodeSelector] = None
+    concurrency: Optional[int] = 1
 
     @validator("model")
     def validate_model(cls, v):

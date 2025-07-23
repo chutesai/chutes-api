@@ -52,7 +52,7 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, limit_deployments, semcomp
+from api.util import ensure_is_developer, limit_deployments, semcomp, get_current_hf_commit
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -856,6 +856,15 @@ async def easy_deploy_vllm_chute(
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
+    # Set revision to current main if not specified.
+    if not args.revision:
+        args.revision = get_current_hf_commit(args.model)
+        if not args.revision:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Could not determine current revision from huggingface for {args.model}, and value was not provided",
+            )
+
     # Make sure we can download the model, set max model length.
     if not args.engine_args:
         args.engine_args = VLLMEngineArgs()
@@ -963,6 +972,8 @@ async def easy_deploy_vllm_chute(
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
         jobs=[],
+        concurrency=args.concurrency,
+        revision=args.revision,
     )
     return await _deploy_chute(chute_args, db, current_user)
 
