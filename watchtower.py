@@ -413,15 +413,19 @@ async def check_llm_weights(chute, instances):
 
     # Revision will need to be a requirement in the future, and at that point
     # it can be an attribute on the chute object rather than this janky regex.
-    revision_match = re.search(
-        r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
-    )
-    if not revision_match:
-        # Need to fetch remote revisions and allow a range of them.
+    if (revision := chute.revision) is None:
+        revision_match = re.search(
+            r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
+        )
+        if revision_match:
+            revision = revision_match.group(1)
+
+    # Could call out to HF and list all revisions and check for any,
+    # but revision for new chutes is a required parameter now...
+    if not revision:
         logger.warning(f"No revision to check: {chute.name}")
         return [], []
 
-    revision = revision_match.group(1)
     logger.info(f"Checking {chute.chute_id=} {chute.name=} for {revision=}")
     encrypted_slurp = use_encrypted_slurp(chute.chutes_version)
 
@@ -811,9 +815,15 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
         return True
 
     processes = dump["all_processes"]
-    revision_match = re.search(
-        r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
-    )
+
+    # Extract the revision, if present.
+    if (revision := chute.revision) is None:
+        revision_match = re.search(
+            r"(?:--revision |(?:^\s+|,\s*)revision=\")([a-f0-9]{40})", chute.code, re.MULTILINE
+        )
+        if revision_match:
+            revision = revision_match.group(1)
+
     found_sglang = False
     for process in processes:
         clean_exe = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["exe"].strip())
@@ -826,8 +836,7 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
         ):
             logger.success(f"{log_prefix} found SGLang chute: {process=}")
             found_sglang = True
-            if revision_match:
-                revision = revision_match.group(1)
+            if revision:
                 if revision in process["cmdline"]:
                     logger.success(f"{log_prefix} also found revision identifier")
                 else:

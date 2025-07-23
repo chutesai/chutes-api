@@ -52,7 +52,7 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, limit_deployments
+from api.util import ensure_is_developer, limit_deployments, semcomp, get_current_hf_commit
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -623,6 +623,20 @@ async def _deploy_chute(
                 detail="You are not allowed to require h200, b200 or mi300x at this time.",
             )
 
+    # Require revision for LLM templates.
+    if chute_args.standard_template == "vllm" and not chute_args.revision:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing required revision parameter for vllm template.",
+        )
+
+    # Prevent deploying images with old chutes SDK versions.
+    if not image.chutes_version or semcomp(image.chutes_version, "0.3.0") < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Unable to deploy chutes with legacy images (chutes SDK < 0.3.0)",
+        )
+
     old_version = None
     if chute:
         # Create a rolling update object so we can gracefully restart/recreate.
@@ -665,7 +679,7 @@ async def _deploy_chute(
         chute.jobs = chute_args.jobs
         chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
-        chute.boost = None
+        chute.revision = chute_args.revision
     else:
         try:
             chute = Chute(
@@ -692,7 +706,7 @@ async def _deploy_chute(
                 standard_template=chute_args.standard_template,
                 chutes_version=image.chutes_version,
                 concurrency=chute_args.concurrency,
-                boost=None,
+                revision=chute_args.revision,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -726,17 +740,6 @@ async def _deploy_chute(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A chute must define at least one cord() or job() function!",
-        )
-
-    # Limit h/b 200 access for now.
-    supported_gpus = set((chute.node_selector or {}).get("supported_gpus", []))
-    if (
-        not (supported_gpus - set(["b200", "h200", "mi300x"]))
-        and chute.user_id != await chutes_user_id()
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You are not allowed to require h200, b200 or mi300x at this time.",
         )
 
     await db.commit()
@@ -853,6 +856,16 @@ async def easy_deploy_vllm_chute(
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
+    # Set revision to current main if not specified.
+    if not args.revision:
+        args.revision = get_current_hf_commit(args.model)
+        if not args.revision:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Could not determine current revision from huggingface for {args.model}, and value was not provided",
+            )
+        logger.info(f"Set the revision automatically to {args.revision}")
+
     # Make sure we can download the model, set max model length.
     if not args.engine_args:
         args.engine_args = VLLMEngineArgs()
@@ -960,6 +973,8 @@ async def easy_deploy_vllm_chute(
         node_selector=node_selector,
         cords=chute_to_cords(chute.chute),
         jobs=[],
+        concurrency=args.concurrency,
+        revision=args.revision,
     )
     return await _deploy_chute(chute_args, db, current_user)
 

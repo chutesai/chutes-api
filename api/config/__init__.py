@@ -124,10 +124,6 @@ class Settings(BaseSettings):
     # IP hash check salt.
     ip_check_salt: str = os.getenv("IP_CHECK_SALT", "salt")
 
-    # Validator and subnet owner keys allowed to link/get free+dev access.
-    validators: list[str] = os.getenv("VALIDATOR_HOTKEYS", "").split(",")
-    subnet_owners: list[str] = os.getenv("SUBNET_OWNER_HOTKEYS", "").split(",")
-
     # Flag indicating that all accounts created are free.
     all_accounts_free: bool = os.getenv("ALL_ACCOUNTS_FREE", "false").lower() == "true"
 

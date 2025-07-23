@@ -520,3 +520,16 @@ async def notify_activated(instance):
             await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
     except Exception as exc:
         logger.warning(f"Error broadcasting instance event: {exc}")
+
+
+def get_current_hf_commit(model_name: str):
+    """
+    Helper to load the current main commit for a given repo.
+    """
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    for ref in api.list_repo_refs(model_name).branches:
+        if ref.ref == "refs/heads/main":
+            return ref.target_commit
+    return None
