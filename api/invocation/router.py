@@ -420,7 +420,7 @@ async def _invoke(
                     "grammar",
                 ]
             )
-            if problematic or random.random() <= 0.15:
+            if problematic:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"{chute.name} does not current support {problematic}",

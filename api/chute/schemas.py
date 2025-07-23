@@ -167,6 +167,7 @@ class ChuteArgs(BaseModel):
     cords: Optional[List[Cord]] = []
     jobs: Optional[List[Job]] = []
     concurrency: Optional[int] = Field(None, gte=0, le=256)
+    revision: Optional[str] = Field(None, pattern=r"^[a-fA-F0-9]{40}$")
 
 
 class InvocationArgs(BaseModel):
@@ -197,6 +198,7 @@ class Chute(Base):
     concurrency = Column(Integer, nullable=True)
     boost = Column(Float, nullable=True)
     chutes_version = Column(String, nullable=True)
+    revision = Column(String, nullable=True)
     openrouter = Column(Boolean, default=False)
     discount = Column(Float, nullable=True, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -5,7 +5,7 @@ DECLARE
     lifetime_seconds NUMERIC;
     invocation RECORD;
 BEGIN
-    IF NEW.chute_id = '35cfa8b4-13a2-5382-b19a-e849f73c5d6a' THEN
+    IF NEW.chute_id = '35cfa8b4-13a2-5382-b19a-e849f73c5d6a' OR NEW.chute_id = '83ce50c4-6d3f-55a6-88a6-c5db187f2c70' THEN
         RETURN NEW;
     END IF;
     IF NEW.deleted_at IS NOT NULL AND OLD.deleted_at IS NULL AND NEW.verified_at IS NOT NULL THEN

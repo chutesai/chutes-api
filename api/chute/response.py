@@ -50,6 +50,7 @@ class ChuteResponse(BaseModel):
     logo_id: Optional[str]
     openrouter: Optional[bool] = False
     chutes_version: Optional[str] = None
+    revision: Optional[str] = None
     concurrency: Optional[int] = None
     boost: Optional[float] = None
 
