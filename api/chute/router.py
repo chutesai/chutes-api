@@ -679,7 +679,7 @@ async def _deploy_chute(
         chute.jobs = chute_args.jobs
         chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
-        chute.boost = None
+        chute.revision = chute_args.revision
     else:
         try:
             chute = Chute(
@@ -706,7 +706,7 @@ async def _deploy_chute(
                 standard_template=chute_args.standard_template,
                 chutes_version=image.chutes_version,
                 concurrency=chute_args.concurrency,
-                boost=None,
+                revision=chute_args.revision,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -864,6 +864,7 @@ async def easy_deploy_vllm_chute(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Could not determine current revision from huggingface for {args.model}, and value was not provided",
             )
+        logger.info(f"Set the revision automatically to {args.revision}")
 
     # Make sure we can download the model, set max model length.
     if not args.engine_args:

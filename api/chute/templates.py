@@ -125,6 +125,7 @@ chute = build_vllm_chute(
     model_name="{{ args.model }}",
     image="{{ image }}",
     node_selector=NodeSelector(),
+    revision="{{ revision }}",
     {%- if args.engine_args %}
     engine_args=dict(
         {%- if args.engine_args.tokenizer is not none %}
@@ -138,12 +139,6 @@ chute = build_vllm_chute(
         {%- endif %}
         {%- if args.engine_args.enforce_eager is not none %}
         enforce_eager={{ args.engine_args.enforce_eager }},
-        {%- endif %}
-        {%- if args.engine_args.num_scheduler_steps is not none %}
-        num_scheduler_steps={{ args.engine_args.num_scheduler_steps }},
-        {%- endif %}
-        {%- if args.engine_args.revision is not none %}
-        revision="{{ args.engine_args.revision }}",
         {%- endif %}
     )
     {%- endif %}
