@@ -58,50 +58,6 @@ class BalanceRequest(BaseModel):
     reason: str
 
 
-async def _link_hotkey(
-    hotkey: str,
-    signature: str,
-    attribute: str,
-    allow_list: list[str],
-    db: AsyncSession,
-    current_user: User,
-):
-    """
-    Link a validator or subnet owner hotkey to this account, allowing free usage and developer access.
-    """
-    signature_string = f"{hotkey}:{current_user.username}"
-    if hotkey in allow_list:
-        if Keypair(ss58_address=hotkey).verify(signature_string, bytes.fromhex(signature)):
-            # Any other accounts already associated?
-            existing = (
-                await db.execute(
-                    select(User)
-                    .where(getattr(User, attribute) == hotkey)
-                    .where(User.user_id != current_user.user_id)
-                )
-            ).scalar_one_or_none()
-            if existing:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=f"Hotkey already associated with user {existing.username}",
-                )
-
-            # Reload the user since current_user isn't bound to a session, then update.
-            user = (
-                await db.execute(select(User).where(User.user_id == current_user.user_id))
-            ).scalar_one_or_none()
-            setattr(user, attribute, hotkey)
-            Permissioning.enable(user, Permissioning.free_account)
-            Permissioning.enable(user, Permissioning.developer)
-            await db.commit()
-            await db.refresh(user)
-            return user
-    raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid hotkey or signature.",
-    )
-
-
 @router.get("/growth")
 async def get_user_growth(
     db: AsyncSession = Depends(get_db_session),
@@ -467,36 +423,6 @@ async def set_logo(
     await db.commit()
     await db.refresh(user)
     return user
-
-
-@router.get("/link_validator", response_model=SelfResponse)
-async def link_validator(
-    hotkey: str,
-    signature: str,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="link_account")),
-):
-    """
-    Link a validator hotkey to this account, allowing free usage.
-    """
-    return await _link_hotkey(
-        hotkey, signature, "validator_hotkey", settings.validators, db, current_user
-    )
-
-
-@router.get("/link_subnet_owner", response_model=SelfResponse)
-async def link_subnet_owner(
-    hotkey: str,
-    signature: str,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="link_account")),
-):
-    """
-    Link a subnet owner hotkey to this account, allowing free usage.
-    """
-    return await _link_hotkey(
-        hotkey, signature, "subnet_owner_hotkey", settings.subnet_owners, db, current_user
-    )
 
 
 async def _validate_username(db, username):
