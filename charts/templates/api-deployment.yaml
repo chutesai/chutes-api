@@ -24,6 +24,9 @@ spec:
       labels:
         {{- include "api.labels" . | nindent 8 }}
         {{- if .Values.datadog_enabled }}
+        prometheus.io/path: /_metrics
+        prometheus.io/port: "8000"
+        prometheus.io/scrape: "true"
         tags.datadoghq.com/env: chutes-prod
         tags.datadoghq.com/service: api
         tags.datadoghq.com/version: 0.0.1
