@@ -21,7 +21,7 @@ from api.chute.schemas import Chute
 from api.instance.schemas import Instance
 from api.capacity_log.schemas import CapacityLog
 import api.database.orms  # noqa
-from watchtower import purge_and_notify
+from watchtower import purge_and_notify  # noqa
 from api.constants import (
     UNDERUTILIZED_CAP,
     UTILIZATION_SCALE_UP,
@@ -154,39 +154,37 @@ async def log_capacity_metrics(chute_metrics: Dict[str, Dict], chute_actions: Di
         for row in result:
             instance_counts[row.chute_id] = row.count
 
-        # Prepare insert data
-        insert_data = []
+        # Track in the database.
+        logged_count = 0
         for chute_id, metrics in chute_metrics.items():
-            insert_data.append(
-                {
-                    "timestamp": timestamp,
-                    "chute_id": chute_id,
-                    "utilization_current": metrics["utilization"].get("current"),
-                    "utilization_5m": metrics["utilization"].get("5m"),
-                    "utilization_15m": metrics["utilization"].get("15m"),
-                    "utilization_1h": metrics["utilization"].get("1h"),
-                    "rate_limit_ratio_5m": metrics["rate_limit_ratio"].get("5m"),
-                    "rate_limit_ratio_15m": metrics["rate_limit_ratio"].get("15m"),
-                    "rate_limit_ratio_1h": metrics["rate_limit_ratio"].get("1h"),
-                    "total_requests_5m": metrics["total_requests"].get("5m"),
-                    "total_requests_15m": metrics["total_requests"].get("15m"),
-                    "total_requests_1h": metrics["total_requests"].get("1h"),
-                    "completed_requests_5m": metrics["completed_requests"].get("5m"),
-                    "completed_requests_15m": metrics["completed_requests"].get("15m"),
-                    "completed_requests_1h": metrics["completed_requests"].get("1h"),
-                    "rate_limited_requests_5m": metrics["rate_limited_requests"].get("5m"),
-                    "rate_limited_requests_15m": metrics["rate_limited_requests"].get("15m"),
-                    "rate_limited_requests_1h": metrics["rate_limited_requests"].get("1h"),
-                    "instance_count": instance_counts.get(chute_id, 0),
-                    "action_taken": chute_actions.get(chute_id, "no_action"),
-                }
+            capacity_log = CapacityLog(
+                timestamp=timestamp,
+                chute_id=chute_id,
+                utilization_current=metrics["utilization"].get("current"),
+                utilization_5m=metrics["utilization"].get("5m"),
+                utilization_15m=metrics["utilization"].get("15m"),
+                utilization_1h=metrics["utilization"].get("1h"),
+                rate_limit_ratio_5m=metrics["rate_limit_ratio"].get("5m"),
+                rate_limit_ratio_15m=metrics["rate_limit_ratio"].get("15m"),
+                rate_limit_ratio_1h=metrics["rate_limit_ratio"].get("1h"),
+                total_requests_5m=metrics["total_requests"].get("5m"),
+                total_requests_15m=metrics["total_requests"].get("15m"),
+                total_requests_1h=metrics["total_requests"].get("1h"),
+                completed_requests_5m=metrics["completed_requests"].get("5m"),
+                completed_requests_15m=metrics["completed_requests"].get("15m"),
+                completed_requests_1h=metrics["completed_requests"].get("1h"),
+                rate_limited_requests_5m=metrics["rate_limited_requests"].get("5m"),
+                rate_limited_requests_15m=metrics["rate_limited_requests"].get("15m"),
+                rate_limited_requests_1h=metrics["rate_limited_requests"].get("1h"),
+                instance_count=instance_counts.get(chute_id, 0),
+                action_taken=chute_actions.get(chute_id, "no_action"),
             )
+            session.add(capacity_log)
+            logged_count += 1
 
-        # Bulk insert
-        if insert_data:
-            await session.execute(CapacityLog.insert(), insert_data)
+        if logged_count:
             await session.commit()
-            logger.info(f"Logged capacity metrics for {len(insert_data)} chutes")
+            logger.info(f"Logged capacity metrics for {logged_count} chutes")
 
 
 async def perform_autoscale():

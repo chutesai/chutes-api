@@ -35,7 +35,7 @@ spec:
             - name: chute-autoscaler
               image: "{{ .Values.chuteAutoscaler.image }}"
               imagePullPolicy: {{ .Values.chuteAutoscaler.imagePullPolicy }}
-              command: ["poetry", "run", "python", "chute-autoscaler.py"]
+              command: ["poetry", "run", "python", "chute_autoscaler.py"]
               env:
                 {{- include "chutes.sensitiveEnv" . | nindent 16 }}
                 {{- include "chutes.commonEnv" . | nindent 16 }}
