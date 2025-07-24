@@ -442,6 +442,67 @@ async def get_chute_utilization():
         return utilization_data
 
 
+@router.get("/utilization_v2")
+async def get_chute_utilization_v2():
+    """
+    Get chute utilization data from the most recent capacity log.
+    """
+    async with get_session(readonly=True) as session:
+        query = text("""
+            WITH latest_logs AS (
+                SELECT DISTINCT ON (chute_id)
+                    chute_id,
+                    timestamp,
+                    utilization_current,
+                    utilization_5m,
+                    utilization_15m,
+                    utilization_1h,
+                    rate_limit_ratio_5m,
+                    rate_limit_ratio_15m,
+                    rate_limit_ratio_1h,
+                    total_requests_1h,
+                    completed_requests_1h,
+                    rate_limited_requests_1h,
+                    instance_count,
+                    action_taken
+                FROM capacity_log
+                ORDER BY chute_id, timestamp DESC
+            ),
+            chute_details AS (
+                SELECT
+                    c.chute_id,
+                    c.name,
+                    EXISTS(SELECT 1 FROM rolling_updates WHERE chute_id = c.chute_id) AS update_in_progress
+                FROM chutes c
+            )
+            SELECT
+                ll.*,
+                cd.name,
+                cd.update_in_progress
+            FROM latest_logs ll
+            JOIN chute_details cd ON cd.chute_id = ll.chute_id
+        """)
+        results = await session.execute(query)
+        rows = results.mappings().all()
+        utilization_data = []
+
+        for row in rows:
+            item = dict(row)
+            scale_value = await settings.redis_client.get(f"scale:{item['chute_id']}")
+            if scale_value:
+                item["scalable"] = int(scale_value) > 0
+                item["scale_allowance"] = int(scale_value)
+            else:
+                item["scalable"] = item.get("action_taken") == "scale_up_candidate"
+                item["scale_allowance"] = 0
+            item["avg_busy_ratio"] = item.get("utilization_1h", 0)
+            item["total_invocations"] = item.get("total_requests_1h", 0)
+            item["total_rate_limit_errors"] = item.get("rate_limited_requests_1h", 0)
+            utilization_data.append(item)
+
+        return utilization_data
+
+
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def get_chute(
     chute_id_or_name: str,
