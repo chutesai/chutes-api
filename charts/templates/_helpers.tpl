@@ -62,6 +62,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "chuteAutoscaler.labels" -}}
+app.kubernetes.io/name: chute-autoscaler
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "autostaker.labels" -}}
 app.kubernetes.io/name: autostaker
 redis-access: "true"

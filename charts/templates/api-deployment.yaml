@@ -69,10 +69,6 @@ spec:
             {{- end }}
             - name: MEMCACHED
               value: memcached
-            - name: VALIDATOR_HOTKEYS
-              value: {{ join "," .Values.validators | quote }}
-            - name: SUBNET_OWNER_HOTKEYS
-              value: {{ join "," .Values.subnet_owners | quote }}
             - name: FIRST_PAYMENT_BONUS
               value: "{{ .Values.account_settings.first_payment_bonus.bonus }}"
             - name: FIRST_PAYMENT_BONUS_THRESHOLD
