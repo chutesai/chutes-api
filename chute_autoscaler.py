@@ -231,34 +231,17 @@ async def perform_autoscale():
     # Analyze each chute.
     for chute_id, metrics in chute_metrics.items():
         info = chute_info.get(chute_id)
-        if not info:
-            logger.warning(f"No data for {chute_id=}")
-            num_to_remove = 1
-            if info.instance_count > UNDERUTILIZED_CAP:
-                num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.5))
-            if num_to_remove > 0:
-                to_downsize.append((chute_id, num_to_remove))
-                await settings.redis_client.set(f"scale:{chute_id}", 0, ex=3700)
-                chute_actions[chute_id] = "scaled_down"
-                logger.info(
-                    f"Scale down candidate: {chute_id} - no metrics available for past hour, "
-                    f"instances: {info.instance_count} - removing {num_to_remove} instances"
-                )
+        if not info or not info.instance_count:
+            target_count = UNDERUTILIZED_CAP
+            await settings.redis_client.set(f"scale:{chute_id}", UNDERUTILIZED_CAP, ex=3700)
+            chute_actions[chute_id] = "scale_up_candidate"
+            scale_up_candidates.append((chute_id, UNDERUTILIZED_CAP))
+            logger.info(f"Scale up candidate: {chute_id} - no instances for past hour!")
             continue
 
         # Skip if rolling update in progress
         if info.has_rolling_update:
             logger.warning(f"Skipping {chute_id=}, rolling update in progress")
-            continue
-
-        # Skip if new chute.
-        if info.new_chute:
-            logger.info(f"Allowing scale-up of new chute {chute_id=}")
-            chute_actions[chute_id] = "scale_up_candidate"
-            num_to_add = max(0, 10 - info.instance_count)
-            if num_to_add >= 1:
-                scale_up_candidates.append((chute_id, num_to_add))
-                await settings.redis_client.set(f"scale:{chute_id}", num_to_add, ex-3700)
             continue
 
         # Check scale up conditions
@@ -276,9 +259,10 @@ async def perform_autoscale():
                 num_to_add = max(2, int(info.instance_count * 0.3))
             else:
                 num_to_add = max(1, int(info.instance_count * 0.2))
+            target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             chute_actions[chute_id] = "scale_up_candidate"
-            await settings.redis_client.set(f"scale:{chute_id}", num_to_add, ex=3700)
+            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             logger.info(
                 f"Scale up candidate: {chute_id} - rate limiting increasing: "
                 f"5m={rate_limit_5m:.1%}, 15m={rate_limit_15m:.1%}, 1h={rate_limit_1h:.1%} "
@@ -292,8 +276,9 @@ async def perform_autoscale():
                 num_to_add = max(2, int(info.instance_count * 0.4))
             elif utilization_1h >= 0.8:
                 num_to_add = max(1, int(info.instance_count * 0.25))
+            target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
-            await settings.redis_client.set(f"scale:{chute_id}", num_to_add, ex=3700)
+            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             chute_actions[chute_id] = "scale_up_candidate"
             logger.info(
                 f"Scale up candidate: {chute_id} - high utilization: {utilization_1h:.1%} "
@@ -308,6 +293,7 @@ async def perform_autoscale():
             and rate_limit_15m == 0
             and rate_limit_1h == 0
             and metrics["total_requests"].get("1h", 0) > 0
+            and not info.new_chute
         ):
             num_to_remove = 1
             if info.instance_count > UNDERUTILIZED_CAP:
@@ -316,15 +302,25 @@ async def perform_autoscale():
                 elif utilization_1h < 0.3:
                     num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.1))
             if num_to_remove > 0:
+                target_count = info.instance_count - num_to_remove
+                await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
                 to_downsize.append((chute_id, num_to_remove))
-                await settings.redis_client.set(f"scale:{chute_id}", 0, ex=3700)
                 chute_actions[chute_id] = "scaled_down"
                 logger.info(
                     f"Scale down candidate: {chute_id} - low utilization: {utilization_1h:.1%}, "
                     f"instances: {info.instance_count} - removing {num_to_remove} instances"
                 )
+        elif info.new_chute:
+            # Allow scaling new chutes, to a point.
+            num_to_add = max(0, 10 - info.instance_count)
+            if num_to_add >= 1:
+                scale_up_candidates.append((chute_id, num_to_add))
+                await settings.redis_client.set(f"scale:{chute_id}", 10, ex=3700)
+                chute_actions[chute_id] = "scale_up_candidate"
         else:
-            await settings.redis_client.set(f"scale:{chute_id}", 0, ex=3700)
+            # Nothing to do.
+            target_count = max(UNDERUTILIZED_CAP, info.instance_count)
+            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
 
     # Log all metrics and actions
     await log_capacity_metrics(chute_metrics, chute_actions)
