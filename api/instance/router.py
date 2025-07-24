@@ -150,6 +150,67 @@ async def _check_scalable(db, chute, hotkey):
             )
 
 
+async def _check_scalable_v2(db, chute, hotkey):
+    chute_id = chute.chute_id
+    query = text("""
+        SELECT
+            COUNT(*) AS total_count,
+            COUNT(CASE WHEN miner_hotkey = :hotkey THEN 1 ELSE NULL END) AS hotkey_count
+        FROM instances
+        WHERE chute_id = :chute_id
+        AND active = true
+        AND verified = true
+    """)
+    count_result = (
+        (await db.execute(query, {"chute_id": chute_id, "hotkey": hotkey})).mappings().first()
+    )
+    current_count = count_result["total_count"]
+    hotkey_count = count_result["hotkey_count"]
+
+    # Get target count from Redis.
+    scale_value = await settings.redis_client.get(f"scale:{chute_id}")
+    target_count = int(scale_value) if scale_value else current_count
+
+    # When there is a rolling update in progress, use the permitted list.
+    if chute.rolling_update:
+        limit = chute.rolling_update.permitted.get(hotkey, 0) or 0
+        if limit <= 0 and chute.rolling_update.permitted:
+            logger.warning(
+                f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
+            )
+        elif limit:
+            chute.rolling_update.permitted[hotkey] -= 1
+        return
+
+    # Check if scaling is allowed based on target count
+    if current_count >= target_count:
+        logger.warning(
+            f"SCALELOCK: chute {chute_id=} {chute.name} has reached target capacity: "
+            f"current={current_count}, target={target_count}, hotkey_count={hotkey_count}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Chute {chute_id} has reached its target capacity of {target_count} instances.",
+        )
+
+    # Additional check: if miner already has instances and we're near capacity, limit.
+    remaining_slots = target_count - current_count
+    if hotkey_count > 0 and remaining_slots <= 2:
+        logger.warning(
+            f"SCALELOCK: chute {chute_id=} {chute.name} - miner {hotkey} already has {hotkey_count} instances, "
+            f"only {remaining_slots} slots remaining"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Chute {chute_id} is near capacity with only {remaining_slots} slots remaining. "
+            f"You already have {hotkey_count} instance(s).",
+        )
+
+
 async def _validate_node(db, chute, node_id: str, hotkey: str):
     node = await get_node_by_id(node_id, db, hotkey)
     if not node:
