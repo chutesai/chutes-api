@@ -809,7 +809,7 @@ async def hostname_invocation(
                     "grammar",
                 ]
             )
-            if problematic or random.random() <= 0.25:
+            if problematic or random.random() <= 0.15:
                 payload["model"] = "moonshotai/Kimi-K2-Instruct-tools"
 
         model = payload.get("model")

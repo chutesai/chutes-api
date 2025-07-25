@@ -4,6 +4,7 @@ Auto-scale chutes based on utilization.
 
 import os
 import asyncio
+import argparse
 import random
 from loguru import logger
 from collections import defaultdict
@@ -231,11 +232,11 @@ async def log_capacity_metrics(
             logger.info(f"Logged capacity metrics for {logged_count} chutes")
 
 
-async def perform_autoscale():
+async def perform_autoscale(dry_run: bool = False):
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
     """
-    logger.info("Fetching metrics from Prometheus and database...")
+    logger.info(f"Fetching metrics from Prometheus and database... (dry_run={dry_run})")
     chute_metrics = await get_all_chute_metrics()
 
     # Safety check - ensure we have enough data
@@ -450,6 +451,17 @@ async def perform_autoscale():
         f"Found {len(scale_up_candidates)} scale up candidates and {len(to_downsize)} scale down candidates"
     )
 
+    # Don't do any actual downscaling in dry-run mode.
+    if dry_run and to_downsize:
+        logger.warning("DRY RUN MODE: Skipping actual instance removal")
+        total_instances_to_remove = sum(num for _, num in to_downsize)
+        logger.info(
+            f"Would remove {total_instances_to_remove} instances across {len(to_downsize)} chutes:"
+        )
+        for chute_id, num_to_remove in to_downsize:
+            logger.info(f"  - Chute {chute_id}: would remove {num_to_remove} instances")
+        return 0
+
     # Perform the actual scale downs
     instances_removed = 0
     gpus_removed = 0
@@ -479,9 +491,9 @@ async def perform_autoscale():
             for instance in active:
                 if len(instance.nodes) != chute.node_selector.get("gpu_count"):
                     logger.warning(f"Bad instance? {instance.instance_id=} {instance.verified=}")
-                    await purge_and_notify(
-                        instance, reason="instance node count does not match node selector"
-                    )
+                    # await purge_and_notify(
+                    #    instance, reason="instance node count does not match node selector"
+                    # )
                     num_to_remove -= 1
                     instances_removed += 1
                     gpus_removed += len(instance.nodes)
@@ -764,7 +776,7 @@ async def perform_autoscale():
                 # Purge the unlucky one
                 if unlucky_instance:
                     kicked.add(unlucky_instance.instance_id)
-                    await purge_and_notify(unlucky_instance, reason=unlucky_reason)
+                    # await purge_and_notify(unlucky_instance, reason=unlucky_reason)
                     instances_removed += 1
                     gpus_removed += len(unlucky_instance.nodes)
 
@@ -774,4 +786,11 @@ async def perform_autoscale():
 
 
 if __name__ == "__main__":
-    asyncio.run(perform_autoscale())
+    parser = argparse.ArgumentParser(description="Auto-scale chutes based on utilization")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Run without actually removing instances (simulation mode)",
+    )
+    args = parser.parse_args()
+    asyncio.run(perform_autoscale(dry_run=args.dry_run))
