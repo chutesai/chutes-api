@@ -36,5 +36,8 @@ class CapacityLog(Base):
     # Action taken
     action_taken = Column(String, nullable=True)
 
+    # Target number of instances.
+    target_count = Column(Integer, nullable=False)
+
     # Index on the timestamp and chute_id.
     __table_args__ = (Index("idx_capacity_log_chute_timestamp", "chute_id", "timestamp"),)

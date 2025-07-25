@@ -408,7 +408,7 @@ async def get_chute_code(
     return Response(content=chute.code, media_type="text/plain")
 
 
-@router.get("/utilization")
+@router.get("/utilization_legacy")
 async def get_chute_utilization():
     """
     Get chute utilization data.
@@ -442,7 +442,7 @@ async def get_chute_utilization():
         return utilization_data
 
 
-@router.get("/utilization_v2")
+@router.get("/utilization")
 async def get_chute_utilization_v2():
     """
     Get chute utilization data from the most recent capacity log.
@@ -464,14 +464,15 @@ async def get_chute_utilization_v2():
                     completed_requests_1h,
                     rate_limited_requests_1h,
                     instance_count,
-                    action_taken
+                    action_taken,
+                    target_count
                 FROM capacity_log
                 ORDER BY chute_id, timestamp DESC
             ),
             chute_details AS (
                 SELECT
                     c.chute_id,
-                    c.name,
+                    CASE WHEN c.public IS true THEN c.name ELSE '[private chute]' AS name,
                     EXISTS(SELECT 1 FROM rolling_updates WHERE chute_id = c.chute_id) AS update_in_progress,
                     COUNT(i.instance_id) AS active_instance_count
                 FROM chutes c
@@ -487,6 +488,7 @@ async def get_chute_utilization_v2():
                 cd.active_instance_count
             FROM latest_logs ll
             JOIN chute_details cd ON cd.chute_id = ll.chute_id
+            ORDER BY ll.total_requests_1h DESC
         """)
         results = await session.execute(query)
         rows = results.mappings().all()

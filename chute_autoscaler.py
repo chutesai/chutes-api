@@ -8,11 +8,12 @@ import random
 from loguru import logger
 from collections import defaultdict
 from datetime import timedelta, datetime, timezone
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 import aiohttp
 from sqlalchemy import (
     text,
     select,
+    func,
 )
 from sqlalchemy.orm import selectinload
 from api.database import get_session
@@ -33,7 +34,16 @@ from api.constants import (
 # Constants
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
 MIN_CHUTES_FOR_SCALING = 10
-PRICE_COMPATIBILITY_THRESHOLD = 0.5
+PRICE_COMPATIBILITY_THRESHOLD = 0.67
+# Any manual overrides per chute...
+LIMIT_OVERRIDES = {
+    "68d5c974-2efe-58af-9eed-78214df85f78": 20,
+}
+FAILSAFE = {
+    "154ad01c-a431-5744-83c8-651215124360": 75,
+    "de510462-c319-543b-9c67-00bcf807d2a7": 75,
+    "561e4875-254d-588f-a36f-57c9cdef8961": 45,
+}
 
 
 async def query_prometheus_batch(
@@ -41,13 +51,16 @@ async def query_prometheus_batch(
 ) -> Dict[str, Optional[float]]:
     """
     Execute multiple Prometheus queries concurrently.
+    Raises exception if any query fails to ensure script safety.
     """
     results = {}
 
     async def query_single(session: aiohttp.ClientSession, name: str, query: str) -> tuple:
         try:
             async with session.get(
-                f"{prometheus_url}/api/v1/query", params={"query": query}
+                f"{prometheus_url}/api/v1/query",
+                params={"query": query},
+                timeout=aiohttp.ClientTimeout(total=30),
             ) as response:
                 response.raise_for_status()
                 data = await response.json()
@@ -61,8 +74,8 @@ async def query_prometheus_batch(
                     return (name, chute_results)
                 return (name, {})
         except Exception as e:
-            logger.error(f"Error querying Prometheus for {name}: {e}")
-            return (name, {})
+            logger.error(f"Critical error querying Prometheus for {name}: {e}")
+            raise Exception(f"Prometheus query failed for {name}: {e}")
 
     async with aiohttp.ClientSession() as session:
         tasks = [query_single(session, name, query) for name, query in queries.items()]
@@ -73,10 +86,22 @@ async def query_prometheus_batch(
     return results
 
 
+async def get_all_chutes_from_db() -> Set[str]:
+    """
+    Get all chute IDs from the database.
+    """
+    async with get_session() as session:
+        result = await session.execute(text("SELECT chute_id FROM chutes"))
+        return {row.chute_id for row in result}
+
+
 async def get_all_chute_metrics() -> Dict[str, Dict]:
     """
-    Get metrics for all chutes from Prometheus.
+    Get metrics for all chutes from Prometheus, including zero defaults for chutes without metrics.
     """
+    # First, get all chute IDs from the database
+    all_db_chute_ids = await get_all_chutes_from_db()
+    logger.info(f"Found {len(all_db_chute_ids)} chutes in database")
 
     queries = {
         # Current utilization
@@ -94,34 +119,42 @@ async def get_all_chute_metrics() -> Dict[str, Dict]:
         "rate_limited_15m": "sum by (chute_id) (increase(requests_rate_limited_total[15m]))",
         "rate_limited_1h": "sum by (chute_id) (increase(requests_rate_limited_total[1h]))",
     }
-    results = await query_prometheus_batch(queries)
-    chute_metrics = defaultdict(
-        lambda: {
-            "utilization": {},
-            "completed_requests": {},
-            "rate_limited_requests": {},
-            "total_requests": {},
-            "rate_limit_ratio": {},
-        }
-    )
 
-    # Process results
-    all_chute_ids = set()
+    try:
+        results = await query_prometheus_batch(queries)
+    except Exception as e:
+        logger.error(f"Failed to query Prometheus, aborting autoscale: {e}")
+        raise
+
+    # Initialize metrics for all chutes with zero defaults
+    chute_metrics = {}
+    for chute_id in all_db_chute_ids:
+        chute_metrics[chute_id] = {
+            "utilization": {"current": 0.0, "5m": 0.0, "15m": 0.0, "1h": 0.0},
+            "completed_requests": {"5m": 0.0, "15m": 0.0, "1h": 0.0},
+            "rate_limited_requests": {"5m": 0.0, "15m": 0.0, "1h": 0.0},
+            "total_requests": {"5m": 0.0, "15m": 0.0, "1h": 0.0},
+            "rate_limit_ratio": {"5m": 0.0, "15m": 0.0, "1h": 0.0},
+        }
+
+    # Process Prometheus results and update metrics where data exists
+    prometheus_chute_ids = set()
     for metric_name, chute_values in results.items():
         for chute_id, value in chute_values.items():
-            all_chute_ids.add(chute_id)
-            if metric_name.startswith("utilization_"):
-                window = metric_name.replace("utilization_", "")
-                chute_metrics[chute_id]["utilization"][window] = value
-            elif metric_name.startswith("completed_"):
-                window = metric_name.replace("completed_", "")
-                chute_metrics[chute_id]["completed_requests"][window] = value
-            elif metric_name.startswith("rate_limited_"):
-                window = metric_name.replace("rate_limited_", "")
-                chute_metrics[chute_id]["rate_limited_requests"][window] = value
+            prometheus_chute_ids.add(chute_id)
+            if chute_id in chute_metrics:  # Only update if chute exists in DB
+                if metric_name.startswith("utilization_"):
+                    window = metric_name.replace("utilization_", "")
+                    chute_metrics[chute_id]["utilization"][window] = value
+                elif metric_name.startswith("completed_"):
+                    window = metric_name.replace("completed_", "")
+                    chute_metrics[chute_id]["completed_requests"][window] = value
+                elif metric_name.startswith("rate_limited_"):
+                    window = metric_name.replace("rate_limited_", "")
+                    chute_metrics[chute_id]["rate_limited_requests"][window] = value
 
     # Calculate derived metrics
-    for chute_id in all_chute_ids:
+    for chute_id in chute_metrics:
         metrics = chute_metrics[chute_id]
         for window in ["5m", "15m", "1h"]:
             completed = metrics["completed_requests"].get(window, 0) or 0
@@ -133,17 +166,25 @@ async def get_all_chute_metrics() -> Dict[str, Dict]:
             else:
                 metrics["rate_limit_ratio"][window] = 0.0
 
-    return dict(chute_metrics)
+    # Log information about chutes without metrics
+    chutes_without_metrics = all_db_chute_ids - prometheus_chute_ids
+    if chutes_without_metrics:
+        logger.info(
+            f"Found {len(chutes_without_metrics)} chutes in DB without Prometheus metrics (set to zero defaults)"
+        )
+
+    return chute_metrics
 
 
-async def log_capacity_metrics(chute_metrics: Dict[str, Dict], chute_actions: Dict[str, str]):
+async def log_capacity_metrics(
+    chute_metrics: Dict[str, Dict],
+    chute_actions: Dict[str, str],
+    chute_target_counts: Dict[str, int],
+):
     """
     Log all chute metrics to the capacity_log table.
     """
     async with get_session() as session:
-        result = await session.execute(text("SELECT NOW()"))
-        timestamp = result.scalar()
-
         instance_counts = {}
         result = await session.execute(
             text("""
@@ -160,7 +201,7 @@ async def log_capacity_metrics(chute_metrics: Dict[str, Dict], chute_actions: Di
         logged_count = 0
         for chute_id, metrics in chute_metrics.items():
             capacity_log = CapacityLog(
-                timestamp=timestamp,
+                timestamp=func.now(),
                 chute_id=chute_id,
                 utilization_current=metrics["utilization"].get("current"),
                 utilization_5m=metrics["utilization"].get("5m"),
@@ -180,6 +221,7 @@ async def log_capacity_metrics(chute_metrics: Dict[str, Dict], chute_actions: Di
                 rate_limited_requests_1h=metrics["rate_limited_requests"].get("1h"),
                 instance_count=instance_counts.get(chute_id, 0),
                 action_taken=chute_actions.get(chute_id, "no_action"),
+                target_count=chute_target_counts.get(chute_id, UNDERUTILIZED_CAP),
             )
             session.add(capacity_log)
             logged_count += 1
@@ -193,20 +235,21 @@ async def perform_autoscale():
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
     """
-    logger.info("Fetching metrics from Prometheus...")
+    logger.info("Fetching metrics from Prometheus and database...")
     chute_metrics = await get_all_chute_metrics()
 
-    # Safety check - ensure we have enough data (prometheus wiped?)
+    # Safety check - ensure we have enough data
     if len(chute_metrics) < MIN_CHUTES_FOR_SCALING:
         logger.warning(
-            f"Only found metrics for {len(chute_metrics)} chutes, need at least {MIN_CHUTES_FOR_SCALING}. Aborting."
+            f"Only found {len(chute_metrics)} chutes total, need at least {MIN_CHUTES_FOR_SCALING}. Aborting."
         )
         return
-    logger.info(f"Found metrics for {len(chute_metrics)} chutes")
+    logger.info(f"Processing metrics for {len(chute_metrics)} chutes")
 
     to_downsize = []
     scale_up_candidates = []
     chute_actions = {}
+    chute_target_counts = {}
 
     # Also need to check which chutes are being updated.
     async with get_session() as session:
@@ -231,17 +274,51 @@ async def perform_autoscale():
     # Analyze each chute.
     for chute_id, metrics in chute_metrics.items():
         info = chute_info.get(chute_id)
+        if not info:
+            logger.warning(f"Chute {chute_id} found in metrics but not in chute_info query")
+            # Set default target count for chutes not found in query
+            chute_target_counts[chute_id] = UNDERUTILIZED_CAP
+            continue
+
         if not info or not info.instance_count:
-            target_count = UNDERUTILIZED_CAP
-            await settings.redis_client.set(f"scale:{chute_id}", UNDERUTILIZED_CAP, ex=3700)
+            # Check if there's a failsafe minimum for this chute
+            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
+            target_count = max(UNDERUTILIZED_CAP, failsafe_min)
+            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             chute_actions[chute_id] = "scale_up_candidate"
-            scale_up_candidates.append((chute_id, UNDERUTILIZED_CAP))
-            logger.info(f"Scale up candidate: {chute_id} - no instances for past hour!")
+            chute_target_counts[chute_id] = target_count
+            scale_up_candidates.append((chute_id, target_count))
+            logger.info(
+                f"Scale up candidate: {chute_id} - no instances for past hour! Target: {target_count}"
+            )
             continue
 
         # Skip if rolling update in progress
         if info.has_rolling_update:
             logger.warning(f"Skipping {chute_id=}, rolling update in progress")
+            chute_actions[chute_id] = "skipped_rolling_update"
+            # Keep current instance count as target for rolling updates
+            chute_target_counts[chute_id] = info.instance_count
+            continue
+
+        # XXX Manual configurations, just in case, e.g. here kimi-k2-tools on vllm with b200s.
+        if chute_id in LIMIT_OVERRIDES:
+            limit = LIMIT_OVERRIDES[chute_id]
+            logger.warning(f"Setting manual override value to {chute_id=}: {limit=}")
+            await settings.redis_client.set(f"scale:{chute_id}", limit, ex=3700)
+            chute_target_counts[chute_id] = limit
+            if info.instance_count < limit:
+                scale_up_candidates.append((chute_id, limit - info.instance_count))
+                chute_actions[chute_id] = "scale_up_candidate"
+            elif info.instance_count >= limit:
+                chute_actions[chute_id] = "no_action"
+                num_to_remove = info.instance_count - limit or 1
+                to_downsize.append((chute_id, num_to_remove))
+                chute_actions[chute_id] = "scaled_down"
+                logger.info(
+                    f"Scale down candidate: {chute_id} - manual override {limit=}, "
+                    f"instances: {info.instance_count} - removing {num_to_remove} instances"
+                )
             continue
 
         # Check scale up conditions
@@ -262,6 +339,7 @@ async def perform_autoscale():
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             chute_actions[chute_id] = "scale_up_candidate"
+            chute_target_counts[chute_id] = target_count
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             logger.info(
                 f"Scale up candidate: {chute_id} - rate limiting increasing: "
@@ -280,6 +358,7 @@ async def perform_autoscale():
             scale_up_candidates.append((chute_id, num_to_add))
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             chute_actions[chute_id] = "scale_up_candidate"
+            chute_target_counts[chute_id] = target_count
             logger.info(
                 f"Scale up candidate: {chute_id} - high utilization: {utilization_1h:.1%} "
                 f"- allowing {num_to_add} additional instances"
@@ -301,29 +380,71 @@ async def perform_autoscale():
                     num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.33))
                 elif utilization_1h < 0.3:
                     num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.1))
+
+            # Check failsafe minimum
+            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
+            target_count = info.instance_count - num_to_remove
+
+            # Ensure we don't go below failsafe minimum
+            if target_count < failsafe_min:
+                if info.instance_count > failsafe_min:
+                    # Scale down to failsafe minimum only
+                    num_to_remove = info.instance_count - failsafe_min
+                    target_count = failsafe_min
+                    logger.info(f"Scaling down {chute_id} to failsafe minimum: {failsafe_min}")
+                else:
+                    # Already at or below failsafe, don't scale down
+                    num_to_remove = 0
+                    target_count = info.instance_count
+                    logger.info(
+                        f"Chute {chute_id} already at/below failsafe minimum: {failsafe_min}"
+                    )
+
             if num_to_remove > 0:
-                target_count = info.instance_count - num_to_remove
                 await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
                 to_downsize.append((chute_id, num_to_remove))
                 chute_actions[chute_id] = "scaled_down"
+                chute_target_counts[chute_id] = target_count
                 logger.info(
                     f"Scale down candidate: {chute_id} - low utilization: {utilization_1h:.1%}, "
-                    f"instances: {info.instance_count} - removing {num_to_remove} instances"
+                    f"instances: {info.instance_count} - removing {num_to_remove} instances, target: {target_count}"
                 )
+            else:
+                chute_actions[chute_id] = "no_action"
+                target_count = max(failsafe_min, info.instance_count)
+                chute_target_counts[chute_id] = target_count
+                await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
         elif info.new_chute:
             # Allow scaling new chutes, to a point.
-            num_to_add = max(0, 10 - info.instance_count)
+            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
+            # For new chutes, target is the max of 10, current count, or failsafe
+            target_count = max(10, failsafe_min)
+            num_to_add = max(0, target_count - info.instance_count)
+            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
+            chute_target_counts[chute_id] = target_count
             if num_to_add >= 1:
                 scale_up_candidates.append((chute_id, num_to_add))
-                await settings.redis_client.set(f"scale:{chute_id}", 10, ex=3700)
                 chute_actions[chute_id] = "scale_up_candidate"
+            elif info.instance_count > target_count:
+                num_to_remove = info.instance_count - target_count
+                to_downsize.append((chute_id, num_to_remove))
+                chute_actions[chute_id] = "scaled_down"
+                logger.info(
+                    f"Scale down candidate: {chute_id} - new chute override "
+                    f"instances: {info.instance_count} - removing {num_to_remove} instances to target: {target_count}"
+                )
+            else:
+                chute_actions[chute_id] = "no_action"
         else:
             # Nothing to do.
-            target_count = max(UNDERUTILIZED_CAP, info.instance_count)
+            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
+            target_count = max(failsafe_min, info.instance_count)
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
+            chute_actions[chute_id] = "no_action"
+            chute_target_counts[chute_id] = target_count
 
     # Log all metrics and actions
-    await log_capacity_metrics(chute_metrics, chute_actions)
+    await log_capacity_metrics(chute_metrics, chute_actions, chute_target_counts)
 
     logger.success(
         f"Found {len(scale_up_candidates)} scale up candidates and {len(to_downsize)} scale down candidates"
@@ -331,6 +452,7 @@ async def perform_autoscale():
 
     # Perform the actual scale downs
     instances_removed = 0
+    gpus_removed = 0
     for chute_id, num_to_remove in to_downsize:
         async with get_session() as session:
             chute = (
@@ -357,12 +479,12 @@ async def perform_autoscale():
             for instance in active:
                 if len(instance.nodes) != chute.node_selector.get("gpu_count"):
                     logger.warning(f"Bad instance? {instance.instance_id=} {instance.verified=}")
-                    # XXX Disabled until tested.
-                    # await purge_and_notify(
-                    #    instance, reason="instance node count does not match node selector"
-                    # )
+                    await purge_and_notify(
+                       instance, reason="instance node count does not match node selector"
+                    )
                     num_to_remove -= 1
                     instances_removed += 1
+                    gpus_removed += len(instance.nodes)
                 else:
                     instances.append(instance)
 
@@ -372,6 +494,39 @@ async def perform_autoscale():
                     f"Instance count for {chute_id=} is now below underutilized cap, skipping..."
                 )
                 continue
+
+            # Calculate compatible_chute_ids once per chute (before the removal loop)
+            # Get minimum GPU price for current chute
+            current_chute_min_rate = float("inf")
+            current_node_selector = NodeSelector(**chute.node_selector)
+            current_chute_gpus = set(current_node_selector.supported_gpus)
+            for gpu in current_node_selector.supported_gpus:
+                if gpu in SUPPORTED_GPUS:
+                    current_chute_min_rate = min(
+                        current_chute_min_rate, SUPPORTED_GPUS[gpu]["hourly_rate"]
+                    )
+
+            # Get all chutes and their hardware requirements
+            chutes_query = text("""
+                SELECT c.chute_id, c.node_selector
+                FROM chutes c
+            """)
+            chutes_result = await session.execute(chutes_query)
+
+            # Find chutes that the instance's nodes could run
+            compatible_chute_ids = set()
+            for row in chutes_result:
+                node_selector = NodeSelector(**row.node_selector)
+                supported_gpus = set(node_selector.supported_gpus)
+                if current_chute_gpus & supported_gpus:
+                    chute_min_rate = float("inf")
+                    for gpu in supported_gpus:
+                        if gpu in SUPPORTED_GPUS:
+                            chute_min_rate = min(chute_min_rate, SUPPORTED_GPUS[gpu]["hourly_rate"])
+                    # Only compatible if this chute's min price is at least threshold of current chute's min price
+                    if chute_min_rate >= (current_chute_min_rate * PRICE_COMPATIBILITY_THRESHOLD):
+                        compatible_chute_ids.add(row.chute_id)
+            compatible_chute_ids.add(chute_id)  # Always include current chute
 
             logger.info(
                 f"Downsizing chute {chute_id}, current count = {len(instances)}, removing {num_to_remove} unlucky instances"
@@ -397,70 +552,44 @@ async def perform_autoscale():
                     continue
                 instances = established_instances
 
-                # Calculate inventory imbalance based on proportional utilization and hardware compatibility.
+                # Recalculate inventory imbalance based on current state
                 miner_imbalance = {}
                 if len(instances) > 1:
-                    # Get minimum GPU price for current chute
-                    current_chute_min_rate = float("inf")
-                    current_node_selector = NodeSelector(chute.node_selector)
-                    current_chute_gpus = set(current_node_selector.supported_gpus)
-                    for gpu in current_node_selector.supported_gpus:
-                        if gpu in SUPPORTED_GPUS:
-                            current_chute_min_rate = min(
-                                current_chute_min_rate, SUPPORTED_GPUS[gpu]["hourly_rate"]
-                            )
-
-                    # Get all instance counts by miner and chute (only multi-instance miners).
+                    # Get current instance counts by miner and chute (only multi-instance miners)
+                    # Need to re-query to get updated counts after each removal
                     inventory_query = text("""
-                        SELECT i.miner_hotkey, i.chute_id, COUNT(*) as count
-                        FROM instances i
-                        WHERE i.verified = true AND i.active = true
-                        AND i.miner_hotkey IN :hotkeys
-                        GROUP BY i.miner_hotkey, i.chute_id
-                        HAVING SUM(COUNT(*)) OVER (PARTITION BY i.miner_hotkey) > 1
+                        WITH miner_counts AS (
+                            SELECT
+                                i.miner_hotkey,
+                                i.chute_id,
+                                COUNT(*) as count,
+                                SUM(COUNT(*)) OVER (PARTITION BY i.miner_hotkey) as total_instances_per_miner
+                            FROM instances i
+                            WHERE i.verified = true
+                            AND i.active = true
+                            AND i.miner_hotkey = ANY(:hotkeys)
+                            AND i.instance_id != ANY(:kicked_instances)
+                            GROUP BY i.miner_hotkey, i.chute_id
+                        )
+                        SELECT miner_hotkey, chute_id, count
+                        FROM miner_counts
+                        WHERE total_instances_per_miner > 1
                     """)
                     unique_hotkeys = list(set(inst.miner_hotkey for inst in instances))
                     inventory_result = await session.execute(
-                        inventory_query, {"hotkeys": unique_hotkeys}
+                        inventory_query,
+                        {
+                            "hotkeys": unique_hotkeys,
+                            "kicked_instances": list(kicked) if kicked else ["fakenews"],
+                        },
                     )
                     miner_inventories = defaultdict(lambda: defaultdict(int))
-                    all_chute_ids = set()
                     for row in inventory_result:
                         miner_inventories[row.miner_hotkey][row.chute_id] = row.count
-                        all_chute_ids.add(row.chute_id)
 
-                    # Skip if no miners have multiple instances.
+                    # Skip if no miners have multiple instances
                     if miner_inventories:
-                        # Get all chutes and their hardware requirements.
-                        chutes_query = text("""
-                            SELECT c.chute_id, c.node_selector
-                            FROM chutes c
-                            WHERE c.chute_id IN :chute_ids
-                        """)
-                        chutes_result = await session.execute(
-                            chutes_query, {"chute_ids": list(all_chute_ids)}
-                        )
-
-                        # Find chutes that the instance's nodes could run.
-                        compatible_chute_ids = set()
-                        for row in chutes_result:
-                            node_selector = NodeSelector(row.node_selector)
-                            supported_gpus = set(node_selector.supported_gpus)
-                            if current_chute_gpus & supported_gpus:
-                                chute_min_rate = float("inf")
-                                for gpu in supported_gpus:
-                                    if gpu in SUPPORTED_GPUS:
-                                        chute_min_rate = min(
-                                            chute_min_rate, SUPPORTED_GPUS[gpu]["hourly_rate"]
-                                        )
-                                # Only compatible if this chute's min price is at least 50% of current chute's min price.
-                                if chute_min_rate >= (
-                                    current_chute_min_rate * PRICE_COMPATIBILITY_THRESHOLD
-                                ):
-                                    compatible_chute_ids.add(row.chute_id)
-                        compatible_chute_ids.add(chute_id)
-
-                        # Get latest capacity metrics for compatible chutes.
+                        # Get latest capacity metrics for compatible chutes
                         capacity_query = text("""
                             WITH latest_capacity AS (
                                 SELECT DISTINCT ON (chute_id)
@@ -469,25 +598,31 @@ async def perform_autoscale():
                                     rate_limit_ratio_1h,
                                     instance_count
                                 FROM capacity_log
-                                WHERE chute_id IN :chute_ids
+                                WHERE chute_id = ANY(:chute_ids)
                                 ORDER BY chute_id, timestamp DESC
-                            )
-                            SELECT
-                                lc.*,
-                                COALESCE(i.active_count, 0) as current_instance_count
-                            FROM latest_capacity lc
-                            LEFT JOIN (
+                            ),
+                            current_counts AS (
                                 SELECT chute_id, COUNT(*) as active_count
                                 FROM instances
                                 WHERE verified = true AND active = true
+                                AND instance_id != ANY(:kicked_instances)
                                 GROUP BY chute_id
-                            ) i ON lc.chute_id = i.chute_id
+                            )
+                            SELECT
+                                lc.*,
+                                COALESCE(cc.active_count, 0) as current_instance_count
+                            FROM latest_capacity lc
+                            LEFT JOIN current_counts cc ON lc.chute_id = cc.chute_id
                         """)
                         capacity_result = await session.execute(
-                            capacity_query, {"chute_ids": list(compatible_chute_ids)}
+                            capacity_query,
+                            {
+                                "chute_ids": list(compatible_chute_ids),
+                                "kicked_instances": list(kicked) if kicked else ["fakenews"],
+                            },
                         )
 
-                        # Calculate "capacity need" for each compatible chute
+                        # Recalculate "capacity need" for each compatible chute
                         chute_needs = {}
                         total_weighted_need = 0
                         for row in capacity_result:
@@ -503,7 +638,7 @@ async def perform_autoscale():
                             }
                             total_weighted_need += capacity_need
 
-                        # Calculate ideal distributions.
+                        # Recalculate ideal distributions
                         ideal_distribution = {}
                         for c_id, needs in chute_needs.items():
                             ideal_distribution[c_id] = (
@@ -512,7 +647,7 @@ async def perform_autoscale():
                                 else 0
                             )
 
-                        # Calculate imbalance score for each miner with multiple instances.
+                        # Calculate imbalance score for each miner with multiple instances
                         for hotkey, inventory in miner_inventories.items():
                             compatible_inventory = {
                                 c_id: count
@@ -521,11 +656,11 @@ async def perform_autoscale():
                             }
                             total_compatible_instances = sum(compatible_inventory.values())
 
-                            # Skip if miner has only one instance on compatible chutes.
+                            # Skip if miner has only one instance on compatible chutes
                             if total_compatible_instances <= 1:
                                 continue
 
-                            # Calculate actual vs ideal distribution.
+                            # Calculate actual vs ideal distribution
                             total_deviation = 0
                             overconcentration_on_current = 0
                             for c_id in compatible_chute_ids:
@@ -533,13 +668,13 @@ async def perform_autoscale():
                                 actual_ratio = actual_count / total_compatible_instances
                                 ideal_ratio = ideal_distribution.get(c_id, 0)
 
-                                # Exponential to punish the largest imbalances the most.
+                                # Exponential to punish the largest imbalances the most
                                 deviation = (actual_ratio - ideal_ratio) ** 2
                                 total_deviation += deviation
                                 if c_id == chute_id and actual_ratio > ideal_ratio:
                                     overconcentration_on_current = actual_ratio - ideal_ratio
 
-                            # RMSD as the imbalance score.
+                            # RMSD as the imbalance score
                             imbalance_score = (
                                 (total_deviation / len(compatible_chute_ids)) ** 0.5
                                 if len(compatible_chute_ids) > 0
@@ -556,7 +691,7 @@ async def perform_autoscale():
                                 "ideal_ratio": ideal_distribution.get(chute_id, 0),
                             }
 
-                        # Prioritize downscaling miners who are overconcentrated on this specific chute.
+                        # Prioritize downscaling miners who are overconcentrated on this specific chute
                         if miner_imbalance:
                             overconcentrated = {
                                 hotkey: data
@@ -572,7 +707,7 @@ async def perform_autoscale():
                                     ),
                                 )
 
-                                # Filter instances to only those belonging to the unlucky miner.
+                                # Filter instances to only those belonging to the unlucky miner
                                 unlucky_miner_instances = [
                                     instance
                                     for instance in instances
@@ -594,7 +729,7 @@ async def perform_autoscale():
                                     )
                                     logger.info(unlucky_reason)
 
-                # If there are no unbalanced miners, just select miner with the most instances.
+                # If there are no unbalanced miners, just select miner with the most instances
                 if not unlucky_instance:
                     counts = defaultdict(int)
                     for instance in instances:
@@ -626,15 +761,15 @@ async def perform_autoscale():
                     )
                     logger.info(unlucky_reason)
 
-                # Purge the unlucky one.
+                # Purge the unlucky one
                 if unlucky_instance:
                     kicked.add(unlucky_instance.instance_id)
-                    # XXX Disabled until tested.
-                    # await purge_and_notify(unlucky_instance, reason=unlucky_reason)
+                    await purge_and_notify(unlucky_instance, reason=unlucky_reason)
                     instances_removed += 1
+                    gpus_removed += len(unlucky_instance.nodes)
 
     if instances_removed:
-        logger.success(f"Scaled down {instances_removed} underutilized instances")
+        logger.success(f"Scaled down, {instances_removed=} and {gpus_removed=}")
     return instances_removed
 
 
