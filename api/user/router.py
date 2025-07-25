@@ -89,6 +89,29 @@ async def get_user_growth(
     return response
 
 
+@router.get("/user_id_lookup")
+async def admin_user_id_lookup(
+    username: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    user = (
+        (await db.execute(select(User).where(User.username == username)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {username}"
+        )
+    return {"user_id": user.user_id}
+
+
 @router.post("/admin_balance_change")
 async def admin_balance_change(
     balance_req: BalanceRequest,
