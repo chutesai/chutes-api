@@ -125,7 +125,8 @@ chute = build_vllm_chute(
     model_name="{{ args.model }}",
     image="{{ image }}",
     node_selector=NodeSelector(),
-    revision="{{ revision }}",
+    revision="{{ args.revision }}",
+    concurrency="{{ args.concurrency }}",
     {%- if args.engine_args %}
     engine_args=dict(
         {%- if args.engine_args.tokenizer is not none %}
