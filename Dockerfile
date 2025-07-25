@@ -154,5 +154,6 @@ ADD --chown=chutes tokenizer /app/tokenizer
 ADD --chown=chutes watchtower.py /app/watchtower.py
 ADD --chown=chutes cacher.py /app/cacher.py
 ADD --chown=chutes downscaler.py /app/downscaler.py
+ADD --chown=chutes chute_autoscaler.py /app/chute_autoscaler.py
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

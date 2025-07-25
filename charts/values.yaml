@@ -13,108 +13,6 @@ consecutive_failure_limit: 7
 
 datadog_enabled: false
 
-# Taken from https://taostats.io/validators - allows linking accounts (where validators get free access)
-validators:
-  - 5DFwFpurRFaT5VtjdsATUnRakGhvUdgCghF61457QbWdsnJp
-  - 5GKH9FPPnWSUoeeTJp19wVtd84XqFW4pyK2ijV2GsFbhTrP1
-  - 5F4tQyWrhfGVcNhoqeiNsR6KjD4wMZ2kfhLj4oHYuyHbZAc3
-  - 5CsvRJXuR955WojnGMdok1hbhffZyB4N5ocrv82f3p5A2zVp
-  - 5HEo565WAy4Dbq3Sv271SAi7syBSofyfhhwRNjFNSM2gP9M2
-  - 5FxcZraZACr4L78jWkcYe3FHdiwiAUzrKLVtsSwkvFobBKqq
-  - 5HK5tp6t2S59DywmHRWPBVJeJ86T61KjurYqeooqj8sREpeN
-  - 5Dd8gaRNdhm1YP7G1hcB1N842ecAUQmbLjCRLqH5ycaTGrWv
-  - 5HYk8DMKWK8TJyPzZJ9vmZk7B5NPCgjnZoyZ1ZsB54RXdN47
-  - 5GP7c3fFazW9GXK8Up3qgu2DJBk8inu4aK9TZy3RuoSWVCMi
-  - 5FFApaS75bv5pJHfAp2FVLBj9ZaXuFDjEypsaBNc1wCfe52v
-  - 5Fy3MjrdKRvUWSuJa4Yd5dmBYunzKNmXnLcvP22NfaTvhQCY
-  - 5DvTpiniW9s3APmHRYn8FroUWyfnLtrsid5Mtn5EwMXHN2ed
-  - 5E4z3h9yVhmQyCFWNbY9BPpwhx4xFiPwq3eeqmBgVF6KULde
-  - 5G1NjW9YhXLadMWajvTkfcJy6up3yH2q1YzMXDTi6ijanChe
-  - 5F2CsUDVbRbVMXTh9fAzF9GacjVX7UapvRxidrxe7z8BYckQ
-  - 5DM7CPqPKtMSADhFKYsstsCS4Tm4Kd6PMXoh6DdqY4MtxmtX
-  - 5DQ2Geab6G25wiZ4jGH6wJM8fekrm1QhV9hrRuntjBVxxKZm
-  - 5Hp18g9P8hLGKp9W3ZDr4bvJwba6b6bY3P2u3VdYf8yMR8FM
-  - 5F27Eqz2PhyMtGMEce898x31DokNqRVxkm5AhDDe6rDGNvoY
-  - 5CVS9d1NcQyWKUyadLevwGxg6LgBcF9Lik6NSnbe5q59jwhE
-  - 5HbScNssaEfioJHXjcXdpyqo1AKnYjymidGF8opcF9rTFZdT
-  - 5HRB5xi9W1yEdJGEWPsgtH71mPjAvN2Z9HxNvRMMcK5kXuW2
-  - 5FFM6Nvvm78GqyMratgXXvjbqZPi7SHgSQ81nyS96jBuUWgt
-  - 5Fq5v71D4LX8Db1xsmRSy6udQThcZ8sFDqxQFwnUZ1BuqY5A
-  - 5CoZxgtfhcJKX2HmkwnsN18KbaT9aih9eF3b6qVPTgAUbifj
-  - 5Deo9Q3SnZWNPSEPRTgapbyy6egKu2oaNSqD4RQHHJEuzD9Y
-  - 5GmvyePN9aYErXBBhBnxZKGoGk4LKZApE4NkaSzW62CYCYNA
-  - 5HeKSHGdsRCwVgyrHchijnZJnq4wiv6GqoDLNah8R5WMfnLB
-  - 5D4oo3Z5VFUJtFWcK9wtfPqkGnzVubSFMnWnMKUVkDxsrWSj
-  - 5E4hBXkG9uVc1y9zdNzgCiLHrPbFukChkYeN1LxFnZgg4ASL
-  - 5GcBK8PDrVifV1xAf4Qkkk6KsbsmhDdX9atvk8vyKU8xdU63
-  - 5HBVrFGy6oYhhh71m9fFGYD7zbKyAeHnWN8i8s9fJTBMCtEE
-
-# Taken from btcli subnet list
-subnet_owners:
-  - 5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM
-  - 5HCFWvRqzSHWRPecN7q8J6c7aKQnrCZTMHstPv39xL1wgDHh
-  - 5EcYQ3W77ndrmMWdvVQusoFqY8doxfP3U2zrh7xZQiaz7avY
-  - 5G26HqQg8M6hfw9q84gM3udYHHymThmswRKgSGtwdcduBSos
-  - 5CXGPMnq9RCCLUEvp9G2iUuabw69TSFM155UVS1S4Zmusaxv
-  - 5CFmgJ2SQZBjgdyDvwsWhAQatEENLt6k2gWvpkjeHeMm95yv
-  - 5CfSg4e23Z3aTXvc2XZie8ZE1xkqRPoyVRFdWUuyyjGxJrMA
-  - 5CiQ1cxLB1ABBJyf9FAR8CRhfcKgs4M8QaRgmHh318PKLqvb
-  - 5F6tnxzAAxbhaWRmeUmB63JEM3VXBNSmqb3AwYJVDStQjw8y
-  - 5FsbubeciqtB5Nik3umL2iD4fG8FcC9GbT9nHJfXMj4mJJZ9
-  - 5EvNESR7DfSMmdwJ3crtBW1ENAhq3f99X4FCbTi1hDUNCWAW
-  - 5EtM9iXMAYRsmt6aoQAoWNDX6yaBnjhmnEQhWKv8HpwkVtML
-  - 5ELzhHvgUqmnAYs74vFWjMMehXNeHkRtkreAa3g8QQS96PCp
-  - 5HBswBt1A9Ahx6U76abXXGd7VmabmCNBGhSK2vrP71GSxtgZ
-  - 5GR5TWbbD2Du1DuokpU6gQzKEjNwUWiB6aewjdAn8nREdiMF
-  - 5DLd6s3A9xLRapjnM54drzpn3K4qEEd73XJ2rz66L6J2xWD8
-  - 5DnhT8EDV3ufCVHHfi7GFD4Z93MKNwWPwVZqh5o7UPYuwn6d
-  - 5E7a4a7QETrNjoZ2SbVSJMaavrQeyTEaHgjBPDUDxBKjUaMZ
-  - 5G9FYbXLvGTvGEgYF9tm56oW7RzkSFRCduhJeQq8EML54BXs
-  - 5CFJNoUYbdw9NvU2MuvQuxG88BWBKYbEQPxg1sVieck16TRq
-  - 5CMEwRYLefRmtJg7zzRyJtcXrQqmspr9B1r1nKySDReA37Z1
-  - 5GsHpHeCGhxstoEEZTR64VUashnDP4n7ir7LbNdRfXpkMU7R
-  - 5HZ3rviPkBERT9H5dE5km4hML1PCyjLo5yX8B3Y4fvamBwxw
-  - 5GvTa4JUKbUHqeJH8YLUDaV7jHChrfUy4n5zWrcCiU7bySoc
-  - 5FpX2DN3A38JzXfEDZwBsDhCM527L6BDPi6MKGeXvGxFPipx
-  - 5F6aRdsBHajN2NhZHBTB6ibBFu7YuZZEWruWzB8x6B6GiZ4D
-  - 5EbrhAoHNxgpPkTdVtEr3mvSudCYc1E7P5oHwPuxA2hvmV3u
-  - 5Cyfk5Jjee6uCafjZyUUjtKd7Q4qh1yJ48Ts7bkT9xXaDqe1
-  - 5E9fVY1jexCNVMjd2rdBsAxeamFGEMfzHcyTn2fHgdHeYc5p
-  - 5HHHHHzgLnYRvnKkHd45cRUDMHXTSwx7MjUzxBrKbY4JfZWn
-  - 5DcErZoVeG7ZShXwKFgJURuGXmdAVwmYzyvLAgpPjrPznDMB
-  - 5CwLjwPdkwM9Rhia5VA5WSDVsL5FKWH24j5Tb96WnuUnqcst
-  - 5DWgkCSvq4brWSNLDU9FBgTk1ZpAQ2y6t3ky97CvEVuS9Qad
-  - 5HinUfk5SqBUAbkMtgdNoum3VJvwrLgdvwW5sbXA1UPYZ8uB
-  - 5DthmKBR83sUdudSfgFnsxBkTYtYTFLJUgovNfb1TSKVLiTH
-  - 5EsmkLf4VnpgNM31syMjAWsUrQdW2Yu5xzWbv6oDQydP9vVx
-  - 5C8aDHZtpBJr4WGbvzJL2MBckeDYg1kZXTEG5S47oWEtsZUE
-  - 5DXqqdrvu5FK3dASRVTCdGPZKx4Q9nkAZZSmibKG6PEEeW4j
-  - 5EFJ7mEVyjxT3iXqxuHyMMuGgJKFt85tb5s4vEvnCTpSoP3w
-  - 5G3qVaXzKMPDm5AJ3dpzbpUC27kpccBvDwzSWXrq8M6qMmbC
-  - 5F9Qvcz22Fwq4cm58o2bShiL6n8BnJmhqXB1cispBpqRfN6w
-  - 5FCSevLkofmKZRixMawp6jyyjBty1AeSCLa7N5Fv892DYkXX
-  - 5Gbdb5s2WrRaFXTgMUiVNBKACe3cgSLwZNyK2Vwvjfvf6jUJ
-  - 5HjMs5JDrLH3Hknmfm1gDq7nFYAv6M7t9v3EWMctSRXJS9HC
-  - 5FsREvyUXSZWYRqVyQLDdpYmZZPnkhZyW6HjooozKP1nQkwu
-  - 5FbcZiAHA75i2bPVrF7wa9mFaxV1eM27HR63kJtbpb8spvmf
-  - 5Ek83SLwZi1P6s3E3kCfmxZJ5HHVepDsdpxJERfvpiopG5jz
-  - 5CS2niAKFcmvE3i2Lb9ukR66Enkn26ygievde3dMepJ9ha9x
-  - 5D2Qc9ud7vTJrPzk8mT1ruY8oV8UaDP3ttepD7zVNNi943ch
-  - 5C6z6jXv1iuwKMwfuWrZgPrrtxQZh7YKYThLXoMA2VgFG8w2
-  - 5HgrQSNzy7Jq2kjVhT9LHmtcFuQzrTTzpAYcd4uAFumuwAyj
-  - 5FqACMtcegZxxopgu1g7TgyrnyD8skurr9QDPLPhxNQzsThe
-  - 5EgfUiH6A99dhihMzp7eMM8UDkvmFjCWgM5gnpBN8UgLrVuz
-  - 5F2HTUqtk9VWQwXkkUX9oFSXUkAib74qw7s3W7KyZP88AmYe
-  - 5EZxb7YGiyMxD18Nv6hk9wi7NkhasgRMN1ssXSMqPcPFjauW
-  - 5DkRocgbM16F41BLGs3UMoqwKdrbmkzQiUHgnzLHXrV9frob
-  - 5G77DNXrfAxbvi53p3mh88kRMySBcJsv9j9cH4KU6ALWXgQF
-  - 5GmhjCqDTsRcKqPFw4FDig8tVBfFGNrwP8ywe5En5hnELwDQ
-  - 5DyEYZ2pB3bP6BN8Xpo5ova3TEPiT82j5oHXqgQ8csKE9stH
-  - 5FH9AQM4kqbkdC9jyV5FrdEWVYt41nkhFstop7Vhyfb9ZsXt
-  - 5H9djFYLbh72qDkXq3283FfnhzL5np4TmQgir9kBQmg99GkG
-  - 5ECEsYL82fbXx9KfTZy7G2KXSurnScciJyAVMHZjekc8jUbn
-  - 5EsNzkZ3DwDqCsYmSJDeGXX51dQJd5broUCH6dbDjvkTcicD
-
 api:
   replicaCount: 12
   image: parachutes/validator:latest
@@ -328,7 +226,7 @@ cacher:
   affinity: {}
   tolerations: []
 
-downscaler:
+chuteAutoscaler:
   image: parachutes/validator:latest
   imagePullPolicy: Always
   resources:

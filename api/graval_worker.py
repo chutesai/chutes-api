@@ -293,7 +293,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
             node.miner_hotkey,
             url,
             payload=challenge,
-            timeout=int(graval_config["estimate"] * 1.2),
+            timeout=int(graval_config["estimate"] * 2.5),
         ) as response:
             if response.status != 200:
                 error_message = (
@@ -316,7 +316,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
 
                 # Check if the time taken to generate the proof matches what we'd expect.
                 delta = time.time() - started_at
-                if not graval_config["estimate"] * 0.55 < delta < graval_config["estimate"] * 1.2:
+                if not graval_config["estimate"] * 0.55 < delta < graval_config["estimate"] * 1.5:
                     error_message = (
                         f"GraVal decryption challenge completed in {int(delta)} seconds, "
                         f"but estimate is {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"
@@ -485,6 +485,14 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
         ):
             logger.warning("Found no matching nodes, did they disappear?")
             return False, "nodes not found"
+
+    # Re-order nodes...
+    node_map = {node.uuid: node for node in nodes}
+    nodes = [node_map[uuid] for uuid in uuids if uuid in node_map]
+    if len(nodes) != len(uuids):
+        error_message = f"Expecting {len(uuids)} nodes but only found {len(nodes)}"
+        logger.warning(error_message)
+        return False, error_message
 
     # XXX Check if the advertised IP matches outbound IP, disabled temporarily.
     # if not await verify_outbound_ip(nodes):

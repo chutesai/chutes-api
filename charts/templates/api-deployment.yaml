@@ -24,6 +24,9 @@ spec:
       labels:
         {{- include "api.labels" . | nindent 8 }}
         {{- if .Values.datadog_enabled }}
+        prometheus.io/path: /_metrics
+        prometheus.io/port: "8000"
+        prometheus.io/scrape: "true"
         tags.datadoghq.com/env: chutes-prod
         tags.datadoghq.com/service: api
         tags.datadoghq.com/version: 0.0.1
@@ -69,10 +72,6 @@ spec:
             {{- end }}
             - name: MEMCACHED
               value: memcached
-            - name: VALIDATOR_HOTKEYS
-              value: {{ join "," .Values.validators | quote }}
-            - name: SUBNET_OWNER_HOTKEYS
-              value: {{ join "," .Values.subnet_owners | quote }}
             - name: FIRST_PAYMENT_BONUS
               value: "{{ .Values.account_settings.first_payment_bonus.bonus }}"
             - name: FIRST_PAYMENT_BONUS_THRESHOLD

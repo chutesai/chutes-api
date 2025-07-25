@@ -49,6 +49,12 @@ from api.instance.util import LeastConnManager
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
+from api.metrics.capacity import (
+    track_capacity,
+    track_request_completed,
+    track_request_rate_limited,
+)
+
 
 # Tokenizer for input/output token estimation.
 TOKENIZER = AutoTokenizer.from_pretrained(
@@ -747,6 +753,14 @@ async def invoke(
     avoid = []
     for attempt_idx in range(5):
         async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
+            try:
+                if attempt_idx == 0 and manager.mean_count is not None:
+                    track_capacity(chute.chute_id, manager.mean_count, chute.concurrency or 1.0)
+            except Exception as cap_err:
+                logger.error(
+                    f"Failed tracking chute capacity metrics: {cap_err}\n{traceback.format_exc()}"
+                )
+
             if not target:
                 if infra_overload:
                     logger.warning(f"All miners are at max capacity: {chute.name=}")
@@ -827,6 +841,8 @@ async def invoke(
                         )
                     except Exception as exc:
                         logger.warning(f"Error clearing consecutive failures: {exc}")
+
+                    track_request_completed(chute.chute_id)
 
                     # Calculate the credits used and deduct from user's balance asynchronously.
                     # For LLMs and Diffusion chutes, we use custom per token/image step pricing,
@@ -931,6 +947,7 @@ async def invoke(
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
                     infra_overload = True
+                    track_request_rate_limited(chute.chute_id)
                 elif isinstance(exc, BadRequest):
                     error_message = "BAD_REQUEST"
                     error_detail = str(exc)

@@ -1,14 +1,14 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: downscaler
+  name: chute-autoscaler
   labels:
-    {{- include "downscaler.labels" . | nindent 4 }}
+    {{- include "chuteAutoscaler.labels" . | nindent 4 }}
 spec:
-  schedule: "*/45 * * * *"
+  schedule: "*/30 * * * *"
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 10
   jobTemplate:
     spec:
       backoffLimit: 2
@@ -16,30 +16,30 @@ spec:
       template:
         metadata:
           labels:
-            {{- include "downscaler.labels" . | nindent 12 }}
+            {{- include "chuteAutoscaler.labels" . | nindent 12 }}
         spec:
           restartPolicy: Never
-          {{- with .Values.downscaler.nodeSelector }}
+          {{- with .Values.chuteAutoscaler.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.downscaler.affinity }}
+          {{- with .Values.chuteAutoscaler.affinity }}
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.downscaler.tolerations }}
+          {{- with .Values.chuteAutoscaler.tolerations }}
           tolerations:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           containers:
-            - name: downscaler
-              image: "{{ .Values.downscaler.image }}"
-              imagePullPolicy: {{ .Values.downscaler.imagePullPolicy }}
-              command: ["poetry", "run", "python", "downscaler.py"]
+            - name: chute-autoscaler
+              image: "{{ .Values.chuteAutoscaler.image }}"
+              imagePullPolicy: {{ .Values.chuteAutoscaler.imagePullPolicy }}
+              command: ["poetry", "run", "python", "chute_autoscaler.py"]
               env:
                 {{- include "chutes.sensitiveEnv" . | nindent 16 }}
                 {{- include "chutes.commonEnv" . | nindent 16 }}
                 - name: MEMCACHED
                   value: memcached
               resources:
-                {{- toYaml .Values.downscaler.resources | nindent 16 }}
+                {{- toYaml .Values.chuteAutoscaler.resources | nindent 16 }}

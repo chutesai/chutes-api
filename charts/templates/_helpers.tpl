@@ -56,8 +56,8 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
-{{- define "downscaler.labels" -}}
-app.kubernetes.io/name: downscaler
+{{- define "chuteAutoscaler.labels" -}}
+app.kubernetes.io/name: chute-autoscaler
 redis-access: "true"
 db-access: "true"
 {{- end }}

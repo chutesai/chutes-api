@@ -10,12 +10,13 @@ import hashlib
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from loguru import logger
-from fastapi import FastAPI, Request, APIRouter, HTTPException, status
+from fastapi import FastAPI, Request, APIRouter, HTTPException, status, Response
 from fastapi.responses import ORJSONResponse
 from fastapi_cache import FastAPICache
 from fastapi_cache.backends.memcached import MemcachedBackend
 from sqlalchemy import text
 import api.database.orms  # noqa: F401
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
 from api.bounty.router import router as bounty_router
@@ -142,7 +143,15 @@ async def ping():
         )
 
 
+# Prometheus metrics endpoint.
+async def get_latest_metrics(request: Request):
+    if request.headers.get("x-forwarded-for"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
 default_router.get("/ping")(ping)
+default_router.get("/_metrics")(get_latest_metrics)
 
 app.include_router(default_router)
 app.include_router(host_invocation_router)
