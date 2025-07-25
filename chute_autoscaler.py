@@ -15,16 +15,19 @@ from sqlalchemy import (
     text,
     select,
     func,
+    and_,
+    or_,
 )
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
 from api.gpu import SUPPORTED_GPUS
+from api.util import notify_deleted
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance
 from api.capacity_log.schemas import CapacityLog
 import api.database.orms  # noqa
-from watchtower import purge_and_notify  # noqa
+from watchtower import purge, purge_and_notify  # noqa
 from api.constants import (
     UNDERUTILIZED_CAP,
     UTILIZATION_SCALE_UP,
@@ -45,6 +48,44 @@ FAILSAFE = {
     "de510462-c319-543b-9c67-00bcf807d2a7": 75,
     "561e4875-254d-588f-a36f-57c9cdef8961": 45,
 }
+
+
+async def instance_cleanup():
+    """
+    Clean up instances that should have been verified by now.
+    """
+    async with get_session() as session:
+        query = (
+            select(Instance)
+            .where(
+                or_(
+                    and_(
+                        Instance.config_id.isnot(None),
+                        Instance.created_at <= func.now() - timedelta(minutes=25),
+                    ),
+                    and_(
+                        Instance.config_id.is_(None),
+                        Instance.created_at <= func.now() - timedelta(hours=1, minutes=15),
+                    ),
+                ),
+                Instance.verified.is_(False),
+            )
+            .options(joinedload(Instance.chute))
+        )
+        total = 0
+        for instance in (await session.execute(query)).unique().scalars().all():
+            delta = int((datetime.now() - instance.created_at.replace(tzinfo=None)).total_seconds())
+            logger.warning(
+                f"Purging instance {instance.instance_id} of {instance.chute.name} "
+                f"which was created {instance.created_at} ({delta} seconds ago)..."
+            )
+            logger.warning(f"  {instance.verified=} {instance.active=}")
+            await purge_and_notify(
+                instance, reason="Instance failed to verify within a reasonable amount of time"
+            )
+            total += 1
+        if total:
+            logger.success(f"Purged {total} total unverified+old instances.")
 
 
 async def query_prometheus_batch(
@@ -236,6 +277,9 @@ async def perform_autoscale(dry_run: bool = False):
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
     """
+    logger.info("Performing instance cleanup...")
+    await instance_cleanup()
+
     logger.info(f"Fetching metrics from Prometheus and database... (dry_run={dry_run})")
     chute_metrics = await get_all_chute_metrics()
 
@@ -465,6 +509,7 @@ async def perform_autoscale(dry_run: bool = False):
     # Perform the actual scale downs
     instances_removed = 0
     gpus_removed = 0
+    notification_tasks = []
     for chute_id, num_to_remove in to_downsize:
         async with get_session() as session:
             chute = (
@@ -491,9 +536,9 @@ async def perform_autoscale(dry_run: bool = False):
             for instance in active:
                 if len(instance.nodes) != chute.node_selector.get("gpu_count"):
                     logger.warning(f"Bad instance? {instance.instance_id=} {instance.verified=}")
-                    # await purge_and_notify(
-                    #    instance, reason="instance node count does not match node selector"
-                    # )
+                    reason = "instance node count does not match node selector"
+                    await purge(instance, reason=reason)
+                    notification_tasks.append(notify_deleted(instance, message=reason))
                     num_to_remove -= 1
                     instances_removed += 1
                     gpus_removed += len(instance.nodes)
@@ -776,9 +821,18 @@ async def perform_autoscale(dry_run: bool = False):
                 # Purge the unlucky one
                 if unlucky_instance:
                     kicked.add(unlucky_instance.instance_id)
-                    # await purge_and_notify(unlucky_instance, reason=unlucky_reason)
+                    await purge(unlucky_instance, reason=unlucky_reason)
+                    notification_tasks.append(
+                        notify_deleted(unlucky_instance, message=unlucky_reason)
+                    )
                     instances_removed += 1
                     gpus_removed += len(unlucky_instance.nodes)
+
+    # Send deletion notifications after a short delay to allow some connection draining.
+    if notification_tasks:
+        logger.info("Waiting to send deletion notification...")
+        await asyncio.sleep(30)
+        await asyncio.gather(*notification_tasks)
 
     if instances_removed:
         logger.success(f"Scaled down, {instances_removed=} and {gpus_removed=}")

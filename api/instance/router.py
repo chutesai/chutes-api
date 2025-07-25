@@ -155,16 +155,16 @@ async def _check_scalable(db, chute, hotkey):
     query = text("""
         SELECT
             COUNT(*) AS total_count,
+            COUNT(CASE WHEN active IS true AND verified IS true THEN 1 ELSE NULL END) AS active_count,
             COUNT(CASE WHEN miner_hotkey = :hotkey THEN 1 ELSE NULL END) AS hotkey_count
         FROM instances
         WHERE chute_id = :chute_id
-        AND active = true
-        AND verified = true
     """)
     count_result = (
         (await db.execute(query, {"chute_id": chute_id, "hotkey": hotkey})).mappings().first()
     )
     current_count = count_result["total_count"]
+    active_count = count_result["active_count"]
     hotkey_count = count_result["hotkey_count"]
 
     # Get target count from Redis
@@ -192,6 +192,11 @@ async def _check_scalable(db, chute, hotkey):
                 f"using conservative current count as default: {target_count}"
             )
 
+    # Edge case where we have too many instances already but none are active.
+    if current_count <= target_count + 2 and active_count == 0:
+        logger.warning("No active instances, allowing!")
+        return
+
     # When there is a rolling update in progress, use the permitted list.
     if chute.rolling_update:
         limit = chute.rolling_update.permitted.get(hotkey, 0) or 0
@@ -211,7 +216,7 @@ async def _check_scalable(db, chute, hotkey):
     if current_count >= target_count:
         logger.warning(
             f"SCALELOCK: chute {chute_id=} {chute.name} has reached target capacity: "
-            f"current={current_count}, target={target_count}, hotkey_count={hotkey_count}"
+            f"{current_count=}, {active_count=}, {target_count=}, {hotkey_count=}"
         )
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
@@ -220,7 +225,7 @@ async def _check_scalable(db, chute, hotkey):
 
     # Prevent monopolizing capped chutes.
     remaining_slots = target_count - current_count
-    if hotkey_count > 0 and remaining_slots <= 2:
+    if remaining_slots <= 1 and hotkey_count == current_count:
         logger.warning(
             f"SCALELOCK: chute {chute_id=} {chute.name} - miner {hotkey} already has {hotkey_count} instances, "
             f"only {remaining_slots} slots remaining"
@@ -339,7 +344,8 @@ async def get_launch_config(
 
     # Load the chute and check if it's scalable.
     chute = await _load_chute(db, chute_id)
-    await _check_scalable(db, chute, hotkey)
+    if not job_id:
+        await _check_scalable(db, chute, hotkey)
 
     # Associated with a job?
     disk_gb = None
@@ -422,6 +428,10 @@ async def claim_launch_config(
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
 
+    # Re-check scalable...
+    if not launch_config.job_id:
+        await _check_scalable(db, chute, launch_config.miner_hotkey)
+
     # IP matches?
     x_forwarded_for = request.headers.get("X-Forwarded-For")
     actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
@@ -486,7 +496,7 @@ async def claim_launch_config(
     if semcomp(chute.chutes_version, "0.3.1") >= 0:
         image_id = chute.image_id
         patch_version = chute.image.patch_version
-        if "CFSV_OS" in os.environ:
+        if "CFSV_OP" in os.environ:
             task = await generate_fs_hash.kiq(
                 image_id,
                 patch_version,
@@ -792,7 +802,7 @@ async def verify_launch_config_instance(
     if semcomp(instance.chute.chutes_version, "0.3.1") < 0:
         image_id = instance.chute.image_id
         patch_version = instance.chute.image.patch_version
-        if "CFSV_OS" in os.environ:
+        if "CFSV_OP" in os.environ:
             task = await generate_fs_hash.kiq(
                 image_id,
                 patch_version,
@@ -894,8 +904,6 @@ async def create_instance(
 
     # Scalable?
     await _check_scalable(db, chute, hotkey)
-    if chute.rolling_update:
-        chute.rolling_update.permitted[hotkey] -= 1
 
     nodes = None
     try:
