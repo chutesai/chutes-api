@@ -91,7 +91,7 @@ async def _check_blacklisted(db, hotkey):
     return mgnode
 
 
-async def _check_scalable(db, chute, hotkey):
+async def _check_scalable_legacy(db, chute, hotkey):
     chute_id = chute.chute_id
 
     # Check utilization.
@@ -150,7 +150,7 @@ async def _check_scalable(db, chute, hotkey):
             )
 
 
-async def _check_scalable_v2(db, chute, hotkey):
+async def _check_scalable(db, chute, hotkey):
     chute_id = chute.chute_id
     query = text("""
         SELECT
@@ -167,9 +167,30 @@ async def _check_scalable_v2(db, chute, hotkey):
     current_count = count_result["total_count"]
     hotkey_count = count_result["hotkey_count"]
 
-    # Get target count from Redis.
+    # Get target count from Redis
     scale_value = await settings.redis_client.get(f"scale:{chute_id}")
-    target_count = int(scale_value) if scale_value else current_count
+    if scale_value:
+        target_count = int(scale_value)
+    else:
+        # Fallback to database.
+        capacity_query = text("""
+            SELECT target_count
+            FROM capacity_log
+            WHERE chute_id = :chute_id
+            ORDER BY timestamp DESC
+            LIMIT 1
+        """)
+        capacity_result = await db.execute(capacity_query, {"chute_id": chute_id})
+        capacity_row = capacity_result.first()
+        if capacity_row and capacity_row.target_count is not None:
+            target_count = capacity_row.target_count
+            logger.info(f"Retrieved target_count from CapacityLog for {chute_id}: {target_count}")
+        else:
+            target_count = current_count
+            logger.warning(
+                f"No target_count in Redis or CapacityLog for {chute_id}, "
+                f"using conservative current count as default: {target_count}"
+            )
 
     # When there is a rolling update in progress, use the permitted list.
     if chute.rolling_update:
@@ -186,7 +207,7 @@ async def _check_scalable_v2(db, chute, hotkey):
             chute.rolling_update.permitted[hotkey] -= 1
         return
 
-    # Check if scaling is allowed based on target count
+    # Check if scaling is allowed based on target count.
     if current_count >= target_count:
         logger.warning(
             f"SCALELOCK: chute {chute_id=} {chute.name} has reached target capacity: "
@@ -197,7 +218,7 @@ async def _check_scalable_v2(db, chute, hotkey):
             detail=f"Chute {chute_id} has reached its target capacity of {target_count} instances.",
         )
 
-    # Additional check: if miner already has instances and we're near capacity, limit.
+    # Prevent monopolizing capped chutes.
     remaining_slots = target_count - current_count
     if hotkey_count > 0 and remaining_slots <= 2:
         logger.warning(

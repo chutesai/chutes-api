@@ -226,19 +226,6 @@ cacher:
   affinity: {}
   tolerations: []
 
-downscaler:
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-  resources:
-    requests:
-      cpu: "1"
-      memory: "4Gi"
-    limits:
-      cpu: "1"
-      memory: "4Gi"
-  affinity: {}
-  tolerations: []
-
 chuteAutoscaler:
   image: parachutes/validator:latest
   imagePullPolicy: Always

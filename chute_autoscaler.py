@@ -480,7 +480,7 @@ async def perform_autoscale():
                 if len(instance.nodes) != chute.node_selector.get("gpu_count"):
                     logger.warning(f"Bad instance? {instance.instance_id=} {instance.verified=}")
                     await purge_and_notify(
-                       instance, reason="instance node count does not match node selector"
+                        instance, reason="instance node count does not match node selector"
                     )
                     num_to_remove -= 1
                     instances_removed += 1
