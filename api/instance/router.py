@@ -362,7 +362,7 @@ async def get_launch_config(
             )
 
         # Don't allow too many miners to try to claim the job...
-        if len(job.miner_history) >= 3:
+        if len(job.miner_history) >= 15:
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail=f"Job {job_id} for chute {chute_id} is already in a race between {len(job.miner_history)} miners",
@@ -467,7 +467,7 @@ async def claim_launch_config(
                 chute,
                 miner_hotkey=launch_config.miner_hotkey,
             )
-            assert code == chute.code
+            assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
         except AssertionError as exc:
             logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
             launch_config.failed_at = func.now()

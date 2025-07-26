@@ -395,9 +395,9 @@ async def perform_autoscale(dry_run: bool = False):
         # Scale up candidate: high utilization
         elif utilization_1h >= UTILIZATION_SCALE_UP:
             num_to_add = 1
-            if utilization_1h >= 0.9:
+            if utilization_1h >= UTILIZATION_SCALE_UP * 1.5:
                 num_to_add = max(5, int(info.instance_count * 0.5))
-            elif utilization_1h >= 0.8:
+            elif utilization_1h >= UTILIZATION_SCALE_UP * 1.25:
                 num_to_add = max(3, int(info.instance_count * 0.3))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
