@@ -474,12 +474,10 @@ async def get_chute_utilization_v2():
                     c.chute_id,
                     CASE WHEN c.public IS true THEN c.name ELSE '[private chute]' END AS name,
                     EXISTS(SELECT 1 FROM rolling_updates WHERE chute_id = c.chute_id) AS update_in_progress,
-                    COUNT(i.instance_id) AS active_instance_count
+                    COUNT(CASE WHEN i.active = true AND i.verified = true THEN 1 END) AS active_instance_count
                 FROM chutes c
                 LEFT JOIN instances i ON c.chute_id = i.chute_id
-                    AND i.active = true
-                    AND i.verified = true
-                GROUP BY c.chute_id, c.name
+                GROUP BY c.chute_id, c.name, c.public
             )
             SELECT
                 ll.*,
