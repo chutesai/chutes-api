@@ -376,11 +376,11 @@ async def perform_autoscale(dry_run: bool = False):
         if rate_limit_5m > rate_limit_15m > rate_limit_1h and rate_limit_15m >= RATE_LIMIT_SCALE_UP:
             num_to_add = 1
             if rate_limit_15m >= 0.5:
-                num_to_add = max(3, int(info.instance_count * 0.5))
+                num_to_add = max(5, int(info.instance_count * 0.5))
             elif rate_limit_15m >= 0.3:
-                num_to_add = max(2, int(info.instance_count * 0.3))
+                num_to_add = max(3, int(info.instance_count * 0.3))
             else:
-                num_to_add = max(1, int(info.instance_count * 0.2))
+                num_to_add = max(2, int(info.instance_count * 0.2))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             chute_actions[chute_id] = "scale_up_candidate"
@@ -396,9 +396,9 @@ async def perform_autoscale(dry_run: bool = False):
         elif utilization_1h >= UTILIZATION_SCALE_UP:
             num_to_add = 1
             if utilization_1h >= 0.9:
-                num_to_add = max(2, int(info.instance_count * 0.4))
+                num_to_add = max(5, int(info.instance_count * 0.5))
             elif utilization_1h >= 0.8:
-                num_to_add = max(1, int(info.instance_count * 0.25))
+                num_to_add = max(3, int(info.instance_count * 0.3))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
@@ -422,8 +422,8 @@ async def perform_autoscale(dry_run: bool = False):
             num_to_remove = 1
             if info.instance_count > UNDERUTILIZED_CAP:
                 if utilization_1h < 0.1:
-                    num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.33))
-                elif utilization_1h < 0.3:
+                    num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.2))
+                elif utilization_1h < 0.2:
                     num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.1))
 
             # Check failsafe minimum
