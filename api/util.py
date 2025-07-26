@@ -15,6 +15,7 @@ import secrets
 import orjson as json
 import base64
 import semver
+from urllib.parse import urlparse
 from loguru import logger
 from typing import Set
 from ipaddress import ip_address, IPv4Address, IPv6Address
@@ -533,3 +534,54 @@ def get_current_hf_commit(model_name: str):
         if ref.ref == "refs/heads/main":
             return ref.target_commit
     return None
+
+
+def check_vlm_payload(request_body: dict):
+    """
+    Check if a VLM request is valid (for us).
+    """
+    if not request_body.get("messages"):
+        return
+    for message in request_body["messages"]:
+        if not isinstance(message.get("content"), list):
+            continue
+
+        for content_item in message["content"]:
+            if not isinstance(content_item, dict):
+                continue
+            for key in ("image", "image_url", "video", "video_url"):
+                if key not in content_item:
+                    continue
+                visual_data = content_item[key]
+                visual_type = "video" if "video" in key else "image"
+                if isinstance(visual_data, dict) and "url" in visual_data:
+                    url = visual_data["url"]
+                    if url.startswith(f"data:{visual_type}") or url.startswith("data:"):
+                        continue
+                    parsed_url = urlparse(url)
+                    if parsed_url.scheme != "https":
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Only HTTPS URLs are supported for {visual_type}s. Got scheme: {parsed_url.scheme}",
+                        )
+                    if parsed_url.port is not None and parsed_url.port != 443:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
+                        )
+                elif isinstance(visual_data, str):
+                    if visual_data.startswith(f"data:{visual_type}") or visual_data.startswith(
+                        "data:"
+                    ):
+                        continue
+                    parsed_url = urlparse(visual_data)
+                    if parsed_url.scheme != "https":
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Only HTTPS URLs are supported for {visual_type}s. Got scheme: {parsed_url.scheme}",
+                        )
+                    if parsed_url.port is not None and parsed_url.port != 443:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
+                        )

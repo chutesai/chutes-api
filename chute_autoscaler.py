@@ -370,9 +370,10 @@ async def perform_autoscale(dry_run: bool = False):
         rate_limit_15m = metrics["rate_limit_ratio"].get("15m", 0)
         rate_limit_1h = metrics["rate_limit_ratio"].get("1h", 0)
         utilization_1h = metrics["utilization"].get("1h", 0)
+        utilization_15m = metrics["utilization"].get("15m", 0)
 
         # Scale up candidate: increasing rate limiting and significant rate limiting
-        if rate_limit_5m >= RATE_LIMIT_SCALE_UP:
+        if rate_limit_15m >= RATE_LIMIT_SCALE_UP:
             num_to_add = 1
             if rate_limit_15m >= 0.5:
                 num_to_add = max(3, int(info.instance_count * 0.5))
@@ -392,11 +393,11 @@ async def perform_autoscale(dry_run: bool = False):
             )
 
         # Scale up candidate: high utilization
-        elif utilization_1h >= UTILIZATION_SCALE_UP:
+        elif utilization_15m >= UTILIZATION_SCALE_UP:
             num_to_add = 1
-            if utilization_1h >= UTILIZATION_SCALE_UP * 1.5:
+            if utilization_15m >= UTILIZATION_SCALE_UP * 1.5:
                 num_to_add = max(3, int(info.instance_count * 0.5))
-            elif utilization_1h >= UTILIZATION_SCALE_UP * 1.25:
+            elif utilization_15m >= UTILIZATION_SCALE_UP * 1.25:
                 num_to_add = max(2, int(info.instance_count * 0.25))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))

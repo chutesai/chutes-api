@@ -316,7 +316,7 @@ async def verify_povw_challenge(nodes: list[Node]) -> bool:
 
                 # Check if the time taken to generate the proof matches what we'd expect.
                 delta = time.time() - started_at
-                if not graval_config["estimate"] * 0.55 < delta < graval_config["estimate"] * 1.5:
+                if not graval_config["estimate"] * 0.55 < delta < graval_config["estimate"] * 1.7:
                     error_message = (
                         f"GraVal decryption challenge completed in {int(delta)} seconds, "
                         f"but estimate is {graval_config['estimate']} seconds: {url=} {node.miner_hotkey=}"

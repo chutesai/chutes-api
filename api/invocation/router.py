@@ -35,6 +35,7 @@ from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
+from api.util import check_vlm_payload
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -425,6 +426,15 @@ async def _invoke(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"{chute.name} does not current support {problematic}",
                 )
+
+        # Images must be https or base64.
+        if chute.name == "internlm/Intern-S1":
+            try:
+                check_vlm_payload(request_body)
+            except Exception as exc:
+                if isinstance(exc, HTTPException):
+                    raise
+                logger.error(f"Failed to check VLM request payload: {exc}")
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
