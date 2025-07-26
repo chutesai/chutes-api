@@ -104,18 +104,18 @@ async def _cached_get_metrics(table, cache_key):
                 if isinstance(value, decimal.Decimal):
                     row[key] = float(value)
         cache_value = base64.b64encode(gzip.compress(json.dumps(rv)))
-        await settings.memcache.set(cache_key, cache_value, exptime=1800)
+        await settings.memcache.set(cache_key, cache_value, exptime=300)
         return rv
 
 
 @router.get("/stats/llm")
 async def get_llm_stats():
-    return await _cached_get_metrics("vllm_metrics", b"llm_stats")
+    return await _cached_get_metrics("vllm_metrics", b"llmstats")
 
 
 @router.get("/stats/diffusion")
 async def get_diffusion_stats():
-    return await _cached_get_metrics("diffusion_metrics", b"diff_stats")
+    return await _cached_get_metrics("diffusion_metrics", b"diffstats")
 
 
 @router.get("/exports/{year}/{month}/{day}/{hour_format}")
