@@ -7,7 +7,6 @@ import asyncio
 import argparse
 import random
 from loguru import logger
-from collections import defaultdict
 from datetime import timedelta, datetime, timezone
 from typing import Dict, Optional, Set
 import aiohttp
@@ -373,14 +372,14 @@ async def perform_autoscale(dry_run: bool = False):
         utilization_1h = metrics["utilization"].get("1h", 0)
 
         # Scale up candidate: increasing rate limiting and significant rate limiting
-        if rate_limit_5m > rate_limit_15m > rate_limit_1h and rate_limit_15m >= RATE_LIMIT_SCALE_UP:
+        if rate_limit_5m >= RATE_LIMIT_SCALE_UP:
             num_to_add = 1
             if rate_limit_15m >= 0.5:
-                num_to_add = max(5, int(info.instance_count * 0.5))
+                num_to_add = max(3, int(info.instance_count * 0.5))
             elif rate_limit_15m >= 0.3:
-                num_to_add = max(3, int(info.instance_count * 0.3))
+                num_to_add = max(2, int(info.instance_count * 0.3))
             else:
-                num_to_add = max(2, int(info.instance_count * 0.2))
+                num_to_add = max(1, int(info.instance_count * 0.2))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             chute_actions[chute_id] = "scale_up_candidate"
@@ -396,9 +395,9 @@ async def perform_autoscale(dry_run: bool = False):
         elif utilization_1h >= UTILIZATION_SCALE_UP:
             num_to_add = 1
             if utilization_1h >= UTILIZATION_SCALE_UP * 1.5:
-                num_to_add = max(5, int(info.instance_count * 0.5))
+                num_to_add = max(3, int(info.instance_count * 0.5))
             elif utilization_1h >= UTILIZATION_SCALE_UP * 1.25:
-                num_to_add = max(3, int(info.instance_count * 0.3))
+                num_to_add = max(2, int(info.instance_count * 0.25))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
@@ -609,224 +608,226 @@ async def perform_autoscale(dry_run: bool = False):
                     continue
                 instances = established_instances
 
-                # Recalculate inventory imbalance based on current state
-                miner_imbalance = {}
-                if len(instances) > 1:
-                    # Get current instance counts by miner and chute (only multi-instance miners)
-                    # Need to re-query to get updated counts after each removal
-                    inventory_query = text("""
-                        WITH miner_counts AS (
-                            SELECT
-                                i.miner_hotkey,
-                                i.chute_id,
-                                COUNT(*) as count,
-                                SUM(COUNT(*)) OVER (PARTITION BY i.miner_hotkey) as total_instances_per_miner
-                            FROM instances i
-                            WHERE i.verified = true
-                            AND i.active = true
-                            AND i.miner_hotkey = ANY(:hotkeys)
-                            AND i.instance_id != ANY(:kicked_instances)
-                            GROUP BY i.miner_hotkey, i.chute_id
-                        )
-                        SELECT miner_hotkey, chute_id, count
-                        FROM miner_counts
-                        WHERE total_instances_per_miner > 1
-                    """)
-                    unique_hotkeys = list(set(inst.miner_hotkey for inst in instances))
-                    inventory_result = await session.execute(
-                        inventory_query,
-                        {
-                            "hotkeys": unique_hotkeys,
-                            "kicked_instances": list(kicked) if kicked else ["fakenews"],
-                        },
-                    )
-                    miner_inventories = defaultdict(lambda: defaultdict(int))
-                    for row in inventory_result:
-                        miner_inventories[row.miner_hotkey][row.chute_id] = row.count
+                ##############################################################
+                # XXX Switching to purely random instance selection for now. #
+                ##############################################################
+                # # Recalculate inventory imbalance based on current state
+                # miner_imbalance = {}
+                # if len(instances) > 1:
+                #     # Get current instance counts by miner and chute (only multi-instance miners)
+                #     # Need to re-query to get updated counts after each removal
+                #     inventory_query = text("""
+                #         WITH miner_counts AS (
+                #             SELECT
+                #                 i.miner_hotkey,
+                #                 i.chute_id,
+                #                 COUNT(*) as count,
+                #                 SUM(COUNT(*)) OVER (PARTITION BY i.miner_hotkey) as total_instances_per_miner
+                #             FROM instances i
+                #             WHERE i.verified = true
+                #             AND i.active = true
+                #             AND i.miner_hotkey = ANY(:hotkeys)
+                #             AND i.instance_id != ANY(:kicked_instances)
+                #             GROUP BY i.miner_hotkey, i.chute_id
+                #         )
+                #         SELECT miner_hotkey, chute_id, count
+                #         FROM miner_counts
+                #         WHERE total_instances_per_miner > 1
+                #     """)
+                #     unique_hotkeys = list(set(inst.miner_hotkey for inst in instances))
+                #     inventory_result = await session.execute(
+                #         inventory_query,
+                #         {
+                #             "hotkeys": unique_hotkeys,
+                #             "kicked_instances": list(kicked) if kicked else ["fakenews"],
+                #         },
+                #     )
+                #     miner_inventories = defaultdict(lambda: defaultdict(int))
+                #     for row in inventory_result:
+                #         miner_inventories[row.miner_hotkey][row.chute_id] = row.count
 
-                    # Skip if no miners have multiple instances
-                    if miner_inventories:
-                        # Get latest capacity metrics for compatible chutes
-                        capacity_query = text("""
-                            WITH latest_capacity AS (
-                                SELECT DISTINCT ON (chute_id)
-                                    chute_id,
-                                    utilization_1h,
-                                    rate_limit_ratio_1h,
-                                    instance_count
-                                FROM capacity_log
-                                WHERE chute_id = ANY(:chute_ids)
-                                ORDER BY chute_id, timestamp DESC
-                            ),
-                            current_counts AS (
-                                SELECT chute_id, COUNT(*) as active_count
-                                FROM instances
-                                WHERE verified = true AND active = true
-                                AND instance_id != ANY(:kicked_instances)
-                                GROUP BY chute_id
-                            )
-                            SELECT
-                                lc.*,
-                                COALESCE(cc.active_count, 0) as current_instance_count
-                            FROM latest_capacity lc
-                            LEFT JOIN current_counts cc ON lc.chute_id = cc.chute_id
-                        """)
-                        capacity_result = await session.execute(
-                            capacity_query,
-                            {
-                                "chute_ids": list(compatible_chute_ids),
-                                "kicked_instances": list(kicked) if kicked else ["fakenews"],
-                            },
-                        )
+                #     # Skip if no miners have multiple instances
+                #     if miner_inventories:
+                #         # Get latest capacity metrics for compatible chutes
+                #         capacity_query = text("""
+                #             WITH latest_capacity AS (
+                #                 SELECT DISTINCT ON (chute_id)
+                #                     chute_id,
+                #                     utilization_1h,
+                #                     rate_limit_ratio_1h,
+                #                     instance_count
+                #                 FROM capacity_log
+                #                 WHERE chute_id = ANY(:chute_ids)
+                #                 ORDER BY chute_id, timestamp DESC
+                #             ),
+                #             current_counts AS (
+                #                 SELECT chute_id, COUNT(*) as active_count
+                #                 FROM instances
+                #                 WHERE verified = true AND active = true
+                #                 AND instance_id != ANY(:kicked_instances)
+                #                 GROUP BY chute_id
+                #             )
+                #             SELECT
+                #                 lc.*,
+                #                 COALESCE(cc.active_count, 0) as current_instance_count
+                #             FROM latest_capacity lc
+                #             LEFT JOIN current_counts cc ON lc.chute_id = cc.chute_id
+                #         """)
+                #         capacity_result = await session.execute(
+                #             capacity_query,
+                #             {
+                #                 "chute_ids": list(compatible_chute_ids),
+                #                 "kicked_instances": list(kicked) if kicked else ["fakenews"],
+                #             },
+                #         )
 
-                        # Recalculate "capacity need" for each compatible chute
-                        chute_needs = {}
-                        total_weighted_need = 0
-                        for row in capacity_result:
-                            # Capacity need = utilization * instance count
-                            utilization = max(row.utilization_1h or 0, 0.01)
-                            instance_count = row.current_instance_count or 1
-                            capacity_need = utilization * instance_count
-                            chute_needs[row.chute_id] = {
-                                "utilization": utilization,
-                                "instance_count": instance_count,
-                                "capacity_need": capacity_need,
-                                "rate_limit": row.rate_limit_ratio_1h or 0,
-                            }
-                            total_weighted_need += capacity_need
+                #         # Recalculate "capacity need" for each compatible chute
+                #         chute_needs = {}
+                #         total_weighted_need = 0
+                #         for row in capacity_result:
+                #             # Capacity need = utilization * instance count
+                #             utilization = max(row.utilization_1h or 0, 0.01)
+                #             instance_count = row.current_instance_count or 1
+                #             capacity_need = utilization * instance_count
+                #             chute_needs[row.chute_id] = {
+                #                 "utilization": utilization,
+                #                 "instance_count": instance_count,
+                #                 "capacity_need": capacity_need,
+                #                 "rate_limit": row.rate_limit_ratio_1h or 0,
+                #             }
+                #             total_weighted_need += capacity_need
 
-                        # Recalculate ideal distributions
-                        ideal_distribution = {}
-                        for c_id, needs in chute_needs.items():
-                            ideal_distribution[c_id] = (
-                                needs["capacity_need"] / total_weighted_need
-                                if total_weighted_need > 0
-                                else 0
-                            )
+                #         # Recalculate ideal distributions
+                #         ideal_distribution = {}
+                #         for c_id, needs in chute_needs.items():
+                #             ideal_distribution[c_id] = (
+                #                 needs["capacity_need"] / total_weighted_need
+                #                 if total_weighted_need > 0
+                #                 else 0
+                #             )
 
-                        # Calculate imbalance score for each miner with multiple instances
-                        for hotkey, inventory in miner_inventories.items():
-                            compatible_inventory = {
-                                c_id: count
-                                for c_id, count in inventory.items()
-                                if c_id in compatible_chute_ids
-                            }
-                            total_compatible_instances = sum(compatible_inventory.values())
+                #         # Calculate imbalance score for each miner with multiple instances
+                #         for hotkey, inventory in miner_inventories.items():
+                #             compatible_inventory = {
+                #                 c_id: count
+                #                 for c_id, count in inventory.items()
+                #                 if c_id in compatible_chute_ids
+                #             }
+                #             total_compatible_instances = sum(compatible_inventory.values())
 
-                            # Skip if miner has only one instance on compatible chutes
-                            if total_compatible_instances <= 1:
-                                continue
+                #             # Skip if miner has only one instance on compatible chutes
+                #             if total_compatible_instances <= 1:
+                #                 continue
 
-                            # Calculate actual vs ideal distribution
-                            total_deviation = 0
-                            overconcentration_on_current = 0
-                            for c_id in compatible_chute_ids:
-                                actual_count = compatible_inventory.get(c_id, 0)
-                                actual_ratio = actual_count / total_compatible_instances
-                                ideal_ratio = ideal_distribution.get(c_id, 0)
+                #             # Calculate actual vs ideal distribution
+                #             total_deviation = 0
+                #             overconcentration_on_current = 0
+                #             for c_id in compatible_chute_ids:
+                #                 actual_count = compatible_inventory.get(c_id, 0)
+                #                 actual_ratio = actual_count / total_compatible_instances
+                #                 ideal_ratio = ideal_distribution.get(c_id, 0)
 
-                                # Exponential to punish the largest imbalances the most
-                                deviation = (actual_ratio - ideal_ratio) ** 2
-                                total_deviation += deviation
-                                if c_id == chute_id and actual_ratio > ideal_ratio:
-                                    overconcentration_on_current = actual_ratio - ideal_ratio
+                #                 # Exponential to punish the largest imbalances the most
+                #                 deviation = (actual_ratio - ideal_ratio) ** 2
+                #                 total_deviation += deviation
+                #                 if c_id == chute_id and actual_ratio > ideal_ratio:
+                #                     overconcentration_on_current = actual_ratio - ideal_ratio
 
-                            # RMSD as the imbalance score
-                            imbalance_score = (
-                                (total_deviation / len(compatible_chute_ids)) ** 0.5
-                                if len(compatible_chute_ids) > 0
-                                else 0
-                            )
-                            miner_imbalance[hotkey] = {
-                                "score": imbalance_score,
-                                "overconcentration": overconcentration_on_current,
-                                "current_chute": compatible_inventory.get(chute_id, 0),
-                                "total_compatible": total_compatible_instances,
-                                "compatible_chutes": len(compatible_inventory),
-                                "actual_ratio": compatible_inventory.get(chute_id, 0)
-                                / total_compatible_instances,
-                                "ideal_ratio": ideal_distribution.get(chute_id, 0),
-                            }
+                #             # RMSD as the imbalance score
+                #             imbalance_score = (
+                #                 (total_deviation / len(compatible_chute_ids)) ** 0.5
+                #                 if len(compatible_chute_ids) > 0
+                #                 else 0
+                #             )
+                #             miner_imbalance[hotkey] = {
+                #                 "score": imbalance_score,
+                #                 "overconcentration": overconcentration_on_current,
+                #                 "current_chute": compatible_inventory.get(chute_id, 0),
+                #                 "total_compatible": total_compatible_instances,
+                #                 "compatible_chutes": len(compatible_inventory),
+                #                 "actual_ratio": compatible_inventory.get(chute_id, 0)
+                #                 / total_compatible_instances,
+                #                 "ideal_ratio": ideal_distribution.get(chute_id, 0),
+                #             }
 
-                        # Prioritize downscaling miners who are overconcentrated on this specific chute
-                        if miner_imbalance:
-                            overconcentrated = {
-                                hotkey: data
-                                for hotkey, data in miner_imbalance.items()
-                                if data["overconcentration"] > 0.05
-                            }
-                            if overconcentrated:
-                                unlucky = max(
-                                    overconcentrated.keys(),
-                                    key=lambda h: (
-                                        overconcentrated[h]["overconcentration"],
-                                        overconcentrated[h]["score"],
-                                    ),
-                                )
+                #         # Prioritize downscaling miners who are overconcentrated on this specific chute
+                #         if miner_imbalance:
+                #             overconcentrated = {
+                #                 hotkey: data
+                #                 for hotkey, data in miner_imbalance.items()
+                #                 if data["overconcentration"] > 0.05
+                #             }
+                #             if overconcentrated:
+                #                 unlucky = max(
+                #                     overconcentrated.keys(),
+                #                     key=lambda h: (
+                #                         overconcentrated[h]["overconcentration"],
+                #                         overconcentrated[h]["score"],
+                #                     ),
+                #                 )
 
-                                # Filter instances to only those belonging to the unlucky miner
-                                unlucky_miner_instances = [
-                                    instance
-                                    for instance in instances
-                                    if instance.miner_hotkey == unlucky
-                                ]
-                                if unlucky_miner_instances:
-                                    unlucky_instance = random.choice(unlucky_miner_instances)
-                                    imb_data = miner_imbalance[unlucky]
-                                    unlucky_reason = (
-                                        f"Selected instance from hardware-aware imbalanced miner: "
-                                        f"{chute.chute_id=} {unlucky_instance.instance_id=} "
-                                        f"{unlucky_instance.miner_hotkey=} "
-                                        f"GPU: {unlucky_instance.nodes[0].gpu_identifier}, "
-                                        f"actual: {imb_data['actual_ratio']:.1%} vs ideal: {imb_data['ideal_ratio']:.1%} "
-                                        f"(+{imb_data['overconcentration']:.1%} overconcentrated), "
-                                        f"across {imb_data['compatible_chutes']} compatible chutes, "
-                                        f"imbalance score: {imb_data['score']:.3f}, "
-                                        f"{idx + 1} of {num_to_remove}"
-                                    )
-                                    logger.info(unlucky_reason)
+                #                 # Filter instances to only those belonging to the unlucky miner
+                #                 unlucky_miner_instances = [
+                #                     instance
+                #                     for instance in instances
+                #                     if instance.miner_hotkey == unlucky
+                #                 ]
+                #                 if unlucky_miner_instances:
+                #                     unlucky_instance = random.choice(unlucky_miner_instances)
+                #                     imb_data = miner_imbalance[unlucky]
+                #                     unlucky_reason = (
+                #                         f"Selected instance from hardware-aware imbalanced miner: "
+                #                         f"{chute.chute_id=} {unlucky_instance.instance_id=} "
+                #                         f"{unlucky_instance.miner_hotkey=} "
+                #                         f"GPU: {unlucky_instance.nodes[0].gpu_identifier}, "
+                #                         f"actual: {imb_data['actual_ratio']:.1%} vs ideal: {imb_data['ideal_ratio']:.1%} "
+                #                         f"(+{imb_data['overconcentration']:.1%} overconcentrated), "
+                #                         f"across {imb_data['compatible_chutes']} compatible chutes, "
+                #                         f"imbalance score: {imb_data['score']:.3f}, "
+                #                         f"{idx + 1} of {num_to_remove}"
+                #                     )
+                #                     logger.info(unlucky_reason)
 
-                # If there are no unbalanced miners, just select miner with the most instances
-                if not unlucky_instance:
-                    counts = defaultdict(int)
-                    for instance in instances:
-                        counts[instance.miner_hotkey] += 1
-                    max_count = max(counts.values())
-                    if max_count > 1:
-                        max_miners = [
-                            hotkey for hotkey, count in counts.items() if count == max_count
-                        ]
-                        unlucky = random.choice(max_miners)
-                        unlucky_instance = random.choice(
-                            [instance for instance in instances if instance.miner_hotkey == unlucky]
-                        )
-                        unlucky_reason = (
-                            "Selected an unlucky instance via miner duplicates: "
-                            f"{chute.chute_id=} {unlucky_instance.instance_id=} "
-                            f"{unlucky_instance.miner_hotkey=} {unlucky_instance.nodes[0].gpu_identifier=} "
-                            f"{idx + 1} of {num_to_remove}"
-                        )
-                        logger.info(unlucky_reason)
+                # # If there are no unbalanced miners, just select miner with the most instances
+                # if not unlucky_instance:
+                #     counts = defaultdict(int)
+                #     for instance in instances:
+                #         counts[instance.miner_hotkey] += 1
+                #     max_count = max(counts.values())
+                #     if max_count > 1:
+                #         max_miners = [
+                #             hotkey for hotkey, count in counts.items() if count == max_count
+                #         ]
+                #         unlucky = random.choice(max_miners)
+                #         unlucky_instance = random.choice(
+                #             [instance for instance in instances if instance.miner_hotkey == unlucky]
+                #         )
+                #         unlucky_reason = (
+                #             "Selected an unlucky instance via miner duplicates: "
+                #             f"{chute.chute_id=} {unlucky_instance.instance_id=} "
+                #             f"{unlucky_instance.miner_hotkey=} {unlucky_instance.nodes[0].gpu_identifier=} "
+                #             f"{idx + 1} of {num_to_remove}"
+                #         )
+                #         logger.info(unlucky_reason)
 
-                # If still no selected kick instance, select totally randomly (for now, probably geo-distribution, node stats, uptime, etc. later on).
-                if not unlucky_instance:
-                    unlucky_instance = random.choice(instances)
-                    unlucky_reason = (
-                        f"Selected an unlucky instance at random: {chute.chute_id=} "
-                        f"{unlucky_instance.instance_id=} {unlucky_instance.miner_hotkey=} "
-                        f"{idx + 1} of {num_to_remove}"
-                    )
-                    logger.info(unlucky_reason)
+                # # If still no selected kick instance, select totally randomly (for now, probably geo-distribution, node stats, uptime, etc. later on).
+                # if not unlucky_instance:
+
+                # XXX Completely random instance selection to purge.
+                unlucky_instance = random.choice(instances)
+                unlucky_reason = (
+                    f"Selected an unlucky instance at random: {chute.chute_id=} "
+                    f"{unlucky_instance.instance_id=} {unlucky_instance.miner_hotkey=} "
+                    f"{idx + 1} of {num_to_remove}"
+                )
+                logger.info(unlucky_reason)
 
                 # Purge the unlucky one
-                if unlucky_instance:
-                    kicked.add(unlucky_instance.instance_id)
-                    await purge(unlucky_instance, reason=unlucky_reason)
-                    notification_tasks.append(
-                        notify_deleted(unlucky_instance, message=unlucky_reason)
-                    )
-                    instances_removed += 1
-                    gpus_removed += len(unlucky_instance.nodes)
+                kicked.add(unlucky_instance.instance_id)
+                await purge(unlucky_instance, reason=unlucky_reason)
+                notification_tasks.append(notify_deleted(unlucky_instance, message=unlucky_reason))
+                instances_removed += 1
+                gpus_removed += len(unlucky_instance.nodes)
 
     # Send deletion notifications after a short delay to allow some connection draining.
     if notification_tasks:
