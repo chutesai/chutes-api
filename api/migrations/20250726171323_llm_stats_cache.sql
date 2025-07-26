@@ -49,7 +49,7 @@ RETURNS TABLE (
     out_total_input_tokens bigint,
     out_total_output_tokens bigint,
     out_average_tps numeric
-) AS $
+) AS $$
 DECLARE
     one_hour_before_midnight timestamp := (CURRENT_DATE + interval '23 hours')::timestamp;
     target_date_end timestamp := (target_date + interval '1 day')::timestamp;
@@ -193,7 +193,7 @@ $$ LANGUAGE plpgsql;
 
 -- Function to populate metrics for a specific day (for backfilling)
 CREATE OR REPLACE FUNCTION populate_vllm_metrics_for_day(target_date date)
-RETURNS integer AS $
+RETURNS integer AS $$
 DECLARE
     yesterday date := CURRENT_DATE - interval '1 day';
     row_count integer := 0;
@@ -249,13 +249,13 @@ BEGIN
     
     RETURN row_count;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 -- Function to backfill historical data (only for days before yesterday)
 CREATE OR REPLACE FUNCTION backfill_vllm_metrics(
     start_date date,
     end_date date DEFAULT CURRENT_DATE - interval '2 days'
-) RETURNS void AS $
+) RETURNS void AS $$
 DECLARE
     curr_date date;
     rows_inserted integer;
@@ -276,10 +276,10 @@ BEGIN
     
     RAISE NOTICE 'Backfill complete. Total rows: %', total_rows;
 END;
-$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION refresh_vllm_metrics_for_day(target_date date)
-RETURNS void AS $
+RETURNS void AS $$
 DECLARE
     one_hour_before_midnight timestamp := (CURRENT_DATE + interval '23 hours')::timestamp;
     target_date_end timestamp := (target_date + interval '1 day')::timestamp;

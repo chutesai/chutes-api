@@ -474,6 +474,7 @@ async def get_chute_utilization_v2():
                     c.chute_id,
                     CASE WHEN c.public IS true THEN c.name ELSE '[private chute]' END AS name,
                     EXISTS(SELECT 1 FROM rolling_updates WHERE chute_id = c.chute_id) AS update_in_progress,
+                    COUNT(i.instance_id) AS total_instance_count,
                     COUNT(CASE WHEN i.active = true AND i.verified = true THEN 1 END) AS active_instance_count
                 FROM chutes c
                 LEFT JOIN instances i ON c.chute_id = i.chute_id
@@ -483,6 +484,7 @@ async def get_chute_utilization_v2():
                 ll.*,
                 cd.name,
                 cd.update_in_progress,
+                cd.total_instance_count,
                 cd.active_instance_count
             FROM latest_logs ll
             JOIN chute_details cd ON cd.chute_id = ll.chute_id
@@ -497,7 +499,7 @@ async def get_chute_utilization_v2():
 
             if scale_value:
                 target_count = int(scale_value)
-                current_count = item.get("active_instance_count", 0)
+                current_count = item.get("total_instance_count", 0)
 
                 # Scalable if current instances < target count
                 item["scalable"] = current_count < target_count
