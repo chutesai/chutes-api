@@ -56,18 +56,29 @@ async def instance_cleanup():
     async with get_session() as session:
         query = (
             select(Instance)
+            .join(LaunchConfig, Instance.config_id == LaunchConfig.config_id, isouter=True)
             .where(
                 or_(
                     and_(
-                        Instance.config_id.isnot(None),
-                        Instance.created_at <= func.now() - timedelta(minutes=25),
+                        Instance.verified.is_(False),
+                        or_(
+                            and_(
+                                Instance.config_id.isnot(None),
+                                Instance.created_at <= func.now() - timedelta(minutes=25),
+                            ),
+                            and_(
+                                Instance.config_id.is_(None),
+                                Instance.created_at <= func.now() - timedelta(hours=1, minutes=15),
+                            ),
+                        ),
                     ),
                     and_(
-                        Instance.config_id.is_(None),
-                        Instance.created_at <= func.now() - timedelta(hours=1, minutes=15),
+                        Instance.verified.is_(True),
+                        Instance.active.is_(False),
+                        Instance.config_id.isnot(None),
+                        LaunchConfig.verified_at <= func.now() - timedelta(minutes=30),
                     ),
-                ),
-                Instance.verified.is_(False),
+                )
             )
             .options(joinedload(Instance.chute))
         )
