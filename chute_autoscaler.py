@@ -23,7 +23,7 @@ from api.config import settings
 from api.gpu import SUPPORTED_GPUS
 from api.util import notify_deleted
 from api.chute.schemas import Chute, NodeSelector
-from api.instance.schemas import Instance
+from api.instance.schemas import Instance, LaunchConfig
 from api.capacity_log.schemas import CapacityLog
 import api.database.orms  # noqa
 from watchtower import purge, purge_and_notify  # noqa

@@ -471,7 +471,6 @@ async def _invoke_one(
                         "SGLang backend failure, input_ids null error response produced."
                     )
 
-                response_ids = set()
                 if chunk.startswith(b"data:") and not chunk.startswith(b"data: [DONE]"):
                     if (
                         chute.standard_template == "vllm"
@@ -486,11 +485,10 @@ async def _invoke_one(
                             ):
                                 logger.warning(f"BAD_RESPONSE: {data=} {target.miner_hotkey=}")
                                 valid = False
-                            response_ids.add(data["id"])
                             raise
                         except Exception:
                             ...
-                        if not valid or len(response_ids) > 1:
+                        if not valid:
                             raise EmptyLLMResponse(
                                 f"BAD_RESPONSE {target.instance_id=} {chute.name} returned invalid chunks"
                             )
