@@ -382,13 +382,15 @@ async def perform_autoscale(dry_run: bool = False):
         rate_limit_1h = metrics["rate_limit_ratio"].get("1h", 0)
         utilization_1h = metrics["utilization"].get("1h", 0)
         utilization_15m = metrics["utilization"].get("15m", 0)
+        rate_limit_basis = max(rate_limit_1h, rate_limit_15m)
+        utilization_basis = max(utilization_1h, utilization_15m)
 
         # Scale up candidate: increasing rate limiting and significant rate limiting
-        if rate_limit_15m >= RATE_LIMIT_SCALE_UP:
+        if rate_limit_basis >= RATE_LIMIT_SCALE_UP:
             num_to_add = 1
-            if rate_limit_15m >= 0.5:
+            if rate_limit_basis >= 0.5:
                 num_to_add = max(3, int(info.instance_count * 0.5))
-            elif rate_limit_15m >= 0.3:
+            elif rate_limit_basis >= 0.3:
                 num_to_add = max(2, int(info.instance_count * 0.3))
             else:
                 num_to_add = max(1, int(info.instance_count * 0.2))
@@ -404,11 +406,11 @@ async def perform_autoscale(dry_run: bool = False):
             )
 
         # Scale up candidate: high utilization
-        elif utilization_15m >= UTILIZATION_SCALE_UP:
+        elif utilization_basis >= UTILIZATION_SCALE_UP:
             num_to_add = 1
-            if utilization_15m >= UTILIZATION_SCALE_UP * 1.5:
+            if utilization_basis >= UTILIZATION_SCALE_UP * 1.5:
                 num_to_add = max(3, int(info.instance_count * 0.5))
-            elif utilization_15m >= UTILIZATION_SCALE_UP * 1.25:
+            elif utilization_basis >= UTILIZATION_SCALE_UP * 1.25:
                 num_to_add = max(2, int(info.instance_count * 0.25))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
@@ -416,14 +418,14 @@ async def perform_autoscale(dry_run: bool = False):
             chute_actions[chute_id] = "scale_up_candidate"
             chute_target_counts[chute_id] = target_count
             logger.info(
-                f"Scale up candidate: {chute_id} - high utilization: {utilization_1h:.1%} "
+                f"Scale up candidate: {chute_id} - high utilization: {utilization_basis:.1%} "
                 f"- allowing {num_to_add} additional instances"
             )
 
         # Scale down candidate: low utilization, no rate limiting, and has enough instances
         elif (
             info.instance_count >= UNDERUTILIZED_CAP
-            and utilization_1h < UTILIZATION_SCALE_UP
+            and utilization_basis < UTILIZATION_SCALE_UP
             and rate_limit_5m == 0
             and rate_limit_15m == 0
             and rate_limit_1h == 0
@@ -432,9 +434,9 @@ async def perform_autoscale(dry_run: bool = False):
         ):
             num_to_remove = 1
             if info.instance_count > UNDERUTILIZED_CAP:
-                if utilization_1h < 0.1:
+                if utilization_basis < 0.1:
                     num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.2))
-                elif utilization_1h < 0.2:
+                elif utilization_basis < 0.2:
                     num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.1))
 
             # Check failsafe minimum
@@ -462,7 +464,7 @@ async def perform_autoscale(dry_run: bool = False):
                 chute_actions[chute_id] = "scaled_down"
                 chute_target_counts[chute_id] = target_count
                 logger.info(
-                    f"Scale down candidate: {chute_id} - low utilization: {utilization_1h:.1%}, "
+                    f"Scale down candidate: {chute_id} - low utilization: {utilization_basis:.1%}, "
                     f"instances: {info.instance_count} - removing {num_to_remove} instances, target: {target_count}"
                 )
             else:
