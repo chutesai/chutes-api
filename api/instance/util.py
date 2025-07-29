@@ -8,7 +8,7 @@ import uuid
 import asyncio
 import random
 import aiohttp
-import orjson as json
+import traceback
 from fastapi import HTTPException, status
 from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
@@ -18,6 +18,7 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
+from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text, func
@@ -315,7 +316,9 @@ class LeastConnManager:
             else:
                 yield None
         except Exception as e:
-            logger.error(f"Error getting target: {e}", exc_info=True)
+            logger.error("Error getting target")
+            logger.error(str(e))
+            logger.error(traceback.format_exc())
             yield None
         finally:
             if instance:
@@ -350,7 +353,6 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
     started_at = time.time()
     while not instances:
         # Increase the bounty.
-        bounty, last_increased_at, was_increased = None, None, False
         async with get_session() as bounty_session:
             update_result = await bounty_session.execute(
                 text("SELECT 1 FROM rolling_updates WHERE chute_id = :chute_id"),
@@ -361,38 +363,16 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
                     f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
                 )
             else:
-                result = await bounty_session.execute(
-                    text("SELECT * FROM increase_bounty(:chute_id)"),
-                    {"chute_id": chute_id},
-                )
-                bounty, last_increased_at, was_increased = result.one()
-                await bounty_session.commit()
-
-        # Broadcast unique bounty events.
-        if was_increased:
-            logger.info(f"Bounty for {chute_id=} is now {bounty}")
-            await settings.redis_client.publish(
-                "miner_broadcast",
-                json.dumps(
-                    {
-                        "reason": "bounty_change",
-                        "data": {"chute_id": chute_id, "bounty": bounty},
-                    }
-                ).decode(),
-            )
-            await settings.redis_client.publish(
-                "events",
-                json.dumps(
-                    {
-                        "reason": "bounty_change",
-                        "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
-                        "data": {
-                            "chute_id": chute_id,
-                            "bounty": bounty,
-                        },
-                    }
-                ).decode(),
-            )
+                if await create_bounty_if_not_exists(chute_id):
+                    logger.success(f"Successfully created a bounty for {chute_id=}")
+                current_time = int(time.time())
+                window = current_time - (current_time % 30)
+                notification_key = f"bounty_notification:{chute_id}:{window}"
+                if await settings.redis_client.setnx(notification_key, b"1"):
+                    await settings.redis_client.expire(notification_key, 33)
+                    if (amount := await get_bounty_amount(chute_id)) is not None:
+                        logger.info(f"Bounty for {chute_id=} is now {amount}")
+                        await send_bounty_notification(chute_id, amount)
         if not max_wait or time.time() - started_at >= max_wait:
             break
         await asyncio.sleep(1.0)

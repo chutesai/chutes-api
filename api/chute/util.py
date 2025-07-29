@@ -40,6 +40,7 @@ from api.util import (
     use_encrypted_path,
     notify_deleted,
 )
+from api.bounty.util import claim_bounty
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount
 from api.user.service import chutes_user_id
@@ -107,15 +108,11 @@ INSERT INTO invocations (
 ) RETURNING to_char(date_trunc('week', started_at), 'IYYY_IW') AS suffix
 """
 ).columns(suffix=String)
+
 UPDATE_INVOCATION = """
-WITH removed_bounty AS (
-    DELETE FROM bounties
-    WHERE chute_id = :chute_id
-    RETURNING bounty
-)
 UPDATE partitioned_invocations_{suffix} SET
     completed_at = CURRENT_TIMESTAMP,
-    bounty = COALESCE((SELECT bounty FROM removed_bounty), bounty),
+    bounty = :bounty,
     metrics = :metrics
 WHERE invocation_id = :invocation_id
 RETURNING CEIL(EXTRACT(EPOCH FROM (completed_at - started_at))) * compute_multiplier AS total_compute_units
@@ -825,10 +822,14 @@ async def invoke(
 
                 async with get_session() as session:
                     # Mark the invocation as complete.
+                    bounty = await claim_bounty(chute_id)
+                    if bounty is None:
+                        bounty = 0
                     result = await session.execute(
                         text(UPDATE_INVOCATION.format(suffix=partition_suffix)),
                         {
                             "chute_id": chute_id,
+                            "bounty": bounty,
                             "invocation_id": invocation_id,
                             "metrics": json.dumps(metrics).decode(),
                         },

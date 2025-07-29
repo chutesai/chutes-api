@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS partitioned_vllm_metrics (
     PRIMARY KEY (chute_id, date)
 ) PARTITION BY RANGE (date);
 
-CREATE INDEX idx_partitioned_vllm_metrics_date ON partitioned_vllm_metrics (date);
+CREATE INDEX IF NOT EXISTS idx_partitioned_vllm_metrics_date ON partitioned_vllm_metrics (date);
 
 -- Function to create partition for a specific date
 CREATE OR REPLACE FUNCTION create_vllm_metrics_partition(partition_date date)

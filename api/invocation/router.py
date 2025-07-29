@@ -10,7 +10,7 @@ import orjson as json
 import csv
 import uuid
 import decimal
-import random
+import traceback
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime
@@ -410,22 +410,8 @@ async def _invoke(
             )
             request_body["model"] = chute.name
 
-        if chute.name == "moonshotai/Kimi-K2-Instruct":
-            problematic = set(request_body) & set(
-                [
-                    "logit_bias",
-                    "response_format",
-                    "tools",
-                    "tool_choice",
-                    "regex",
-                    "grammar",
-                ]
-            )
-            if problematic:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"{chute.name} does not current support {problematic}",
-                )
+        if chute.name == "moonshotai/Kimi-K2-Instruct-tools":
+            request_body["model"] = "moonshotai/Kimi-K2-Instruct"
 
         # Images must be https or base64.
         if chute.name == "internlm/Intern-S1":
@@ -662,6 +648,7 @@ async def _invoke(
                         yield result_val
 
             except Exception as e:
+                logger.error(f"Failed here: {e}\n{traceback.format_exc()}")
                 if not first_chunk_processed:
                     if isinstance(e, HTTPException):
                         raise e
@@ -672,7 +659,7 @@ async def _invoke(
                 else:
                     yield json.dumps(
                         {
-                            "error": f"Unhandled exception during response stream: {error}",
+                            "error": f"Unhandled exception during response stream: {e}",
                         }
                     )
 
@@ -805,23 +792,25 @@ async def hostname_invocation(
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
 
-        # vLLM on b200 is too slow to support all traffic, but SGLang variant
-        # doesn't support structured outputs/tool use, etc.
-        # We can route to the different variants based on the request.
-        elif model == "moonshotai/Kimi-K2-Instruct":
-            problematic = set(payload) & set(
-                [
-                    "logit_bias",
-                    "response_format",
-                    "tools",
-                    "tool_choice",
-                    "regex",
-                    "grammar",
-                ]
-            )
-            if problematic or random.random() <= 0.05:
-                payload["model"] = "moonshotai/Kimi-K2-Instruct-tools"
-
+        # Make sure we throw an error for tensorrtllm tool choice...
+        elif model == "moonshotai/Kimi-K2-Instruct" and "tools" in payload:
+            if (choice := payload.get("tool_choice")) is not None:
+                tool_error = (
+                    "trtllm infernce requires specifying tool calls explicitely, "
+                    'e.g. tool_choice={"type": "function", "function": {"name": "get_capital_info"}}'
+                )
+                if not isinstance(choice, dict):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=tool_error,
+                    )
+                if not choice.get("type") == "function" or not isinstance(
+                    choice.get("function", dict)
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=tool_error,
+                    )
         model = payload.get("model")
         chute = None
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"

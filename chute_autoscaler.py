@@ -40,7 +40,7 @@ MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
-    "68d5c974-2efe-58af-9eed-78214df85f78": 20,
+    "35cfa8b4-13a2-5382-b19a-e849f73c5d6a": 20,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 75,
@@ -64,7 +64,7 @@ async def instance_cleanup():
                         or_(
                             and_(
                                 Instance.config_id.isnot(None),
-                                Instance.created_at <= func.now() - timedelta(minutes=25),
+                                Instance.created_at <= func.now() - timedelta(minutes=45),
                             ),
                             and_(
                                 Instance.config_id.is_(None),
