@@ -133,7 +133,7 @@ async def send_bounty_notification(chute_id: str, bounty: int) -> None:
                     "reason": "bounty_change",
                     "data": {"chute_id": chute_id, "bounty": bounty},
                 }
-            ).decode(),
+            )
         )
         await settings.redis_client.publish(
             "events",
@@ -146,7 +146,7 @@ async def send_bounty_notification(chute_id: str, bounty: int) -> None:
                         "bounty": bounty,
                     },
                 }
-            ).decode(),
+            )
         )
     except Exception as exc:
         logger.error(f"Failed to send bounty notification: {exc}")
