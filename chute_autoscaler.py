@@ -388,12 +388,12 @@ async def perform_autoscale(dry_run: bool = False):
         # Scale up candidate: increasing rate limiting and significant rate limiting
         if rate_limit_basis >= RATE_LIMIT_SCALE_UP:
             num_to_add = 1
-            if rate_limit_basis >= 0.5:
-                num_to_add = max(3, int(info.instance_count * 0.5))
-            elif rate_limit_basis >= 0.3:
-                num_to_add = max(2, int(info.instance_count * 0.3))
+            if rate_limit_basis >= 0.2:
+                num_to_add = max(3, int(info.instance_count * 0.3))
+            elif rate_limit_basis >= 0.1:
+                num_to_add = max(2, int(info.instance_count * 0.15))
             else:
-                num_to_add = max(1, int(info.instance_count * 0.2))
+                num_to_add = max(1, int(info.instance_count * 0.05))
             target_count = info.instance_count + num_to_add
             scale_up_candidates.append((chute_id, num_to_add))
             chute_actions[chute_id] = "scale_up_candidate"

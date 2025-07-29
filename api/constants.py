@@ -35,4 +35,4 @@ EXPANSION_UTILIZATION_THRESHOLD = 0.02
 UNDERUTILIZED_CAP = 5
 
 # Percentage of requests being rate limited to allow scaling up.
-RATE_LIMIT_SCALE_UP = 0.1
+RATE_LIMIT_SCALE_UP = 0.02
