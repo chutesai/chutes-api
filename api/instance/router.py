@@ -599,7 +599,9 @@ async def claim_launch_config(
             ]
         )
         if expected != received:
-            logger.error(f"{instance.instance_id=} from {config_id=} posted invalid ports: {expected=} vs {received=}")
+            logger.error(
+                f"{instance.instance_id=} from {config_id=} posted invalid ports: {expected=} vs {received=}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Invalid port mappings provided: {expected=} {received=}",
@@ -708,20 +710,26 @@ async def verify_port_map(instance, port_map):
     """
     Verify a port is open on the remote chute pod.
     """
+    logger.info(f"Attempting to verify {port_map=} on {instance.instance_id=}")
     try:
         if port_map["proto"].lower() in ["tcp", "http"]:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
+            sock.settimeout(10)
             sock.connect((instance.host, port_map["external_port"]))
+            logger.info(f"Connected to {instance.instance_id=} on {port_map=}")
             sock.send(b"test")
+            logger.info(f"Sent a packet to {instance.instance_id=} on {port_map=}")
             response = sock.recv(1024).decode()
+            logger.success(f"Received a response from {instance.instance_id=} on {port_map=}")
             sock.close()
         else:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            sock.settimeout(3)
+            sock.settimeout(10)
             sock.sendto(b"test", (instance.host, port_map["external_port"]))
+            logger.info(f"Sent a packet to {instance.instance_id=} on {port_map=}")
             response, _ = sock.recvfrom(1024)
             response = response.decode()
+            logger.success(f"Received a response from {instance.instance_id=} on {port_map=}")
             sock.close()
         if "|" not in response:
             logger.error(f"Invalid socket response for {port_map=} {response=}")
