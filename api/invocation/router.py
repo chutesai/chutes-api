@@ -10,7 +10,6 @@ import orjson as json
 import csv
 import uuid
 import decimal
-import random
 import traceback
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
@@ -790,9 +789,7 @@ async def hostname_invocation(
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
 
-        # vLLM on b200 is too slow to support all traffic, but SGLang variant
-        # doesn't support structured outputs/tool use, etc.
-        # We can route to the different variants based on the request.
+        # Disable tools on kimi-k2 for now.
         elif model == "moonshotai/Kimi-K2-Instruct":
             problematic = set(payload) & set(
                 [
@@ -804,8 +801,11 @@ async def hostname_invocation(
                     "grammar",
                 ]
             )
-            if problematic or random.random() <= 0.05:
-                payload["model"] = "moonshotai/Kimi-K2-Instruct-tools"
+            if problematic:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"{model} on chutes does not currently support {problematic}",
+                )
 
         model = payload.get("model")
         chute = None
