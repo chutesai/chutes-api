@@ -522,7 +522,6 @@ async def perform_autoscale(dry_run: bool = False):
     # Perform the actual scale downs
     instances_removed = 0
     gpus_removed = 0
-    notification_tasks = []
     for chute_id, num_to_remove in to_downsize:
         async with get_session() as session:
             chute = (
@@ -551,7 +550,7 @@ async def perform_autoscale(dry_run: bool = False):
                     logger.warning(f"Bad instance? {instance.instance_id=} {instance.verified=}")
                     reason = "instance node count does not match node selector"
                     await purge(instance, reason=reason)
-                    notification_tasks.append(notify_deleted(instance, message=reason))
+                    await notify_deleted(instance, message=reason)
                     num_to_remove -= 1
                     instances_removed += 1
                     gpus_removed += len(instance.nodes)
@@ -839,15 +838,9 @@ async def perform_autoscale(dry_run: bool = False):
                 # Purge the unlucky one
                 kicked.add(unlucky_instance.instance_id)
                 await purge(unlucky_instance, reason=unlucky_reason)
-                notification_tasks.append(notify_deleted(unlucky_instance, message=unlucky_reason))
+                await notify_deleted(unlucky_instance, message=unlucky_reason)
                 instances_removed += 1
                 gpus_removed += len(unlucky_instance.nodes)
-
-    # Send deletion notifications after a short delay to allow some connection draining.
-    if notification_tasks:
-        logger.info("Waiting to send deletion notification...")
-        await asyncio.sleep(30)
-        await asyncio.gather(*notification_tasks)
 
     if instances_removed:
         logger.success(f"Scaled down, {instances_removed=} and {gpus_removed=}")
