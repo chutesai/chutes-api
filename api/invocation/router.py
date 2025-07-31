@@ -788,23 +788,23 @@ async def hostname_invocation(
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
 
-        # Disable tools on kimi-k2 for now.
-        elif model == "moonshotai/Kimi-K2-Instruct":
-            problematic = set(payload) & set(
-                [
-                    "logit_bias",
-                    "response_format",
-                    "tools",
-                    "tool_choice",
-                    "regex",
-                    "grammar",
-                ]
-            )
-            if problematic:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"{model} on chutes does not currently support {problematic}",
-                )
+        # # Disable tools on kimi-k2 for now.
+        # elif model == "moonshotai/Kimi-K2-Instruct":
+        #     problematic = set(payload) & set(
+        #         [
+        #             "logit_bias",
+        #             "response_format",
+        #             "tools",
+        #             "tool_choice",
+        #             "regex",
+        #             "grammar",
+        #         ]
+        #     )
+        #     if problematic:
+        #         raise HTTPException(
+        #             status_code=status.HTTP_400_BAD_REQUEST,
+        #             detail=f"{model} on chutes does not currently support {problematic}",
+        #         )
 
         model = payload.get("model")
         chute = None
