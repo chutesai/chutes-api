@@ -7,6 +7,7 @@ import uuid
 import base64
 import traceback
 import random
+import socket
 import secrets
 import asyncio
 from loguru import logger
@@ -574,19 +575,36 @@ async def claim_launch_config(
 
     # Mark the job as associated with this instance.
     if launch_config.job_id:
-        stmt = (
-            update(Job)
-            .where(Job.job_id == launch_config.job_id)
-            .values(
-                instance_id=instance.instance_id,
-                port_mappings=[item.model_dump() for item in args.port_mappings],
-            )
+        job = (
+            (await db.execute(select(Job).where(Job.job_id == launch_config.job_id)))
+            .unique()
+            .scalar_one_or_none()
         )
-        result = await db.execute(stmt)
-        if result.rowcount == 0:
+        if not job:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Job {launch_config.job_id} no longer exists!",
+            )
+        job.instance_id = instance.instance_id
+        job.port_mappings = [item.model_dump() for item in args.port_mappings]
+
+        # Verify port mappings are correct.
+        job_obj = next(j for j in chute.jobs if j["name"] == job.method)
+        expected = set([f"{p['proto']}:{p['port']}".lower() for p in job_obj["ports"]])
+        received = set(
+            [
+                f"{p.proto}:{p.internal_port}".lower()
+                for p in args.port_mappings
+                if p.internal_port not in [8000, 8001]
+            ]
+        )
+        if expected != received:
+            logger.error(
+                f"{instance.instance_id=} from {config_id=} posted invalid ports: {expected=} vs {received=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Invalid port mappings provided: {expected=} {received=}",
             )
 
     # Verify the GPUs are suitable.
@@ -686,6 +704,44 @@ async def activate_launch_config_instance(
         await db.commit()
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
+
+
+async def verify_port_map(instance, port_map):
+    """
+    Verify a port is open on the remote chute pod.
+    """
+    logger.info(f"Attempting to verify {port_map=} on {instance.instance_id=}")
+    try:
+        if port_map["proto"].lower() in ["tcp", "http"]:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10)
+            sock.connect((instance.host, port_map["external_port"]))
+            logger.info(f"Connected to {instance.instance_id=} on {port_map=}")
+            sock.send(b"test")
+            logger.info(f"Sent a packet to {instance.instance_id=} on {port_map=}")
+            response = sock.recv(1024).decode()
+            logger.success(f"Received a response from {instance.instance_id=} on {port_map=}")
+            sock.close()
+        else:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(10)
+            sock.sendto(b"test", (instance.host, port_map["external_port"]))
+            logger.info(f"Sent a packet to {instance.instance_id=} on {port_map=}")
+            response, _ = sock.recvfrom(1024)
+            response = response.decode()
+            logger.success(f"Received a response from {instance.instance_id=} on {port_map=}")
+            sock.close()
+        if "|" not in response:
+            logger.error(f"Invalid socket response for {port_map=} {response=}")
+            return False
+
+        iv_hex, encrypted_response = response.split("|", 1)
+        decrypted = aes_decrypt(encrypted_response, instance.symmetric_key, iv_hex)
+        expected = f"response from {port_map.proto.lower()} {port_map.internal_port}"
+        return decrypted.decode() == expected
+    except Exception as e:
+        logger.error(f"Port verification failed for {port_map}: {e}")
+        return False
 
 
 @router.put("/launch_config/{config_id}")
@@ -835,6 +891,17 @@ async def verify_launch_config_instance(
     launch_config.verified_at = func.now()
     job = instance.job
     if job:
+        # Test the ports are open.
+        for port_map in instance.port_mappings:
+            if port_map["internal_port"] in (8000, 8001):
+                continue
+            if not await verify_port_map(instance, port_map):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"Failed port verification on {port_map=}",
+                )
+
+        # All good!
         job.started_at = func.now()
 
     # Can't do this via the instance attrs directly, circular dependency :/

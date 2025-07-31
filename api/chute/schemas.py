@@ -39,6 +39,7 @@ class Cord(BaseModel):
 class Port(BaseModel):
     name: str
     port: int = Field(...)
+    default: Optional[bool] = True
     proto: str = constr(pattern=r"^(tcp|udp|http)$")
 
     @field_validator("port")
