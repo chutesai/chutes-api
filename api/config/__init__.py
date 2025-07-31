@@ -115,8 +115,8 @@ class Settings(BaseSettings):
     opencl_graval_url: str = os.getenv("OPENCL_GRAVAL_URL", "https://opencl-graval.chutes.ai")
 
     # Database settings.
-    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "64"))
-    db_overflow: int = int(os.getenv("DB_OVERFLOW", "32"))
+    db_pool_size: int = int(os.getenv("DB_POOL_SIZE", "16"))
+    db_overflow: int = int(os.getenv("DB_OVERFLOW", "4"))
 
     # Debug logging.
     debug: bool = os.getenv("DEBUG", "false").lower() == "true"
