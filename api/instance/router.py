@@ -737,7 +737,7 @@ async def verify_port_map(instance, port_map):
 
         iv_hex, encrypted_response = response.split("|", 1)
         decrypted = aes_decrypt(encrypted_response, instance.symmetric_key, iv_hex)
-        expected = f"response from {port_map.proto.lower()} {port_map.internal_port}"
+        expected = f"response from {port_map['proto'].lower()} {port_map['internal_port']}"
         return decrypted.decode() == expected
     except Exception as e:
         logger.error(f"Port verification failed for {port_map}: {e}")
