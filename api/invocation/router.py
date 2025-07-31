@@ -411,13 +411,12 @@ async def _invoke(
             request_body["model"] = chute.name
 
         # Images must be https or base64.
-        if chute.name == "internlm/Intern-S1":
-            try:
-                check_vlm_payload(request_body)
-            except Exception as exc:
-                if isinstance(exc, HTTPException):
-                    raise
-                logger.error(f"Failed to check VLM request payload: {exc}")
+        try:
+            check_vlm_payload(request_body)
+        except Exception as exc:
+            if isinstance(exc, HTTPException):
+                raise
+            logger.error(f"Failed to check VLM request payload: {exc}")
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
