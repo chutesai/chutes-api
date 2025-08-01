@@ -37,6 +37,9 @@ from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
 from api.config import settings
 
+from api.connection_debug import setup_connection_debugging, enable_sqlalchemy_logging
+
+enable_sqlalchemy_logging()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -129,6 +132,7 @@ default_router.include_router(guess_router, prefix="/guess", tags=["ConfigGuesse
 default_router.include_router(audit_router, prefix="/audit", tags=["Audit"])
 default_router.include_router(jobs_router, prefix="/jobs", tags=["Job"])
 
+setup_connection_debugging(app, engine)
 
 # Do not use app for this, else middleware picks it up
 async def ping():

@@ -1,0 +1,265 @@
+---
+# Source: chutes-api/templates/api-deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-debug
+  labels:
+    app.kubernetes.io/name: api
+    redis-access: "true"
+    db-access: "true"
+spec:
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+      redis-access: "true"
+      db-access: "true"
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+        redis-access: "true"
+        db-access: "true"
+    spec:
+      affinity:
+        nodeAffinity: {}
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                  - api
+              topologyKey: kubernetes.io/hostname
+            weight: 100
+      volumes:
+        - name: squad-certs
+          secret:
+            secretName: squad-cert
+            items:
+              - key: squad_pub.pem
+                path: squad_pub.pem
+        - name: connection-debug
+          configMap:
+            name: connection-debug
+        - name: api-debug
+          configMap:
+            name: api-debug
+      containers:
+        - name: api
+          image: "parachutes/validator:latest"
+          imagePullPolicy: Always
+          command:
+          - poetry
+          - run
+          - uvicorn
+          - api.main:app
+          - --host
+          - "0.0.0.0"
+          - --port
+          - "8000"
+          env:
+            - name: CFSV_OP
+              valueFrom:
+               secretKeyRef:
+                 key: key
+                 name: cfsvop
+            - name: LAUNCH_CONFIG_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: launch-config
+                  key: key
+            - name: ENVDUMP_UNLOCK
+              valueFrom:
+                secretKeyRef:
+                  key: token
+                  name: envdump
+            - name: KUBECHECK_SALT
+              valueFrom:
+                secretKeyRef:
+                  key: salt
+                  name: kubecheck
+            - name: KUBECHECK_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  key: prefix
+                  name: kubecheck
+            - name: KUBECHECK_SUFFIX
+              valueFrom:
+                secretKeyRef:
+                  key: suffix
+                  name: kubecheck
+            - name: ENVCHECK_KEY_52
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: envcheck-52
+            - name: ENVCHECK_SALT_52
+              valueFrom:
+                secretKeyRef:
+                  key: salt
+                  name: envcheck-52
+            - name: ENVCHECK_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: envcheck
+            - name: ENVCHECK_SALT
+              valueFrom:
+                secretKeyRef:
+                  key: salt
+                  name: envcheck
+            - name: CODECHECK_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codecheck-key
+                  key: key
+            - name: IP_CHECK_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: ip-check-salt
+                  key: salt
+            - name: VALIDATOR_SEED
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: seed
+            - name: WALLET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: wallet-key
+            - name: PG_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: pg-key
+            - name: CHUTES_VERSION
+              value: 0.2.42
+            - name: GRAVAL_URL
+              value: https://graval.chutes.ai
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: s3-credentials
+                  key: bucket
+            - name: REGISTRY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: registry-secret
+                  key: password
+            - name: REGISTRY_INSECURE
+              value: "true"
+            - name: MEMCACHED
+              value: memcached
+            - name: FIRST_PAYMENT_BONUS
+              value: "25"
+            - name: FIRST_PAYMENT_BONUS_THRESHOLD
+              value: "100"
+            - name: ALL_ACCOUNTS_FREE
+              value: "false"
+            - name: DEVELOPER_DEPOSIT
+              value: "5000"
+            - name: CONSECUTIVE_FAILURE_LIMIT
+              value: "7"
+            - name: CM_REDIS_SHARD_COUNT
+              value: "1"
+            - name: SQUAD_CERT_PATH
+              value: /etc/squad/squad_pub.pem
+          volumeMounts:
+            - name: squad-certs
+              mountPath: "/etc/squad"
+              readOnly: true
+            - name: connection-debug
+              mountPath: /app/api/connection_debug.py
+              subPath: connection_debug.py
+            - name: api-debug
+              mountPath: /app/api/main.py
+              subPath: main.py
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 30
+          resources:
+            limits:
+              cpu: "4"
+              memory: 20Gi
+            requests:
+              cpu: "4"
+              memory: 20Gi
