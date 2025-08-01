@@ -695,9 +695,9 @@ async def _invoke_one(
             yield data
     finally:
         if session:
-            await session.close()
+            await asyncio.shield(session.close())
         if response:
-            await response.release()
+            await asyncio.shield(response.release())
 
 
 async def _s3_upload(data: io.BytesIO, path: str):

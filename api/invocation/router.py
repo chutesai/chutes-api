@@ -830,7 +830,10 @@ async def hostname_invocation(
             request.state.auth_object_id = chute.chute_id
 
     # Model disabled temporarily?
-    if await settings.redis_client.get(f"model_disabled:{request.state.chute_id}"):
+    if (
+        await settings.redis_client.get(f"model_disabled:{request.state.chute_id}")
+        and current_user.user_id != "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
+    ):
         logger.warning(f"MODEL DISABLED: {request.state.chute_id}")
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
