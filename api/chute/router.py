@@ -52,7 +52,14 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, limit_deployments, semcomp, get_current_hf_commit
+from api.util import (
+    semcomp,
+    ensure_is_developer,
+    limit_deployments,
+    get_current_hf_commit,
+    is_affine_registered,
+    check_affine_code,
+)
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -868,7 +875,42 @@ async def deploy_chute(
     """
     Standard deploy from the CDK.
     """
-    await ensure_is_developer(db, current_user)
+    http_exc = await ensure_is_developer(db, current_user, raise_=False)
+    affine_checked = False
+    if http_exc is not None:
+        if not await is_affine_registered(db, current_user):
+            logger.warning(
+                f"Attempted chute creation from non-dev and non-affine user: {current_user.user_id=}"
+            )
+            raise http_exc
+        affine_checked = True
+
+    # Affine special handling.
+    if chute_args.name.startswith("affine"):
+        if not affine_checked and not await is_affine_registered(db, current_user):
+            logger.warning(
+                "Attempted affine deployment by unregistered hotkey: "
+                f"{current_user.user_id=} {current_user.username=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only users with hotkeys registered on affine may deploy chutes named affine*",
+            )
+        valid, message = check_affine_code(chute_args.code)
+        if not valid:
+            logger.warning(
+                f"Affine deployment attempted from {current_user.user_id=} "
+                f"{current_user.hotkey=} with invalid code:\n{chute_args.code}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=message,
+            )
+        logger.success(
+            f"Affine deployment initiated: {chute_args.name=} from {current_user.hotkey=}, code check passed."
+        )
+
+    # No-DoS-Plz.
     await limit_deployments(db, current_user)
     if current_user.user_id not in (
         await chutes_user_id(),
