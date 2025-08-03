@@ -322,11 +322,12 @@ class LeastConnManager:
                 yield None, "No infrastructure available to serve request"
         except Exception as e:
             if isinstance(e, InfraOverload):
-                yield None, str(e)
+                yield None, "infra_overload"
+                return
             logger.error("Error getting target")
             logger.error(str(e))
             logger.error(traceback.format_exc())
-            yield None, f"Error getting target: {str(e)}"
+            yield None, f"No infrastructure available to serve request, error code: {str(e)}"
         finally:
             if instance:
                 try:
