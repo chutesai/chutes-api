@@ -14,6 +14,8 @@ from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
 from loguru import logger
 from contextlib import asynccontextmanager
+from api.exceptions import InfraOverload
+from api.chute.schemas import Chute
 from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
@@ -49,13 +51,15 @@ class LeastConnManager:
     def __init__(
         self,
         chute_id: str,
+        concurrency: int,
         instances: list[Instance],
         connection_expiry: int = 600,
         cleanup_interval: int = 5,
     ):
+        self.concurrency = concurrency or 1
         self.chute_id = chute_id
         self.redis_client = settings.cm_redis_client[
-            uuid.UUID(chute_id).int % len(settings.cm_redis_client)
+            uuid.UUID(self.chute_id).int % len(settings.cm_redis_client)
         ]
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
@@ -204,14 +208,15 @@ class LeastConnManager:
             )
 
         # Check if all instances are overwhelmed
-        if min_count >= 25:
-            logger.warning(f"All instances overwhelmed for {self.chute_id}: min_count={min_count}")
-            return []
+        if min_count >= self.concurrency:
+            raise InfraOverload(
+                f"All instances overwhelmed for {self.chute_id}: min_count={min_count}"
+            )
 
         # Group instances by connection count
         grouped_by_count = {}
         for instance_id, count in counts.items():
-            if count >= 25:
+            if count >= self.concurrency:
                 continue
             if count not in grouped_by_count:
                 grouped_by_count[count] = []
@@ -284,7 +289,7 @@ class LeastConnManager:
                 self.get_targets(avoid=avoid, prefixes=prefixes), timeout=7.0
             )
             if not targets:
-                yield None
+                yield None, "No infrastructure available to serve request"
                 return
             instance = targets[0]
             try:
@@ -306,25 +311,28 @@ class LeastConnManager:
                 )
             except Exception as e:
                 logger.error(f"Error tracking connection: {e}")
-            yield instance
+            yield instance, None
         except asyncio.TimeoutError:
             logger.error("Timeout getting targets")
             # Fallback to random instance
             available = [inst for iid, inst in self.instances.items() if iid not in avoid]
             if available:
-                yield random.choice(available)
+                yield random.choice(available), None
             else:
-                yield None
+                yield None, "No infrastructure available to serve request"
         except Exception as e:
+            if isinstance(e, InfraOverload):
+                yield None, "infra_overload"
+                return
             logger.error("Error getting target")
             logger.error(str(e))
             logger.error(traceback.format_exc())
-            yield None
+            yield None, f"No infrastructure available to serve request, error code: {str(e)}"
         finally:
             if instance:
                 try:
                     key = f"conn:{self.chute_id}:{instance.instance_id}"
-                    await asyncio.wait_for(
+                    await asyncio.shield(
                         self.redis_client.eval(
                             self.lua_remove_connection,
                             1,
@@ -332,8 +340,7 @@ class LeastConnManager:
                             conn_id,
                             int(time.time()),
                             self.connection_expiry,
-                        ),
-                        timeout=3.0,
+                        )
                     )
                 except asyncio.TimeoutError:
                     logger.warning(f"Timeout cleaning up connection {conn_id}")
@@ -345,10 +352,11 @@ class LeastConnManager:
             self._cleanup_task.cancel()
 
 
-async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wait: int = 0):
+async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait: int = 0):
     """
     Select target instances by least connections (with random on equal counts).
     """
+    chute_id = chute.chute_id
     instances = await load_chute_targets(chute_id, nonce=0)
     started_at = time.time()
     while not instances:
@@ -380,7 +388,9 @@ async def get_chute_target_manager(session: AsyncSession, chute_id: str, max_wai
     if not instances:
         return None
     if chute_id not in MANAGERS:
-        MANAGERS[chute_id] = LeastConnManager(chute_id=chute_id, instances=instances)
+        MANAGERS[chute_id] = LeastConnManager(
+            chute_id=chute_id, concurrency=chute.concurrency or 1, instances=instances
+        )
         async with MANAGERS[chute_id].lock:
             await MANAGERS[chute_id].initialize()
     async with MANAGERS[chute_id].lock:

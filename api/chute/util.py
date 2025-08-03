@@ -747,7 +747,7 @@ async def invoke(
     infra_overload = False
     avoid = []
     for attempt_idx in range(5):
-        async with manager.get_target(avoid=avoid, prefixes=prefixes) as target:
+        async with manager.get_target(avoid=avoid, prefixes=prefixes) as (target, error_message):
             try:
                 if attempt_idx == 0 and manager.mean_count is not None:
                     track_capacity(chute.chute_id, manager.mean_count, chute.concurrency or 1.0)
@@ -757,7 +757,7 @@ async def invoke(
                 )
 
             if not target:
-                if infra_overload:
+                if infra_overload or error_message == "infra_overload":
                     logger.warning(f"All miners are at max capacity: {chute.name=}")
                     yield sse(
                         {
@@ -766,8 +766,12 @@ async def invoke(
                         }
                     )
                 else:
-                    logger.warning(f"No targets found for {chute_id=}")
-                    yield sse({"error": "no_targets"})
+                    if not error_message:
+                        error_message = (
+                            "Unhandled exception trying to load backend node to route request"
+                        )
+                    logger.warning(f"No targets found for {chute_id=}: {error_message=}")
+                    yield sse({"error": error_message})
                 return
 
             invocation_id = str(uuid.uuid4())
