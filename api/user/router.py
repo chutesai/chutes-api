@@ -16,6 +16,7 @@ from api.database import get_db_session
 from api.user.schemas import (
     UserRequest,
     User,
+    PriceOverride,
     AdminUserRequest,
     InvocationQuota,
     InvocationDiscount,
@@ -361,6 +362,27 @@ async def my_discounts(
         .all()
     )
     return discounts
+
+
+@router.get("/me/price_overrides")
+async def my_price_overrides(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Load price overrides for the current user.
+    """
+    overrides = (
+        (
+            await db.execute(
+                select(PriceOverride).where(PriceOverride.user_id == current_user.user_id)
+            )
+        )
+        .unique()
+        .scalars()
+        .all()
+    )
+    return overrides
 
 
 @router.get("/me/quota_usage/{chute_id}")
