@@ -9,6 +9,7 @@ import gzip
 import orjson as json
 import csv
 import uuid
+import random
 import decimal
 import traceback
 from loguru import logger
@@ -788,23 +789,13 @@ async def hostname_invocation(
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
 
-        # # Disable tools on kimi-k2 for now.
-        # elif model == "moonshotai/Kimi-K2-Instruct":
-        #     problematic = set(payload) & set(
-        #         [
-        #             "logit_bias",
-        #             "response_format",
-        #             "tools",
-        #             "tool_choice",
-        #             "regex",
-        #             "grammar",
-        #         ]
-        #     )
-        #     if problematic:
-        #         raise HTTPException(
-        #             status_code=status.HTTP_400_BAD_REQUEST,
-        #             detail=f"{model} on chutes does not currently support {problematic}",
-        #         )
+        # THUDM -> zai-org namespace change.
+        if model.startswith("THUDM/"):
+            payload["model"] = re.sub(r"^THUDM/", "zai-org", model)
+
+        # Kimi migration to b200.
+        if model == "moonshotai/Kimi-K2-Instruct" and random.random() <= 0.05:
+            payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
 
         model = payload.get("model")
         chute = None
