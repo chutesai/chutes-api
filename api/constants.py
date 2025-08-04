@@ -20,6 +20,8 @@ ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 #            = $0.8 * 0.03704   = $0.029632/million output
 LLM_PRICE_MULT_PER_MILLION_IN = 0.0092555
 LLM_PRICE_MULT_PER_MILLION_OUT = 0.03704
+LLM_MIN_PRICE_IN = 0.01
+LLM_MIN_PRICE_OUT = 0.01
 
 # Likewise, for diffusion models, we allow different node selectors and step
 # counts, so we can't really have a fixed "per image" pricing, just a price

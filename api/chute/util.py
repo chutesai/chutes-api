@@ -25,6 +25,8 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
 from api.constants import (
+    LLM_MIN_PRICE_IN,
+    LLM_MIN_PRICE_OUT,
     LLM_PRICE_MULT_PER_MILLION_IN,
     LLM_PRICE_MULT_PER_MILLION_OUT,
     DIFFUSION_PRICE_MULT_PER_STEP,
@@ -872,12 +874,18 @@ async def invoke(
                                 per_million_in = (
                                     price_override.per_million_in
                                     if price_override.per_million_in is not None
-                                    else hourly_price * LLM_PRICE_MULT_PER_MILLION_IN
+                                    else max(
+                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
+                                        LLM_MIN_PRICE_IN,
+                                    )
                                 )
                                 per_million_out = (
                                     price_override.per_million_out
                                     if price_override.per_million_out is not None
-                                    else hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT
+                                    else max(
+                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
+                                        LLM_MIN_PRICE_OUT,
+                                    )
                                 )
                                 balance_used = (
                                     metrics.get("it", 0) or 0
@@ -917,14 +925,18 @@ async def invoke(
                                     in_balance_used = (
                                         (metrics.get("it", 0) or 0)
                                         / 1000000.0
-                                        * hourly_price
-                                        * LLM_PRICE_MULT_PER_MILLION_IN
+                                        * max(
+                                            hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
+                                            LLM_MIN_PRICE_IN,
+                                        )
                                     )
                                     out_balance_used = (
                                         (metrics.get("ot", 0) or 0)
                                         / 1000000.0
-                                        * hourly_price
-                                        * LLM_PRICE_MULT_PER_MILLION_OUT
+                                        * max(
+                                            hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
+                                            LLM_MIN_PRICE_OUT,
+                                        )
                                     )
                                     balance_used = in_balance_used + out_balance_used
                                     balance_used -= balance_used * discount
@@ -1179,8 +1191,8 @@ async def get_and_store_llm_details(chute_id: str):
 
         # Calculate pricing.
         hourly = await selector_hourly_price(chute.node_selector)
-        per_million_in = hourly * LLM_PRICE_MULT_PER_MILLION_IN
-        per_million_out = hourly * LLM_PRICE_MULT_PER_MILLION_OUT
+        per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
+        per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
         if chute.discount:
             per_million_in -= per_million_in * chute.discount
             per_million_out -= per_million_out * chute.discount

@@ -49,6 +49,8 @@ from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
 from api.constants import (
+    LLM_MIN_PRICE_IN,
+    LLM_MIN_PRICE_OUT,
     LLM_PRICE_MULT_PER_MILLION_IN,
     LLM_PRICE_MULT_PER_MILLION_OUT,
     DIFFUSION_PRICE_MULT_PER_STEP,
@@ -66,8 +68,8 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     """
     if chute.standard_template == "vllm":
         hourly = await selector_hourly_price(chute.node_selector)
-        per_million_in = hourly * LLM_PRICE_MULT_PER_MILLION_IN
-        per_million_out = hourly * LLM_PRICE_MULT_PER_MILLION_OUT
+        per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
+        per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
         if chute.discount:
             per_million_in -= per_million_in * chute.discount
             per_million_out -= per_million_out * chute.discount
