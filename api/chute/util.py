@@ -1211,6 +1211,12 @@ async def get_and_store_llm_details(chute_id: str):
             try:
                 model_info = await load_llm_details(chute, instance)
                 model_info["price"] = price
+
+                # OpenRouter format.
+                model_info["pricing"] = {
+                    "prompt": per_million_in,
+                    "completion": per_million_out,
+                }
                 break
             except Exception as exc:
                 logger.error(
