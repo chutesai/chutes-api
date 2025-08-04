@@ -49,7 +49,10 @@ from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
 from api.constants import (
-    LLM_PRICE_MULT_PER_MILLION,
+    LLM_MIN_PRICE_IN,
+    LLM_MIN_PRICE_OUT,
+    LLM_PRICE_MULT_PER_MILLION_IN,
+    LLM_PRICE_MULT_PER_MILLION_OUT,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
 from api.util import ensure_is_developer, limit_deployments, semcomp, get_current_hf_commit
@@ -65,13 +68,25 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     """
     if chute.standard_template == "vllm":
         hourly = await selector_hourly_price(chute.node_selector)
-        per_million = hourly * LLM_PRICE_MULT_PER_MILLION
+        per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
+        per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
         if chute.discount:
-            per_million -= per_million * chute.discount
-        response.current_estimated_price = {"per_million_tokens": {"usd": per_million}}
+            per_million_in -= per_million_in * chute.discount
+            per_million_out -= per_million_out * chute.discount
+        response.current_estimated_price = {
+            "per_million_tokens": {
+                "input": {"usd": per_million_in},
+                "output": {"usd": per_million_out},
+            }
+        }
         tao_usd = await get_fetcher().get_price("tao")
         if tao_usd:
-            response.current_estimated_price["per_million_tokens"]["tao"] = per_million / tao_usd
+            response.current_estimated_price["per_million_tokens"]["input"]["tao"] = (
+                per_million_in / tao_usd
+            )
+            response.current_estimated_price["per_million_tokens"]["output"]["tao"] = (
+                per_million_out / tao_usd
+            )
     elif chute.standard_template == "diffusion":
         hourly = await selector_hourly_price(chute.node_selector)
         per_step = hourly * DIFFUSION_PRICE_MULT_PER_STEP
@@ -82,7 +97,7 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
         if tao_usd:
             response.current_estimated_price["per_step"]["tao"] = per_step / tao_usd
 
-    # Legacy/fallback.
+    # Legacy/fallback, and discounts.
     if not response.current_estimated_price:
         response.current_estimated_price = {}
     node_selector = NodeSelector(**chute.node_selector)
