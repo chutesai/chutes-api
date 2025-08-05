@@ -718,6 +718,13 @@ async def _deploy_chute(
                 detail="You are not allowed to require h200, b200 or mi300x at this time.",
             )
 
+    # Disable non-chutes official images for affine.
+    if image.user_id != await chutes_user_id() or not image.name.startswith(("sglang/", "vllm/")):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must use either sglang or vllm official chutes image for affine deployments.",
+        )
+
     # Require revision for LLM templates.
     if chute_args.standard_template == "vllm" and not chute_args.revision:
         raise HTTPException(
