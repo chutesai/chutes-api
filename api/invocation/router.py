@@ -794,7 +794,7 @@ async def hostname_invocation(
             payload["model"] = re.sub(r"^THUDM/", "zai-org", model)
 
         # Kimi migration to b200.
-        if model == "moonshotai/Kimi-K2-Instruct" and random.random() <= 0.05:
+        if model == "moonshotai/Kimi-K2-Instruct":
             payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
 
         model = payload.get("model")

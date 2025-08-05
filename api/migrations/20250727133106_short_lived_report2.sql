@@ -23,7 +23,8 @@ BEGIN
             AND EXTRACT(EPOCH FROM (ia.deleted_at - ia.verified_at)) < 3600
             AND ia.chute_id NOT IN (
                 '35cfa8b4-13a2-5382-b19a-e849f73c5d6a',
-                '83ce50c4-6d3f-55a6-88a6-c5db187f2c70'
+                '83ce50c4-6d3f-55a6-88a6-c5db187f2c70',
+                'eb04d6a6-b250-5f44-b91e-079bc938482a'
             )
     LOOP
         reported_count := 0;

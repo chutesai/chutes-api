@@ -433,7 +433,11 @@ async def check_llm_weights(chute, instances):
         logger.warning(f"No revision to check: {chute.name}")
         return [], []
 
-    logger.info(f"Checking {chute.chute_id=} {chute.name=} for {revision=}")
+    # Chute name exceptions, e.g. moonshot kimi k2 with 75k ctx on b200s.
+    model_match = re.search(r"^\s*model_name\s*=\s*['\"]([^'\"]+)['\"]", chute.code, re.MULTILINE)
+    model_name = chute.name if not model_match else model_match.group(1)
+
+    logger.info(f"Checking {chute.chute_id=} {model_name=} for {revision=}")
     encrypted_slurp = use_encrypted_slurp(chute.chutes_version)
 
     # Test each instance.
@@ -452,17 +456,17 @@ async def check_llm_weights(chute, instances):
     for target_path in target_paths:
         incorrect = []
         digest_counts = {}
-        expected_digest, expected_content = await get_hf_content(chute.name, revision, target_path)
+        expected_digest, expected_content = await get_hf_content(model_name, revision, target_path)
         if not expected_digest:
             # Could try other means later on but for now treat as "OK".
             logger.warning(
-                f"Failed to check huggingface for {target_path} on {chute.name} {revision=}"
+                f"Failed to check huggingface for {target_path} on {model_name} {revision=}"
             )
             continue
         if expected_content and target_path == "model.safetensors.index.json":
             weight_map = json.loads(expected_content)
         for instance in instances:
-            nice_name = chute.name.replace("/", "--")
+            nice_name = model_name.replace("/", "--")
             payload = {"path": f"/cache/hub/models--{nice_name}/snapshots/{revision}/{target_path}"}
             try:
                 started_at = time.time()
@@ -477,12 +481,12 @@ async def check_llm_weights(chute, instances):
                 digest_counts[digest] += 1
                 if expected_digest and expected_digest != digest:
                     logger.warning(
-                        f"Digest of {target_path} on {instance.instance_id=} of {chute.name} "
+                        f"Digest of {target_path} on {instance.instance_id=} of {model_name} "
                         f"is incorrect: {expected_digest} vs {digest}"
                     )
                     incorrect.append(instance)
                 logger.info(
-                    f"Digest of {target_path} on {instance.instance_id=} of {chute.name}: {digest} {duration=}"
+                    f"Digest of {target_path} on {instance.instance_id=} of {model_name}: {digest} {duration=}"
                 )
                 if duration > 9.0:
                     logger.warning(
@@ -506,7 +510,7 @@ async def check_llm_weights(chute, instances):
             hotkeys = set([inst.miner_hotkey for inst in incorrect])
             if len(digest_counts) == 1 and len(hotkeys) >= 2:
                 logger.warning(
-                    f"Huggingface digest mismatch, but all miners are in consensus: {expected_digest=} for {target_path} of {chute.name}"
+                    f"Huggingface digest mismatch, but all miners are in consensus: {expected_digest=} for {target_path} of {model_name}"
                 )
             else:
                 for inst in incorrect:
@@ -515,7 +519,7 @@ async def check_llm_weights(chute, instances):
     # Now check the actual weights.
     if weight_map:
         await check_weight_files(
-            encrypted_slurp, chute.name, revision, instances, weight_map, hard_failed, soft_failed
+            encrypted_slurp, model_name, revision, instances, weight_map, hard_failed, soft_failed
         )
     return hard_failed, soft_failed
 
@@ -831,6 +835,10 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
         if revision_match:
             revision = revision_match.group(1)
 
+    # Chute name exceptions, e.g. moonshot kimi k2 with 75k ctx on b200s.
+    model_match = re.search(r"^\s*model_name\s*=\s*['\"]([^'\"]+)['\"]", chute.code, re.MULTILINE)
+    model_name = chute.name if not model_match else model_match.group(1)
+
     found_sglang = False
     for process in processes:
         clean_exe = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["exe"].strip())
@@ -838,7 +846,7 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
             (process["exe"] == "/opt/python/bin/python3.12" or clean_exe == "python")
             and process["username"] == "chutes"
             and process["cmdline"].startswith(
-                f"python -m sglang.launch_server --host 127.0.0.1 --port 10101 --model-path {chute.name}"
+                f"python -m sglang.launch_server --host 127.0.0.1 --port 10101 --model-path {model_name}"
             )
         ):
             logger.success(f"{log_prefix} found SGLang chute: {process=}")
