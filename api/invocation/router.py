@@ -9,7 +9,6 @@ import gzip
 import orjson as json
 import csv
 import uuid
-import random
 import decimal
 import traceback
 from loguru import logger
