@@ -72,7 +72,9 @@ $$ LANGUAGE plpgsql;
 CREATE OR REPLACE FUNCTION trigger_refresh_quota_on_payment()
 RETURNS TRIGGER AS $$
 BEGIN
-    PERFORM refresh_invocation_quota(NEW.user_id, NEW.usd_amount);
+    IF NEW.purpose = 'credits' THEN
+        PERFORM refresh_invocation_quota(NEW.user_id, NEW.usd_amount);
+    END IF;
     RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
