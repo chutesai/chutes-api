@@ -587,25 +587,32 @@ def check_vlm_payload(request_body: dict):
                         )
 
 
-def check_tool_arguments(request_body: dict):
+def fix_glm_tool_arguments(request_body: dict):
     """
     Check if a request is passing string arguments to tools and parse them.
     """
-    if not request_body.get("messages"):
+    if (
+        not request_body.get("messages")
+        or (request_body.get("model") or "").lower() != "zai-org/glm-4.5-fp8"
+    ):
         return
-
     for message in request_body["messages"]:
         calls = message.get("tool_calls")
         if isinstance(calls, list):
             for call in calls:
-                if isinstance(call.get("function", {}).get("arguments"), str):
+                if isinstance(call.get("function", {}).get("arguments"), str) and call["function"][
+                    "arguments"
+                ].strip().startswith("{"):
                     try:
-                        call["function"]["arguments"] = json.loads(call["function"]["arguments"])
-                        logger.warning(
-                            f"FUNCTION ARGUMENTS TYPECHANGE: {request_body.get('model')}"
-                        )
-                    except Exception:
-                        raise HTTPException(
-                            status_code=status.HTTP_400_BAD_REQUEST,
-                            detail="Please pass function.arguments as a valid JSON object.",
-                        )
+                        args = json.loads(call["function"]["arguments"])
+                        formatted = []
+                        for key, value in args.items():
+                            formatted.append(f"<arg_key>{key}</arg_key>")
+                            formatted_value = value if isinstance(value, str) else json.dumps(value)
+                            formatted.append(f"<arg_value>{formatted_value}</arg_value>")
+                        call["function"]["arguments"] = "\n".join(formatted) + "\n"
+                        # logger.debug(
+                        #     f"FUNCTION ARGUMENTS REFORMATTED: {request_body.get('model')} -> {call['function']['arguments']}"
+                        # )
+                    except Exception as exc:
+                        logger.error(f"ERROR CHECKING GLM FUNCTION ARGUMENTS: {str(exc)}")
