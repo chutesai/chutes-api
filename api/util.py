@@ -585,3 +585,27 @@ def check_vlm_payload(request_body: dict):
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
                         )
+
+
+def check_tool_arguments(request_body: dict):
+    """
+    Check if a request is passing string arguments to tools and parse them.
+    """
+    if not request_body.get("messages"):
+        return
+
+    for message in request_body["messages"]:
+        calls = message.get("tool_calls")
+        if isinstance(calls, list):
+            for call in calls:
+                if isinstance(call.get("function", {}).get("arguments"), str):
+                    try:
+                        call["function"]["arguments"] = json.loads(call["function"]["arguments"])
+                        logger.warning(
+                            f"FUNCTION ARGUMENTS TYPECHANGE: {request_body.get('model')}"
+                        )
+                    except Exception:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Please pass function.arguments as a valid JSON object.",
+                        )
