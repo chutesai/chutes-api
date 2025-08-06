@@ -790,7 +790,7 @@ async def hostname_invocation(
 
         # THUDM -> zai-org namespace change.
         if model.startswith("THUDM/"):
-            payload["model"] = re.sub(r"^THUDM/", "zai-org", model)
+            payload["model"] = re.sub(r"^THUDM/", "zai-org/", model)
 
         # Kimi migration to b200.
         if model == "moonshotai/Kimi-K2-Instruct":

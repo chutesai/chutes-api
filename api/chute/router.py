@@ -535,7 +535,7 @@ async def get_chute_utilization_v2(request: Request):
             item["total_invocations"] = item.get("total_requests_1h", 0)
             item["total_rate_limit_errors"] = item.get("rate_limited_requests_1h", 0)
             utilization_data.append(item)
-        await settings.memcache.set(cache_key, json.dumps(utilization_data), exptime=300)
+        await settings.memcache.set(cache_key, json.dumps(utilization_data), exptime=30)
         return utilization_data
 
 
