@@ -35,7 +35,7 @@ from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.util import check_vlm_payload, fix_tool_arguments
+from api.util import check_vlm_payload
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -417,15 +417,6 @@ async def _invoke(
             if isinstance(exc, HTTPException):
                 raise
             logger.error(f"Failed to check VLM request payload: {str(exc)}")
-
-        # Fix GLM 4.5 tool calls.
-        if chute.name in ("zai-org/GLM-4.5-FP8", "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"):
-            try:
-                fix_tool_arguments(request_body)
-            except Exception as exc:
-                if isinstance(exc, HTTPException):
-                    raise
-                logger.error(f"Failed to check GLM function calling payload: {str(exc)}")
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
