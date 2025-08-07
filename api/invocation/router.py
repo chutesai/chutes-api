@@ -622,6 +622,20 @@ async def _invoke(
 
                         # If the error occurred on the first chunk, we can raise an HTTP exception.
                         if not first_chunk_processed:
+                            # SGLang errors.
+                            if isinstance(error, dict):
+                                if (
+                                    isinstance(error.get("code"), int)
+                                    and 400 <= error["code"] < 500
+                                ):
+                                    logger.warning(
+                                        f"Received error code from upstream streaming response: {error=}"
+                                    )
+                                    raise HTTPException(
+                                        status_code=error["code"],
+                                        detail=error,
+                                    )
+
                             if error in ("infra_overload", "no_targets"):
                                 raise HTTPException(
                                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
