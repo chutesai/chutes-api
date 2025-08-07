@@ -587,14 +587,14 @@ def check_vlm_payload(request_body: dict):
                         )
 
 
-def fix_glm_tool_arguments(request_body: dict):
+def fix_tool_arguments(request_body: dict):
     """
-    Check if a request is passing string arguments to tools and parse them.
+    Fix function call argument formatting for various models.
     """
-    if (
-        not request_body.get("messages")
-        or (request_body.get("model") or "").lower() != "zai-org/glm-4.5-fp8"
-    ):
+    model = request_body.get("model")
+    if model not in ("zai-org/GLM-4.5-FP8", "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8"):
+        return
+    if not request_body.get("messages"):
         return
     for message in request_body["messages"]:
         calls = message.get("tool_calls")
@@ -607,12 +607,22 @@ def fix_glm_tool_arguments(request_body: dict):
                         args = json.loads(call["function"]["arguments"])
                         formatted = []
                         for key, value in args.items():
-                            formatted.append(f"<arg_key>{key}</arg_key>")
-                            formatted_value = value if isinstance(value, str) else json.dumps(value)
-                            formatted.append(f"<arg_value>{formatted_value}</arg_value>")
-                        call["function"]["arguments"] = "\n".join(formatted) + "\n"
-                        # logger.debug(
-                        #     f"FUNCTION ARGUMENTS REFORMATTED: {request_body.get('model')} -> {call['function']['arguments']}"
-                        # )
+                            if model == "zai-org/GLM-4.5-FP8":
+                                formatted.append(f"<arg_key>{key}</arg_key>")
+                                formatted_value = (
+                                    value if isinstance(value, str) else json.dumps(value)
+                                )
+                                formatted.append(f"<arg_value>{formatted_value}</arg_value>")
+                            elif model == "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":
+                                formatted.append(f"<parameter={key}>")
+                                formatted_value = (
+                                    value if isinstance(value, str) else json.dumps(value)
+                                )
+                                formatted.append("<//parameter>")
+                        if formatted:
+                            call["function"]["arguments"] = "\n".join(formatted) + "\n"
+                            # logger.debug(
+                            #     f"FUNCTION ARGUMENTS REFORMATTED: {request_body.get('model')} -> {call['function']['arguments']}"
+                            # )
                     except Exception as exc:
                         logger.error(f"ERROR CHECKING GLM FUNCTION ARGUMENTS: {str(exc)}")
