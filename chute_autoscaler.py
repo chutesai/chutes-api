@@ -40,8 +40,7 @@ MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
-    "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 8,
-    "eb04d6a6-b250-5f44-b91e-079bc938482a": 20,
+    "eb04d6a6-b250-5f44-b91e-079bc938482a": 30,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 75,
