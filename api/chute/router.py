@@ -35,6 +35,7 @@ from api.chute.templates import (
     build_diffusion_code,
     build_tei_code,
 )
+from api.gpu import SUPPORTED_GPUS
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
 from api.instance.schemas import Instance
@@ -734,7 +735,13 @@ async def _deploy_chute(
             )
 
     # Disable non-chutes official images for affine.
-    if image.user_id != await chutes_user_id() or not image.name.startswith(("sglang/", "vllm/")):
+    if (
+        affine_dev
+        and (
+            image.user_id != await chutes_user_id()
+            or not image.name.startswith(("sglang/", "vllm/"))
+        )
+    ) and not current_user.has_role(Permissioning.unlimited_dev):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Must use either sglang or vllm official chutes image for affine deployments.",
@@ -748,10 +755,10 @@ async def _deploy_chute(
         )
 
     # Prevent deploying images with old chutes SDK versions.
-    if not image.chutes_version or semcomp(image.chutes_version, "0.3.0") < 0:
+    if not image.chutes_version or semcomp(image.chutes_version, "0.3.18") < 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to deploy chutes with legacy images (chutes SDK < 0.3.0)",
+            detail="Unable to deploy chutes with legacy images (chutes SDK < 0.3.18)",
         )
 
     old_version = None
@@ -927,9 +934,10 @@ async def deploy_chute(
         affine_checked = True
 
     # Affine special handling.
-    if chute_args.name.startswith("affine") and current_user.username.lower() not in (
-        "affine",
-        "affine2",
+    if (
+        chute_args.name.startswith("affine")
+        and not current_user.has_role(Permissioning.unlimited_dev)
+        and current_user.username.lower() not in ("affine", "affine2", "unconst", "nonaffine")
     ):
         if not affine_checked and not await is_affine_registered(db, current_user):
             logger.warning(
@@ -947,11 +955,50 @@ async def deploy_chute(
                 f"{current_user.hotkey=} with invalid code:\n{chute_args.code}"
             )
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
+                status_code=status.HTTP_400_BAD_REQUEST,
                 detail=message,
             )
+
+        # Sanity check the model.
+        async with aiohttp.ClientSession() as hsession:
+            try:
+                guessed_config = await guesser.analyze_model(chute_args.name, hsession)
+            except HTTPException as e:
+                raise e
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unable to properly evaluate requested model {chute_args.name}: {str(e)}",
+                )
+
+        # Force exclude GPU types: 5090 because the inference engines don't support them,
+        # mi300x because we don't have containers/miners that support them yet,
+        # and b200s because we simply don't have sufficient quantity and need them for kimi-k2.
+        chute_args.node_selector.exclude = list(
+            set(chute_args.node_selector.exclude or [] + ["b200", "mi300x"])
+        )
+
+        # Check that our best guess for model config matches the node selector.
+        min_vram_required = guessed_config.required_gpus * guessed_config.min_vram_per_gpu
+        node_selector_min_vram = chute_args.node_selector.gpu_count * min(
+            [
+                SUPPORTED_GPUS[gpu]["memory"]
+                for gpu in SUPPORTED_GPUS
+                if gpu in chute_args.node_selector.supported_gpus
+            ]
+        )
+        if min_vram_required < 8 * 140 and min_vram_required < node_selector_min_vram:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "node_selector specs are insufficient to support the model: "
+                    f"{min_vram_required=} {node_selector_min_vram=}, please fix and try again."
+                ),
+            )
+
         logger.success(
-            f"Affine deployment initiated: {chute_args.name=} from {current_user.hotkey=}, code check passed."
+            f"Affine deployment initiated: {chute_args.name=} from {current_user.hotkey=}, "
+            "code check and prelim model config/node selector config passed."
         )
         is_affine_model = True
 
@@ -961,7 +1008,7 @@ async def deploy_chute(
         await chutes_user_id(),
         "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
         "5bf8a979-ea71-54bf-8644-26a3411a3b58",
-    ):
+    ) and not current_user.has_role(Permissioning.unlimited_dev):
         bad, response = await is_bad_code(chute_args.code)
         logger.warning(
             f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
@@ -974,7 +1021,11 @@ async def deploy_chute(
     chute = await _deploy_chute(chute_args, db, current_user, use_rolling_update=False)
 
     # Auto-cleanup the other chutes for affine miners.
-    if is_affine_model:
+    if (
+        is_affine_model
+        and not current_user.has_role(Permissioning.unlimited_dev)
+        and current_user.username.lower() not in ("affine", "affine2", "nonaffine", "unconst")
+    ):
         old_chutes = (
             (
                 await db.execute(
@@ -1054,6 +1105,11 @@ async def easy_deploy_vllm_chute(
     """
     Easy/templated vLLM deployment.
     """
+    if await is_affine_registered(db, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Easy vllm deployment method not supported for Affine currently.",
+        )
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 

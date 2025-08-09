@@ -614,6 +614,7 @@ def check_affine_code(code: str) -> tuple[bool, str]:
         tree = ast.parse(code)
     except SyntaxError as e:
         return False, f"Syntax error: {e}"
+
     imported_names = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
@@ -625,6 +626,38 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                 return False, f"Invalid import from: {node.module}. Only 'from chutes.*' is allowed"
             for alias in node.names:
                 imported_names.add(alias.asname if alias.asname else alias.name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            for decorator in node.decorator_list:
+                if isinstance(decorator, ast.Call):
+                    if (
+                        isinstance(decorator.func, ast.Attribute)
+                        and isinstance(decorator.func.value, ast.Name)
+                        and decorator.func.value.id == "chute"
+                        and decorator.func.attr == "cord"
+                    ):
+                        return False, "@chute.cord decorators are not allowed"
+                elif isinstance(decorator, ast.Attribute):
+                    if (
+                        isinstance(decorator.value, ast.Name)
+                        and decorator.value.id == "chute"
+                        and decorator.attr == "cord"
+                    ):
+                        return False, "@chute.cord decorators are not allowed"
+
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute):
+                    current = target
+                    attrs = []
+                    while isinstance(current, ast.Attribute):
+                        attrs.append(current.attr)
+                        current = current.value
+
+                    if isinstance(current, ast.Name) and current.id == "chute":
+                        attr_chain = ".".join(reversed(attrs))
+                        return False, f"Assignment to chute.{attr_chain} is not allowed"
 
     assignments = {}
     chute_assignment = None
@@ -642,6 +675,35 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                 if chute_assignment is not None:
                                     return False, "Multiple assignments to 'chute' variable"
                                 chute_assignment = func_name
+                                for keyword in node.value.keywords:
+                                    if keyword.arg == "image":
+                                        if not (
+                                            isinstance(keyword.value, ast.Constant)
+                                            and isinstance(keyword.value.value, str)
+                                        ):
+                                            return (
+                                                False,
+                                                "image argument must be a string literal, not Image(...)",
+                                            )
+                                        image_str = keyword.value.value
+                                        if not (
+                                            image_str.startswith("chutes/sglang")
+                                            or image_str.startswith("chutes/vllm")
+                                        ):
+                                            return (
+                                                False,
+                                                "image must start with 'chutes/sglang' or 'chutes/vllm'",
+                                            )
+                                    elif keyword.arg == "engine_args":
+                                        arg_str = ast.unparse(keyword.value)
+                                        if (
+                                            "trust_remote_code" in arg_str
+                                            or "trust-remote-code" in arg_str
+                                        ):
+                                            return (
+                                                False,
+                                                "engine_args cannot contain 'trust_remote_code' or 'trust-remote-code'",
+                                            )
                             else:
                                 return (
                                     False,
@@ -651,18 +713,21 @@ def check_affine_code(code: str) -> tuple[bool, str]:
 
     if chute_assignment is None:
         return False, "No 'chute' variable found calling build_sglang_chute or build_vllm_chute"
+
     top_level_vars = set()
     for node in tree.body:
         if isinstance(node, ast.Assign):
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     top_level_vars.add(target.id)
+
     top_level_vars.discard("chute")
     if top_level_vars:
         return (
             False,
             f"Found extra variables: {', '.join(sorted(top_level_vars))}. Only 'chute' is allowed",
         )
+
     return True, f"Valid chute file with {chute_assignment}"
 
 
