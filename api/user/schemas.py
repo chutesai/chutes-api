@@ -3,6 +3,7 @@ ORM definitions for users.
 """
 
 import datetime
+import orjson as json
 from typing import Self, Optional
 from pydantic import BaseModel
 from sqlalchemy import (
@@ -268,3 +269,52 @@ class JobQuota(Base):
             return settings.default_job_quotas.get(
                 chute_id, settings.default_job_quotas.get("*", 0)
             )
+
+
+class PriceOverride(Base):
+    __tablename__ = "price_overrides"
+    user_id = Column(String, primary_key=True)
+    chute_id = Column(String, primary_key=True)
+    per_request = Column(Double, nullable=True)
+    per_million_in = Column(Double, nullable=True)
+    per_million_out = Column(Double, nullable=True)
+    per_step = Column(Double, nullable=True)
+
+    @staticmethod
+    async def get(user_id: str, chute_id: str):
+        key = f"idiscount:{user_id}:{chute_id}".encode()
+        cached = (await settings.memcache.get(key) or b"").decode()
+        if cached:
+            try:
+                return PriceOverride(**json.loads(cached))
+            except Exception:
+                await settings.memcache.delete(key)
+
+        async with get_session() as session:
+            override = (
+                (
+                    await session.execute(
+                        select(PriceOverride)
+                        .where(PriceOverride.user_id == user_id)
+                        .where(PriceOverride.chute_id.in_([chute_id, "*"]))
+                        .order_by(case((PriceOverride.chute_id == chute_id, 0), else_=1))
+                        .limit(1)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            if override is not None:
+                serialized = json.dumps(
+                    {
+                        "per_request": override.per_request,
+                        "per_million_in": override.per_million_in,
+                        "per_million_out": override.per_million_out,
+                        "per_step": override.per_step,
+                        "user_id": override.user_id,
+                        "chute_id": override.chute_id,
+                    }
+                )
+                await settings.memcache.set(key, serialized, exptime=1800)
+                return override
+            return None

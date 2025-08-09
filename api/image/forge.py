@@ -679,6 +679,31 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
             logger.info(f"Stage 1: Building updated image as {updated_tag}")
 
             dockerfile_content = f"""FROM {full_source_tag}
+USER root
+RUN rm -f /etc/chutesfs.index
+"""
+            if "-rocm" not in full_source_tag:
+                dockerfile_content += """
+ENV DEBIAN_FRONTEND=noninteractive
+ENV NEEDRESTART_SUSPEND=y
+RUN apt update && \
+    apt -y install \
+      libclblast-dev \
+      clinfo \
+      ocl-icd-libopencl1 \
+      opencl-headers \
+      ocl-icd-opencl-dev \
+      libudev-dev \
+      libopenmpi-dev \
+      libudev-dev \
+      openssh-server \
+      curl \
+      wget \
+      jq || true
+RUN mkdir -p /etc/OpenCL/vendors/ && echo 'libnvidia-opencl.so.1' > /etc/OpenCL/vendors/nvidia.icd
+"""
+            dockerfile_content += f"""
+USER chutes
 RUN pip install --upgrade chutes=={chutes_version}
 """
             dockerfile_path = os.path.join(build_dir, "Dockerfile.update")

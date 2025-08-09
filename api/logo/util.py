@@ -32,7 +32,7 @@ async def validate_and_convert_image(file: UploadFile) -> Tuple[bytes, str]:
         right = left + size
         bottom = top + size
         image = image.crop((left, top, right, bottom))
-        image = image.resize((128, 128), Image.Resampling.LANCZOS)
+        image = image.resize((512, 512), Image.Resampling.LANCZOS)
 
         # Save as WebP
         img_byte_arr = io.BytesIO()

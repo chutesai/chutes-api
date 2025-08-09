@@ -199,7 +199,7 @@ async def _check_scalable(db, chute, hotkey):
         return
 
     # When there is a rolling update in progress, use the permitted list.
-    if chute.rolling_update:
+    if chute.rolling_update and current_count >= target_count - 2:
         limit = chute.rolling_update.permitted.get(hotkey, 0) or 0
         if limit <= 0 and chute.rolling_update.permitted:
             logger.warning(

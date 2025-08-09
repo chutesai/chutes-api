@@ -131,7 +131,7 @@ async def return_developer_deposit(
     if not recent_payment:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"You have not made any payments to the developer deposit address: {current_user.developer_deposit_address}",
+            detail=f"You have not made any payments to the developer deposit address: {current_user.developer_payment_address}",
         )
     if datetime.now(timezone.utc) - recent_payment.created_at <= timedelta(days=7):
         raise HTTPException(

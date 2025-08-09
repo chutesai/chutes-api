@@ -14,6 +14,7 @@ class MinimalImageResponse(BaseModel):
     name: str
     tag: str
     public: bool
+    patch_version: Optional[str]
 
     class Config:
         from_attributes = True
@@ -31,6 +32,7 @@ class ImageResponse(BaseModel):
     build_completed_at: Optional[datetime]
     user: UserResponse
     logo_id: Optional[str]
+    patch_version: Optional[str]
 
     class Config:
         from_attributes = True

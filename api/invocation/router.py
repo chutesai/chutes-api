@@ -35,7 +35,7 @@ from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.util import check_vlm_payload
+from api.util import check_vlm_payload, fix_glm_tool_arguments
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -416,7 +416,20 @@ async def _invoke(
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 raise
-            logger.error(f"Failed to check VLM request payload: {exc}")
+            logger.error(f"Failed to check VLM request payload: {str(exc)}")
+
+        # Fix GLM 4.5 tool call args...
+        if chute.name == "zai-org/GLM-4.5-FP8":
+            tools = request_body.get("tools")
+            if tools and isinstance(tools, list):
+                if "tool_choice" not in request_body:
+                    request_body["tool_choice"] = "auto"
+            try:
+                fix_glm_tool_arguments(request_body)
+            except Exception as exc:
+                if isinstance(exc, HTTPException):
+                    raise
+                logger.error(f"Failed to check GLM function calling payload: {str(exc)}")
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
@@ -429,7 +442,7 @@ async def _invoke(
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
     async with get_session() as db:
-        manager = await get_chute_target_manager(db, chute.chute_id, max_wait=0)
+        manager = await get_chute_target_manager(db, chute, max_wait=0)
     if not manager or not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(
@@ -609,6 +622,20 @@ async def _invoke(
 
                         # If the error occurred on the first chunk, we can raise an HTTP exception.
                         if not first_chunk_processed:
+                            # SGLang errors.
+                            if isinstance(error, dict):
+                                if (
+                                    isinstance(error.get("code"), int)
+                                    and 400 <= error["code"] < 500
+                                ):
+                                    logger.warning(
+                                        f"Received error code from upstream streaming response: {error=}"
+                                    )
+                                    raise HTTPException(
+                                        status_code=error["code"],
+                                        detail=error,
+                                    )
+
                             if error in ("infra_overload", "no_targets"):
                                 raise HTTPException(
                                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -788,23 +815,13 @@ async def hostname_invocation(
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
 
-        # # Disable tools on kimi-k2 for now.
-        # elif model == "moonshotai/Kimi-K2-Instruct":
-        #     problematic = set(payload) & set(
-        #         [
-        #             "logit_bias",
-        #             "response_format",
-        #             "tools",
-        #             "tool_choice",
-        #             "regex",
-        #             "grammar",
-        #         ]
-        #     )
-        #     if problematic:
-        #         raise HTTPException(
-        #             status_code=status.HTTP_400_BAD_REQUEST,
-        #             detail=f"{model} on chutes does not currently support {problematic}",
-        #         )
+        # THUDM -> zai-org namespace change.
+        if model.startswith("THUDM/"):
+            payload["model"] = re.sub(r"^THUDM/", "zai-org/", model)
+
+        # Kimi migration to b200.
+        if model == "moonshotai/Kimi-K2-Instruct":
+            payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
 
         model = payload.get("model")
         chute = None

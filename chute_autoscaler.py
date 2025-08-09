@@ -40,7 +40,7 @@ MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
-    "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 20,
+    "eb04d6a6-b250-5f44-b91e-079bc938482a": 30,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 75,
@@ -64,7 +64,7 @@ async def instance_cleanup():
                         or_(
                             and_(
                                 Instance.config_id.isnot(None),
-                                Instance.created_at <= func.now() - timedelta(minutes=45),
+                                Instance.created_at <= func.now() - timedelta(hours=1),
                             ),
                             and_(
                                 Instance.config_id.is_(None),
@@ -385,8 +385,24 @@ async def perform_autoscale(dry_run: bool = False):
         rate_limit_basis = max(rate_limit_1h, rate_limit_15m)
         utilization_basis = max(utilization_1h, utilization_15m)
 
+        # Scale up candidate: high utilization
+        if utilization_basis >= UTILIZATION_SCALE_UP:
+            num_to_add = 1
+            if utilization_basis >= UTILIZATION_SCALE_UP * 1.5:
+                num_to_add = max(3, int(info.instance_count * 0.5))
+            elif utilization_basis >= UTILIZATION_SCALE_UP * 1.25:
+                num_to_add = max(2, int(info.instance_count * 0.25))
+            target_count = info.instance_count + num_to_add
+            scale_up_candidates.append((chute_id, num_to_add))
+            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
+            chute_actions[chute_id] = "scale_up_candidate"
+            chute_target_counts[chute_id] = target_count
+            logger.info(
+                f"Scale up candidate: {chute_id} - high utilization: {utilization_basis:.1%} "
+                f"- allowing {num_to_add} additional instances"
+            )
         # Scale up candidate: increasing rate limiting and significant rate limiting
-        if rate_limit_basis >= RATE_LIMIT_SCALE_UP:
+        elif rate_limit_basis >= RATE_LIMIT_SCALE_UP:
             num_to_add = 1
             if rate_limit_basis >= 0.2:
                 num_to_add = max(3, int(info.instance_count * 0.3))
@@ -402,23 +418,6 @@ async def perform_autoscale(dry_run: bool = False):
             logger.info(
                 f"Scale up candidate: {chute_id} - rate limiting increasing: "
                 f"5m={rate_limit_5m:.1%}, 15m={rate_limit_15m:.1%}, 1h={rate_limit_1h:.1%} "
-                f"- allowing {num_to_add} additional instances"
-            )
-
-        # Scale up candidate: high utilization
-        elif utilization_basis >= UTILIZATION_SCALE_UP:
-            num_to_add = 1
-            if utilization_basis >= UTILIZATION_SCALE_UP * 1.5:
-                num_to_add = max(3, int(info.instance_count * 0.5))
-            elif utilization_basis >= UTILIZATION_SCALE_UP * 1.25:
-                num_to_add = max(2, int(info.instance_count * 0.25))
-            target_count = info.instance_count + num_to_add
-            scale_up_candidates.append((chute_id, num_to_add))
-            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-            chute_actions[chute_id] = "scale_up_candidate"
-            chute_target_counts[chute_id] = target_count
-            logger.info(
-                f"Scale up candidate: {chute_id} - high utilization: {utilization_basis:.1%} "
                 f"- allowing {num_to_add} additional instances"
             )
 
