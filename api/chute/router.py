@@ -738,10 +738,12 @@ async def _deploy_chute(
     if (
         affine_dev
         and (
-            image.user_id != await chutes_user_id()
-            or not image.name.startswith(("sglang/", "vllm/"))
+            image.user_id != await chutes_user_id() or not image.name.startswith(("sglang", "vllm"))
         )
     ) and not current_user.has_role(Permissioning.unlimited_dev):
+        logger.error(
+            f"Affine user tried to deploy unofficial vllm/sglang image: {image.name=} {image.tag=} {current_user.username=}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Must use either sglang or vllm official chutes image for affine deployments.",
@@ -966,6 +968,9 @@ async def deploy_chute(
             except HTTPException as e:
                 raise e
             except Exception as e:
+                logger.error(
+                    f"Affine user tried to deploy invalid model: {chute_args.name=} {current_user.username=}"
+                )
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Unable to properly evaluate requested model {chute_args.name}: {str(e)}",
@@ -988,6 +993,9 @@ async def deploy_chute(
             ]
         )
         if min_vram_required < 8 * 140 and min_vram_required < node_selector_min_vram:
+            logger.error(
+                f"Affine user tried to deploy bad node_selector: {min_vram_required=} {node_selector_min_vram} {chute_args.name=} {current_user.username=}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
@@ -1010,10 +1018,10 @@ async def deploy_chute(
         "5bf8a979-ea71-54bf-8644-26a3411a3b58",
     ) and not current_user.has_role(Permissioning.unlimited_dev):
         bad, response = await is_bad_code(chute_args.code)
-        logger.warning(
-            f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
-        )
         if bad:
+            logger.warning(
+                f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=json.dumps(response).decode(),
