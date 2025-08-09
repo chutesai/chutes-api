@@ -35,8 +35,10 @@ from api.chute.templates import (
     build_diffusion_code,
     build_tei_code,
 )
+from api.gpu import SUPPORTED_GPUS
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
+from api.instance.schemas import Instance
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -55,7 +57,15 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION_OUT,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
-from api.util import ensure_is_developer, limit_deployments, semcomp, get_current_hf_commit
+from api.util import (
+    semcomp,
+    ensure_is_developer,
+    limit_deployments,
+    get_current_hf_commit,
+    is_affine_registered,
+    check_affine_code,
+    notify_deleted,
+)
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -650,6 +660,7 @@ async def _deploy_chute(
     chute_args: ChuteArgs,
     db: AsyncSession,
     current_user: User,
+    use_rolling_update: bool = True,
 ):
     """
     Deploy a chute!
@@ -689,8 +700,11 @@ async def _deploy_chute(
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
         chute_args.node_selector = NodeSelector(**chute_args.node_selector)
-    if current_user.user_id != await chutes_user_id() and not current_user.has_role(
-        Permissioning.unlimited_dev
+    affine_dev = await is_affine_registered(db, current_user)
+    if (
+        current_user.user_id != await chutes_user_id()
+        and not current_user.has_role(Permissioning.unlimited_dev)
+        and not affine_dev
     ):
         if (
             chute_args.node_selector
@@ -720,6 +734,19 @@ async def _deploy_chute(
                 detail="You are not allowed to require h200, b200 or mi300x at this time.",
             )
 
+    # Disable non-chutes official images for affine.
+    if (
+        affine_dev
+        and (
+            image.user_id != await chutes_user_id()
+            or not image.name.startswith(("sglang/", "vllm/"))
+        )
+    ) and not current_user.has_role(Permissioning.unlimited_dev):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must use either sglang or vllm official chutes image for affine deployments.",
+        )
+
     # Require revision for LLM templates.
     if chute_args.standard_template == "vllm" and not chute_args.revision:
         raise HTTPException(
@@ -728,10 +755,10 @@ async def _deploy_chute(
         )
 
     # Prevent deploying images with old chutes SDK versions.
-    if not image.chutes_version or semcomp(image.chutes_version, "0.3.0") < 0:
+    if not image.chutes_version or semcomp(image.chutes_version, "0.3.18") < 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Unable to deploy chutes with legacy images (chutes SDK < 0.3.0)",
+            detail="Unable to deploy chutes with legacy images (chutes SDK < 0.3.18)",
         )
 
     old_version = None
@@ -843,20 +870,32 @@ async def _deploy_chute(
     await db.refresh(chute)
 
     if old_version:
-        await handle_rolling_update.kiq(chute.chute_id, chute.version)
-        await settings.redis_client.publish(
-            "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "chute_updated",
-                    "data": {
-                        "chute_id": chute.chute_id,
-                        "version": chute.version,
-                        "job_only": not chute.cords,
-                    },
-                }
-            ).decode(),
-        )
+        if use_rolling_update:
+            await handle_rolling_update.kiq(chute.chute_id, chute.version)
+            await settings.redis_client.publish(
+                "miner_broadcast",
+                json.dumps(
+                    {
+                        "reason": "chute_updated",
+                        "data": {
+                            "chute_id": chute.chute_id,
+                            "version": chute.version,
+                            "job_only": not chute.cords,
+                        },
+                    }
+                ).decode(),
+            )
+        else:
+            # Purge all instances immediately.
+            instances = (
+                (await db.query(Instance).where(Instance.chute_id == chute.chute_id))
+                .unique()
+                .scalars()
+                .all()
+            )
+            for instance in instances:
+                await db.delete(instance)
+                await notify_deleted(instance, "Chute updated with use_rolling_update=False")
     else:
         await settings.redis_client.publish(
             "miner_broadcast",
@@ -883,13 +922,93 @@ async def deploy_chute(
     """
     Standard deploy from the CDK.
     """
-    await ensure_is_developer(db, current_user)
+    is_affine_model = False
+    http_exc = await ensure_is_developer(db, current_user, raise_=False)
+    affine_checked = False
+    if http_exc is not None:
+        if not await is_affine_registered(db, current_user):
+            logger.warning(
+                f"Attempted chute creation from non-dev and non-affine user: {current_user.user_id=}"
+            )
+            raise http_exc
+        affine_checked = True
+
+    # Affine special handling.
+    if (
+        chute_args.name.startswith("affine")
+        and not current_user.has_role(Permissioning.unlimited_dev)
+        and current_user.username.lower() not in ("affine", "affine2", "unconst", "nonaffine")
+    ):
+        if not affine_checked and not await is_affine_registered(db, current_user):
+            logger.warning(
+                "Attempted affine deployment by unregistered hotkey: "
+                f"{current_user.user_id=} {current_user.username=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only users with hotkeys registered on affine may deploy chutes named affine*",
+            )
+        valid, message = check_affine_code(chute_args.code)
+        if not valid:
+            logger.warning(
+                f"Affine deployment attempted from {current_user.user_id=} "
+                f"{current_user.hotkey=} with invalid code:\n{chute_args.code}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=message,
+            )
+
+        # Sanity check the model.
+        async with aiohttp.ClientSession() as hsession:
+            try:
+                guessed_config = await guesser.analyze_model(chute_args.name, hsession)
+            except HTTPException as e:
+                raise e
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Unable to properly evaluate requested model {chute_args.name}: {str(e)}",
+                )
+
+        # Force exclude GPU types: 5090 because the inference engines don't support them,
+        # mi300x because we don't have containers/miners that support them yet,
+        # and b200s because we simply don't have sufficient quantity and need them for kimi-k2.
+        chute_args.node_selector.exclude = list(
+            set(chute_args.node_selector.exclude or [] + ["b200", "mi300x"])
+        )
+
+        # Check that our best guess for model config matches the node selector.
+        min_vram_required = guessed_config.required_gpus * guessed_config.min_vram_per_gpu
+        node_selector_min_vram = chute_args.node_selector.gpu_count * min(
+            [
+                SUPPORTED_GPUS[gpu]["memory"]
+                for gpu in SUPPORTED_GPUS
+                if gpu in chute_args.node_selector.supported_gpus
+            ]
+        )
+        if min_vram_required < 8 * 140 and min_vram_required < node_selector_min_vram:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "node_selector specs are insufficient to support the model: "
+                    f"{min_vram_required=} {node_selector_min_vram=}, please fix and try again."
+                ),
+            )
+
+        logger.success(
+            f"Affine deployment initiated: {chute_args.name=} from {current_user.hotkey=}, "
+            "code check and prelim model config/node selector config passed."
+        )
+        is_affine_model = True
+
+    # No-DoS-Plz.
     await limit_deployments(db, current_user)
     if current_user.user_id not in (
         await chutes_user_id(),
         "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
         "5bf8a979-ea71-54bf-8644-26a3411a3b58",
-    ):
+    ) and not current_user.has_role(Permissioning.unlimited_dev):
         bad, response = await is_bad_code(chute_args.code)
         logger.warning(
             f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
@@ -899,7 +1018,43 @@ async def deploy_chute(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=json.dumps(response).decode(),
             )
-    return await _deploy_chute(chute_args, db, current_user)
+    chute = await _deploy_chute(chute_args, db, current_user, use_rolling_update=False)
+
+    # Auto-cleanup the other chutes for affine miners.
+    if (
+        is_affine_model
+        and not current_user.has_role(Permissioning.unlimited_dev)
+        and current_user.username.lower() not in ("affine", "affine2", "nonaffine", "unconst")
+    ):
+        old_chutes = (
+            (
+                await db.execute(
+                    select(Chute).where(
+                        Chute.user_id == current_user.user_id,
+                        Chute.name.ilike("affine%"),
+                        Chute.chute_id.is_not(chute.chute_id),
+                    )
+                )
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+        for old_chute in old_chutes:
+            await db.delete(old_chute)
+            await settings.redis_client.publish(
+                "miner_broadcast",
+                json.dumps(
+                    {
+                        "reason": "chute_deleted",
+                        "data": {"chute_id": old_chute.chute_id, "version": old_chute.version},
+                    }
+                ).decode(),
+            )
+            logger.success(
+                f"Auto-cleaned {old_chute.chute_id=} {old_chute.name=} from {old_chute.user_id=} for affine"
+            )
+    return chute
 
 
 async def _find_latest_image(db: AsyncSession, name: str) -> Image:
@@ -950,6 +1105,11 @@ async def easy_deploy_vllm_chute(
     """
     Easy/templated vLLM deployment.
     """
+    if await is_affine_registered(db, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Easy vllm deployment method not supported for Affine currently.",
+        )
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 

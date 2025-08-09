@@ -3,34 +3,36 @@ Utility/helper functions.
 """
 
 import re
-import asyncio
-import aiodns
-import datetime
-import hashlib
-import random
-import string
-import uuid
+import ast
 import time
-import secrets
-import orjson as json
+import uuid
+import aiodns
 import base64
+import random
 import semver
-from urllib.parse import urlparse
-from loguru import logger
+import string
+import asyncio
+import secrets
+import hashlib
+import datetime
+import orjson as json
 from typing import Set
-from ipaddress import ip_address, IPv4Address, IPv6Address
-from fastapi import status, HTTPException
-from sqlalchemy import func, or_, and_
-from sqlalchemy.future import select
+from loguru import logger
 from api.config import settings
+from urllib.parse import urlparse
+from sqlalchemy.future import select
+from api.metasync import MetagraphNode
 from api.payment.schemas import Payment
 from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
-from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from fastapi import status, HTTPException
+from sqlalchemy import func, or_, and_, exists
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding, hashes
+from ipaddress import ip_address, IPv4Address, IPv6Address
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from scalecodec.utils.ss58 import is_valid_ss58_address, ss58_decode
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
 
@@ -163,12 +165,12 @@ async def is_valid_host(host: str) -> bool:
     return False
 
 
-async def ensure_is_developer(session, user):
+async def ensure_is_developer(session, user, raise_: bool = True):
     """
     Ensure a user is a developer, otherwise raise exception with helpful info.
     """
     if user.has_role(Permissioning.developer):
-        return
+        return None
     total_query = select(func.sum(Payment.usd_amount)).where(
         Payment.user_id == user.user_id, Payment.purpose == "developer"
     )
@@ -176,7 +178,7 @@ async def ensure_is_developer(session, user):
     fetcher = get_fetcher()
     fmv = await fetcher.get_price("tao")
     required_tao = (settings.developer_deposit - total_payments) / fmv
-    raise HTTPException(
+    exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=(
             "You do not have developer permissions, to enable developer permissions, "
@@ -184,6 +186,23 @@ async def ensure_is_developer(session, user):
             f"to your developer deposit address: {user.developer_payment_address}"
         ),
     )
+    if not raise_:
+        return exc
+    raise exc
+
+
+async def is_affine_registered(session, user):
+    """
+    Check if a user is registered on affine (thereby allowing limited dev activity).
+    """
+    result = await session.execute(
+        select(
+            exists(
+                select(1).where(MetagraphNode.netuid == 120, MetagraphNode.hotkey == user.hotkey)
+            )
+        )
+    )
+    return result.scalar()
 
 
 async def _limit_dev_activity(session, user, maximum, clazz):
@@ -585,6 +604,131 @@ def check_vlm_payload(request_body: dict):
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
                         )
+
+
+def check_affine_code(code: str) -> tuple[bool, str]:
+    """
+    Check if an affine model meets the requirements (LLM chute using SGLang or vLLM).
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return False, f"Syntax error: {e}"
+
+    imported_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name != "os":
+                    return False, f"Invalid import: {alias.name}. Only 'os' is allowed"
+        elif isinstance(node, ast.ImportFrom):
+            if node.module is None or not node.module.startswith("chutes."):
+                return False, f"Invalid import from: {node.module}. Only 'from chutes.*' is allowed"
+            for alias in node.names:
+                imported_names.add(alias.asname if alias.asname else alias.name)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef):
+            for decorator in node.decorator_list:
+                if isinstance(decorator, ast.Call):
+                    if (
+                        isinstance(decorator.func, ast.Attribute)
+                        and isinstance(decorator.func.value, ast.Name)
+                        and decorator.func.value.id == "chute"
+                        and decorator.func.attr == "cord"
+                    ):
+                        return False, "@chute.cord decorators are not allowed"
+                elif isinstance(decorator, ast.Attribute):
+                    if (
+                        isinstance(decorator.value, ast.Name)
+                        and decorator.value.id == "chute"
+                        and decorator.attr == "cord"
+                    ):
+                        return False, "@chute.cord decorators are not allowed"
+
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute):
+                    current = target
+                    attrs = []
+                    while isinstance(current, ast.Attribute):
+                        attrs.append(current.attr)
+                        current = current.value
+
+                    if isinstance(current, ast.Name) and current.id == "chute":
+                        attr_chain = ".".join(reversed(attrs))
+                        return False, f"Assignment to chute.{attr_chain} is not allowed"
+
+    assignments = {}
+    chute_assignment = None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    var_name = target.id
+                    if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name):
+                        func_name = node.value.func.id
+                        if func_name in ["build_sglang_chute", "build_vllm_chute"]:
+                            if func_name not in imported_names:
+                                return False, f"Function {func_name} is used but not imported"
+                            if var_name == "chute":
+                                if chute_assignment is not None:
+                                    return False, "Multiple assignments to 'chute' variable"
+                                chute_assignment = func_name
+                                for keyword in node.value.keywords:
+                                    if keyword.arg == "image":
+                                        if not (
+                                            isinstance(keyword.value, ast.Constant)
+                                            and isinstance(keyword.value.value, str)
+                                        ):
+                                            return (
+                                                False,
+                                                "image argument must be a string literal, not Image(...)",
+                                            )
+                                        image_str = keyword.value.value
+                                        if not (
+                                            image_str.startswith("chutes/sglang")
+                                            or image_str.startswith("chutes/vllm")
+                                        ):
+                                            return (
+                                                False,
+                                                "image must start with 'chutes/sglang' or 'chutes/vllm'",
+                                            )
+                                    elif keyword.arg == "engine_args":
+                                        arg_str = ast.unparse(keyword.value)
+                                        if (
+                                            "trust_remote_code" in arg_str
+                                            or "trust-remote-code" in arg_str
+                                        ):
+                                            return (
+                                                False,
+                                                "engine_args cannot contain 'trust_remote_code' or 'trust-remote-code'",
+                                            )
+                            else:
+                                return (
+                                    False,
+                                    f"Function {func_name} must be assigned to variable 'chute', not '{var_name}'",
+                                )
+                    assignments[var_name] = node
+
+    if chute_assignment is None:
+        return False, "No 'chute' variable found calling build_sglang_chute or build_vllm_chute"
+
+    top_level_vars = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    top_level_vars.add(target.id)
+
+    top_level_vars.discard("chute")
+    if top_level_vars:
+        return (
+            False,
+            f"Found extra variables: {', '.join(sorted(top_level_vars))}. Only 'chute' is allowed",
+        )
+
+    return True, f"Valid chute file with {chute_assignment}"
 
 
 def fix_glm_tool_arguments(request_body: dict):

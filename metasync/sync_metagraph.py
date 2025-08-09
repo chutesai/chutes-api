@@ -20,12 +20,12 @@ MetagraphNode = create_metagraph_node_class(Base)
 logger = get_logger(__name__)
 
 
-async def sync_and_save_metagraph():
+async def sync_and_save_metagraph(netuid: int):
     """
     Load the metagraph for our subnet and persist it to the database.
     """
     substrate = get_substrate(subtensor_address=settings.subtensor)
-    nodes = get_nodes_for_netuid(substrate, settings.netuid)
+    nodes = get_nodes_for_netuid(substrate, netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")
     redis_client = redis.Redis.from_url(settings.redis_url)
@@ -37,7 +37,7 @@ async def sync_and_save_metagraph():
                 f"DELETE FROM metagraph_nodes WHERE netuid = :netuid AND hotkey NOT IN ({hotkeys}) AND node_id >= 0"
             ),
             {
-                "netuid": settings.netuid,
+                "netuid": netuid,
             },
         )
         for node in nodes:
@@ -53,12 +53,12 @@ async def sync_and_save_metagraph():
             result = await session.execute(statement)
             if result.rowcount > 0:
                 logger.info(f"Detected metagraph update for {node.hotkey=}")
-                redis_client.publish(f"metagraph_change:{settings.netuid}", json.dumps(node_dict))
+                redis_client.publish(f"metagraph_change:{netuid}", json.dumps(node_dict))
                 updated += 1
         if updated:
-            logger.info(f"Updated {updated} nodes for netuid={settings.netuid}")
+            logger.info(f"Updated {updated} nodes for {netuid=}")
         else:
-            logger.info(f"No metagraph changes detected for netuid={settings.netuid}")
+            logger.info(f"No metagraph changes detected for {netuid=}")
         await session.commit()
         redis_client.close()
 
@@ -71,9 +71,13 @@ async def main():
         await conn.run_sync(Base.metadata.create_all)
 
     try:
-        logger.info("Attempting to resync metagraph...")
-        await asyncio.wait_for(sync_and_save_metagraph(), 60)
-        logger.info("Successfully synced metagraph.")
+        logger.info("Attempting to resync metagraph for {settings.netuid=}")
+        await asyncio.wait_for(sync_and_save_metagraph(netuid=settings.netuid), 60)
+        logger.info("Successfully synced metagraph for {settings.netuid=}")
+
+        # Other subnets (e.g. we sync affine here so miners get dev access.
+        for netuid in (120,):
+            await asyncio.wait_for(sync_and_save_metagraph(netuid=netuid), 60)
     finally:
         await engine.dispose()
 
