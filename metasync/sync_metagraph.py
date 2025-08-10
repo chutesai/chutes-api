@@ -71,9 +71,9 @@ async def main():
         await conn.run_sync(Base.metadata.create_all)
 
     try:
-        logger.info("Attempting to resync metagraph for {settings.netuid=}")
+        logger.info(f"Attempting to resync metagraph for {settings.netuid=}")
         await asyncio.wait_for(sync_and_save_metagraph(netuid=settings.netuid), 60)
-        logger.info("Successfully synced metagraph for {settings.netuid=}")
+        logger.info(f"Successfully synced metagraph for {settings.netuid=}")
 
         # Other subnets (e.g. we sync affine here so miners get dev access.
         for netuid in (120,):

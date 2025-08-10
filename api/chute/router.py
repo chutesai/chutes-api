@@ -890,7 +890,7 @@ async def _deploy_chute(
         else:
             # Purge all instances immediately.
             instances = (
-                (await db.query(Instance).where(Instance.chute_id == chute.chute_id))
+                (await db.execute(select(Instance).where(Instance.chute_id == chute.chute_id)))
                 .unique()
                 .scalars()
                 .all()
@@ -1026,7 +1026,9 @@ async def deploy_chute(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=json.dumps(response).decode(),
             )
-    chute = await _deploy_chute(chute_args, db, current_user, use_rolling_update=False)
+    chute = await _deploy_chute(
+        chute_args, db, current_user, use_rolling_update=not is_affine_model
+    )
 
     # Auto-cleanup the other chutes for affine miners.
     if (
