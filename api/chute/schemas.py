@@ -160,7 +160,7 @@ class ChuteArgs(BaseModel):
     logo_id: Optional[str] = None
     image: str
     public: bool
-    code: str
+    code: str = Field(max_length=150000)
     filename: str
     ref_str: str
     standard_template: Optional[str] = None

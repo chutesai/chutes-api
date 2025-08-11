@@ -36,6 +36,54 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
 
+DANGEROUS_BUILTINS = {
+    "eval",
+    "exec",
+    "compile",
+    "__import__",
+    "open",
+    "input",
+    "breakpoint",
+    "help",
+    "dir",
+    "globals",
+    "locals",
+    "vars",
+    "setattr",
+    "delattr",
+    "getattr",
+    "type",
+    "classmethod",
+    "staticmethod",
+    "property",
+    "super",
+    "isinstance",
+    "issubclass",
+    "callable",
+    "hasattr",
+    "hash",
+    "id",
+    "object",
+    "memoryview",
+    "bytearray",
+    "bytes",
+    "frozenset",
+    "set",
+    "dict",
+    "list",
+    "tuple",
+    "range",
+    "slice",
+    "filter",
+    "map",
+    "zip",
+    "enumerate",
+    "reversed",
+    "sorted",
+    "any",
+    "all",
+}
+
 
 def is_valid_bittensor_address(address):
     """
@@ -628,6 +676,88 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                 imported_names.add(alias.asname if alias.asname else alias.name)
 
     for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in DANGEROUS_BUILTINS:
+                return False, f"Dangerous function '{node.func.id}' is not allowed"
+            elif isinstance(node.func, ast.Attribute):
+                if node.func.attr in DANGEROUS_BUILTINS:
+                    return False, f"Dangerous function '{node.func.attr}' is not allowed"
+
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") and node.attr.endswith("__"):
+                dangerous_attrs = {
+                    "__builtins__",
+                    "__globals__",
+                    "__code__",
+                    "__class__",
+                    "__subclasses__",
+                    "__bases__",
+                    "__mro__",
+                    "__dict__",
+                    "__func__",
+                    "__self__",
+                    "__module__",
+                    "__closure__",
+                    "__annotations__",
+                    "__kwdefaults__",
+                    "__defaults__",
+                }
+                if node.attr in dangerous_attrs:
+                    return False, f"Access to '{node.attr}' is not allowed"
+
+            if isinstance(node.value, ast.Name) and node.value.id == "os":
+                if node.attr not in ["environ", "getenv"]:
+                    return (
+                        False,
+                        f"os.{node.attr} is not allowed. Only os.environ and os.getenv are permitted",
+                    )
+
+        if isinstance(node, ast.Subscript):
+            if (
+                isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "os"
+                and node.value.attr == "environ"
+            ):
+                pass
+            elif isinstance(node.value, ast.Attribute) and node.value.attr in [
+                "__getitem__",
+                "__setitem__",
+                "__delitem__",
+            ]:
+                return False, "Direct access to special methods is not allowed"
+
+        if isinstance(node, ast.ClassDef):
+            return False, "Class definitions are not allowed"
+
+        if isinstance(node, ast.FunctionDef) and not isinstance(node, ast.AsyncFunctionDef):
+            for parent in ast.walk(tree):
+                if parent != node and isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for child in ast.walk(parent):
+                        if child == node:
+                            return False, "Nested function definitions are not allowed"
+
+        if isinstance(
+            node,
+            (
+                ast.AsyncFunctionDef,
+                ast.GeneratorExp,
+                ast.ListComp,
+                ast.SetComp,
+                ast.DictComp,
+                ast.Yield,
+                ast.YieldFrom,
+                ast.Raise,
+                ast.Try,
+                ast.ExceptHandler,
+                ast.With,
+                ast.Assert,
+                ast.Global,
+                ast.Nonlocal,
+            ),
+        ):
+            return False, f"{node.__class__.__name__} is not allowed"
+
         if isinstance(node, ast.FunctionDef):
             for decorator in node.decorator_list:
                 if isinstance(decorator, ast.Call):
@@ -645,6 +775,8 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                         and decorator.attr == "cord"
                     ):
                         return False, "@chute.cord decorators are not allowed"
+                else:
+                    return False, "Decorators are not allowed"
 
         if isinstance(node, ast.Assign):
             for target in node.targets:
