@@ -672,8 +672,27 @@ def check_affine_code(code: str) -> tuple[bool, str]:
         elif isinstance(node, ast.ImportFrom):
             if node.module is None or not node.module.startswith("chutes."):
                 return False, f"Invalid import from: {node.module}. Only 'from chutes.*' is allowed"
-            for alias in node.names:
-                imported_names.add(alias.asname if alias.asname else alias.name)
+
+            if node.module == "chutes.sglang":
+                for alias in node.names:
+                    if alias.name != "build_sglang_chute":
+                        return False, "From chutes.sglang, only build_sglang_chute can be imported"
+                    imported_names.add(alias.asname if alias.asname else alias.name)
+            elif node.module == "chutes.vllm":
+                for alias in node.names:
+                    if alias.name != "build_vllm_chute":
+                        return False, "From chutes.vllm, only build_vllm_chute can be imported"
+                    imported_names.add(alias.asname if alias.asname else alias.name)
+            elif node.module == "chutes.chute":
+                for alias in node.names:
+                    if alias.name != "NodeSelector":
+                        return False, "From chutes.chute, only NodeSelector can be imported"
+                    imported_names.add(alias.asname if alias.asname else alias.name)
+            else:
+                return (
+                    False,
+                    f"Invalid import from {node.module}. Only chutes.sglang, chutes.vllm, and chutes.chute are allowed",
+                )
 
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
@@ -726,6 +745,22 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                 "__delitem__",
             ]:
                 return False, "Direct access to special methods is not allowed"
+
+        if isinstance(node, ast.Delete):
+            for target in node.targets:
+                if isinstance(target, ast.Subscript):
+                    if not (
+                        isinstance(target.value, ast.Attribute)
+                        and isinstance(target.value.value, ast.Name)
+                        and target.value.value.id == "os"
+                        and target.value.attr == "environ"
+                    ):
+                        return False, "Only 'del os.environ[key]' is allowed for delete operations"
+                else:
+                    return False, "Delete operations are only allowed for os.environ items"
+
+        if isinstance(node, ast.Lambda):
+            return False, "Lambda functions are not allowed"
 
         if isinstance(node, ast.ClassDef):
             return False, "Class definitions are not allowed"
