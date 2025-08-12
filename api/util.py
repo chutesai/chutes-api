@@ -672,26 +672,23 @@ def check_affine_code(code: str) -> tuple[bool, str]:
         elif isinstance(node, ast.ImportFrom):
             if node.module is None or not node.module.startswith("chutes."):
                 return False, f"Invalid import from: {node.module}. Only 'from chutes.*' is allowed"
-
-            if node.module == "chutes.sglang":
-                for alias in node.names:
-                    if alias.name != "build_sglang_chute":
-                        return False, "From chutes.sglang, only build_sglang_chute can be imported"
-                    imported_names.add(alias.asname if alias.asname else alias.name)
-            elif node.module == "chutes.vllm":
-                for alias in node.names:
-                    if alias.name != "build_vllm_chute":
-                        return False, "From chutes.vllm, only build_vllm_chute can be imported"
-                    imported_names.add(alias.asname if alias.asname else alias.name)
-            elif node.module == "chutes.chute":
+            if node.module == "chutes.chute":
                 for alias in node.names:
                     if alias.name != "NodeSelector":
                         return False, "From chutes.chute, only NodeSelector can be imported"
                     imported_names.add(alias.asname if alias.asname else alias.name)
+            elif node.module.startswith("chutes.chute.template"):
+                for alias in node.names:
+                    if alias.name not in ["build_vllm_chute", "build_sglang_chute"]:
+                        return (
+                            False,
+                            f"From {node.module}, only build_vllm_chute or build_sglang_chute can be imported",
+                        )
+                    imported_names.add(alias.asname if alias.asname else alias.name)
             else:
                 return (
                     False,
-                    f"Invalid import from {node.module}. Only chutes.sglang, chutes.vllm, and chutes.chute are allowed",
+                    f"Invalid import from {node.module}. Only chutes.chute and chutes.chute.template.* are allowed",
                 )
 
     for node in ast.walk(tree):
