@@ -632,17 +632,42 @@ async def delete_chute(
     """
     Delete a chute by ID or name.
     """
-    chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user)
-    if not chute or chute.user_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or does not belong to you",
+    chute = None
+    if current_user.has_role(Permissioning.affine_admin):
+        try:
+            uuid.UUID(chute_id_or_name)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Must use chute UUID to delete affine models.",
+            )
+        chute = await get_one(chute_id_or_name)
+        if not chute:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chute not found",
+            )
+        if chute.user_id != current_user.user_id and "affine" not in chute.name.lower():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot delete non-affine chutes not owned by you.",
+            )
+        logger.warning(
+            f"AFFINE DEV DELETION TRIGGERED: {current_user.user_id=} "
+            f"{current_user.username=} {chute.chute_id=} {chute.name=}"
         )
+    else:
+        chute = await get_chute_by_id_or_name(chute_id_or_name, db, current_user)
+        if not chute or chute.user_id != current_user.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chute not found, or does not belong to you",
+            )
+
     chute_id = chute.chute_id
     version = chute.version
     await db.delete(chute)
     await db.commit()
-
     await settings.redis_client.publish(
         "miner_broadcast",
         json.dumps(
@@ -763,6 +788,13 @@ async def _deploy_chute(
             detail="Unable to deploy chutes with legacy images (chutes SDK < 0.3.18)",
         )
 
+    # Prevent enabling logging on a chute that had it disabled previously.
+    if chute and not chute.logging_enabled and chute_args.logging_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You cannot update a chute's logging_enabled flag to true after it has been false.",
+        )
+
     old_version = None
     if chute:
         # Create a rolling update object so we can gracefully restart/recreate.
@@ -806,6 +838,7 @@ async def _deploy_chute(
         chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
         chute.revision = chute_args.revision
+        chute.logging_enabled = chute_args.logging_enabled
     else:
         try:
             chute = Chute(
@@ -833,6 +866,7 @@ async def _deploy_chute(
                 chutes_version=image.chutes_version,
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
+                logging_enabled=chute_args.logging_enabled,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -933,11 +967,17 @@ async def deploy_chute(
                 f"Attempted chute creation from non-dev and non-affine user: {current_user.user_id=}"
             )
             raise http_exc
+        else:
+            if not re.match(r"[^/]+/affine.*", chute_args.name, re.I):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Affine miners may only deploy chutes named */affine*",
+                )
         affine_checked = True
 
     # Affine special handling.
     if (
-        chute_args.name.startswith("affine")
+        "affine" in chute_args.name.lower()
         and not current_user.has_role(Permissioning.unlimited_dev)
         and current_user.username.lower() not in ("affine", "affine2", "unconst", "nonaffine")
     ):
@@ -948,7 +988,7 @@ async def deploy_chute(
             )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only users with hotkeys registered on affine may deploy chutes named affine*",
+                detail="Only users with hotkeys registered on affine may deploy chutes with 'affine' in the name",
             )
         valid, message = check_affine_code(chute_args.code)
         if not valid:
@@ -1009,6 +1049,7 @@ async def deploy_chute(
             "code check and prelim model config/node selector config passed."
         )
         is_affine_model = True
+        chute_args.logging_enabled = True
 
     # No-DoS-Plz.
     await limit_deployments(db, current_user)

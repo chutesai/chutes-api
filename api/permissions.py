@@ -51,6 +51,10 @@ class Permissioning:
         bitmask=1 << 9,
         description="Enable stake weighted quota (signed message with the coldkey)",
     )
+    affine_admin = Role(
+        bitmask=1 << 10,
+        description="Affine admin",
+    )
 
     @classmethod
     def enabled(cls, user, role):

@@ -169,6 +169,7 @@ class ChuteArgs(BaseModel):
     jobs: Optional[List[Job]] = []
     concurrency: Optional[int] = Field(None, gte=0, le=256)
     revision: Optional[str] = Field(None, pattern=r"^[a-fA-F0-9]{40}$")
+    logging_enabled: Optional[bool] = False
 
 
 class InvocationArgs(BaseModel):
@@ -204,6 +205,7 @@ class Chute(Base):
     discount = Column(Float, nullable=True, default=0.0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    logging_enabled = Column(Boolean, default=False)
 
     # Stats for sorting.
     invocation_count = Column(BigInteger, default=0)

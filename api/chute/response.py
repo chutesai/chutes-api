@@ -53,6 +53,7 @@ class ChuteResponse(BaseModel):
     revision: Optional[str] = None
     concurrency: Optional[int] = None
     boost: Optional[float] = None
+    logging_enabled: Optional[bool] = False
 
     class Config:
         from_attributes = True

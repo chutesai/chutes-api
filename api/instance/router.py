@@ -10,6 +10,7 @@ import random
 import socket
 import secrets
 import asyncio
+import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
@@ -20,6 +21,7 @@ from sqlalchemy.exc import IntegrityError
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
+from api.permissions import Permissioning
 from api.constants import (
     HOTKEY_HEADER,
     EXPANSION_UTILIZATION_THRESHOLD,
@@ -56,6 +58,7 @@ from api.util import (
     notify_verified,
     notify_activated,
 )
+from starlette.responses import StreamingResponse
 from api.graval_worker import verify_instance, graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
 
@@ -1026,6 +1029,84 @@ async def create_instance(
 async def get_token(salt: str = None, request: Request = None):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
     return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
+
+
+@router.get("/{instance_id}/logs")
+async def stream_logs(
+    instance_id: str,
+    request: Request,
+    backfill: Optional[int] = 100,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Fetch the raw kubernetes pod logs, but only if logging_enabled is
+    true on the chute itself, meaning the developer of the chute has
+    explicitly set the option.
+
+    These are application-level logs, which for example would not include
+    any prompts/responses/etc. by default for any sglang/vllm container.
+
+    The caveat is that affine admins can view any affine chute pod logs.
+    """
+    # These are raw application (k8s pod) logs
+    instance = (
+        (
+            await db.execute(
+                select(Instance)
+                .where(Instance.instance_id == instance_id)
+                .options(joinedload(Instance.chute))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Instance not found.",
+        )
+    if instance.chute.user_id != current_user.user_id or not instance.chute.logging_enabled:
+        if (
+            not current_user.has_role(Permissioning.affine_admin)
+            or "affine" not in instance.chute.name.lower()
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "You may only view logs for your own chutes, IFF logging_enabled "
+                    "is configured on the chute (or be affine admin for affine models)"
+                ),
+            )
+    if not 0 <= backfill <= 10000:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`backfill` must be between 0 and 10000 (lines of logs)",
+        )
+
+    async def _stream():
+        log_port = next(p for p in instance.port_mappings if p["internal_port"] == 8001)[
+            "external_port"
+        ]
+        async with miner_client.get(
+            instance.miner_hotkey,
+            f"http://{instance.host}:{log_port}/logs/stream",
+            timeout=0,
+            purpose="chutes",
+            params={"backfill": str(backfill)},
+        ) as resp:
+            async for chunk in resp.content:
+                yield chunk
+
+    return StreamingResponse(
+        _stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.patch("/{chute_id}/{instance_id}")
