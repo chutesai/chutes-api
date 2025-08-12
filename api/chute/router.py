@@ -1032,7 +1032,7 @@ async def deploy_chute(
                 if gpu in chute_args.node_selector.supported_gpus
             ]
         )
-        if min_vram_required < 8 * 140 and min_vram_required < node_selector_min_vram:
+        if min_vram_required < 8 * 140 and node_selector_min_vram < min_vram_required:
             logger.error(
                 f"Affine user tried to deploy bad node_selector: {min_vram_required=} {node_selector_min_vram} {chute_args.name=} {current_user.username=}"
             )

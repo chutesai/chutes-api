@@ -41,6 +41,7 @@ PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
     "eb04d6a6-b250-5f44-b91e-079bc938482a": 30,
+    "83ce50c4-6d3f-55a6-88a6-c5db187f2c70": 50,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 75,
@@ -365,16 +366,7 @@ async def perform_autoscale(dry_run: bool = False):
             if info.instance_count < limit:
                 scale_up_candidates.append((chute_id, limit - info.instance_count))
                 chute_actions[chute_id] = "scale_up_candidate"
-            elif info.instance_count >= limit:
-                chute_actions[chute_id] = "no_action"
-                num_to_remove = info.instance_count - limit or 1
-                to_downsize.append((chute_id, num_to_remove))
-                chute_actions[chute_id] = "scaled_down"
-                logger.info(
-                    f"Scale down candidate: {chute_id} - manual override {limit=}, "
-                    f"instances: {info.instance_count} - removing {num_to_remove} instances"
-                )
-            continue
+                continue
 
         # Check scale up conditions
         rate_limit_5m = metrics["rate_limit_ratio"].get("5m", 0)
@@ -430,6 +422,7 @@ async def perform_autoscale(dry_run: bool = False):
             and rate_limit_1h == 0
             and metrics["total_requests"].get("1h", 0) > 0
             and not info.new_chute
+            and chute_id not in LIMIT_OVERRIDES
         ):
             num_to_remove = 1
             if info.instance_count > UNDERUTILIZED_CAP:
