@@ -1083,7 +1083,7 @@ async def deploy_chute(
                     select(Chute).where(
                         Chute.user_id == current_user.user_id,
                         Chute.name.ilike("affine%"),
-                        Chute.chute_id.is_not(chute.chute_id),
+                        Chute.chute_id != chute.chute_id,  # noqa
                     )
                 )
             )
