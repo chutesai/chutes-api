@@ -219,11 +219,7 @@ class InvocationDiscount(Base):
     @staticmethod
     async def get(user_id: str, chute_id: str):
         key = f"idiscount:{user_id}:{chute_id}".encode()
-        cached = None
-        try:
-            cached = (await memcache_get(key) or b"").decode()
-        except Exception:
-            ...
+        cached = (await memcache_get(key) or b"").decode()
         if cached:
             try:
                 return float(cached)
