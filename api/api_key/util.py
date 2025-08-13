@@ -7,9 +7,9 @@ import pickle
 from async_lru import alru_cache
 from sqlalchemy import select
 from fastapi import Request, HTTPException, status
-from api.config import settings
 from api.api_key.schemas import APIKey
 from api.database import get_session
+from api.util import memcache_get, memcache_set, memcache_delete
 
 
 def reinject_dash(uuid_str: str) -> str:
@@ -25,12 +25,12 @@ async def _load_key(token_id: str):
     Load API key from database with memcache caching.
     """
     cache_key = f"api_key:{token_id}".encode()
-    cached = await settings.memcache.get(cache_key)
+    cached = await memcache_get(cache_key)
     if cached:
         try:
             return pickle.loads(cached)
         except Exception:
-            await settings.memcache.delete(cache_key)
+            await memcache_delete(cache_key)
     async with get_session() as session:
         api_key = (
             (await session.execute(select(APIKey).where(APIKey.api_key_id == token_id)))
@@ -39,7 +39,7 @@ async def _load_key(token_id: str):
         )
         if api_key:
             serialized = pickle.dumps(api_key)
-            await settings.memcache.set(cache_key, serialized, exptime=600)
+            await memcache_set(cache_key, serialized, exptime=600)
         return api_key
 
 

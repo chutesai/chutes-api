@@ -16,6 +16,7 @@ from api.database import get_db_session
 from api.user.util import refund_deposit
 from api.user.schemas import User
 from api.user.service import get_current_user
+from api.util import memcache_get, memcache_set
 from api.payment.schemas import Payment
 from sqlalchemy import select, desc, func
 
@@ -88,10 +89,6 @@ async def get_pricing():
     tao_compute_price = usd_compute_price / current_tao_price
     return {
         "tao_usd": current_tao_price,
-        "first_payment_bonus": {
-            "minimum_payment_usd": settings.first_payment_bonus_threshold,
-            "bonus_amount_usd": settings.first_payment_bonus,
-        },
         "compute_unit_estimate": {
             "usd": usd_compute_price,
             "tao": tao_compute_price,
@@ -162,7 +159,7 @@ async def list_payments(
     """
     if request:
         cache_key = f"payment_list:{page}:{limit}".encode()
-        if cached := await settings.memcache.get(cache_key):
+        if cached := await memcache_get(cache_key):
             return json.loads(cached)
     query = (
         select(Payment, User)
@@ -202,5 +199,5 @@ async def list_payments(
         "limit": limit,
         "items": results,
     }
-    await settings.memcache.set(cache_key, json.dumps(response), exptime=300)
+    await memcache_set(cache_key, json.dumps(response), exptime=300)
     return response

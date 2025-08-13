@@ -66,6 +66,7 @@ from api.util import (
     check_affine_code,
     notify_deleted,
 )
+from api.util import memcache_get, memcache_set
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
 
@@ -163,7 +164,7 @@ async def list_chutes(
             ),
         )
     ).encode()
-    cached = await settings.memcache.get(cache_key)
+    cached = await memcache_get(cache_key)
     if cached:
         return json.loads(cached)
     query = select(Chute).options(selectinload(Chute.instances))
@@ -240,7 +241,7 @@ async def list_chutes(
         "items": [item.model_dump() for item in responses],
         "cord_refs": cord_refs,
     }
-    await settings.memcache.set(cache_key, json.dumps(result), exptime=60)
+    await memcache_set(cache_key, json.dumps(result), exptime=60)
     return result
 
 
@@ -474,7 +475,7 @@ async def get_chute_utilization_v2(request: Request):
     """
     cache_key = "chute_utilization_metrics".encode()
     if request:
-        cached = await settings.memcache.get(cache_key)
+        cached = await memcache_get(cache_key)
         if cached:
             return json.loads(cached)
 
@@ -545,7 +546,7 @@ async def get_chute_utilization_v2(request: Request):
             item["total_invocations"] = item.get("total_requests_1h", 0)
             item["total_rate_limit_errors"] = item.get("rate_limited_requests_1h", 0)
             utilization_data.append(item)
-        await settings.memcache.set(cache_key, json.dumps(utilization_data), exptime=30)
+        await memcache_set(cache_key, json.dumps(utilization_data), exptime=30)
         return utilization_data
 
 

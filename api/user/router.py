@@ -21,6 +21,7 @@ from api.user.schemas import (
     InvocationQuota,
     InvocationDiscount,
 )
+from api.util import memcache_get, memcache_set, memcache_delete
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
@@ -64,7 +65,7 @@ async def get_user_growth(
     db: AsyncSession = Depends(get_db_session),
 ):
     cache_key = "user_growth".encode()
-    cached = await settings.memcache.get(cache_key)
+    cached = await memcache_get(cache_key)
     if cached:
         return json.loads(cached)
     query = text("""
@@ -86,7 +87,7 @@ async def get_user_growth(
         }
         for row in rows
     ]
-    await settings.memcache.set(cache_key, json.dumps(response), exptime=600)
+    await memcache_set(cache_key, json.dumps(response), exptime=600)
     return response
 
 
@@ -200,7 +201,7 @@ async def admin_quotas_change(
     # Purge the cache.
     for chute_id in deleted_chute_ids:
         key = f"quota:{user_id}:{chute_id}".encode()
-        await settings.memcache.delete(key)
+        await memcache_delete(key)
 
     # Add the new values.
     for key, quota in quotas.items():
@@ -260,7 +261,7 @@ async def admin_discounts_change(
     deleted_chute_ids = [row[0] for row in result]
     for chute_id in deleted_chute_ids:
         key = f"idiscount:{user_id}:{chute_id}".encode()
-        await settings.memcache.delete(key)
+        await memcache_delete(key)
 
     # Add the new values.
     for key, discount in discounts.items():
