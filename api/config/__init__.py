@@ -92,7 +92,7 @@ class Settings(BaseSettings):
         )
     )
     memcache: Optional[aiomcache.Client] = (
-        aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211)
+        aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211, pool_size=4)
         if os.getenv("MEMCACHED")
         else None
     )
