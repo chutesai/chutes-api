@@ -638,8 +638,6 @@ async def claim_launch_config(
     encrypted_payload = await graval_encrypt(
         node,
         instance.symmetric_key,
-        with_chutes=True,
-        cuda=False,
         iterations=iterations,
         seed=None,
     )
