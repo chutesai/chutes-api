@@ -16,6 +16,7 @@ import asyncio
 import secrets
 import hashlib
 import datetime
+import traceback
 from io import BytesIO
 from PIL import Image
 import orjson as json
@@ -606,10 +607,15 @@ def get_current_hf_commit(model_name: str):
     return None
 
 
-def check_vlm_payload(request_body: dict):
+def recreate_vlm_payload(request_body: dict):
     """
-    Check if a VLM request is valid (for us).
+    Check if a VLM request is valid (for us), download images/videos locally and pass to miners as b64.
     """
+    futures = []
+
+    async def _inject_b64(url, obj, key):
+        obj[key] = reformat_vlm_asset(await fetch_vlm_asset(url))
+
     if not request_body.get("messages"):
         return
     for message in request_body["messages"]:
@@ -639,6 +645,8 @@ def check_vlm_payload(request_body: dict):
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
                         )
+                        futures.append(_inject_b64(url, visual_data, "url"))
+
                 elif isinstance(visual_data, str):
                     if visual_data.startswith(f"data:{visual_type}") or visual_data.startswith(
                         "data:"
@@ -655,6 +663,27 @@ def check_vlm_payload(request_body: dict):
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
                         )
+                    futures.append(_inject_b64(visual_data, content_item, key))
+
+    # Perform asset downloads concurrently.
+    if len(futures) > 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Exceeded maximum image URLs per request: {len(futures)}",
+        )
+    if futures:
+        try:
+            await asyncio.gather(*futures)
+        except Exception as exc:
+            logger.error(
+                f"Failed to update images/videos to base64: {str(exc)}\n{traceback.format_exc()}"
+            )
+            if isinstance(exc, HTTPException):
+                raise
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to load image/video data: {str(exc)}",
+            )
 
 
 def check_affine_code(code: str) -> tuple[bool, str]:
@@ -994,7 +1023,7 @@ def reformat_vlm_asset(image_data: bytes, max_width: int = 1024) -> str:
             img = rgb_img
     img.save(buffer, format=img_format)
     image_bytes = buffer.getvalue()
-    return base64.b64encode(image_bytes).decode("utf-8")
+    return f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
 
 
 async def memcache_get(key: bytes):
