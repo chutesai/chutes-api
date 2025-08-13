@@ -256,7 +256,7 @@ async def get_stats(
         return mstats
 
     if request:
-        cached = memcache_get(cache_key)
+        cached = await memcache_get(cache_key)
         if cached:
             return _filter_by_key(json.loads(cached))
 
