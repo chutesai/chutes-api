@@ -92,7 +92,7 @@ class Settings(BaseSettings):
         )
     )
     memcache: Optional[aiomcache.Client] = (
-        aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211)
+        aiomcache.Client(os.getenv("MEMCACHED", "memcached"), 11211, pool_size=4)
         if os.getenv("MEMCACHED")
         else None
     )
@@ -105,13 +105,10 @@ class Settings(BaseSettings):
     scan_timeout: int = int(os.getenv("SCAN_TIMEOUT", "1800"))
     netuid: int = int(os.getenv("NETUID", "64"))
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
-    first_payment_bonus: float = float(os.getenv("FIRST_PAYMENT_BONUS", "25.0"))
-    first_payment_bonus_threshold: float = float(os.getenv("FIRST_PAYMENT_BONUS_THRESHOLD", 100.0))
     developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "250.0"))
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "128"))
     device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
-    graval_url: str = os.getenv("GRAVAL_URL", "")
     opencl_graval_url: str = os.getenv("OPENCL_GRAVAL_URL", "https://opencl-graval.chutes.ai")
 
     # Database settings.

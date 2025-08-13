@@ -31,10 +31,8 @@ from api.constants import (
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute
 from api.instance.schemas import (
-    InstanceArgs,
     Instance,
     instance_nodes,
-    ActivateArgs,
     LaunchConfig,
     LaunchConfigArgs,
 )
@@ -59,7 +57,7 @@ from api.util import (
     notify_activated,
 )
 from starlette.responses import StreamingResponse
-from api.graval_worker import verify_instance, graval_encrypt, verify_proof, generate_fs_hash
+from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
 
 router = APIRouter()
@@ -640,8 +638,6 @@ async def claim_launch_config(
     encrypted_payload = await graval_encrypt(
         node,
         instance.symmetric_key,
-        with_chutes=True,
-        cuda=False,
         iterations=iterations,
         seed=None,
     )
@@ -943,88 +939,6 @@ async def verify_launch_config_instance(
     return return_value
 
 
-@router.post("/{chute_id}/", status_code=status.HTTP_202_ACCEPTED)
-async def create_instance(
-    chute_id: str,
-    instance_args: InstanceArgs,
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
-):
-    await _check_blacklisted(db, hotkey)
-
-    chute = (
-        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
-        .unique()
-        .scalar_one_or_none()
-    )
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Chute {chute_id} not found",
-        )
-    if semcomp(chute.chutes_version, "0.3.0") >= 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Your miner is outdated, you must upgrade to support launch configs.",
-        )
-
-    # Host port already used?
-    await _validate_host_port(db, instance_args.host, instance_args.port)
-
-    # Scalable?
-    await _check_scalable(db, chute, hotkey)
-
-    nodes = None
-    try:
-        # Load the miner.
-        miner = await get_miner_by_hotkey(hotkey, db)
-        if not miner:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Did not find miner with {hotkey=}",
-            )
-
-        # Instantiate the instance.
-        instance = Instance(
-            instance_id=generate_uuid(),
-            host=instance_args.host,
-            port=instance_args.port,
-            chute_id=chute_id,
-            version=chute.version,
-            miner_uid=miner.node_id,
-            miner_hotkey=hotkey,
-            miner_coldkey=miner.coldkey,
-            region="n/a",
-            active=False,
-            verified=False,
-            chutes_version=chute.chutes_version,
-        )
-        db.add(instance)
-
-        # Verify the GPUs are suitable.
-        nodes = await _validate_nodes(db, chute, instance_args.node_ids, hotkey, instance)
-        await db.commit()
-    except IntegrityError as exc:
-        detail = f"INTEGRITYERROR {hotkey=}: {exc}\n{traceback.format_exc()}"
-        logger.error(detail)
-        await db.rollback()
-        if "uq_inode" in str(exc):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"One or more nodes already provisioned to an instance: {detail=}",
-            )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Unhandled DB integrity error: {detail}",
-        )
-    await db.refresh(instance)
-    gpu_count = len(nodes)
-    gpu_type = nodes[0].gpu_identifier
-    asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
-    return instance
-
-
 @router.get("/token_check")
 async def get_token(salt: str = None, request: Request = None):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
@@ -1107,57 +1021,6 @@ async def stream_logs(
             "X-Accel-Buffering": "no",
         },
     )
-
-
-@router.patch("/{chute_id}/{instance_id}")
-async def activate_instance(
-    chute_id: str,
-    instance_id: str,
-    args: ActivateArgs,
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
-):
-    if not args.active:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail='Patch endpoint only supports {"active": true} as request body.',
-        )
-    instance = await get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey)
-    if not instance:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Instance not found.",
-        )
-    if instance.active and instance.verified:
-        return instance
-    elif not instance.active:
-        instance.active = True
-        await db.commit()
-        await db.refresh(instance)
-        asyncio.create_task(notify_activated(instance))
-
-    # Kick off validation.
-    if await settings.redis_client.get(f"verify:lock:{instance_id}"):
-        logger.warning("Ignoring verification request, already in progress...")
-        return instance
-
-    if await settings.redis_client.get(f"verify:lock:{instance_id}"):
-        logger.info(f"Verification request is currently in progress: {instance_id=}")
-        return instance
-    attempts = await settings.redis_client.get(f"verify_instance:{instance_id}")
-    if attempts and int(attempts) > 5:
-        logger.warning(
-            f"Refusing to attempt verification more than 7 times for {instance_id=} {attempts=}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too may verification requests.",
-        )
-    await settings.redis_client.incr(f"verify_instance:{instance_id}")
-    await settings.redis_client.expire(f"verify_instance:{instance_id}", 600)
-    await verify_instance.kiq(instance_id)
-    return instance
 
 
 @router.delete("/{chute_id}/{instance_id}")

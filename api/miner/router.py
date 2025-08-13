@@ -26,6 +26,7 @@ from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 from api.metasync import get_scoring_data, get_miner_by_hotkey, MetagraphNode
+from api.util import memcache_get, memcache_set
 from metasync.constants import UTILIZATION_RATIO_QUERY
 
 router = APIRouter()
@@ -255,7 +256,7 @@ async def get_stats(
         return mstats
 
     if request:
-        cached = await settings.memcache.get(cache_key)
+        cached = await memcache_get(cache_key)
         if cached:
             return _filter_by_key(json.loads(cached))
 
@@ -355,7 +356,7 @@ async def get_stats(
             "compute_units": compute_data,
         }
 
-    await settings.memcache.set(cache_key, json.dumps(results))
+    await memcache_set(cache_key, json.dumps(results))
     return _filter_by_key(results)
 
 
@@ -363,7 +364,7 @@ async def get_stats(
 async def get_scores(hotkey: Optional[str] = None, request: Request = None):
     rv = None
     if request:
-        cached = await settings.memcache.get(b"miner_scores")
+        cached = await memcache_get(b"miner_scores")
         if cached:
             rv = json.loads(cached)
         else:
@@ -373,7 +374,7 @@ async def get_scores(hotkey: Optional[str] = None, request: Request = None):
             )
     if not rv:
         rv = await get_scoring_data()
-        await settings.memcache.set(b"miner_scores", json.dumps(rv))
+        await memcache_set(b"miner_scores", json.dumps(rv))
     if hotkey:
         for key in rv:
             if key != "totals":
@@ -383,17 +384,17 @@ async def get_scores(hotkey: Optional[str] = None, request: Request = None):
 
 @router.get("/unique_chute_history/{hotkey}")
 async def unique_chute_history(hotkey: str, request: Request = None):
-    if not await settings.memcache.get(f"miner_exists:{hotkey}".encode()):
+    if not await memcache_get(f"miner_exists:{hotkey}".encode()):
         async with get_session(readonly=True) as session:
             if not await get_miner_by_hotkey(hotkey, session):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"Miner {hotkey} not found in metagraph.",
                 )
-        await settings.memcache.set(f"miner_exists:{hotkey}".encode(), b"1", exptime=7200)
+        await memcache_set(f"miner_exists:{hotkey}".encode(), b"1", exptime=7200)
 
     cache_key = f"uqhist:{hotkey}".encode()
-    cached = await settings.memcache.get(cache_key)
+    cached = await memcache_get(cache_key)
     if cached:
         return json.loads(cached)
     raise HTTPException(
@@ -424,7 +425,7 @@ async def get_utilization(hotkey: Optional[str] = None, request: Request = None)
     cache_key = "utilscore".encode()
     result = None
     if request:
-        cached = await settings.memcache.get(cache_key)
+        cached = await memcache_get(cache_key)
         if cached:
             result = json.loads(cached)
     if not result:
@@ -437,7 +438,7 @@ async def get_utilization(hotkey: Optional[str] = None, request: Request = None)
                 .unique()
                 .all()
             }
-            await settings.memcache.set(cache_key, json.dumps(result))
+            await memcache_set(cache_key, json.dumps(result))
     if hotkey:
         return {hotkey: result.get(hotkey)}
     return result
@@ -491,7 +492,7 @@ SELECT * FROM top_instances ORDER BY miner_hotkey ASC;
     cache_key = "utilinst".encode()
     result = None
     if request:
-        cached = await settings.memcache.get(cache_key)
+        cached = await memcache_get(cache_key)
         if cached:
             result = json.loads(cached)
     if not result:
@@ -504,7 +505,7 @@ SELECT * FROM top_instances ORDER BY miner_hotkey ASC;
                 result[hotkey].append(
                     {"instance_id": instance_id, "ratio": float(busy_ratio), "chute_id": chute_id}
                 )
-                await settings.memcache.set(cache_key, json.dumps(result))
+                await memcache_set(cache_key, json.dumps(result))
     if hotkey:
         return {hotkey: result.get(hotkey)}
     return result

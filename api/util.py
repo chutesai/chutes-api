@@ -11,10 +11,13 @@ import base64
 import random
 import semver
 import string
+import aiohttp
 import asyncio
 import secrets
 import hashlib
 import datetime
+from io import BytesIO
+from PIL import Image
 import orjson as json
 from typing import Set
 from loguru import logger
@@ -921,3 +924,112 @@ def fix_glm_tool_arguments(request_body: dict):
                         call["function"]["arguments"] = "\n".join(formatted) + "\n"
                     except Exception as exc:
                         logger.error(f"ERROR CHECKING GLM FUNCTION ARGUMENTS: {str(exc)}")
+
+
+async def fetch_vlm_asset(url: str) -> bytes:
+    """
+    Fetch an asset (image or video) from the specified URL (for VLMs).
+    """
+    timeout = aiohttp.ClientTimeout(connect=2, total=30)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        try:
+            async with session.get(url) as response:
+                if response.status != 200:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Failed to fetch {url}: {response.status=}",
+                    )
+                content_type = response.headers.get("Content-Type", "").lower()
+                if not content_type.startswith(("image/", "video/")):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid image URL: {content_type=} for {url=}",
+                    )
+                content_length = response.headers.get("Content-Length")
+                max_size = 100 * 1024 * 1024
+                if content_length and int(content_length) > max_size:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"VLM asset max size is {max_size} bytes, {content_length=} for {url=}",
+                    )
+                chunks = []
+                total_size = 0
+                async for chunk in response.content.iter_chunked(32768):
+                    total_size += len(chunk)
+                    if total_size > max_size:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"VLM asset max size is {max_size} bytes, already read {total_size=}",
+                        )
+                    chunks.append(chunk)
+                return b"".join(chunks)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Timeout fetching image for VLM processing from {url=}",
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Unexpected error attempting to fetch image for VLM processing: {str(exc)}",
+            )
+
+
+def reformat_vlm_asset(image_data: bytes, max_width: int = 1024) -> str:
+    """
+    Pre-fetch and convert to base64 images for vision models.
+    """
+    img = Image.open(BytesIO(image_data))
+    if img.width > max_width:
+        aspect_ratio = img.height / img.width
+        new_width = max_width
+        new_height = int(new_width * aspect_ratio)
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    buffer = BytesIO()
+    img_format = img.format if img.format else "PNG"
+    if img_format == "JPEG":
+        if img.mode in ("RGBA", "P"):
+            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+            rgb_img.paste(img, mask=img.split()[3] if img.mode == "RGBA" else None)
+            img = rgb_img
+    img.save(buffer, format=img_format)
+    image_bytes = buffer.getvalue()
+    return base64.b64encode(image_bytes).decode("utf-8")
+
+
+async def memcache_get(key: bytes):
+    """
+    Safe memcache get.
+    """
+    if isinstance(key, str):
+        key = key.encode()
+    try:
+        return await settings.memcache.get(key)
+    except Exception as exc:
+        logger.warning(f"Failed to get memcached value: {str(exc)}")
+    return None
+
+
+async def memcache_set(key: bytes, value: bytes, **kwargs):
+    """
+    Safe memcache set.
+    """
+    if isinstance(key, str):
+        key = key.encode()
+    if isinstance(value, str):
+        value = value.encode()
+    try:
+        return await settings.memcache.set(key, value, **kwargs)
+    except Exception as exc:
+        logger.warning(f"Failed to set memcached value: {str(exc)}")
+    return None
+
+
+async def memcache_delete(key: bytes):
+    if isinstance(key, str):
+        key = key.encode()
+    try:
+        return await settings.memcache.delete(key)
+    except Exception as exc:
+        logger.warning(f"Failed to delete memcached value: {str(exc)}")
+    return None

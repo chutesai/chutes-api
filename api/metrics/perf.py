@@ -4,7 +4,7 @@ Track LLM usage metrics in prometheus (in addition to DB).
 
 from loguru import logger
 from typing import Optional
-from api.config import settings
+from api.util import memcache_get, memcache_set
 
 
 class PerfTracker:
@@ -18,7 +18,6 @@ class PerfTracker:
         self.window_size = window_size
         self.alpha = 2 / (window_size + 1)
         self.ttl_seconds = ttl_days * 24 * 3600
-        self.mc = settings.memcache
 
     def _keys(self, chute_id: str, metric: str) -> tuple:
         base = f"_mva:{chute_id}:{metric}"
@@ -27,8 +26,8 @@ class PerfTracker:
     async def update_average(self, value: float, chute_id: str, metric: str) -> float:
         v_key, c_key, l_key = self._keys(chute_id, metric)
         try:
-            old_avg_bytes = await self.mc.get(v_key.encode())
-            count_bytes = await self.mc.get(c_key.encode())
+            old_avg_bytes = await memcache_get(v_key.encode())
+            count_bytes = await memcache_get(c_key.encode())
             old_avg = float(old_avg_bytes) if old_avg_bytes else None
             count = int(count_bytes) if count_bytes else 0
             if old_avg is not None:
@@ -37,9 +36,9 @@ class PerfTracker:
             else:
                 new_avg = value
                 new_count = 1
-            await self.mc.set(v_key.encode(), str(new_avg).encode(), exptime=self.ttl_seconds)
-            await self.mc.set(c_key.encode(), str(new_count).encode(), exptime=self.ttl_seconds)
-            await self.mc.set(l_key.encode(), str(value).encode(), exptime=self.ttl_seconds)
+            await memcache_set(v_key.encode(), str(new_avg).encode(), exptime=self.ttl_seconds)
+            await memcache_set(c_key.encode(), str(new_count).encode(), exptime=self.ttl_seconds)
+            await memcache_set(l_key.encode(), str(value).encode(), exptime=self.ttl_seconds)
             return new_avg
         except Exception as e:
             logger.debug(f"Memcache error: {e}")
@@ -70,9 +69,9 @@ class PerfTracker:
         for metric in ["sps", "spt"]:
             v_key, c_key, l_key = self._keys(chute_id, metric)
             try:
-                v_bytes = await self.mc.get(v_key.encode())
-                c_bytes = await self.mc.get(c_key.encode())
-                l_bytes = await self.mc.get(l_key.encode())
+                v_bytes = await memcache_get(v_key.encode())
+                c_bytes = await memcache_get(c_key.encode())
+                l_bytes = await memcache_get(l_key.encode())
                 if v_bytes:
                     result[metric] = {
                         "v": float(v_bytes),

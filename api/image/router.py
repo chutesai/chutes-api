@@ -10,14 +10,13 @@ from loguru import logger
 from fastapi import APIRouter, Depends, HTTPException, status, File, Form, UploadFile, Response
 from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
-from sqlalchemy import and_, or_, exists, func, delete
+from sqlalchemy import and_, or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
 from api.image.schemas import Image
 from api.chute.schemas import Chute
 from api.user.schemas import User
-from api.fs_challenge.schemas import FSChallenge
 from api.user.service import get_current_user
 from api.database import get_db_session
 from api.config import settings
@@ -270,9 +269,6 @@ async def create_image(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Image with {name=} and {tag=} aready exists",
         )
-
-    # Double check we've purged all FS challenges.
-    await db.execute(delete(FSChallenge).where(FSChallenge.image_id == image_id))
 
     # Force installation of chutes with the specified version.
     dockerfile += f"\n\nRUN pip install --upgrade chutes=={settings.chutes_version}"

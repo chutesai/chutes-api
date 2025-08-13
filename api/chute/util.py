@@ -43,6 +43,7 @@ from api.util import (
     use_encrypted_path,
     notify_deleted,
 )
+from api.util import memcache_set
 from api.bounty.util import claim_bounty
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOverride
@@ -359,9 +360,7 @@ async def track_prefix_hashes(prefixes, instance_id):
         return
     try:
         for _, prefix_hash in prefixes:
-            await settings.memcache.set(
-                f"pfx:{prefix_hash}:{instance_id}".encode(), b"1", exptime=600
-            )
+            await memcache_set(f"pfx:{prefix_hash}:{instance_id}".encode(), b"1", exptime=600)
             break  # XXX only track the largest prefix
     except Exception as exc:
         logger.warning(f"Error setting prefix hash cache: {exc}")

@@ -29,6 +29,7 @@ from api.chute.util import (
     is_shared,
     count_prompt_tokens,
 )
+from api.util import memcache_get, memcache_set
 from api.user.schemas import User, InvocationQuota
 from api.user.service import get_current_user
 from api.report.schemas import Report, ReportArgs
@@ -67,7 +68,7 @@ async def get_usage(request: Request):
     """
     cache_key = b"invocation_usage_data"
     if request:
-        if cached := await settings.memcache.get(cache_key):
+        if cached := await memcache_get(cache_key):
             return json.loads(cached)
     query = text(
         "SELECT chute_id, DATE(bucket) as date, sum(amount) as usd_amount, sum(count) as invocation_count "
@@ -88,12 +89,12 @@ async def get_usage(request: Request):
                     "invocation_count": int(invocation_count),
                 }
             )
-        await settings.memcache.set(cache_key, json.dumps(rv))
+        await memcache_set(cache_key, json.dumps(rv))
         return rv
 
 
 async def _cached_get_metrics(table, cache_key):
-    if cached := await settings.memcache.get(cache_key):
+    if cached := await memcache_get(cache_key):
         return json.loads(gzip.decompress(base64.b64decode(cached)))
     async with get_session() as session:
         result = await session.execute(text(f"SELECT * FROM {table}"))
@@ -104,7 +105,7 @@ async def _cached_get_metrics(table, cache_key):
                 if isinstance(value, decimal.Decimal):
                     row[key] = float(value)
         cache_value = base64.b64encode(gzip.compress(json.dumps(rv)))
-        await settings.memcache.set(cache_key, cache_value, exptime=300)
+        await memcache_set(cache_key, cache_value, exptime=300)
         return rv
 
 
@@ -522,33 +523,39 @@ async def _invoke(
 
             # Check for rerolls, which are cheaper.
             rr_key = f"userreq:{current_user.user_id}{_prompt_hash}".encode()
-            value = await settings.memcache.get(rr_key)
+            value = await memcache_get(rr_key)
             if value is None:
-                await settings.memcache.set(rr_key, b"0")
-            count = await settings.memcache.incr(rr_key, 1)
-            await settings.memcache.touch(rr_key, 60 * 60 * 3)
-            if count > 1:
-                reroll = True
+                await memcache_set(rr_key, b"0")
+            try:
+                count = await settings.memcache.incr(rr_key, 1)
+                await settings.memcache.touch(rr_key, 60 * 60 * 3)
+                if count > 1:
+                    reroll = True
+            except Exception:
+                ...
 
         for _hash in (request_hash, _prompt_hash):
             if not _hash:
                 continue
             req_key = f"req:{_hash}".encode()
-            value = await settings.memcache.get(req_key)
+            value = await memcache_get(req_key)
             if value is None:
-                await settings.memcache.set(req_key, b"0")
-            count = await settings.memcache.incr(req_key, 1)
-            await settings.memcache.touch(req_key, exptime=60 * 60 * 3)
-            if count > 1 and _hash == request_hash:
-                total_dupe_count = count
+                await memcache_set(req_key, b"0")
+            try:
+                count = await settings.memcache.incr(req_key, 1)
+                await settings.memcache.touch(req_key, exptime=60 * 60 * 3)
+                if count > 1 and _hash == request_hash:
+                    total_dupe_count = count
 
-                # Check for user specific spam.
-                ureq_key = f"userreq:{current_user.user_id}{_hash}".encode()
-                value = await settings.memcache.get(ureq_key)
-                if value is None:
-                    await settings.memcache.set(ureq_key, b"0")
-                user_dupe_count = await settings.memcache.incr(ureq_key, 1)
-                await settings.memcache.touch(ureq_key, 60 * 60 * 3)
+                    # Check for user specific spam.
+                    ureq_key = f"userreq:{current_user.user_id}{_hash}".encode()
+                    value = await memcache_get(ureq_key)
+                    if value is None:
+                        await memcache_set(ureq_key, b"0")
+                    user_dupe_count = await settings.memcache.incr(ureq_key, 1)
+                    await settings.memcache.touch(ureq_key, 60 * 60 * 3)
+            except Exception:
+                ...
 
     except Exception as exc:
         logger.warning(f"Error updating request hash tracking: {exc}")
