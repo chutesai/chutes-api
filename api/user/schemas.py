@@ -241,10 +241,7 @@ class InvocationDiscount(Base):
             default_discount = settings.default_discounts.get(
                 chute_id, settings.default_discounts.get("*", 200)
             )
-            try:
-                await memcache_set(key, str(default_discount).encode(), exptime=1800)
-            except Exception:
-                ...
+            await memcache_set(key, str(default_discount).encode(), exptime=1800)
             return default_discount
 
 
@@ -319,9 +316,6 @@ class PriceOverride(Base):
                         "chute_id": override.chute_id,
                     }
                 )
-                try:
-                    await memcache_set(key, serialized, exptime=1800)
-                except Exception:
-                    ...
+                await memcache_set(key, serialized, exptime=1800)
                 return override
             return None
