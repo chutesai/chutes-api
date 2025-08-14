@@ -449,8 +449,8 @@ async def _invoke_one(
                     chute.standard_template == "vllm"
                     and plain_path in LLM_PATHS
                     and chunk.startswith(b"data: {")
-                    and b'"content":""' not in chunk
-                    and b'"content": ""' not in chunk
+                    and b'content":""' not in chunk
+                    and b'content": ""' not in chunk
                 ):
                     if metrics["ttft"] is None:
                         metrics["ttft"] = round(time.time() - started_at, 3)
