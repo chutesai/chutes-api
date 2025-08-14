@@ -874,6 +874,7 @@ async def _deploy_chute(
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
                 logging_enabled=chute_args.logging_enabled,
+                discount=-10.0 if "affine" in chute.name.lower() else None,
             )
         except ValueError as exc:
             raise HTTPException(
