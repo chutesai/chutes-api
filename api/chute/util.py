@@ -633,6 +633,11 @@ async def _invoke_one(
                     if plain_path == "chat":
                         try:
                             output_text = json_data["choices"][0]["message"]["content"]
+                            reasoning_content = json_data["choices"][0]["message"].get(
+                                "reasoning_content"
+                            )
+                            if reasoning_content:
+                                output_text += " " + reasoning_content
                         except (KeyError, IndexError):
                             ...
                     else:
