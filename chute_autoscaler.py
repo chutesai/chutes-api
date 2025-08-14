@@ -421,7 +421,6 @@ async def perform_autoscale(dry_run: bool = False):
             and rate_limit_5m == 0
             and rate_limit_15m == 0
             and rate_limit_1h == 0
-            and metrics["total_requests"].get("1h", 0) > 0
             and not info.new_chute
             and chute_id not in LIMIT_OVERRIDES
         ):
