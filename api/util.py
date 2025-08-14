@@ -1038,7 +1038,8 @@ def reformat_vlm_asset(data_bytes: bytes, visual_type: str = "image", max_size: 
                 img = rgb_img
         img.save(buffer, format=img_format)
         data_bytes = buffer.getvalue()
-    return f"data:image/png;base64,{base64.b64encode(data_bytes).decode()}"
+        return f"data:image/png;base64,{base64.b64encode(data_bytes).decode()}"
+    return f"data:video/mp4;base64,{base64.b64encode(data_bytes).decode()}"
 
 
 async def memcache_get(key: bytes):
