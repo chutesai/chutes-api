@@ -63,9 +63,9 @@ from api.util import (
     limit_deployments,
     get_current_hf_commit,
     is_affine_registered,
-    check_affine_code,
     notify_deleted,
 )
+from api.affine import check_affine_code
 from api.util import memcache_get, memcache_set
 from api.guesser import guesser
 from api.graval_worker import handle_rolling_update
