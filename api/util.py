@@ -905,6 +905,7 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                                     False,
                                                     "engine_args for build_vllm_chute must be a dictionary literal {...}",
                                                 )
+                                            # Keys must be plain string literals and must not include trust flags
                                             for key in keyword.value.keys:
                                                 if not (
                                                     isinstance(key, ast.Constant)
@@ -914,13 +915,28 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                                         False,
                                                         "engine_args dictionary keys must be string literals",
                                                     )
-                                                if key.value in [
+                                                if key.value in (
                                                     "trust_remote_code",
                                                     "trust-remote-code",
-                                                ]:
+                                                ):
                                                     return (
                                                         False,
                                                         f"engine_args cannot contain '{key.value}'",
+                                                    )
+                                            # Values must be simple literals (no expressions); strings must not sneak trust flags
+                                            for val in keyword.value.values:
+                                                if not isinstance(val, ast.Constant):
+                                                    return (
+                                                        False,
+                                                        "engine_args dictionary values must be simple literals (str/int/float/bool/None)",
+                                                    )
+                                                if isinstance(val.value, str) and (
+                                                    "trust_remote_code" in val.value
+                                                    or "trust-remote-code" in val.value
+                                                ):
+                                                    return (
+                                                        False,
+                                                        "engine_args cannot reference 'trust_remote_code' in any string value",
                                                     )
                                         elif func_name == "build_sglang_chute":
                                             if not (
