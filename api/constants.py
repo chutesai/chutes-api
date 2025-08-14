@@ -38,3 +38,6 @@ UNDERUTILIZED_CAP = 5
 
 # Percentage of requests being rate limited to allow scaling up.
 RATE_LIMIT_SCALE_UP = 0.02
+
+# Maximum size of VLM asset (video/image).
+VLM_MAX_SIZE = 100 * 1024 * 1024

@@ -25,6 +25,7 @@ from loguru import logger
 from api.config import settings
 from urllib.parse import urlparse
 from sqlalchemy.future import select
+from api.constants import VLM_MAX_SIZE
 from api.metasync import MetagraphNode
 from api.payment.schemas import Payment
 from api.fmv.fetcher import get_fetcher
@@ -607,14 +608,14 @@ def get_current_hf_commit(model_name: str):
     return None
 
 
-def recreate_vlm_payload(request_body: dict):
+async def recreate_vlm_payload(request_body: dict):
     """
     Check if a VLM request is valid (for us), download images/videos locally and pass to miners as b64.
     """
     futures = []
 
-    async def _inject_b64(url, obj, key):
-        obj[key] = reformat_vlm_asset(await fetch_vlm_asset(url))
+    async def _inject_b64(url, obj, key, visual_type):
+        obj[key] = reformat_vlm_asset(await fetch_vlm_asset(url), visual_type)
 
     if not request_body.get("messages"):
         return
@@ -635,17 +636,17 @@ def recreate_vlm_payload(request_body: dict):
                     if url.startswith(f"data:{visual_type}") or url.startswith("data:"):
                         continue
                     parsed_url = urlparse(url)
-                    if parsed_url.scheme != "https":
+                    if parsed_url.scheme.lower() not in ("https", "http"):
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Only HTTPS URLs are supported for {visual_type}s. Got scheme: {parsed_url.scheme}",
+                            detail=f"Only HTTP(s) URLs are supported for {visual_type}s: {parsed_url.scheme} is not supported",
                         )
-                    if parsed_url.port is not None and parsed_url.port != 443:
+                    if parsed_url.port is not None and parsed_url.port not in (80, 443):
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
+                            detail=f"Only HTTP(s) standard ports are supported for {visual_type}s, port {parsed_url.port} is not supported",
                         )
-                        futures.append(_inject_b64(url, visual_data, "url"))
+                    futures.append(_inject_b64(url, visual_data, "url", visual_type))
 
                 elif isinstance(visual_data, str):
                     if visual_data.startswith(f"data:{visual_type}") or visual_data.startswith(
@@ -663,7 +664,7 @@ def recreate_vlm_payload(request_body: dict):
                             status_code=status.HTTP_400_BAD_REQUEST,
                             detail=f"Only HTTPS URLs on port 443 are supported for {visual_type}s. Got port: {parsed_url.port}",
                         )
-                    futures.append(_inject_b64(visual_data, content_item, key))
+                    futures.append(_inject_b64(visual_data, content_item, key, visual_type))
 
     # Perform asset downloads concurrently.
     if len(futures) > 8:
@@ -959,6 +960,7 @@ async def fetch_vlm_asset(url: str) -> bytes:
     """
     Fetch an asset (image or video) from the specified URL (for VLMs).
     """
+    logger.info(f"VLM sixtyfourer: downloading vision asset from {url=}")
     timeout = aiohttp.ClientTimeout(connect=2, total=30)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
@@ -970,60 +972,73 @@ async def fetch_vlm_asset(url: str) -> bytes:
                     )
                 content_type = response.headers.get("Content-Type", "").lower()
                 if not content_type.startswith(("image/", "video/")):
+                    logger.error(f"VLM sixtyfourer: invalid image URL: {content_type=} for {url=}")
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=f"Invalid image URL: {content_type=} for {url=}",
                     )
                 content_length = response.headers.get("Content-Length")
-                max_size = 100 * 1024 * 1024
-                if content_length and int(content_length) > max_size:
+                if content_length and int(content_length) > VLM_MAX_SIZE:
+                    logger.error(
+                        f"VLM sixtyfourer: max size is {VLM_MAX_SIZE} bytes, {url=} has size {content_length} bytes"
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
-                        detail=f"VLM asset max size is {max_size} bytes, {content_length=} for {url=}",
+                        detail=f"VLM asset max size is {VLM_MAX_SIZE} bytes, {url=} has size {content_length} bytes",
                     )
                 chunks = []
                 total_size = 0
                 async for chunk in response.content.iter_chunked(32768):
                     total_size += len(chunk)
-                    if total_size > max_size:
+                    if total_size > VLM_MAX_SIZE:
+                        logger.error(
+                            f"VLM sixtyfourer: max size is {VLM_MAX_SIZE} bytes, already read {total_size=}"
+                        )
                         raise HTTPException(
                             status_code=status.HTTP_400_BAD_REQUEST,
-                            detail=f"VLM asset max size is {max_size} bytes, already read {total_size=}",
+                            detail=f"VLM asset max size is {VLM_MAX_SIZE} bytes, already read {total_size=}",
                         )
                     chunks.append(chunk)
+                logger.success(f"VLM sixtyfourer: successfully downloaded {url=}")
                 return b"".join(chunks)
         except asyncio.TimeoutError:
+            logger.error(f"VLM sixtyfourer: timeout downloading {url=}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Timeout fetching image for VLM processing from {url=}",
             )
         except Exception as exc:
+            logger.error(f"VLM sixtyfourer: unhandled download exception: {str(exc)}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Unexpected error attempting to fetch image for VLM processing: {str(exc)}",
             )
 
 
-def reformat_vlm_asset(image_data: bytes, max_width: int = 1024) -> str:
+def reformat_vlm_asset(data_bytes: bytes, visual_type: str = "image", max_size: int = 1024) -> str:
     """
-    Pre-fetch and convert to base64 images for vision models.
+    Pre-fetch and convert to base64 images/videos for vision models.
     """
-    img = Image.open(BytesIO(image_data))
-    if img.width > max_width:
-        aspect_ratio = img.height / img.width
-        new_width = max_width
-        new_height = int(new_width * aspect_ratio)
-        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-    buffer = BytesIO()
-    img_format = img.format if img.format else "PNG"
-    if img_format == "JPEG":
-        if img.mode in ("RGBA", "P"):
-            rgb_img = Image.new("RGB", img.size, (255, 255, 255))
-            rgb_img.paste(img, mask=img.split()[3] if img.mode == "RGBA" else None)
-            img = rgb_img
-    img.save(buffer, format=img_format)
-    image_bytes = buffer.getvalue()
-    return f"data:image/png;base64,{base64.b64encode(image_bytes).decode()}"
+    if visual_type == "image":
+        img = Image.open(BytesIO(data_bytes))
+        if img.width > max_size or img.height > max_size:
+            scale_factor = max_size / max(img.width, img.height)
+            new_width = int(img.width * scale_factor)
+            new_height = int(img.height * scale_factor)
+            logger.warning(
+                f"Received large VLM payload image, resizing from {img.width=} {img.height=} to {new_width=} {new_height=}"
+            )
+            img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        buffer = BytesIO()
+        img_format = img.format if img.format else "PNG"
+        if img_format == "JPEG":
+            if img.mode in ("RGBA", "P"):
+                rgb_img = Image.new("RGB", img.size, (255, 255, 255))
+                rgb_img.paste(img, mask=img.split()[3] if img.mode == "RGBA" else None)
+                img = rgb_img
+        img.save(buffer, format=img_format)
+        data_bytes = buffer.getvalue()
+    return f"data:image/png;base64,{base64.b64encode(data_bytes).decode()}"
 
 
 async def memcache_get(key: bytes):
