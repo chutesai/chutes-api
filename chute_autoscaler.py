@@ -42,6 +42,7 @@ PRICE_COMPATIBILITY_THRESHOLD = 0.67
 LIMIT_OVERRIDES = {
     "eb04d6a6-b250-5f44-b91e-079bc938482a": 30,
     "83ce50c4-6d3f-55a6-88a6-c5db187f2c70": 50,
+    "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 50,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 75,
@@ -420,7 +421,6 @@ async def perform_autoscale(dry_run: bool = False):
             and rate_limit_5m == 0
             and rate_limit_15m == 0
             and rate_limit_1h == 0
-            and metrics["total_requests"].get("1h", 0) > 0
             and not info.new_chute
             and chute_id not in LIMIT_OVERRIDES
         ):

@@ -36,7 +36,7 @@ from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.util import check_vlm_payload, fix_glm_tool_arguments
+from api.util import recreate_vlm_payload, fix_glm_tool_arguments
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -411,13 +411,13 @@ async def _invoke(
             )
             request_body["model"] = chute.name
 
-        # Images must be https or base64.
+        # Fetch images/videos and convert to base64 to avoid issues with miner network policies/connectivity.
         try:
-            check_vlm_payload(request_body)
+            await recreate_vlm_payload(request_body)
         except Exception as exc:
             if isinstance(exc, HTTPException):
                 raise
-            logger.error(f"Failed to check VLM request payload: {str(exc)}")
+            logger.error(f"Failed to update VLM request payload: {str(exc)}")
 
         # Fix GLM 4.5 tool call args...
         if chute.name == "zai-org/GLM-4.5-FP8":
