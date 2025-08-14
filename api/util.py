@@ -872,7 +872,14 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                 if chute_assignment is not None:
                                     return False, "Multiple assignments to 'chute' variable"
                                 chute_assignment = func_name
+                                if node.value.keywords is None:
+                                    return False, f"{func_name} call cannot use **kwargs unpacking"
                                 for keyword in node.value.keywords:
+                                    if keyword.arg is None:
+                                        return (
+                                            False,
+                                            f"{func_name} call cannot use **kwargs unpacking",
+                                        )
                                     if keyword.arg == "image":
                                         if not (
                                             isinstance(keyword.value, ast.Constant)
@@ -892,15 +899,46 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                                 "image must start with 'chutes/sglang' or 'chutes/vllm'",
                                             )
                                     elif keyword.arg == "engine_args":
-                                        arg_str = ast.unparse(keyword.value)
-                                        if (
-                                            "trust_remote_code" in arg_str
-                                            or "trust-remote-code" in arg_str
-                                        ):
-                                            return (
-                                                False,
-                                                "engine_args cannot contain 'trust_remote_code' or 'trust-remote-code'",
-                                            )
+                                        if func_name == "build_vllm_chute":
+                                            if not isinstance(keyword.value, ast.Dict):
+                                                return (
+                                                    False,
+                                                    "engine_args for build_vllm_chute must be a dictionary literal {...}",
+                                                )
+                                            for key in keyword.value.keys:
+                                                if not (
+                                                    isinstance(key, ast.Constant)
+                                                    and isinstance(key.value, str)
+                                                ):
+                                                    return (
+                                                        False,
+                                                        "engine_args dictionary keys must be string literals",
+                                                    )
+                                                if key.value in [
+                                                    "trust_remote_code",
+                                                    "trust-remote-code",
+                                                ]:
+                                                    return (
+                                                        False,
+                                                        f"engine_args cannot contain '{key.value}'",
+                                                    )
+                                        elif func_name == "build_sglang_chute":
+                                            if not (
+                                                isinstance(keyword.value, ast.Constant)
+                                                and isinstance(keyword.value.value, str)
+                                            ):
+                                                return (
+                                                    False,
+                                                    "engine_args for build_sglang_chute must be a string literal",
+                                                )
+                                            if (
+                                                "trust_remote_code" in keyword.value.value
+                                                or "trust-remote-code" in keyword.value.value
+                                            ):
+                                                return (
+                                                    False,
+                                                    "engine_args string cannot contain 'trust_remote_code' or 'trust-remote-code'",
+                                                )
                             else:
                                 return (
                                     False,
