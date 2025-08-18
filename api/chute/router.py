@@ -634,7 +634,10 @@ async def delete_chute(
     Delete a chute by ID or name.
     """
     chute = None
-    if current_user.has_role(Permissioning.affine_admin):
+    if (
+        current_user.has_role(Permissioning.affine_admin)
+        and current_user.user_id != await chutes_user_id()
+    ):
         try:
             uuid.UUID(chute_id_or_name)
         except ValueError:
