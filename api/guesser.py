@@ -24,7 +24,7 @@ class GPURequirements(BaseModel):
 class ConfigGuesser:
     def __init__(self):
         self.available_vram_sizes = sorted(
-            set(gpu["memory"] for gpu in SUPPORTED_GPUS.values() if gpu["memory"] <= 80)
+            set(gpu["memory"] for gpu in SUPPORTED_GPUS.values() if gpu["memory"] <= 140)
         )
 
         self.vram_overhead = {

@@ -18,13 +18,43 @@ from api.user.schemas import User
 from api.user.service import get_current_user
 from api.util import memcache_get, memcache_set
 from api.payment.schemas import Payment
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, text
 
 router = APIRouter()
 
 
 class ReturnDepositArgs(BaseModel):
     address: str
+
+
+@cache(expire=300)
+@router.get("/payments/summary/tao")
+async def get_tao_payment_totals(db: AsyncSession = Depends(get_db_session)):
+    """
+    Get the amount (as USD equivalent) of payments made by tao for
+    today, the current month, and total.
+    """
+    query = """
+    SELECT
+        COALESCE(SUM(CASE
+            WHEN DATE(created_at) = CURRENT_DATE
+            THEN usd_amount
+        END), 0) AS today,
+        COALESCE(SUM(CASE
+            WHEN DATE_TRUNC('month', created_at) = DATE_TRUNC('month', CURRENT_DATE)
+            THEN usd_amount
+        END), 0) AS this_month,
+        COALESCE(SUM(usd_amount), 0) AS total
+    FROM payments
+    WHERE purpose = 'credits'
+    """
+    result = await db.execute(text(query))
+    row = result.fetchone()
+    return {
+        "today": float(row.today),
+        "this_month": float(row.this_month),
+        "total": float(row.total),
+    }
 
 
 @cache(expire=90)
