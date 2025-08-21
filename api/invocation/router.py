@@ -830,6 +830,13 @@ async def hostname_invocation(
         if model == "moonshotai/Kimi-K2-Instruct":
             payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
 
+        # Header for thinking mode enablement in DS V3.1
+        if model == "deepseek-ai/DeepSeek-V3.1":
+            if (request.headers.get("X-Enable-Thinking") or "").lower() == "true":
+                if "chat_template_kwargs" not in payload:
+                    payload["chat_template_kwargs"] = {}
+                payload["chat_template_kwargs"]["thinking"] = True
+
         model = payload.get("model")
         chute = None
         template = "vllm" if "llm" in request.state.chute_id else "diffusion"
