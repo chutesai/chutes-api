@@ -29,7 +29,7 @@ LLM_MIN_PRICE_OUT = 0.01
 DIFFUSION_PRICE_MULT_PER_STEP = 0.005
 
 # Minimum utilization of a chute before additional instances can be added.
-UTILIZATION_SCALE_UP = 0.35
+UTILIZATION_SCALE_UP = 0.4
 # XXX Legacy value.
 EXPANSION_UTILIZATION_THRESHOLD = 0.02
 
