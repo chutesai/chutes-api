@@ -34,7 +34,7 @@ UTILIZATION_SCALE_UP = 0.4
 EXPANSION_UTILIZATION_THRESHOLD = 0.02
 
 # Cap on number of instances for an underutilized chute.
-UNDERUTILIZED_CAP = 5
+UNDERUTILIZED_CAP = 4
 
 # Percentage of requests being rate limited to allow scaling up.
 RATE_LIMIT_SCALE_UP = 0.02
