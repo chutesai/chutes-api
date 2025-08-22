@@ -930,6 +930,17 @@ async def verify_launch_config_instance(
                 "job_status_url": f"https://api.{settings.base_domain}/jobs/{instance.job.job_id}?token={job_token}",
             }
         )
+
+    # Stealth models...
+    if instance.chute.name in ("Zenith", "Meridian", "Proxima"):
+        return_value.update(
+            {
+                "secrets": {
+                    "HUGGING_FACE_HUB_TOKEN": os.getenv("STEALTH_0_TOKEN"),
+                },
+            }
+        )
+
     return_value["activation_url"] = (
         f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
     )

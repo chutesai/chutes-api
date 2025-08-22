@@ -933,6 +933,9 @@ async def _deploy_chute(
                 ).decode(),
             )
         else:
+            logger.warning(
+                f"Chute deployed with rolling update disabled: {chute.chute_id=} {chute.name=}"
+            )
             # Purge all instances immediately.
             instances = (
                 (await db.execute(select(Instance).where(Instance.chute_id == chute.chute_id)))
