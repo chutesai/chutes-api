@@ -831,7 +831,11 @@ async def hostname_invocation(
             payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
 
         # Header for thinking mode enablement in various models.
-        thinking_key = "thinking" if model == "deepseek-ai/DeepSeek-V3.1" else "enable_thinking"
+        thinking_key = (
+            "thinking"
+            if model in ("deepseek-ai/DeepSeek-V3.1", "Zenith", "Meridian", "Proxima")
+            else "enable_thinking"
+        )
         if (request.headers.get("X-Enable-Thinking") or "").lower() == "true":
             if "chat_template_kwargs" not in payload:
                 payload["chat_template_kwargs"] = {}
