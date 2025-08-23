@@ -381,6 +381,18 @@ SUPPORTED_GPUS = {
             "estimate": 75,
         },
     },
+    "H20": {
+        "model_name_check": " H20$",
+        "memory": 96,
+        "processors": 78,
+        "clock_rate": {"base": 1590, "boost": 1980},
+        "max_threads_per_processor": 1024,
+        "hourly_rate": 1.15,
+        "graval": {
+            "iterations": 1,
+            "estimate": 300,
+        },
+    },
     "h200": {
         "model_name_check": " H200",
         "memory": 140,
@@ -412,8 +424,6 @@ SUPPORTED_GPUS = {
             "estimate": 75,
         },
     },
-    # XXX Likewise, b200 is not yet supported, but kept here as a stub for
-    # purpose of compute multiplier/scoring consistency.
     "b200": {
         "model_name_check": " B200",
         "memory": 192,
