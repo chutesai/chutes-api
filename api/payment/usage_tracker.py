@@ -42,6 +42,8 @@ async def process_balance_changes():
             amount = float(values.get(b"amount", 0))
             count = int(values.get(b"count", 0))
             timestamp = int(values.get(b"timestamp", 0))
+            input_tokens = int(values.get(b"input_tokens") or 0)
+            output_tokens = int(values.get(b"output_tokens") or 0)
             if user_id not in user_totals:
                 user_totals[user_id] = 0
             user_totals[user_id] += amount
@@ -54,11 +56,15 @@ async def process_balance_changes():
                 f"Updating usage data for {user_id=} {chute_id=} {hour_bucket=} {amount=} {count=}"
             )
             stmt = text("""
-                INSERT INTO usage_data (user_id, bucket, chute_id, amount, count)
-                SELECT :user_id, to_timestamp(:hour_bucket), :chute_id, :amount, :count
+                INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens)
+                SELECT :user_id, to_timestamp(:hour_bucket), :chute_id, :amount, :count, :input_tokens, :output_tokens
                 WHERE EXISTS (SELECT 1 FROM users WHERE user_id = :user_id)
                 ON CONFLICT (user_id, chute_id, bucket)
-                DO UPDATE SET amount = (usage_data.amount + :amount), count = (usage_data.count + :count)
+                DO UPDATE SET
+                    amount = (usage_data.amount + :amount),
+                    count = (usage_data.count + :count),
+                    input_tokens = (usage_data.input_tokens + :input_tokens),
+                    output_tokens = (usage_data.output_tokens + :output_tokens)
             """).bindparams(
                 bindparam("user_id", type_=String),
                 bindparam("chute_id", type_=String),
@@ -71,6 +77,8 @@ async def process_balance_changes():
                     "chute_id": chute_id,
                     "amount": amount,
                     "count": count,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
                 },
             )
 

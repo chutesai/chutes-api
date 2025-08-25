@@ -38,8 +38,11 @@ async def warm_up_cache():
     async with get_session() as session:
         await get_stats(miner_hotkey=None, session=session, per_chute=False, request=None)
         logger.success("Warmed up stats endpoint, per_chute=False")
+    async with get_session() as session:
         await get_stats(miner_hotkey=None, session=session, per_chute=True, request=None)
         logger.success("Warmed up stats endpoint, per_chute=True")
+    async with get_session() as session:
+        await session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue_summary;"))
     await get_scores(hotkey=None, request=None)
     logger.success("Warmed up scores endpoint")
     await get_utilization(hotkey=None, request=None)

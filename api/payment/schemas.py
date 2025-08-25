@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKey,
     Double,
     Index,
+    Numeric,
 )
 from api.database import Base, generate_uuid
 
@@ -25,6 +26,7 @@ class Payment(Base):
     fmv = Column(Double, nullable=False)
     usd_amount = Column(Double, nullable=False)
     transaction_hash = Column(String, nullable=False)
+    extrinsic_idx = Column(BigInteger, nullable=True)
     purpose = Column(String, default="credits")
     source_address = Column(String)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -64,6 +66,8 @@ class UsageData(Base):
     chute_id = Column(String, primary_key=True)
     amount = Column(Double, nullable=False)
     count = Column(BigInteger, nullable=False)
+    input_tokens = Column(Numeric, nullable=True)
+    output_tokens = Column(Numeric, nullable=True)
 
 
 class AdminBalanceChange(Base):

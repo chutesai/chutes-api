@@ -228,7 +228,7 @@ class LeastConnManager:
             random.shuffle(instances)
 
         # Handle prefix-aware routing if enabled
-        if prefixes and random.random() <= 0.75:
+        if prefixes and random.random() <= 0.95:
             result = await self._handle_prefix_routing(
                 counts, grouped_by_count, min_count, prefixes
             )

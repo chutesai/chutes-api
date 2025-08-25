@@ -528,7 +528,7 @@ async def _invoke(
                 await memcache_set(rr_key, b"0")
             try:
                 count = await settings.memcache.incr(rr_key, 1)
-                await settings.memcache.touch(rr_key, 60 * 60 * 3)
+                await settings.memcache.touch(rr_key, 300)
                 if count > 1:
                     reroll = True
             except Exception:

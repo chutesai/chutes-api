@@ -186,6 +186,7 @@ class PaymentMonitor:
         block: int,
         block_hash: str,
         fmv: float,
+        extrinsic_idx: int,
     ):
         """
         Process an incoming transfer.
@@ -212,6 +213,7 @@ class PaymentMonitor:
                 usd_amount=delta,
                 fmv=fmv,
                 transaction_hash=block_hash,
+                extrinsic_idx=extrinsic_idx,
             )
             session.add(payment)
 
@@ -249,6 +251,7 @@ class PaymentMonitor:
         block: int,
         block_hash: str,
         fmv: float,
+        extrinsic_idx: int,
     ):
         """
         Process an incoming transfer to enable developement (create images/chutes).
@@ -284,6 +287,7 @@ class PaymentMonitor:
                 fmv=fmv,
                 transaction_hash=block_hash,
                 purpose="developer",
+                extrinsic_idx=extrinsic_idx,
             )
             session.add(payment)
 
@@ -411,6 +415,7 @@ class PaymentMonitor:
                                 current_block_number,
                                 current_block_hash,
                                 fmv,
+                                raw_event.get("extrinsic_idx"),
                             )
                             payments += 1
                         if to_address in self._developer_payment_addresses:
@@ -421,6 +426,7 @@ class PaymentMonitor:
                                 current_block_number,
                                 current_block_hash,
                                 fmv,
+                                raw_event.get("extrinsic_idx"),
                             )
                             developer_deposits += 1
                     if payments or developer_deposits:

@@ -28,6 +28,26 @@ class ReturnDepositArgs(BaseModel):
 
 
 @cache(expire=300)
+@router.get("/daily_revenue_summary")
+async def get_daily_revenue_summary(db: AsyncSession = Depends(get_db_session)):
+    """
+    Get the summary of daily revenue including paygo, invoiced users, subscriptions.
+    """
+    result = await db.execute(text("SELECT * FROM daily_revenue_summary ORDER BY date DESC"))
+    rows = result.fetchall()
+    return [
+        {
+            "date": row.date.isoformat() if row.date else None,
+            "new_subscriber_count": row.new_subscriber_count,
+            "new_subscriber_revenue": float(row.new_subscriber_revenue),
+            "paygo_revenue": float(row.paygo_revenue),
+            "total_revenue": float(row.new_subscriber_revenue + row.paygo_revenue),
+        }
+        for row in rows
+    ]
+
+
+@cache(expire=300)
 @router.get("/payments/summary/tao")
 async def get_tao_payment_totals(db: AsyncSession = Depends(get_db_session)):
     """

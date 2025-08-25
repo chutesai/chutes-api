@@ -432,9 +432,6 @@ async def delete_my_user(
         )
 
     await db.execute(
-        text("DELETE FROM usage_data WHERE user_id = :user_id"), {"user_id": current_user.user_id}
-    )
-    await db.execute(
         text("DELETE FROM users WHERE user_id = :user_id"), {"user_id": current_user.user_id}
     )
     await db.commit()

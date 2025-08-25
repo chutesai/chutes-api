@@ -381,13 +381,13 @@ SUPPORTED_GPUS = {
             "estimate": 75,
         },
     },
-    "H20": {
+    "h20": {
         "model_name_check": " H20$",
         "memory": 96,
         "processors": 78,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 1024,
-        "hourly_rate": 1.15,
+        "hourly_rate": 0.7,
         "graval": {
             "iterations": 1,
             "estimate": 300,

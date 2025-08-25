@@ -979,6 +979,9 @@ async def invoke(
                         key = f"balance:{user_id}:{chute.chute_id}"
                         pipeline.hincrbyfloat(key, "amount", balance_used)
                         pipeline.hincrby(key, "count", 1)
+                        if chute.standard_template == "vllm" and metrics:
+                            pipeline.hincrby(key, "input_tokens", metrics.get("it", 0))
+                            pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
                         pipeline.hset(key, "timestamp", int(time.time()))
                         await pipeline.execute()
                     except Exception as exc:
