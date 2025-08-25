@@ -76,7 +76,9 @@ async def delete_api_key(
     """
     Delete an API key by ID.
     """
-    query = select(APIKey).where(APIKey.api_key_id == api_key_id)
+    query = select(APIKey).where(
+        APIKey.api_key_id == api_key_id, APIKey.user_id == current_user.user_id
+    )
     api_key = (await db.execute(query)).unique().scalar_one_or_none()
     if not api_key:
         raise HTTPException(
