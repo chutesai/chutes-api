@@ -89,13 +89,17 @@ async def process_balance_changes():
                 .unique()
                 .scalar_one_or_none()
             )
-            if user and not user.has_role(Permissioning.free_account):
-                logger.info(f"Deducting from {user_id} [{user.username}]: {amount}")
-                user.balance -= amount
-            elif user:
+            if (
+                user
+                and user.has_role(Permissioning.free_account)
+                and not user.has_role(Permissioning.invoice_billing)
+            ):
                 logger.warning(
                     f"Free account {user_id} [{user.username}], skipping deduction: {amount}"
                 )
+            elif user:
+                logger.info(f"Deducting from {user_id} [{user.username}]: {amount}")
+                user.balance -= amount
 
         # Delete processed keys from Redis, while in the transaction.
         # If the transaction fails, we lose the ability to deduct this

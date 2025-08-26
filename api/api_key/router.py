@@ -83,7 +83,7 @@ async def delete_api_key(
     if not api_key:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Image not found, or does not belong to you",
+            detail="API key not found, or does not belong to you",
         )
     await db.delete(api_key)
     await db.commit()

@@ -70,9 +70,6 @@ class User(Base):
     # Balance in USD.
     balance = Column(Double, default=0.0)
 
-    # Flag indicating if the first payment bonus has been credited.
-    bonus_used = Column(Boolean, default=False)
-
     # Friendly name for the frontend for chute creators
     username = Column(String, unique=True)
 

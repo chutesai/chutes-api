@@ -28,7 +28,7 @@ from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
 from api.payment.schemas import AdminBalanceChange
 from api.logo.schemas import Logo
-from sqlalchemy import func
+from sqlalchemy import func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import (
     HOTKEY_HEADER,
@@ -112,6 +112,56 @@ async def admin_user_id_lookup(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {username}"
         )
     return {"user_id": user.user_id}
+
+
+@router.get("/{user_id_or_username}/balance")
+async def admin_balance_lookup(
+    user_id_or_username: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_(User.username == user_id_or_username, User.user_id == user_id_or_username)
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
+        )
+    return {"user_id": user.user_id, "balance": user.balance}
+
+
+@router.get("/invoiced_user_list", response_model=list[SelfResponse])
+async def admin_invoiced_user_list(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    query = select(User).where(
+        and_(
+            User.permissions_bitmask.op("&")(Permissioning.invoiced_billing.bitmask) != 0,
+            User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask) == 0,
+            User.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc",
+        )
+    )
+    result = await db.execute(query)
+    return [SelfResponse.from_orm(user) for user in result.scalars().all()]
 
 
 @router.post("/admin_balance_change")

@@ -39,7 +39,6 @@ class SelfResponse(UserResponse):
     payment_address: str
     developer_payment_address: str
     balance: float
-    bonus_used: bool
     permissions_bitmask: int
 
     @computed_field
