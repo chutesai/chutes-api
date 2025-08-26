@@ -830,10 +830,21 @@ async def hostname_invocation(
         if model == "moonshotai/Kimi-K2-Instruct":
             payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
 
+        # Hermes 4.
+        elif model == "Zenith":
+            payload["model"] = "NousResearch/Hermes-4-405B-FP8"
+        elif model == "Meridian":
+            payload["model"] = "NousResearch/Hermes-4-70B"
+
         # Header and/or model name options to enable thinking mode for various models.
         thinking_key = (
             "thinking"
-            if model in ("deepseek-ai/DeepSeek-V3.1", "Zenith", "Meridian", "Proxima")
+            if model
+            in (
+                "deepseek-ai/DeepSeek-V3.1",
+                "NousResearch/Hermes-4-70B",
+                "NousResearch/Hermes-4-405B-FP8",
+            )
             else "enable_thinking"
         )
         enable_thinking = False
