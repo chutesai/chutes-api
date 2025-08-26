@@ -88,7 +88,25 @@ SELECT
     current_timestamp - INTERVAL '{interval}' AS start_date,
     AVG(i.compute_multiplier) AS compute_multiplier,
     COUNT(DISTINCT CASE WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN i.parent_invocation_id END) as total_invocations,
-    SUM(CASE WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN EXTRACT(EPOCH FROM (i.completed_at - i.started_at)) END) AS total_compute_time,
+    SUM(
+        CASE
+            WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN
+                CASE
+                    WHEN i.metrics->>'steps' IS NOT NULL
+                        AND (i.metrics->>'steps')::float > 0
+                        AND i.metrics->>'masps' IS NOT NULL
+                    THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+                    WHEN i.metrics->>'it' IS NOT NULL
+                        AND i.metrics->>'ot' IS NOT NULL
+                        AND (i.metrics->>'it')::float > 0
+                        AND (i.metrics->>'ot')::float > 0
+                        AND i.metrics->>'maspt' IS NOT NULL
+                    THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+                    ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
+                END
+            ELSE NULL
+        END
+    ) AS total_compute_time,
     COUNT(CASE WHEN i.error_message IS NOT NULL THEN 1 END) AS error_count,
     COUNT(CASE WHEN i.error_message = 'RATE_LIMIT' THEN 1 END) AS rate_limit_count,
     COUNT(DISTINCT CASE WHEN inst.active AND inst.verified THEN i.instance_id END) AS instance_count

@@ -420,7 +420,7 @@ async def _invoke(
             logger.error(f"Failed to update VLM request payload: {str(exc)}")
 
         # Fix GLM 4.5 tool call args...
-        if chute.name == "zai-org/GLM-4.5-FP8":
+        if chute.name in ("zai-org/GLM-4.5-FP8", "zai-org/GLM-4.5-Air"):
             tools = request_body.get("tools")
             if tools and isinstance(tools, list):
                 if "tool_choice" not in request_body:
