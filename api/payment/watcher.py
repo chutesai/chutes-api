@@ -205,7 +205,7 @@ class PaymentMonitor:
             )
             delta = amount * fmv / 1e9
             if amount < 7000000:
-                logger.warning(f"Dust was sent to wallet, ignoring...")
+                logger.warning("Dust was sent to wallet, ignoring...")
                 return
             payment = Payment(
                 payment_id=payment_id,
