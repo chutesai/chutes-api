@@ -155,13 +155,13 @@ async def admin_invoiced_user_list(
         )
     query = select(User).where(
         and_(
-            User.permissions_bitmask.op("&")(Permissioning.invoiced_billing.bitmask) != 0,
+            User.permissions_bitmask.op("&")(Permissioning.invoice_billing.bitmask) != 0,
             User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask) == 0,
             User.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc",
         )
     )
     result = await db.execute(query)
-    return [SelfResponse.from_orm(user) for user in result.scalars().all()]
+    return [SelfResponse.from_orm(user) for user in result.unique().scalars().all()]
 
 
 @router.post("/admin_balance_change")

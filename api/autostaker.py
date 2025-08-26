@@ -45,6 +45,7 @@ def get_stake(substrate, address, block_hash) -> int:
         [settings.validator_ss58, address, settings.netuid],
         block_hash,
     )
+    logger.info(f"DEBUG: get_stake(..) {result=}")
     if result and result.value and "stake" in result.value:
         return result.value["stake"]
     return 0
@@ -64,7 +65,7 @@ def _add_stake(
     block = substrate.get_block_number(substrate.get_chain_head())
     block_hash = substrate.get_block_hash(block)
     old_balance = get_balance(substrate, keypair.ss58_address, block_hash)
-    get_stake(substrate, keypair.ss58_address, block_hash)
+    old_stake = get_stake(substrate, keypair.ss58_address, block_hash)
 
     result = substrate.get_constant(
         module_name="Balances",
@@ -73,15 +74,19 @@ def _add_stake(
     )
     if result is None:
         raise Exception("Unable to retrieve existential deposit amount.")
-    existential_deposit = int(getattr(result, "value", 0))
+    existential_deposit = int(getattr(result, "value", 0)) + 7000000
     staking_balance = int(amount * pow(10, 9))
     if staking_balance > old_balance - existential_deposit:
+        logger.warning(
+            f"Fallback to existential deposit min: {old_balance=} {existential_deposit=}"
+        )
         staking_balance = old_balance - existential_deposit
-    else:
-        staking_balance = staking_balance
+    logger.info(
+        f"Using values: {existential_deposit=} {staking_balance=} {old_balance=} {old_stake=}"
+    )
 
     # Check enough to stake.
-    if staking_balance > old_balance or staking_balance <= 20000000 + existential_deposit:
+    if staking_balance > old_balance or staking_balance <= existential_deposit:
         logger.error("Not enough stake:")
         logger.error(f"\t\tbalance:{old_balance}")
         logger.error(f"\t\tamount: {staking_balance}")
@@ -156,6 +161,7 @@ async def stake(user_id: str) -> None:
             available = _add_stake(substrate, keypair, amount=amount)
             if available < amount:
                 amount = available
+                logger.warning(f"Fallback to lower available balance: {available=} {amount=}")
         except InsufficientBalance:
             logger.success(f"All balance is now staked to {settings.validator_ss58}")
             await settings.redis_client.delete(f"autostake:{user_id}")

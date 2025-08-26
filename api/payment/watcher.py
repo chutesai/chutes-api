@@ -204,6 +204,9 @@ class PaymentMonitor:
                 uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{to_address}:{from_address}:{amount}")
             )
             delta = amount * fmv / 1e9
+            if amount < 7000000:
+                logger.warning(f"Dust was sent to wallet, ignoring...")
+                return
             payment = Payment(
                 payment_id=payment_id,
                 user_id=user.user_id,

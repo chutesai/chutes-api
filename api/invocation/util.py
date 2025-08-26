@@ -95,14 +95,14 @@ SELECT
                     WHEN i.metrics->>'steps' IS NOT NULL
                         AND (i.metrics->>'steps')::float > 0
                         AND i.metrics->>'masps' IS NOT NULL
-                    THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+                    THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float * COALESCE(c.boost, 1.0)
                     WHEN i.metrics->>'it' IS NOT NULL
                         AND i.metrics->>'ot' IS NOT NULL
                         AND (i.metrics->>'it')::float > 0
                         AND (i.metrics->>'ot')::float > 0
                         AND i.metrics->>'maspt' IS NOT NULL
-                    THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
-                    ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
+                    THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float * COALESCE(c.boost, 1.0)
+                    ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at)) * COALESCE(c.boost, 1.0)
                 END
             ELSE NULL
         END
