@@ -49,8 +49,8 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.squad_enabled }}
       volumes:
+      {{- if .Values.squad_enabled }}
         - name: squad-certs
           secret:
             secretName: squad-cert
@@ -58,6 +58,13 @@ spec:
               - key: squad_pub.pem
                 path: squad_pub.pem
       {{- end }}
+        - name: cosign-key
+          secret:
+            secretName: cosign-signing-key
+            items:
+            - key: cosign.key
+              path: cosign.key
+              mode: 0400  # read-only for owner only
       containers:
         - name: api
           image: "{{ .Values.api.image }}"
@@ -84,16 +91,27 @@ spec:
               value: "{{ .Values.consecutive_failure_limit }}"
             - name: CM_REDIS_SHARD_COUNT
               value: "{{ .Values.cmRedis.shard_count }}"
+            - name: COSIGN_KEY
+              value: /etc/cosign/cosign.key
+            - name: COSIGN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cosign-signing-key
+                  key: cosign.password 
+
             {{- if .Values.squad_enabled }}
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
             {{- end }}
-          {{- if .Values.squad_enabled }}
           volumeMounts:
+          {{- if .Values.squad_enabled }}
             - name: squad-certs
               mountPath: "/etc/squad"
               readOnly: true
           {{- end }}
+            - name: cosign-key
+              mountPath: /etc/cosign
+              readOnly: true
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

@@ -4,6 +4,7 @@ Application-wide settings.
 
 import os
 import hashlib
+from pathlib import Path
 import aioboto3
 import aiomcache
 import json
@@ -169,6 +170,10 @@ class Settings(BaseSettings):
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "1.0"))
+
+    # Cosign Settings
+    cosign_password: str = str(os.getenv("COSIGN_PASSWORD"))
+    cosign_key: Path = Path(os.getenv("COSIGN_KEY"))
 
 
 settings = Settings()

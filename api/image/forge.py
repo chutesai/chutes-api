@@ -3,6 +3,7 @@ Image forge -- build images and push to local registry with buildah.
 """
 
 import asyncio
+from typing import Any, Callable
 import zipfile
 import uuid
 import os
@@ -17,6 +18,8 @@ from loguru import logger
 from api.config import settings
 from api.database import get_session
 from api.exceptions import (
+    SignFailure,
+    SignTimeout,
     UnsafeExtraction,
     BuildFailure,
     PushFailure,
@@ -392,7 +395,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
             timeout=settings.build_timeout,
         )
         if process.returncode == 0:
-            logger.success(f"Successfull pushed {full_image_tag}, done!")
+            logger.success(f"Successfully pushed {full_image_tag}.")
             delta = time.time() - started_at
             message = (
                 "\N{HAMMER AND WRENCH} "
@@ -426,6 +429,9 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
             f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
         )
 
+    # SIGN
+    sign_image(image, full_image_tag, started_at, _capture_logs)
+
     # DONE!
     delta = time.time() - started_at
     message = (
@@ -440,6 +446,83 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
     await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
     return short_tag
 
+async def get_image_digest(image_tag: str) -> str:
+    """Get digest from buildah inspect"""
+    process = await asyncio.create_subprocess_exec(
+        "buildah",
+        "inspect",
+        "--format",
+        "{{.Digest}}",
+        image_tag,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    
+    if process.returncode != 0:
+        raise SignFailure(f"Failed to get digest for {image_tag}: {stderr.decode()}")
+    
+    return stdout.decode().strip()
+
+async def sign_image(image, image_tag: str, started_at, _capture_logs: Callable[[Any, Any, bool], None]):
+    """Sign the image using cosign"""
+    try:
+        image_digest = get_image_digest(image_tag)
+        image_digest_tag = f"{image_tag.split(':')[0]}@{image_digest}"
+        process = await asyncio.create_subprocess_exec(
+            "cosign",
+            "sign",
+            "--key",
+            f"{settings.cosign_key}",
+            image_digest_tag,
+            "--yes",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await process.communicate(input=f"{settings.cosign_password}\n".encode())
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=settings.build_timeout,
+        )
+        if process.returncode == 0:
+            logger.success(f"Successfully signed {image_digest_tag}, done!")
+            delta = time.time() - started_at
+            message = (
+                "\N{HAMMER AND WRENCH} "
+                + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
+            )
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+            )
+            logger.success(message)
+        else:
+            message = "Image sign failed, check logs for more details!"
+            logger.error(message)
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            raise SignFailure(f"Sign of {image_tag} failed!")
+    except asyncio.TimeoutError:
+        message = f"Sign of {image_digest_tag} timed out after {settings.push_timeout} seconds."
+        logger.error(message)
+        await settings.redis_client.xadd(
+            f"forge:{image.image_id}:stream",
+            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+        )
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        process.kill()
+        await process.communicate()
+        raise SignTimeout(
+            f"Sign of {image_tag} timed out after {settings.push_timeout} seconds."
+        )
 
 async def extract_cfsv_data_from_verification_image(verification_tag: str, build_dir: str) -> str:
     """
