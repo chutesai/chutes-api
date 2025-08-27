@@ -12,6 +12,7 @@ import tempfile
 import traceback
 import time
 import shutil
+import aiohttp
 import chutes
 import orjson as json
 from loguru import logger
@@ -309,57 +310,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         raise BuildTimeout(message)
 
     # Scan with trivy
-    await settings.redis_client.xadd(
-        f"forge:{image.image_id}:stream",
-        {
-            "data": json.dumps(
-                {"log_type": "stdout", "log": "scanning image with trivy..."}
-            ).decode()
-        },
-    )
-    logger.info("Scanning image with trivy...")
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "bash",
-            "/usr/local/bin/trivy_scan.sh",
-            short_tag,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await asyncio.wait_for(
-            asyncio.gather(
-                _capture_logs(process.stdout, "stdout"),
-                _capture_logs(process.stderr, "stderr"),
-                process.wait(),
-            ),
-            timeout=settings.scan_timeout,
-        )
-        if process.returncode == 0:
-            message = f"No HIGH|CRITICAL vulnerabilities detected in {short_tag}"
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream",
-                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
-            )
-            logger.success(message)
-        else:
-            message = f"Issues scanning {short_tag} with trivy!"
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream",
-                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-            )
-            logger.error(message)
-            raise BuildFailure(f"Failed trivy image scan: {short_tag}")
-    except asyncio.TimeoutError:
-        message = f"Trivy scan of {short_tag} timed out after."
-        logger.error(message)
-        await settings.redis_client.xadd(
-            f"forge:{image.image_id}:stream",
-            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-        )
-        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
-        process.kill()
-        await process.communicate()
-        raise BuildTimeout(message)
+    await trivy_image_scan(image, short_tag, _capture_logs)
 
     # Push
     await settings.redis_client.xadd(
@@ -430,7 +381,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         )
 
     # SIGN
-    sign_image(image, full_image_tag, started_at, _capture_logs)
+    await sign_image(image, full_image_tag, started_at, _capture_logs)
 
     # DONE!
     delta = time.time() - started_at
@@ -446,13 +397,64 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
     await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
     return short_tag
 
+async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, bool], None]):
+    await settings.redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {
+            "data": json.dumps(
+                {"log_type": "stdout", "log": "scanning image with trivy..."}
+            ).decode()
+        },
+    )
+    logger.info("Scanning image with trivy...")
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "bash",
+            "/usr/local/bin/trivy_scan.sh",
+            short_tag,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=settings.scan_timeout,
+        )
+        if process.returncode == 0:
+            message = f"No HIGH|CRITICAL vulnerabilities detected in {short_tag}"
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+            )
+            logger.success(message)
+        else:
+            message = f"Issues scanning {short_tag} with trivy!"
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            logger.error(message)
+            raise BuildFailure(f"Failed trivy image scan: {short_tag}")
+    except asyncio.TimeoutError:
+        message = f"Trivy scan of {short_tag} timed out after."
+        logger.error(message)
+        await settings.redis_client.xadd(
+            f"forge:{image.image_id}:stream",
+            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+        )
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        process.kill()
+        await process.communicate()
+        raise BuildTimeout(message)
+
 async def get_image_digest(image_tag: str) -> str:
-    """Get digest from buildah inspect"""
+    """Get digest using cosign triangulate"""
     process = await asyncio.create_subprocess_exec(
-        "buildah",
-        "inspect",
-        "--format",
-        "{{.Digest}}",
+        "cosign",
+        "triangulate",
         image_tag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -462,13 +464,26 @@ async def get_image_digest(image_tag: str) -> str:
     if process.returncode != 0:
         raise SignFailure(f"Failed to get digest for {image_tag}: {stderr.decode()}")
     
-    return stdout.decode().strip()
+    # cosign triangulate returns the signature reference like:
+    # localhost:5000/test-sign:sha256-f043a1e0f30aba1263f163794779c6916f13c18871217c0910525818d752c636.sig
+    triangulate_output = stdout.decode().strip()
+    
+    # Extract the digest from the signature reference
+    # Format: registry/repo:sha256-<digest>.sig
+    if ':sha256-' in triangulate_output and triangulate_output.endswith('.sig'):
+        # Extract the part between 'sha256-' and '.sig'
+        digest_part = triangulate_output.split(':sha256-')[1].replace('.sig', '')
+        digest = f"sha256:{digest_part}"
+    else:
+        raise SignFailure(f"Unexpected triangulate output format: {triangulate_output}")
+    
+    return digest
 
 async def sign_image(image, image_tag: str, started_at, _capture_logs: Callable[[Any, Any, bool], None]):
     """Sign the image using cosign"""
     try:
-        image_digest = get_image_digest(image_tag)
-        image_digest_tag = f"{image_tag.split(':')[0]}@{image_digest}"
+        image_digest = await get_image_digest(image_tag)
+        image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
         process = await asyncio.create_subprocess_exec(
             "cosign",
             "sign",
@@ -480,7 +495,8 @@ async def sign_image(image, image_tag: str, started_at, _capture_logs: Callable[
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await process.communicate(input=f"{settings.cosign_password}\n".encode())
+        stdout, stderr = await process.communicate(input=f"{settings.cosign_password}\n".encode())
+        
         await asyncio.wait_for(
             asyncio.gather(
                 _capture_logs(process.stdout, "stdout"),
