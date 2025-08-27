@@ -227,6 +227,11 @@ async def list_payments(
     )
     results = []
     for payment, user in (await db.execute(query)).all():
+        transfer_link = (
+            f"https://taostats.io/extrinsic/{payment.block}-{payment.extrinsic_idx:04d}"
+            if payment.extrinsic_idx is not None
+            else f"https://taostas.io/block/{payment.block}/extrinsics"
+        )
         results.append(
             dict(
                 payment_id=payment.payment_id,
@@ -237,7 +242,7 @@ async def list_payments(
                 usd_amount=payment.usd_amount,
                 transaction_hash=payment.transaction_hash,
                 timestamp=payment.created_at.isoformat(),
-                tx_link=f"https://taostats.io/transfer/{payment.transaction_hash}",
+                tx_link=transfer_link,
                 transactions_link=f"https://taostats.io/account/{user.payment_address}/transactions",
             )
         )

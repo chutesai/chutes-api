@@ -839,7 +839,7 @@ async def hostname_invocation(
         # Header and/or model name options to enable thinking mode for various models.
         thinking_key = (
             "thinking"
-            if model
+            if payload.get("model")
             in (
                 "deepseek-ai/DeepSeek-V3.1",
                 "NousResearch/Hermes-4-70B",
