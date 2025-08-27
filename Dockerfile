@@ -81,6 +81,12 @@ RUN mkdir -p /root/build /forge /var/lib/containers
 # Install trivy
 RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.64.1
 
+# Install cosign
+ENV COSIGN_VERSION=2.5.3
+RUN curl -LO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_${COSIGN_VERSION}_amd64.deb" && \
+    dpkg -i cosign_${COSIGN_VERSION}_amd64.deb && \
+    rm cosign_${COSIGN_VERSION}_amd64.deb
+
 # Install poetry
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH="/root/.local/bin:$PATH"
