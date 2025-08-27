@@ -214,7 +214,11 @@ class Chute(Base):
     user = relationship("User", back_populates="chutes", lazy="joined")
     logo = relationship("Logo", back_populates="chutes", lazy="joined")
     rolling_update = relationship(
-        "RollingUpdate", back_populates="chute", lazy="joined", uselist=False
+        "RollingUpdate",
+        back_populates="chute",
+        lazy="joined",
+        uselist=False,
+        cascade="all, delete-orphan",
     )
     instances = relationship(
         "Instance", back_populates="chute", lazy="select", cascade="all, delete-orphan"

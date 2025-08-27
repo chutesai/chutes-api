@@ -670,12 +670,6 @@ async def delete_chute(
 
     chute_id = chute.chute_id
     version = chute.version
-    await db.execute(
-        text(
-            "DELETE FROM rolling_updates WHERE chute_id = :chute_id",
-        ),
-        {"chute_id": chute.chute_id},
-    )
     await db.delete(chute)
     await db.commit()
     await settings.redis_client.publish(
