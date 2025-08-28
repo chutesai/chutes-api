@@ -293,15 +293,18 @@ class PriceOverride(Base):
                 (
                     await session.execute(
                         select(PriceOverride)
-                        .where(PriceOverride.user_id == user_id)
-                        .where(PriceOverride.chute_id.in_([chute_id, "*"]))
-                        .order_by(case((PriceOverride.chute_id == chute_id, 0), else_=1))
+                        .where(
+                            PriceOverride.user_id.in_([user_id, "*"]),
+                            PriceOverride.chute_id == chute_id,
+                        )
+                        .order_by(case((PriceOverride.user_id == user_id, 0), else_=1))
                         .limit(1)
                     )
                 )
                 .unique()
                 .scalar_one_or_none()
             )
+
             if override is not None:
                 serialized = json.dumps(
                     {
