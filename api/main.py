@@ -16,7 +16,7 @@ from fastapi_cache import FastAPICache
 from fastapi_cache.backends.memcached import MemcachedBackend
 from sqlalchemy import text
 import api.database.orms  # noqa: F401
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import generate_latest, CollectorRegistry, multiprocess, CONTENT_TYPE_LATEST
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
 from api.bounty.router import router as bounty_router
@@ -44,6 +44,9 @@ async def lifespan(_: FastAPI):
     Execute all initialization/startup code, e.g. ensuring tables exist and such.
     """
     FastAPICache.init(MemcachedBackend(settings.memcache), prefix="chutes-api-cache")
+
+    # Prom multi-proc dir.
+    os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
 
     # Normal table creation stuff.
     async with engine.begin() as conn:
@@ -107,6 +110,11 @@ async def lifespan(_: FastAPI):
     else:
         logger.error(f"failed to run db migrations returncode={process.returncode}")
 
+    # Start a background task to keep the prom gauges updated.
+    from api.metrics.util import keep_gauges_fresh
+
+    asyncio.create_task(keep_gauges_fresh())
+
     yield
 
 
@@ -147,7 +155,10 @@ async def ping():
 async def get_latest_metrics(request: Request):
     if request.headers.get("x-forwarded-for"):
         raise HTTPException(status_code=403, detail="Forbidden")
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    data = generate_latest(registry)
+    return Response(data, media_type=CONTENT_TYPE_LATEST)
 
 
 default_router.get("/ping")(ping)

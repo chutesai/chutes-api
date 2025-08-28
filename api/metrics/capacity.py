@@ -8,16 +8,19 @@ mean_connections = Gauge(
     "mean_connections",
     "Average number of concurrent connections to backend nodes",
     ["chute_id"],
+    multiprocess_mode="livemostrecent",
 )
 concurrency = Gauge(
     "concurrency",
     "Maximum concurrency capacity for the model",
     ["chute_id"],
+    multiprocess_mode="livemostrecent",
 )
 utilization = Gauge(
     "utilization",
     "Ratio of mean connections to concurrency (0-1)",
     ["chute_id"],
+    multiprocess_mode="livemostrecent",
 )
 requests_completed = Counter(
     "requests_completed_total",

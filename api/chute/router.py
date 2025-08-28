@@ -492,8 +492,14 @@ async def get_chute_utilization_v2(request: Request):
                     rate_limit_ratio_5m,
                     rate_limit_ratio_15m,
                     rate_limit_ratio_1h,
+                    total_requests_5m,
+                    total_requests_15m,
                     total_requests_1h,
+                    completed_requests_5m,
+                    completed_requests_15m,
                     completed_requests_1h,
+                    rate_limited_requests_5m,
+                    rate_limited_requests_15m,
                     rate_limited_requests_1h,
                     instance_count,
                     action_taken,
@@ -729,6 +735,11 @@ async def _deploy_chute(
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
         chute_args.node_selector = NodeSelector(**chute_args.node_selector)
+    if set(chute_args.node_selector.supported_gpus) == set(["5090"]):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not allowed to require 5090s",
+        )
     affine_dev = await is_affine_registered(db, current_user)
     if (
         current_user.user_id != await chutes_user_id()
