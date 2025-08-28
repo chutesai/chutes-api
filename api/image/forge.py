@@ -3,7 +3,7 @@ Image forge -- build images and push to local registry with buildah.
 """
 
 import asyncio
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 import zipfile
 import uuid
 import os
@@ -381,7 +381,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         )
 
     # SIGN
-    await sign_image(image, full_image_tag, started_at, _capture_logs)
+    await sign_image(image, full_image_tag, _capture_logs, started_at)
 
     # DONE!
     delta = time.time() - started_at
@@ -479,7 +479,7 @@ async def get_image_digest(image_tag: str) -> str:
     
     return digest
 
-async def sign_image(image, image_tag: str, started_at, _capture_logs: Callable[[Any, Any, bool], None]):
+async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, bool], None], started_at: Optional[float] = None, stream: bool = True):
     """Sign the image using cosign"""
     try:
         image_digest = await get_image_digest(image_tag)
@@ -507,33 +507,36 @@ async def sign_image(image, image_tag: str, started_at, _capture_logs: Callable[
         )
         if process.returncode == 0:
             logger.success(f"Successfully signed {image_digest_tag}, done!")
-            delta = time.time() - started_at
             message = (
-                "\N{HAMMER AND WRENCH} "
-                + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
-            )
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream",
-                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
-            )
+                    "\N{HAMMER AND WRENCH} "
+                    + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
+                )
             logger.success(message)
+            if stream:
+                delta = time.time() - started_at
+                await settings.redis_client.xadd(
+                    f"forge:{image.image_id}:stream",
+                    {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+                )
         else:
             message = "Image sign failed, check logs for more details!"
             logger.error(message)
+            if stream:
+                await settings.redis_client.xadd(
+                    f"forge:{image.image_id}:stream",
+                    {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+                )
+                await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            raise SignFailure(f"Sign of {image_tag} failed!")
+    except asyncio.TimeoutError:
+        message = f"Sign of {image_digest_tag} timed out after {settings.push_timeout} seconds."
+        logger.error(message)
+        if stream:
             await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
             await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
-            raise SignFailure(f"Sign of {image_tag} failed!")
-    except asyncio.TimeoutError:
-        message = f"Sign of {image_digest_tag} timed out after {settings.push_timeout} seconds."
-        logger.error(message)
-        await settings.redis_client.xadd(
-            f"forge:{image.image_id}:stream",
-            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-        )
-        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise SignTimeout(
@@ -1007,6 +1010,9 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                 f"Error updating chutes lib for {image_id}: {exc}\n{traceback.format_exc()}"
             )
             error_message = str(exc)
+
+        # SIGN
+        await sign_image(image, full_target_tag, _capture_logs, stream=True)
 
     # Update the image with the new patch version, tag, etc.
     affected_chute_ids = []
