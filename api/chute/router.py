@@ -16,11 +16,13 @@ from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy.dialects.postgresql import insert
 from typing import Optional
 from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.chute.schemas import (
     Chute,
     ChuteArgs,
+    ChuteShare,
     NodeSelector,
     ChuteUpdateArgs,
     RollingUpdate,
@@ -696,10 +698,19 @@ async def _deploy_chute(
     db: AsyncSession,
     current_user: User,
     use_rolling_update: bool = True,
+    confirm_fee: bool = False,
 ):
     """
     Deploy a chute!
     """
+    if chute_args.public and current_user.user_id != await chutes_user_id():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Chutes no longer supports public chutes. You can instead "
+                "deploy the chute as a private chute and share it with other users."
+            ),
+        )
     image = await get_image_by_id_or_name(chute_args.image, db, current_user)
     if not image:
         raise HTTPException(
@@ -740,6 +751,43 @@ async def _deploy_chute(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not allowed to require 5090s",
         )
+
+    # Fee estimate, as an error, if the user hasn't used the confirmed param.
+    estimate = chute_args.node_selector.current_estimated_price
+    deployment_fee = chute_args.node_selector.gpu_count * estimate["usd"]["hour"] * 3
+    if not confirm_fee:
+        estimate = chute_args.node_selector.current_estimated_price
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                "There is a deployment fee of (hourly price per GPU * number of GPUs * 3), "
+                f"which for this configuration is for this configuration is: ${deployment_fee}\n "
+                "To acknowledge this fee, upgrade your chutes version to latest and "
+                "re-run the deploy command with --accept-fee\n"
+                "(or if deploying via API manually, add confirm_fee=true param)"
+            ),
+        )
+    if current_user.balance <= deployment_fee:
+        logger.warning(
+            f"Payment required: attempted deployment of chute {chute_args.name} "
+            f"from user {current_user.username} with balance < {deployment_fee=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"The deployment fee, based on your node selector, is ${deployment_fee}, "
+                f"but you have a balance of {current_user.balance}.\n"
+                f"Please top up your account with tao @ {current_user.payment_address} or via fiat."
+            ),
+        )
+
+    # Deduct the deployment fee.
+    current_user.balance -= deployment_fee
+    logger.info(
+        f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
+        f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance}"
+    )
+
     affine_dev = await is_affine_registered(db, current_user)
     if (
         current_user.user_id != await chutes_user_id()
@@ -843,7 +891,9 @@ async def _deploy_chute(
         chute.filename = chute_args.filename
         chute.ref_str = chute_args.ref_str
         chute.version = version
-        chute.public = chute_args.public
+        chute.public = (
+            chute_args.public if current_user.user_id == await chutes_user_id() else False,
+        )
         chute.logo_id = (
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
         )
@@ -873,7 +923,9 @@ async def _deploy_chute(
                 filename=chute_args.filename,
                 ref_str=chute_args.ref_str,
                 version=version,
-                public=chute_args.public,
+                public=chute_args.public
+                if current_user.user_id == await chutes_user_id()
+                else False,
                 cords=chute_args.cords,
                 jobs=chute_args.jobs,
                 node_selector=chute_args.node_selector,
@@ -882,7 +934,6 @@ async def _deploy_chute(
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
                 logging_enabled=chute_args.logging_enabled,
-                discount=-10.0 if "affine" in chute_args.name.lower() else None,
             )
         except ValueError as exc:
             raise HTTPException(
@@ -971,6 +1022,7 @@ async def _deploy_chute(
 @router.post("/", response_model=ChuteResponse)
 async def deploy_chute(
     chute_args: ChuteArgs,
+    confirm_fee: Optional[bool] = False,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -1087,22 +1139,20 @@ async def deploy_chute(
                 detail=json.dumps(response).decode(),
             )
     chute = await _deploy_chute(
-        chute_args, db, current_user, use_rolling_update=not is_affine_model
+        chute_args,
+        db,
+        current_user,
+        use_rolling_update=not is_affine_model,
+        confirm_fee=confirm_fee,
     )
 
     # Auto-cleanup the other chutes for affine miners.
-    if (
-        is_affine_model
-        and not current_user.has_role(Permissioning.unlimited_dev)
-        and current_user.username.lower() not in ("affine", "affine2", "nonaffine", "unconst")
-    ):
-        old_chutes = (
+    if is_affine_model:
+        af_dev_user_ids = (
             (
                 await db.execute(
-                    select(Chute).where(
-                        Chute.user_id == current_user.user_id,
-                        Chute.name.ilike("%affine%"),
-                        Chute.chute_id != chute.chute_id,  # noqa
+                    select(User.user_id).where(
+                        User.permissions_bitmask.op("&")(Permissioning.affine_dev.bitmask) != 0
                     )
                 )
             )
@@ -1110,20 +1160,22 @@ async def deploy_chute(
             .scalars()
             .all()
         )
-        for old_chute in old_chutes:
-            await db.delete(old_chute)
-            await settings.redis_client.publish(
-                "miner_broadcast",
-                json.dumps(
+        if af_dev_user_ids:
+            stmt = insert(ChuteShare).values(
+                [
                     {
-                        "reason": "chute_deleted",
-                        "data": {"chute_id": old_chute.chute_id, "version": old_chute.version},
+                        "chute_id": chute.chute_id,
+                        "shared_by": current_user.user_id,
+                        "shared_to": user_id,
+                        "shared_at": func.now(),
                     }
-                ).decode(),
+                    for user_id in af_dev_user_ids
+                    if user_id != current_user.user_id
+                ]
             )
-            logger.success(
-                f"Auto-cleaned {old_chute.chute_id=} {old_chute.name=} from {old_chute.user_id=} for affine"
-            )
+            stmt = stmt.on_conflict_do_nothing()
+            await db.execute(stmt)
+
     return chute
 
 

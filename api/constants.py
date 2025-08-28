@@ -16,10 +16,10 @@ ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 # For example:
 #  llama-3-8b with node selector requiring minimally an a100
 #  Example a100 hourly price (subject to change): $0.8
-#  $/million = $0.8 * 0.0092555 = $0.007404/million input
-#            = $0.8 * 0.03704   = $0.029632/million output
-LLM_PRICE_MULT_PER_MILLION_IN = 0.0092555
-LLM_PRICE_MULT_PER_MILLION_OUT = 0.03704
+#  $/million = $0.8 * 0.010643825 = $0.0085150600/million input
+#            = $0.8 * 0.0463000   = $0.03704000/million output
+LLM_PRICE_MULT_PER_MILLION_IN = 0.010643825
+LLM_PRICE_MULT_PER_MILLION_OUT = 0.0463000
 LLM_MIN_PRICE_IN = 0.01
 LLM_MIN_PRICE_OUT = 0.01
 
