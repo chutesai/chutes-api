@@ -703,7 +703,7 @@ async def _deploy_chute(
     """
     Deploy a chute!
     """
-    if chute_args.public and current_user.user_id != await chutes_user_id():
+    if chute_args.public and not current_user.has_role(Permissioning.public_model_deployment):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -892,7 +892,9 @@ async def _deploy_chute(
         chute.ref_str = chute_args.ref_str
         chute.version = version
         chute.public = (
-            chute_args.public if current_user.user_id == await chutes_user_id() else False,
+            chute_args.public
+            if current_user.has_role(Permissioning.public_model_deployment)
+            else False,
         )
         chute.logo_id = (
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
@@ -924,7 +926,7 @@ async def _deploy_chute(
                 ref_str=chute_args.ref_str,
                 version=version,
                 public=chute_args.public
-                if current_user.user_id == await chutes_user_id()
+                if current_user.has_permission(Permissioning.public_model_deployment)
                 else False,
                 cords=chute_args.cords,
                 jobs=chute_args.jobs,
