@@ -907,8 +907,17 @@ async def _deploy_chute(
         chute.updated_at = func.now()
         chute.revision = chute_args.revision
         chute.logging_enabled = chute_args.logging_enabled
+        chute.max_instances = None if chute.public else (chute_args.max_instances or 1)
+        chute.shutdown_after_seconds = (
+            None if chute.public else (chute_args.shutdown_after_seconds or 300)
+        )
     else:
         try:
+            is_public = (
+                chute_args.public
+                if current_user.has_permission(Permissioning.public_model_deployment)
+                else False
+            )
             chute = Chute(
                 chute_id=str(
                     uuid.uuid5(
@@ -926,9 +935,7 @@ async def _deploy_chute(
                 filename=chute_args.filename,
                 ref_str=chute_args.ref_str,
                 version=version,
-                public=chute_args.public
-                if current_user.has_permission(Permissioning.public_model_deployment)
-                else False,
+                public=is_public,
                 cords=chute_args.cords,
                 jobs=chute_args.jobs,
                 node_selector=chute_args.node_selector,
@@ -937,6 +944,10 @@ async def _deploy_chute(
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
                 logging_enabled=chute_args.logging_enabled,
+                max_instances=None if is_public else (chute_args.max_instances or 1),
+                shutdown_after_seconds=None
+                if is_public
+                else (chute_args.shutdown_after_seconds or 300),
             )
         except ValueError as exc:
             raise HTTPException(

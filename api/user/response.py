@@ -38,8 +38,12 @@ class SelfResponse(UserResponse):
     coldkey: str
     payment_address: str
     developer_payment_address: str
-    balance: float
     permissions_bitmask: int
+
+    @computed_field
+    @property
+    def balance(self) -> float:
+        return float(self.current_balance.effective_balance)
 
     @computed_field
     @property

@@ -50,7 +50,7 @@ from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOve
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager
+from api.instance.util import LeastConnManager, update_shutdown_timestamp
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
@@ -997,6 +997,10 @@ async def invoke(
                             logger.error(
                                 f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
                             )
+
+                    # For private chutes, push back the instance termination timestamp.
+                    if not chute.public:
+                        await update_shutdown_timestamp(target.instance_id)
 
                     await session.commit()
 

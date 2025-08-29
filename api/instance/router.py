@@ -13,6 +13,7 @@ import asyncio
 import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text, func, update
 from sqlalchemy.orm import joinedload
@@ -700,6 +701,14 @@ async def activate_launch_config_instance(
     instance = launch_config.instance
     if not instance.active:
         instance.active = True
+        instance.activated_at = func.now()
+        chute = (
+            (await db.execute(select(Chute.where(Chute.chute_id == instance.chute_id))))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not chute.public:
+            instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
         await db.commit()
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}

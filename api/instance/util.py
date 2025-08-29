@@ -548,3 +548,26 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
     )
+
+
+async def update_shutdown_timestamp(instance_id: str):
+    query = """
+WITH target AS (
+    SELECT i.instance_id, c.shutdown_after_seconds
+    FROM instances i
+    JOIN chutes c ON i.chute_id = c.chute_id
+    WHERE i.instance_id = :instance_id
+    FOR UPDATE OF i SKIP LOCKED
+)
+UPDATE instances
+SET stop_billing_at = NOW() + (target.shutdown_after_seconds * INTERVAL '1 second')
+FROM target
+WHERE instances.instance_id = target.instance_id
+RETURNING instances.instance_id;
+"""
+    try:
+        async with get_session() as session:
+            await session.execute(text("SET LOCAL lock_timeout = '1s'"))
+            await session.execute(text(query), {"instance_id": instance_id})
+    except Exception as exc:
+        logger.warning(f"Failed to push back instance shutdown time for {instance_id=}: {str(exc)}")
