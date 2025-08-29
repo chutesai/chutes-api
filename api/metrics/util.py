@@ -53,7 +53,7 @@ async def keep_gauges_fresh():
             await asyncio.wait_for(update_gauges(), 120.0)
         except Exception as exc:
             logger.warning(f"Failed to update gauges: {str(exc)}\n{traceback.format_exc()}")
-        await asyncio.sleep(60)
+        await asyncio.sleep(300)
 
 
 if __name__ == "__main__":
