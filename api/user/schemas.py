@@ -114,7 +114,7 @@ class User(Base):
         primaryjoin="foreign(User.user_id) == remote(UserCurrentBalance.user_id)",
         viewonly=True,
         uselist=False,
-        lazy="select",
+        lazy="joined",
     )
 
     @validates("username")

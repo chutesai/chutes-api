@@ -334,7 +334,10 @@ async def _invoke(
 
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
-            if current_user.balance <= 0 and not request.state.free_invocation:
+            if (
+                current_user.current_balance.effective_balance <= 0
+                and not request.state.free_invocation
+            ):
                 logger.warning(
                     f"Payment required: attempted invocation of {chute.name} "
                     f"from user {current_user.username} [{origin_ip}] with no balance "
@@ -343,7 +346,7 @@ async def _invoke(
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail=(
-                        f"Quota exceeded and account balance is ${current_user.balance}, "
+                        f"Quota exceeded and account balance is ${current_user.current_balance.effective_balance}, "
                         f"please pay with fiat or send tao to {current_user.payment_address}"
                     ),
                 )

@@ -29,7 +29,6 @@ from api.user.tokens import create_token
 from api.payment.schemas import AdminBalanceChange
 from api.logo.schemas import Logo
 from sqlalchemy import func, or_, and_
-from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import (
     HOTKEY_HEADER,
@@ -129,11 +128,9 @@ async def admin_balance_lookup(
     user = (
         (
             await db.execute(
-                select(User)
-                .where(
+                select(User).where(
                     or_(User.username == user_id_or_username, User.user_id == user_id_or_username)
                 )
-                .options(selectinload(User.current_balance))
             )
         )
         .unique()
@@ -156,16 +153,12 @@ async def admin_invoiced_user_list(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This action can only be performed by billing admin accounts.",
         )
-    query = (
-        select(User)
-        .where(
-            and_(
-                User.permissions_bitmask.op("&")(Permissioning.invoice_billing.bitmask) != 0,
-                User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask) == 0,
-                User.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc",
-            )
+    query = select(User).where(
+        and_(
+            User.permissions_bitmask.op("&")(Permissioning.invoice_billing.bitmask) != 0,
+            User.permissions_bitmask.op("&")(Permissioning.free_account.bitmask) == 0,
+            User.user_id != "5682c3e0-3635-58f7-b7f5-694962450dfc",
         )
-        .options(selectinload(User.current_balance))
     )
     result = await db.execute(query)
     users = []
@@ -352,13 +345,7 @@ async def admin_enable_invoicing(
     except Exception:
         ...
     user = (
-        (
-            await db.execute(
-                select(User)
-                .where(User.user_id == user_id)
-                .options(selectinload(User.current_balance))
-            )
-        )
+        (await db.execute(select(User).where(User.user_id == user_id)))
         .unique()
         .scalar_one_or_none()
     )
@@ -386,13 +373,7 @@ async def me(
     """
     # Re-load with balance...
     user = (
-        (
-            await db.execute(
-                select(User)
-                .where(User.user_id == current_user.user_id)
-                .options(selectinload(User.current_balance))
-            )
-        )
+        (await db.execute(select(User).where(User.user_id == current_user.user_id)))
         .unique()
         .scalar_one_or_none()
     )
@@ -542,13 +523,7 @@ async def set_logo(
         )
     # Reload user.
     user = (
-        (
-            await db.execute(
-                select(User)
-                .where(User.user_id == current_user.user_id)
-                .options(selectinload(User.current_balance))
-            )
-        )
+        (await db.execute(select(User).where(User.user_id == current_user.user_id)))
         .unique()
         .scalar_one_or_none()
     )
@@ -886,11 +861,7 @@ async def change_bt_auth(
     body = await request.json()
     fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
     user = (
-        await db.execute(
-            select(User)
-            .where(User.fingerprint_hash == fingerprint_hash)
-            .options(selectinload(User.current_balance))
-        )
+        await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
     ).scalar_one_or_none()
     if not user:
         raise HTTPException(
