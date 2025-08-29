@@ -15,7 +15,7 @@ SUPPORTED_GPUS = {
         "processors": 82,
         "clock_rate": {"base": 1395, "boost": 1695},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.3,
+        "hourly_rate": 0.09,
         "graval": {
             "estimate": 70,
             "iterations": 1,
@@ -33,7 +33,7 @@ SUPPORTED_GPUS = {
         "processors": 128,
         "clock_rate": {"base": 2235, "boost": 2520},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.50,
+        "hourly_rate": 0.2,
         "graval": {
             "iterations": 2,
             "estimate": 65,
@@ -51,7 +51,7 @@ SUPPORTED_GPUS = {
         "sxm": False,
         "processors": 170,
         "clock_rate": {"base": 2017, "boost": 2407},
-        "hourly_rate": 0.7,
+        "hourly_rate": 0.25,
         "graval": {
             "iterations": 2,
             "estimate": 60,
@@ -69,7 +69,7 @@ SUPPORTED_GPUS = {
         "processors": 48,
         "clock_rate": {"base": 765, "boost": 1560},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.2,
+        "hourly_rate": 0.07,
         "graval": {
             "iterations": 1,
             "estimate": 75,
@@ -87,7 +87,7 @@ SUPPORTED_GPUS = {
         "processors": 48,
         "clock_rate": {"base": 765, "boost": 2175},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.22,
+        "hourly_rate": 0.1,
         "graval": {
             "iterations": 1,
             "estimate": 80,
@@ -105,7 +105,7 @@ SUPPORTED_GPUS = {
         "processors": 64,
         "clock_rate": {"base": 1170, "boost": 1695},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.23,
+        "hourly_rate": 0.13,
         "graval": {
             "iterations": 1,
             "estimate": 92,
@@ -123,7 +123,7 @@ SUPPORTED_GPUS = {
         "processors": 84,
         "clock_rate": {"base": 1455, "boost": 1860},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.4,
+        "hourly_rate": 0.27,
         "graval": {
             "iterations": 1,
             "estimate": 140,
@@ -141,7 +141,7 @@ SUPPORTED_GPUS = {
         "processors": 142,
         "clock_rate": {"base": 915, "boost": 2505},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.65,
+        "hourly_rate": 0.27,
         "graval": {
             "iterations": 1,
             "estimate": 60,
@@ -159,7 +159,7 @@ SUPPORTED_GPUS = {
         "processors": 58,
         "clock_rate": {"base": 795, "boost": 2040},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.32,
+        "hourly_rate": 0.15,
         "graval": {
             "iterations": 1,
             "estimate": 85,
@@ -177,7 +177,7 @@ SUPPORTED_GPUS = {
         "processors": 72,
         "clock_rate": {"base": 1110, "boost": 1710},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.5,
+        "hourly_rate": 0.25,
         "graval": {
             "iterations": 1,
             "estimate": 82,
@@ -213,7 +213,7 @@ SUPPORTED_GPUS = {
         "processors": 142,
         "clock_rate": {"base": 735, "boost": 2490},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.6,
+        "hourly_rate": 0.3,
         "graval": {
             "iterations": 1,
             "estimate": 60,
@@ -231,7 +231,7 @@ SUPPORTED_GPUS = {
         "processors": 142,
         "clock_rate": {"base": 1065, "boost": 2520},
         "max_threads_per_processor": 1536,
-        "hourly_rate": 0.65,
+        "hourly_rate": 0.3,
         "graval": {
             "iterations": 1,
             "estimate": 60,
@@ -249,7 +249,7 @@ SUPPORTED_GPUS = {
         "processors": 108,
         "clock_rate": {"base": 1065, "boost": 1410},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 0.8,
+        "hourly_rate": 0.45,
         "graval": {
             "iterations": 4,
             "estimate": 60,
@@ -267,7 +267,7 @@ SUPPORTED_GPUS = {
         "processors": 108,
         "clock_rate": {"base": 1065, "boost": 1410},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 0.85,
+        "hourly_rate": 0.5,
         "graval": {
             "iterations": 4,
             "estimate": 60,
@@ -285,7 +285,7 @@ SUPPORTED_GPUS = {
         "processors": 108,
         "clock_rate": {"base": 1065, "boost": 1410},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 0.9,
+        "hourly_rate": 0.45,
         "graval": {
             "iterations": 2,
             "estimate": 58,
@@ -303,7 +303,7 @@ SUPPORTED_GPUS = {
         "processors": 108,
         "clock_rate": {"base": 1275, "boost": 1410},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 0.95,
+        "hourly_rate": 0.5,
         "graval": {
             "iterations": 3,
             "estimate": 70,
@@ -321,7 +321,7 @@ SUPPORTED_GPUS = {
         "processors": 114,
         "clock_rate": {"base": 1095, "boost": 1755},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 1.4,
+        "hourly_rate": 1.15,
         "graval": {
             "iterations": 2,
             "estimate": 62,
@@ -339,7 +339,7 @@ SUPPORTED_GPUS = {
         "processors": 132,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 1.5,
+        "hourly_rate": 1.34,
         "graval": {
             "iterations": 3,
             "estimate": 75,
@@ -357,7 +357,7 @@ SUPPORTED_GPUS = {
         "processors": 132,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 1.6,
+        "hourly_rate": 1.25,
         "graval": {
             "iterations": 5,
             "estimate": 70,
@@ -375,7 +375,7 @@ SUPPORTED_GPUS = {
         "processors": 114,
         "clock_rate": {"base": 1095, "boost": 1755},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 1.8,
+        "hourly_rate": 1.25,
         "graval": {
             "iterations": 3,
             "estimate": 75,
@@ -387,7 +387,7 @@ SUPPORTED_GPUS = {
         "processors": 78,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 1024,
-        "hourly_rate": 0.7,
+        "hourly_rate": 0.5,
         "graval": {
             "iterations": 1,
             "estimate": 300,
@@ -405,7 +405,7 @@ SUPPORTED_GPUS = {
         "processors": 132,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 2048,
-        "hourly_rate": 2.7,
+        "hourly_rate": 1.9,
         "graval": {
             "iterations": 3,
             "estimate": 70,
@@ -418,7 +418,7 @@ SUPPORTED_GPUS = {
         "processors": 304,
         "clock_rate": {"base": 1600, "boost": 2100},
         "max_threads_per_processor": 256,
-        "hourly_rate": 2.5,
+        "hourly_rate": 1.9,
         "graval": {
             "iterations": 2,
             "estimate": 75,
@@ -430,7 +430,7 @@ SUPPORTED_GPUS = {
         "processors": 148,
         "clock_rate": {"base": 1590, "boost": 1965},
         "max_threads_per_processor": 1024,
-        "hourly_rate": 4.0,
+        "hourly_rate": 3.15,
         "graval": {
             "iterations": 2,
             "estimate": 75,

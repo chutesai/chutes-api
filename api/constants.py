@@ -14,12 +14,15 @@ ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 # any particular model, e.g. you could run a llama 8b on 1 node or 8, so the price
 # per million really can change depending on the node selector.
 # For example:
-#  llama-3-8b with node selector requiring minimally an a100
-#  Example a100 hourly price (subject to change): $0.8
-#  $/million = $0.8 * 0.010643825 = $0.0085150600/million input
-#            = $0.8 * 0.0463000   = $0.03704000/million output
-LLM_PRICE_MULT_PER_MILLION_IN = 0.010643825
-LLM_PRICE_MULT_PER_MILLION_OUT = 0.0463000
+#  llama-3-8b with node selector requiring minimally an h100
+#  Example h100 hourly price (subject to change): $1.15
+#  $/million = $1.15 * 0.016447 = $0.01891405/million input
+#            = $1.15 * 0.065785 = $0.07565275/million output
+# Deepseek example, 8x h200:
+#  $1.9 * 8 * 0.016447 = $0.25/million input
+#  $1.9 * 8 * 0.065785 = $1.00/million output
+LLM_PRICE_MULT_PER_MILLION_IN = 0.016447
+LLM_PRICE_MULT_PER_MILLION_OUT = 0.065785
 LLM_MIN_PRICE_IN = 0.01
 LLM_MIN_PRICE_OUT = 0.01
 
