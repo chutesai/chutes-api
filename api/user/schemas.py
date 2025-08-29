@@ -111,7 +111,7 @@ class User(Base):
     # The "true" balance which also accounts for the private instances.
     current_balance = relationship(
         "UserCurrentBalance",
-        primaryjoin="User.user_id == UserCurrentBalance.user_id",
+        primaryjoin="foreign(User.user_id) == remote(UserCurrentBalance.user_id)",
         viewonly=True,
         uselist=False,
         lazy="select",
