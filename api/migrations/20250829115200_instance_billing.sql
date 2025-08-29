@@ -57,7 +57,7 @@ FOR EACH ROW
 EXECUTE FUNCTION update_balance_on_instance_delete();
 
 -- User balance view, which accounts for both the actual balance and the instances (not yet truly billed).
-CREATE OR REPLACE VIEW user_current_balance AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS user_current_balance AS
 SELECT
     u.user_id,
     u.balance as stored_balance,
@@ -90,6 +90,8 @@ LEFT JOIN chutes c ON c.user_id = u.user_id
 LEFT JOIN instances i ON i.chute_id = c.chute_id
 LEFT JOIN jobs j ON j.instance_id = i.instance_id
 GROUP BY u.user_id, u.balance, u.permissions_bitmask;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_current_balance_user_id ON user_current_balance(user_id);
 
 -- migrate:down
 DROP TRIGGER IF EXISTS trigger_update_balance_on_delete ON instances;
