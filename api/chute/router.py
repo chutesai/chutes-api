@@ -81,15 +81,16 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     """
     if chute.standard_template == "vllm":
         hourly = await selector_hourly_price(chute.node_selector)
+        if chute.concurrency and chute.concurrency < 16:
+            hourly *= 16 / chute.concurrency
+        if chute.discount:
+            hourly -= hourly * chute.discount
         per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
         per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
-        if chute.discount:
-            per_million_in -= per_million_in * chute.discount
-            per_million_out -= per_million_out * chute.discount
         response.current_estimated_price = {
             "per_million_tokens": {
-                "input": {"usd": per_million_in},
-                "output": {"usd": per_million_out},
+                "input": {"usd": round(per_million_in, 2)},
+                "output": {"usd": round(per_million_out, 2)},
             }
         }
         tao_usd = await get_fetcher().get_price("tao")

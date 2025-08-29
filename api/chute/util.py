@@ -860,7 +860,7 @@ async def invoke(
                     compute_units = result.scalar_one_or_none()
                     balance_used = 0.0
                     override_applied = False
-                    if compute_units and not request.state.free_invocation:
+                    if chute.public and compute_units and not request.state.free_invocation:
                         hourly_price = await selector_hourly_price(chute.node_selector)
 
                         if (
@@ -988,7 +988,7 @@ async def invoke(
                         logger.error(f"Error updating usage pipeline: {exc}")
 
                     # Increment quota usage value.
-                    if chute.discount < 1.0:
+                    if chute.public and chute.discount < 1.0:
                         try:
                             value = 1.0 if not reroll else settings.reroll_multiplier
                             key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)

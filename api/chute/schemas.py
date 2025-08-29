@@ -20,6 +20,8 @@ class ChuteUpdateArgs(BaseModel):
     readme: Optional[str] = Field(default="", max_length=16384)
     tool_description: Optional[str] = Field(default="", max_length=16384)
     logo_id: Optional[str] = None
+    max_instances: Optional[int] = Field(default=1, ge=1, le=100)
+    shutdown_after_seconds: Optional[int] = Field(default=300, ge=60, le=604800)
 
 
 class Cord(BaseModel):
@@ -170,6 +172,8 @@ class ChuteArgs(BaseModel):
     concurrency: Optional[int] = Field(None, gte=0, le=256)
     revision: Optional[str] = Field(None, pattern=r"^[a-fA-F0-9]{40}$")
     logging_enabled: Optional[bool] = False
+    max_instances: Optional[int] = Field(default=1, ge=1, le=100)
+    shutdown_after_seconds: Optional[int] = Field(default=300, ge=60, le=604800)
 
 
 class InvocationArgs(BaseModel):
@@ -206,6 +210,8 @@ class Chute(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     logging_enabled = Column(Boolean, default=False)
+    max_instances = Column(Integer, nullable=True)
+    shutdown_after_seconds = Column(Integer, nullable=True)
 
     # Stats for sorting.
     invocation_count = Column(BigInteger, default=0)
