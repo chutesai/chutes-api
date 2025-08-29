@@ -455,6 +455,7 @@ async def get_image_digest(image_tag: str) -> str:
     process = await asyncio.create_subprocess_exec(
         "cosign",
         "triangulate",
+        f"--allow-http-registry",
         image_tag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -487,6 +488,7 @@ async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, b
         process = await asyncio.create_subprocess_exec(
             "cosign",
             "sign",
+            f"--allow-http-registry",
             "--key",
             f"{settings.cosign_key}",
             image_digest_tag,
@@ -507,17 +509,17 @@ async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, b
         )
         if process.returncode == 0:
             logger.success(f"Successfully signed {image_digest_tag}, done!")
-            message = (
+            if stream:
+                delta = time.time() - started_at
+                message = (
                     "\N{HAMMER AND WRENCH} "
                     + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
                 )
-            logger.success(message)
-            if stream:
-                delta = time.time() - started_at
                 await settings.redis_client.xadd(
                     f"forge:{image.image_id}:stream",
                     {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
                 )
+                logger.success(message)
         else:
             message = "Image sign failed, check logs for more details!"
             logger.error(message)
