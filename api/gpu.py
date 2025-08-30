@@ -147,6 +147,18 @@ SUPPORTED_GPUS = {
             "estimate": 60,
         },
     },
+    "pro_6000": {
+        "model_name_check": "RTX PRO 6000",
+        "memory": 96,
+        "processors": 188,
+        "clock_rate": {"base": 1590, "boost": 2617},
+        "max_threads_per_processor": 1024,
+        "hourly_rate": 1.1,
+        "graval": {
+            "iterations": 1,
+            "estimate": 103,
+        },
+    },
     "l4": {
         "model_name_check": "L4(?!0)",
         "memory": 24,
