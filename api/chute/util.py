@@ -926,21 +926,22 @@ async def invoke(
                             if discount < 1.0:
                                 # LLM per token pricing.
                                 if chute.standard_template == "vllm" and metrics:
+                                    per_million_in = max(
+                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
+                                        LLM_MIN_PRICE_IN,
+                                    )
+                                    per_million_out = max(
+                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
+                                        LLM_MIN_PRICE_OUT,
+                                    )
+                                    if (chute.concurrency or 1) < 16:
+                                        per_million_in *= 16.0 / (chute.concurrency or 1)
+                                        per_million_out *= 16.0 / (chute.concurrency or 1)
                                     in_balance_used = (
-                                        (metrics.get("it", 0) or 0)
-                                        / 1000000.0
-                                        * max(
-                                            hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
-                                            LLM_MIN_PRICE_IN,
-                                        )
+                                        (metrics.get("it", 0) or 0) / 1000000.0 * per_million_in
                                     )
                                     out_balance_used = (
-                                        (metrics.get("ot", 0) or 0)
-                                        / 1000000.0
-                                        * max(
-                                            hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
-                                            LLM_MIN_PRICE_OUT,
-                                        )
+                                        (metrics.get("ot", 0) or 0) / 1000000.0 * per_million_out
                                     )
                                     balance_used = in_balance_used + out_balance_used
                                     balance_used -= balance_used * discount
@@ -1207,6 +1208,9 @@ async def get_and_store_llm_details(chute_id: str):
         if chute.discount:
             per_million_in -= per_million_in * chute.discount
             per_million_out -= per_million_out * chute.discount
+        if (chute.concurrency or 1) < 16:
+            per_million_in *= 16.0 / (chute.concurrency or 1)
+            per_million_out *= 16.0 / (chute.concurrency or 1)
         price = {"input": {"usd": per_million_in}, "output": {"usd": per_million_out}}
         tao_usd = await get_fetcher().get_price("tao")
         if tao_usd:
