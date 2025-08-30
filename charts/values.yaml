@@ -445,6 +445,10 @@ failedChuteCleanup:
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
 
+balanceRefresher:
+  enabled: true
+  image: parachutes/validator:latest
+
 memcached:
   image: memcached:1.6.34
   imagePullPolicy: IfNotPresent

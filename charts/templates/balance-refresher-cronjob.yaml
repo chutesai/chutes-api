@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: balance-refresher
+  labels:
+    {{- include "balanceRefresher.labels" . | nindent 4 }}
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 10
+  activeDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 15000
+      template:
+        metadata:
+          labels:
+            {{- include "balanceRefresher.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.balanceRefresher.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.balanceRefresher.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.balanceRefresher.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: balance-refresher
+              image: "{{ .Values.balanceRefresher.image }}"
+              imagePullPolicy: {{ .Values.balanceRefresher.imagePullPolicy }}
+              command: ["poetry", "run", "python", "balance_refresher.py"]
+              env:
+                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
+                {{- include "chutes.commonEnv" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.balanceRefresher.resources | nindent 16 }}

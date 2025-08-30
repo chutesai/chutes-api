@@ -28,6 +28,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "balanceRefresher.labels" -}}
+app.kubernetes.io/name: balance-refresher
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 redis-access: "true"

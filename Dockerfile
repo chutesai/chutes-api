@@ -153,8 +153,8 @@ ADD --chown=chutes metasync /app/metasync
 ADD --chown=chutes tokenizer /app/tokenizer
 ADD --chown=chutes watchtower.py /app/watchtower.py
 ADD --chown=chutes cacher.py /app/cacher.py
-ADD --chown=chutes downscaler.py /app/downscaler.py
 ADD --chown=chutes chute_autoscaler.py /app/chute_autoscaler.py
+ADD --chown=chutes balance_refresher.py /app/balance_refresher.py
 ADD --chown=chutes data/cache_hit_cluster_params.json /app/cache_hit_cluster_params.json
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
