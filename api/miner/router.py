@@ -283,7 +283,23 @@ async def get_stats(
     SELECT
         i.miner_hotkey,
         COUNT(*) AS total_invocations,
-        SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
+        SUM(
+            i.bounty +
+            i.compute_multiplier *
+            CASE
+                WHEN i.metrics->>'steps' IS NOT NULL
+                    AND (i.metrics->>'steps')::float > 0
+                    AND i.metrics->>'masps' IS NOT NULL
+                THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+                WHEN i.metrics->>'it' IS NOT NULL
+                    AND i.metrics->>'ot' IS NOT NULL
+                    AND (i.metrics->>'it')::float > 0
+                    AND (i.metrics->>'ot')::float > 0
+                    AND i.metrics->>'maspt' IS NOT NULL
+                THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+                ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
+            END
+        ) AS compute_units
     FROM invocations i
     JOIN metagraph_nodes mn on i.miner_hotkey = mn.hotkey AND mn.netuid = 64
     WHERE i.started_at > NOW() - INTERVAL '{interval}'
@@ -297,7 +313,23 @@ async def get_stats(
         AND confirmed_at IS NOT NULL
     )
     GROUP BY i.miner_hotkey
-    HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
+    HAVING SUM(
+        i.bounty +
+        i.compute_multiplier *
+        CASE
+            WHEN i.metrics->>'steps' IS NOT NULL
+                AND (i.metrics->>'steps')::float > 0
+                AND i.metrics->>'masps' IS NOT NULL
+            THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+            WHEN i.metrics->>'it' IS NOT NULL
+                AND i.metrics->>'ot' IS NOT NULL
+                AND (i.metrics->>'it')::float > 0
+                AND (i.metrics->>'ot')::float > 0
+                AND i.metrics->>'maspt' IS NOT NULL
+            THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+            ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
+        END
+    ) > 0
     ORDER BY compute_units DESC
     """
     if per_chute:
@@ -306,7 +338,23 @@ async def get_stats(
             i.miner_hotkey,
             i.chute_id,
             COUNT(*) AS total_invocations,
-            SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) AS compute_units
+            SUM(
+                i.bounty +
+                i.compute_multiplier *
+                CASE
+                    WHEN i.metrics->>'steps' IS NOT NULL
+                        AND (i.metrics->>'steps')::float > 0
+                        AND i.metrics->>'masps' IS NOT NULL
+                    THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+                    WHEN i.metrics->>'it' IS NOT NULL
+                        AND i.metrics->>'ot' IS NOT NULL
+                        AND (i.metrics->>'it')::float > 0
+                        AND (i.metrics->>'ot')::float > 0
+                        AND i.metrics->>'maspt' IS NOT NULL
+                    THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+                    ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
+                END
+            ) AS compute_units
         FROM invocations i
         JOIN metagraph_nodes mn on i.miner_hotkey = mn.hotkey AND mn.netuid = 64
         WHERE i.started_at > NOW() - INTERVAL '{interval}'
@@ -320,7 +368,23 @@ async def get_stats(
             AND confirmed_at IS NOT NULL
         )
         GROUP BY i.miner_hotkey, i.chute_id
-        HAVING SUM(i.compute_multiplier * EXTRACT(EPOCH FROM (i.completed_at - i.started_at))) > 0
+        HAVING SUM(
+            i.bounty +
+            i.compute_multiplier *
+            CASE
+                WHEN i.metrics->>'steps' IS NOT NULL
+                    AND (i.metrics->>'steps')::float > 0
+                    AND i.metrics->>'masps' IS NOT NULL
+                THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+                WHEN i.metrics->>'it' IS NOT NULL
+                    AND i.metrics->>'ot' IS NOT NULL
+                    AND (i.metrics->>'it')::float > 0
+                    AND (i.metrics->>'ot')::float > 0
+                    AND i.metrics->>'maspt' IS NOT NULL
+                THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+                ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
+            END
+        ) > 0
         ORDER BY compute_units DESC
         """
     results = {}

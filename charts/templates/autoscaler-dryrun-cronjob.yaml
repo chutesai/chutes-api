@@ -1,0 +1,45 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: chute-autoscaler-dryrun
+  labels:
+    {{- include "chuteAutoscaler.labels" . | nindent 4 }}
+spec:
+  schedule: "* * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 10
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 15000
+      template:
+        metadata:
+          labels:
+            {{- include "chuteAutoscaler.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.chuteAutoscaler.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.chuteAutoscaler.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.chuteAutoscaler.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: chute-autoscaler-dryrun
+              image: "{{ .Values.chuteAutoscaler.image }}"
+              imagePullPolicy: {{ .Values.chuteAutoscaler.imagePullPolicy }}
+              command: ["poetry", "run", "python", "chute_autoscaler.py", "--dry-run"]
+              env:
+                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
+                {{- include "chutes.commonEnv" . | nindent 16 }}
+                - name: MEMCACHED
+                  value: memcached
+              resources:
+                {{- toYaml .Values.chuteAutoscaler.resources | nindent 16 }}

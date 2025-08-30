@@ -137,6 +137,7 @@ async def list_chutes(
     include_public: Optional[bool] = False,
     template: Optional[str] = None,
     name: Optional[str] = None,
+    exclude: Optional[str] = None,
     image: Optional[str] = None,
     slug: Optional[str] = None,
     page: Optional[int] = 0,
@@ -160,6 +161,7 @@ async def list_chutes(
                     f"page:{page}",
                     f"limit:{limit}",
                     f"name:{name}",
+                    f"exclude:{exclude}",
                     f"include_public:{include_public}",
                     f"include_schemas:{include_schemas}",
                     f"user:{current_user.user_id if current_user else None}",
@@ -189,6 +191,8 @@ async def list_chutes(
     # Filter by name/tag/etc.
     if name and name.strip():
         query = query.where(Chute.name.ilike(f"%{name}%"))
+    if exclude and exclude.strip():
+        query = query.where(~Chute.name.ilike(f"%{exclude}%"))
     if image and image.strip():
         query = query.where(
             or_(
