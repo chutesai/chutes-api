@@ -314,12 +314,19 @@ async def perform_autoscale(dry_run: bool = False):
             text("""
                 SELECT
                     c.chute_id,
+                    c.public,
+                    c.concurrency,
+                    c.max_instances,
+                    c.scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
-                    COUNT(DISTINCT i.instance_id) as instance_count,
-                    EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) as has_rolling_update,
-                    NOW() as db_now
+                    COUNT(DISTINCT i.instance_id) AS instance_count,
+                    EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
+                    NOW() AS db_now
                 FROM chutes c
                 LEFT JOIN instances i ON c.chute_id = i.chute_id AND i.verified = true AND i.active = true
+                WHERE c.jobs IS NULL
+                      OR c.jobs = '[]'::jsonb
+                      OR c.jobs = '{}'::jsonb
                 GROUP BY c.chute_id
             """)
         )
@@ -521,7 +528,11 @@ async def perform_autoscale(dry_run: bool = False):
                     await session.execute(
                         select(Chute)
                         .where(Chute.chute_id == chute_id)
-                        .options(selectinload(Chute.instances).selectinload(Instance.nodes))
+                        .options(
+                            selectinload(Chute.instances)
+                            .selectinload(Instance.nodes)
+                            .selectinload(Instance.launch_config)
+                        )
                     )
                 )
                 .unique()
@@ -535,7 +546,11 @@ async def perform_autoscale(dry_run: bool = False):
                 logger.warning(f"Chute has a rolling update in progress: {chute_id=}")
                 continue
 
-            active = [inst for inst in chute.instances if inst.verified and inst.active]
+            active = [
+                inst
+                for inst in chute.instances
+                if inst.verified and inst.active and not inst.launch_config.job_id
+            ]
             instances = []
             for instance in active:
                 if len(instance.nodes) != chute.node_selector.get("gpu_count"):

@@ -6,7 +6,16 @@ import re
 import ast
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship, validates
-from sqlalchemy import Column, Float, String, DateTime, Boolean, ForeignKey, BigInteger, Integer
+from sqlalchemy import (
+    Column,
+    String,
+    DateTime,
+    Boolean,
+    ForeignKey,
+    BigInteger,
+    Integer,
+    Float,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
@@ -21,6 +30,7 @@ class ChuteUpdateArgs(BaseModel):
     tool_description: Optional[str] = Field(default="", max_length=16384)
     logo_id: Optional[str] = None
     max_instances: Optional[int] = Field(default=1, ge=1, le=100)
+    scaling_threshold: Optional[float] = Field(default=0.75, ge=0.0, le=1.0)
     shutdown_after_seconds: Optional[int] = Field(default=300, ge=60, le=604800)
 
 
@@ -173,6 +183,7 @@ class ChuteArgs(BaseModel):
     revision: Optional[str] = Field(None, pattern=r"^[a-fA-F0-9]{40}$")
     logging_enabled: Optional[bool] = False
     max_instances: Optional[int] = Field(default=1, ge=1, le=100)
+    scaling_threshold: Optional[float] = Field(default=0.75, ge=0.0, le=1.0)
     shutdown_after_seconds: Optional[int] = Field(default=300, ge=60, le=604800)
 
 
@@ -211,6 +222,7 @@ class Chute(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     logging_enabled = Column(Boolean, default=False)
     max_instances = Column(Integer, nullable=True)
+    scaling_threshold = Column(Float, nullable=True)
     shutdown_after_seconds = Column(Integer, nullable=True)
 
     # Stats for sorting.

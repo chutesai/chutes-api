@@ -982,6 +982,11 @@ async def _deploy_chute(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A chute must define at least one cord() or job() function!",
         )
+    elif chute.cords and chute.jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A chute can have jobs or cords not both.",
+        )
 
     await db.commit()
     await db.refresh(chute)
