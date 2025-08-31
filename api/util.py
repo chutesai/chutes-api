@@ -788,3 +788,9 @@ async def memcache_delete(key: bytes):
     except Exception as exc:
         logger.warning(f"Failed to delete memcached value: {str(exc)}")
     return None
+
+
+def has_legacy_private_billing(chute):
+    if not chute.public or "/affine" in chute.name.lower():
+        return False
+    return chute.created_at < datetime.datetime(year=2025, month=9, day=1)
