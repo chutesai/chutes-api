@@ -2,6 +2,7 @@
 API keys router.
 """
 
+import asyncpg
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
@@ -111,6 +112,11 @@ async def create_api_key(
                 detail="An API key already exists with this name",
             )
         raise
+    except asyncpg.exceptions.UniqueViolationError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An API key already exists with this name",
+        )
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

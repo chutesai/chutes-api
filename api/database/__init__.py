@@ -1,5 +1,4 @@
 import uuid
-import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -15,7 +14,7 @@ engine = create_async_engine(
     pool_pre_ping=True,
     pool_reset_on_return="rollback",
     pool_timeout=30,
-    pool_recycle=600,
+    pool_recycle=900,
     pool_use_lifo=True,
 )
 
@@ -36,7 +35,7 @@ if settings.postgres_ro:
         pool_pre_ping=True,
         pool_reset_on_return="rollback",
         pool_timeout=30,
-        pool_recycle=600,
+        pool_recycle=900,
         pool_use_lifo=True,
     )
     SessionLocalRead = sessionmaker(
@@ -58,10 +57,11 @@ async def get_session(readonly=False) -> AsyncGenerator[AsyncSession, None]:
                 await session.commit()
         except Exception:
             if not readonly:
-                await session.rollback()
+                try:
+                    await session.rollback()
+                except Exception:
+                    pass
             raise
-        finally:
-            await asyncio.shield(session.close())
 
 
 async def get_db_session():
@@ -70,18 +70,16 @@ async def get_db_session():
             yield session
             await session.commit()
         except Exception:
-            await session.rollback()
+            try:
+                await session.rollback()
+            except Exception:
+                pass
             raise
-        finally:
-            await asyncio.shield(session.close())
 
 
 async def get_db_ro_session():
     async with SessionLocalRead() as session:
-        try:
-            yield session
-        finally:
-            await asyncio.shield(session.close())
+        yield session
 
 
 def generate_uuid():
