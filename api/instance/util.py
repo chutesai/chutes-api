@@ -286,7 +286,7 @@ class LeastConnManager:
         instance = None
         try:
             targets = await asyncio.wait_for(
-                self.get_targets(avoid=avoid, prefixes=prefixes), timeout=7.0
+                self.get_targets(avoid=avoid, prefixes=prefixes), timeout=0.5
             )
             if not targets:
                 yield None, "No infrastructure available to serve request"
@@ -303,7 +303,7 @@ class LeastConnManager:
                         int(time.time()),
                         self.connection_expiry,
                     ),
-                    timeout=3.0,
+                    timeout=0.5,
                 )
             except asyncio.TimeoutError:
                 logger.warning(
@@ -332,7 +332,7 @@ class LeastConnManager:
             if instance:
                 try:
                     key = f"conn:{self.chute_id}:{instance.instance_id}"
-                    await asyncio.shield(
+                    await asyncio.wait_for(
                         self.redis_client.eval(
                             self.lua_remove_connection,
                             1,
@@ -340,7 +340,8 @@ class LeastConnManager:
                             conn_id,
                             int(time.time()),
                             self.connection_expiry,
-                        )
+                        ),
+                        0.5,
                     )
                 except asyncio.TimeoutError:
                     logger.warning(f"Timeout cleaning up connection {conn_id}")

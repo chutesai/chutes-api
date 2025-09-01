@@ -41,12 +41,13 @@ PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
     "eb04d6a6-b250-5f44-b91e-079bc938482a": 30,
+    "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 60,
+    "02636d63-c996-5779-a0a2-25712469a7ca": 12,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 40,
     "de510462-c319-543b-9c67-00bcf807d2a7": 30,
     "561e4875-254d-588f-a36f-57c9cdef8961": 30,
-    "83ce50c4-6d3f-55a6-88a6-c5db187f2c70": 20,
 }
 
 
@@ -366,6 +367,16 @@ async def perform_autoscale(dry_run: bool = False):
             if info.instance_count < limit:
                 scale_up_candidates.append((chute_id, limit - info.instance_count))
                 chute_actions[chute_id] = "scale_up_candidate"
+                continue
+            elif info.instance_count > limit:
+                num_to_remove = info.instance_count - limit
+                to_downsize.append((chute_id, num_to_remove))
+                chute_actions[chute_id] = "scaled_down"
+                chute_target_counts[chute_id] = limit
+                logger.info(
+                    f"Scale down candidate: {chute_id} - manual limit override, "
+                    f"instances: {info.instance_count} - target: {limit}"
+                )
                 continue
 
         # Check scale up conditions
