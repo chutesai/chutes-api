@@ -701,10 +701,22 @@ async def _invoke_one(
 
             yield data
     finally:
-        if session:
-            await asyncio.shield(session.close())
         if response:
-            await asyncio.shield(response.release())
+            try:
+                async for _ in response.content:
+                    pass
+            except Exception:
+                pass
+            finally:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+        if session:
+            try:
+                await session.close()
+            except Exception:
+                pass
 
 
 async def _s3_upload(data: io.BytesIO, path: str):
