@@ -557,7 +557,10 @@ async def _invoke_one(
 
                 # Moving average performance tracking to keep compute units immutable.
                 ma_updates = await PERF_TRACKER.update_invocation_metrics(
-                    chute_id=chute.chute_id, duration=total_time, metrics=metrics
+                    chute_id=chute.chute_id,
+                    duration=total_time,
+                    metrics=metrics,
+                    public=chute.public,
                 )
                 metrics.update(ma_updates)
 
@@ -679,7 +682,10 @@ async def _invoke_one(
 
                     # Moving average performance tracking to keep compute units immutable.
                     ma_updates = await PERF_TRACKER.update_invocation_metrics(
-                        chute_id=chute.chute_id, duration=total_time, metrics=metrics
+                        chute_id=chute.chute_id,
+                        duration=total_time,
+                        metrics=metrics,
+                        public=chute.public,
                     )
                     metrics.update(ma_updates)
                     if random.random() <= 0.1:
@@ -696,16 +702,31 @@ async def _invoke_one(
 
                 # Moving average steps per second calc.
                 ma_updates = await PERF_TRACKER.update_invocation_metrics(
-                    chute_id=chute.chute_id, duration=delta, metrics=metrics
+                    chute_id=chute.chute_id,
+                    duration=delta,
+                    metrics=metrics,
+                    public=chute.public,
                 )
                 metrics.update(ma_updates)
 
             yield data
     finally:
-        if session:
-            await asyncio.shield(session.close())
         if response:
-            await asyncio.shield(response.release())
+            try:
+                async for _ in response.content:
+                    pass
+            except Exception:
+                pass
+            finally:
+                try:
+                    response.close()
+                except Exception:
+                    pass
+        if session:
+            try:
+                await session.close()
+            except Exception:
+                pass
 
 
 async def _s3_upload(data: io.BytesIO, path: str):

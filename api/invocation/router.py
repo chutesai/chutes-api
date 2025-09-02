@@ -356,7 +356,15 @@ async def _invoke(
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None
-    request_body = await request.json() if request.method in ("POST", "PUT", "PATCH") else {}
+    request_body = None
+    try:
+        request_body = await request.json() if request.method in ("POST", "PUT", "PATCH") else {}
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid request JSON payload: {str(exc)}",
+        )
+
     request_params = request.query_params._dict if request.query_params else {}
     stream = request_body.get("stream", request_params.get("stream", False))
     for cord in chute.cords:

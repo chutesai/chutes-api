@@ -7,7 +7,6 @@ import time
 import uuid
 import asyncio
 import random
-import aiohttp
 import traceback
 from fastapi import HTTPException, status
 from datetime import datetime, timedelta, timezone
@@ -64,7 +63,6 @@ class LeastConnManager:
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.cleanup_interval = cleanup_interval
-        self._session = None
         self.mean_count = None
 
         # Start continuous cleanup task immediately
@@ -101,38 +99,7 @@ class LeastConnManager:
         return removed
         """
 
-        # Batch cleanup all keys.
-        self.lua_batch_cleanup = """
-        local pattern = ARGV[1]
-        local now = tonumber(ARGV[2])
-        local expiry = tonumber(ARGV[3])
-        local cutoff = now - expiry
-        local cursor = "0"
-        local total_removed = 0
-        repeat
-            local result = redis.call('SCAN', cursor, 'MATCH', pattern, 'COUNT', 100)
-            cursor = result[1]
-            local keys = result[2]
-            for i, key in ipairs(keys) do
-                local removed = redis.call('ZREMRANGEBYSCORE', key, 0, cutoff)
-                total_removed = total_removed + removed
-            end
-        until cursor == "0"
-        return total_removed
-        """
-
-    async def initialize(self):
-        if self._session is None:
-            self._session = aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(connect=5.0, total=600.0),
-                read_bufsize=8 * 1024 * 1024,
-            )
-
     async def close(self):
-        if self._session:
-            await self._session.close()
-            self._session = None
-
         if hasattr(self, "_cleanup_task") and self._cleanup_task:
             self._cleanup_task.cancel()
             try:
@@ -149,7 +116,6 @@ class LeastConnManager:
                 await self._cleanup_expired_connections()
                 await asyncio.sleep(self.cleanup_interval)
             except asyncio.CancelledError:
-                logger.info(f"Cleanup task cancelled for chute {self.chute_id}")
                 break
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}", exc_info=True)
@@ -159,9 +125,21 @@ class LeastConnManager:
         now = int(time.time())
         try:
             pattern = f"conn:{self.chute_id}:*"
-            _ = await self.redis_client.eval(
-                self.lua_batch_cleanup, 0, pattern, now, self.connection_expiry
-            )
+            now = time.time()
+            cutoff = now - self.connection_expiry
+            total_removed = 0
+            cursor = 0
+            while True:
+                cursor, keys = await self.redis_client.scan(cursor, match=pattern, count=100)
+                if keys:
+                    pipe = self.redis_client.pipeline()
+                    for key in keys:
+                        pipe.zremrangebyscore(key, 0, cutoff)
+                    results = await pipe.execute()
+                    total_removed += sum(results)
+                if cursor == 0:
+                    break
+            return total_removed
         except Exception as e:
             logger.error(f"Error in batch cleanup: {e}", exc_info=True)
 
@@ -391,8 +369,6 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
         MANAGERS[chute_id] = LeastConnManager(
             chute_id=chute_id, concurrency=chute.concurrency or 1, instances=instances
         )
-        async with MANAGERS[chute_id].lock:
-            await MANAGERS[chute_id].initialize()
     async with MANAGERS[chute_id].lock:
         MANAGERS[chute_id].instances = {instance.instance_id: instance for instance in instances}
     return MANAGERS[chute_id]
