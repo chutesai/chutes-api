@@ -12,7 +12,6 @@ import api.database.orms  # noqa
 from api.instance.schemas import Instance
 from api.job.schemas import Job
 from api.user.schemas import User, UserCurrentBalance
-from api.chute.schemas import Chute
 from api.permissions import Permissioning
 
 
@@ -116,8 +115,7 @@ async def terminate_zero_balance_user_instances():
     async with get_session() as session:
         result = await session.execute(
             select(Instance)
-            .join(Chute, Instance.chute_id == Chute.chute_id)
-            .join(User, Chute.user_id == User.user_id)
+            .where(Instance.billed_to == User.user_id)
             .join(UserCurrentBalance, User.user_id == UserCurrentBalance.user_id)
             .where(
                 UserCurrentBalance.effective_balance <= 0,
@@ -129,7 +127,6 @@ async def terminate_zero_balance_user_instances():
                     User.permissions_bitmask.op("&")(Permissioning.invoice_billing.bitmask)
                     != Permissioning.invoice_billing.bitmask
                 ),
-                Chute.public.is_(False),
             )
         )
         instances = result.scalars().all()

@@ -30,7 +30,7 @@ from api.constants import (
     AUTHORIZATION_HEADER,
 )
 from api.node.util import get_node_by_id
-from api.chute.schemas import Chute
+from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import (
     Instance,
     instance_nodes,
@@ -572,6 +572,7 @@ async def claim_launch_config(
         symmetric_key=secrets.token_bytes(16).hex(),
         config_id=launch_config.config_id,
         port_mappings=[item.model_dump() for item in args.port_mappings],
+        compute_multiplier=NodeSelector(**chute.node_selector).compute_multiplier,
     )
     db.add(instance)
 
@@ -707,8 +708,9 @@ async def activate_launch_config_instance(
             .unique()
             .scalar_one_or_none()
         )
-        if not chute.public:
+        if not chute.public or launch_config.job_id:
             instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
+            instance.billed_to = chute.user_id
         await db.commit()
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}

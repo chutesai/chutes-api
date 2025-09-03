@@ -78,6 +78,7 @@ class Instance(Base):
     activated_at = Column(DateTime(timezone=True), nullable=True)
     last_verified_at = Column(DateTime(timezone=True))
     stop_billing_at = Column(DateTime, nullable=True)
+    billed_to = Column(String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=True)
     verification_error = Column(String, nullable=True)
     consecutive_failures = Column(Integer, default=0)
     chutes_version = Column(String, nullable=True)
@@ -101,6 +102,7 @@ class Instance(Base):
     chute = relationship("Chute", back_populates="instances")
     job = relationship("Job", back_populates="instance", uselist=False)
     config = relationship("LaunchConfig", back_populates="instance", lazy="joined")
+    billed_user = relationship("User", back_populates="instances")
 
     __table_args__ = (
         Index(

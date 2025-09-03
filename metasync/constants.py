@@ -1,35 +1,33 @@
 # Proportion of weights to assign to each metric.
 FEATURE_WEIGHTS = {
-    "compute_units": 0.53,  # Total amount of compute time (compute multiplier * total time).
-    "invocation_count": 0.20,  # Total number of invocations.
+    "compute_units": 0.72,  # Total amount of compute time (compute multiplier * total time).
     "unique_chute_count": 0.20,  # Average instantaneous unique chutes (gpu scaled) over the scoring period.
-    "bounty_count": 0.07,  # Number of bounties received (not bounty values, just counts).
+    "bounty_count": 0.08,  # Number of bounties received (not bounty values, just counts).
 }
 # Time slice to calculate the incentives from.
 SCORING_INTERVAL = "7 days"
-# Query to fetch raw metrics for compute_units, invocation_count, and bounty_count.
+# Query to fetch raw metrics for compute_units and bounties.
 NORMALIZED_COMPUTE_QUERY = """
 SELECT
     mn.hotkey,
-    COUNT(*) as invocation_count,
     COUNT(CASE WHEN i.bounty > 0 THEN 1 END) AS bounty_count,
     sum(
         i.bounty +
         i.compute_multiplier *
         CASE
+            -- Private chutes/jobs/etc are accounted for by instance data instead of here.
+            WHEN (i.metrics->>'p')::bool IS TRUE THEN 0::float
+
             -- For step-based computations
             WHEN i.metrics->>'steps' IS NOT NULL
                 AND (i.metrics->>'steps')::float > 0
                 AND i.metrics->>'masps' IS NOT NULL
             THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
 
-            -- For token-based computations (it + ot)
-            WHEN i.metrics->>'it' IS NOT NULL
-                AND i.metrics->>'ot' IS NOT NULL
-                AND (i.metrics->>'it')::float > 0
-                AND (i.metrics->>'ot')::float > 0
-                AND i.metrics->>'maspt' IS NOT NULL
-            THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+            -- For token-based computations (nc = normalized compute, handles prompt & completion tokens).
+            WHEN i.metrics->>'nc' IS NOT NULL
+                AND (i.metrics->>'nc')::float > 0
+            THEN (i.metrics->>'nc')::float
 
             -- Fallback to actual elapsed time
             ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
@@ -155,72 +153,44 @@ GROUP BY miner_hotkey
 ORDER BY avg_gpu_weighted_chutes DESC;
 """
 
-# Jobs.
-JOBS_QUERY = """
-WITH
-
--- Count of miner-terminated jobs in the past 7 days
-miner_terminated_counts AS (
+# Private instances, including jobs.
+PRIVATE_INSTANCES_QUERY = """
+WITH billed_instances AS (
     SELECT
-        miner_hotkey,
-        COUNT(*) as terminated_job_count
-    FROM jobs
-    WHERE (started_at >= now() - interval '{interval}' OR finished_at >= now() - interval '{interval}')
-      AND miner_terminated = true
-      AND miner_hotkey IS NOT NULL
-    GROUP BY miner_hotkey
+        ia.miner_hotkey,
+        ia.instance_id,
+        ia.activated_at,
+        ia.stop_billing_at,
+        i.compute_multiplier,
+        GREATEST(ia.activated_at, now() - interval '{interval}') as billing_start,
+        LEAST(COALESCE(ia.stop_billing_at, now()), now()) as billing_end
+    FROM instance_audit ia
+    JOIN instances i ON i.instance_id = ia.instance_id
+    WHERE ia.billed_to IS NOT NULL
+      AND (
+        (ia.activated_at >= now() - interval '{interval}' OR ia.activated_at < now() - interval '{interval}')
+        AND (ia.stop_billing_at IS NULL OR ia.stop_billing_at >= now() - interval '{interval}')
+      )
 ),
 
--- Compute units/counts for currently in-progress jobs.
-running_jobs_cus AS (
+-- Aggregate compute units by miner
+miner_compute_units AS (
     SELECT
         miner_hotkey,
-        SUM(extract(epoch from (now() - started_at)) * compute_multiplier) as running_cus,
-        COUNT(*) as running_job_count
-    FROM jobs
-    WHERE started_at IS NOT NULL
-      AND finished_at IS NULL
-      AND miner_hotkey IS NOT NULL
-      AND EXISTS (SELECT 1 FROM instances WHERE instance_id = jobs.instance_id)
+        COUNT(*) as total_instances,
+        SUM(EXTRACT(EPOCH FROM (billing_end - billing_start))) as compute_seconds,
+        SUM(EXTRACT(EPOCH FROM (billing_end - billing_start)) * compute_multiplier) as compute_units
+    FROM billed_instances
+    WHERE billing_end > billing_start
     GROUP BY miner_hotkey
-),
-
--- Compute units/counts for jobs completed within the interval.
-completed_jobs_cus AS (
-    SELECT
-        miner_hotkey,
-        SUM(extract(epoch from (finished_at - started_at)) * compute_multiplier) as completed_cus,
-        COUNT(*) as completed_job_count
-    FROM jobs
-    WHERE finished_at >= now() - interval '{interval}'
-      AND miner_terminated = false
-      AND started_at IS NOT NULL
-      AND miner_hotkey IS NOT NULL
-    GROUP BY miner_hotkey
-),
-
--- Combine the results aggregated by hotkeys.
-all_miners AS (
-    SELECT miner_hotkey FROM miner_terminated_counts
-    UNION
-    SELECT miner_hotkey FROM running_jobs_cus
-    UNION
-    SELECT miner_hotkey FROM completed_jobs_cus
 )
 SELECT
-    am.miner_hotkey,
-    COALESCE(mt.terminated_job_count, 0) as terminated_jobs,
-    COALESCE(rj.running_job_count, 0) as running_jobs,
-    COALESCE(cj.completed_job_count, 0) as completed_jobs,
-    COALESCE(rj.running_job_count, 0) + COALESCE(cj.completed_job_count, 0) as total_jobs,
-    COALESCE(rj.running_cus, 0) as current_running_cus,
-    COALESCE(cj.completed_cus, 0) as completed_cus,
-    COALESCE(rj.running_cus, 0) + COALESCE(cj.completed_cus, 0) as total_cus
-FROM all_miners am
-LEFT JOIN miner_terminated_counts mt ON am.miner_hotkey = mt.miner_hotkey
-LEFT JOIN running_jobs_cus rj ON am.miner_hotkey = rj.miner_hotkey
-LEFT JOIN completed_jobs_cus cj ON am.miner_hotkey = cj.miner_hotkey
-ORDER BY terminated_jobs DESC, total_cus DESC;
+    miner_hotkey,
+    total_instances,
+    COALESCE(compute_seconds, 0) as compute_seconds,
+    COALESCE(compute_units, 0) as compute_units
+FROM miner_compute_units
+ORDER BY compute_units DESC;
 """
 
 # Unique chute history.
