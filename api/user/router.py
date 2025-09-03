@@ -366,7 +366,7 @@ async def admin_enable_invoicing(
 @router.get("/me", response_model=SelfResponse)
 async def me(
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
+    current_user: User = Depends(get_current_user(purpose="me")),
 ):
     """
     Get a detailed response for the current user.

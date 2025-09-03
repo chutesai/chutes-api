@@ -25,8 +25,9 @@ from api.user.service import get_current_user
 from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
-from api.metasync import get_scoring_data, get_miner_by_hotkey, MetagraphNode
+from api.metasync import get_miner_by_hotkey, MetagraphNode
 from api.util import memcache_get, memcache_set
+from metasync.shared import get_scoring_data
 from metasync.constants import UTILIZATION_RATIO_QUERY
 
 router = APIRouter()

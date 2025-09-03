@@ -703,7 +703,7 @@ async def _deploy_chute(
     db: AsyncSession,
     current_user: User,
     use_rolling_update: bool = True,
-    confirm_fee: bool = False,
+    accept_fee: bool = False,
 ):
     """
     Deploy a chute!
@@ -758,21 +758,25 @@ async def _deploy_chute(
         )
 
     # Fee estimate, as an error, if the user hasn't used the confirmed param.
-    estimate = chute_args.node_selector.current_estimated_price
-    deployment_fee = chute_args.node_selector.gpu_count * estimate["usd"]["hour"] * 3
-    if not confirm_fee:
+    estimate = await chute_args.node_selector.current_estimated_price()
+    deployment_fee = (
+        chute_args.node_selector.gpu_count * estimate["usd"]["hour"] * 3
+        if not current_user.has_role(Permissioning.free_account)
+        else 0
+    )
+    if deployment_fee and not accept_fee:
         estimate = chute_args.node_selector.current_estimated_price
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
-                "There is a deployment fee of (hourly price per GPU * number of GPUs * 3), "
-                f"which for this configuration is for this configuration is: ${deployment_fee}\n "
-                "To acknowledge this fee, upgrade your chutes version to latest and "
-                "re-run the deploy command with --accept-fee\n"
-                "(or if deploying via API manually, add confirm_fee=true param)"
+                "DEPLOYMENT FEE NOTICE:\n===\nThere is a deployment fee of (hourly price per GPU * number of GPUs * 3), "
+                f"which for this configuration is for this configuration is: ${round(deployment_fee, 2)}\n "
+                "To acknowledge this fee, ensure you have chutes>=0.3.23 and re-run the deployment command with `--accept-fee`"
             ),
         )
-    if current_user.balance <= deployment_fee:
+    if current_user.balance <= deployment_fee and not current_user.has_role(
+        Permissioning.free_account
+    ):
         logger.warning(
             f"Payment required: attempted deployment of chute {chute_args.name} "
             f"from user {current_user.username} with balance < {deployment_fee=}"
@@ -787,7 +791,8 @@ async def _deploy_chute(
         )
 
     # Deduct the deployment fee.
-    current_user.balance -= deployment_fee
+    if not current_user.has_role(Permissioning.free_account):
+        current_user.balance -= deployment_fee
     logger.info(
         f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
         f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance}"
@@ -899,7 +904,7 @@ async def _deploy_chute(
         chute.public = (
             chute_args.public
             if current_user.has_role(Permissioning.public_model_deployment)
-            else False,
+            else False
         )
         chute.logo_id = (
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
@@ -1045,7 +1050,7 @@ async def _deploy_chute(
 @router.post("/", response_model=ChuteResponse)
 async def deploy_chute(
     chute_args: ChuteArgs,
-    confirm_fee: Optional[bool] = False,
+    accept_fee: Optional[bool] = False,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -1166,7 +1171,7 @@ async def deploy_chute(
         db,
         current_user,
         use_rolling_update=not is_affine_model,
-        confirm_fee=confirm_fee,
+        accept_fee=accept_fee,
     )
 
     # Auto-cleanup the other chutes for affine miners.
