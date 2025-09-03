@@ -36,7 +36,7 @@ from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.util import recreate_vlm_payload, fix_glm_tool_arguments
+from api.util import recreate_vlm_payload
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -426,19 +426,6 @@ async def _invoke(
             if isinstance(exc, HTTPException):
                 raise
             logger.error(f"Failed to update VLM request payload: {str(exc)}")
-
-        # Fix GLM 4.5 tool call args...
-        if chute.name in ("zai-org/GLM-4.5-FP8", "zai-org/GLM-4.5-Air"):
-            tools = request_body.get("tools")
-            if tools and isinstance(tools, list):
-                if "tool_choice" not in request_body:
-                    request_body["tool_choice"] = "auto"
-            try:
-                fix_glm_tool_arguments(request_body)
-            except Exception as exc:
-                if isinstance(exc, HTTPException):
-                    raise
-                logger.error(f"Failed to check GLM function calling payload: {str(exc)}")
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
@@ -843,6 +830,8 @@ async def hostname_invocation(
             payload["model"] = "NousResearch/Hermes-4-405B-FP8"
         elif model == "Meridian":
             payload["model"] = "NousResearch/Hermes-4-70B"
+        elif model == "Proxima":
+            payload["model"] = "NousResearch/Hermes-4-14B"
 
         # Header and/or model name options to enable thinking mode for various models.
         thinking_key = (
@@ -852,6 +841,7 @@ async def hostname_invocation(
                 "deepseek-ai/DeepSeek-V3.1",
                 "NousResearch/Hermes-4-70B",
                 "NousResearch/Hermes-4-405B-FP8",
+                "NousResearch/Hermes-4-14B",
             )
             else "enable_thinking"
         )
