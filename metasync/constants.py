@@ -17,6 +17,11 @@ SELECT
         i.bounty +
         i.compute_multiplier *
         CASE
+            -- For token-based computations (nc = normalized compute, handles prompt & completion tokens).
+            WHEN i.metrics->>'nc' IS NOT NULL
+                AND (i.metrics->>'nc')::float > 0
+            THEN (i.metrics->>'nc')::float
+
             -- For step-based computations
             WHEN i.metrics->>'steps' IS NOT NULL
                 AND (i.metrics->>'steps')::float > 0
