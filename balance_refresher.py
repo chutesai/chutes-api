@@ -29,6 +29,7 @@ async def terminate_jobs_for_zero_balance_users():
     """
     Find and terminate unfinished jobs for users with zero/negative balance.
     """
+    logger.info("Looking for jobs to terminate for zero-balance users...")
     async with get_session() as session:
         result = await session.execute(
             select(Job)
@@ -81,6 +82,7 @@ async def shutdown_stale_instances():
     """
     Shut down instances that are beyond the billing stop time (they are no longer being used).
     """
+    logger.info("Looking for instances past shutdown_after_seconds to terminate...")
     async with get_session() as session:
         instances = (
             (await session.execute(select(Instance).where(Instance.stop_billing_at <= func.now())))
@@ -112,11 +114,13 @@ async def terminate_zero_balance_user_instances():
     When a user no longer has any balance, shut down any
     private instances associated with the account.
     """
+    logger.info("Looking for private instances to terminate for zero-balance users...")
     async with get_session() as session:
         result = await session.execute(
             select(Instance)
-            .where(Instance.billed_to == User.user_id)
+            .join(User, User.user_id == Instance.billed_to)
             .join(UserCurrentBalance, User.user_id == UserCurrentBalance.user_id)
+            .where(Instance.billed_to == User.user_id)
             .where(
                 UserCurrentBalance.effective_balance <= 0,
                 (

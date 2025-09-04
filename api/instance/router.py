@@ -710,7 +710,7 @@ async def activate_launch_config_instance(
         instance.active = True
         instance.activated_at = func.now()
         chute = (
-            (await db.execute(select(Chute.where(Chute.chute_id == instance.chute_id))))
+            (await db.execute(select(Chute).where(Chute.chute_id == instance.chute_id)))
             .unique()
             .scalar_one_or_none()
         )

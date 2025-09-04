@@ -97,6 +97,7 @@ class Instance(Base):
     # both H100 and A100, the user is only charged the A100 rate since the miners *could*
     # have run it on A100s, regardless of whether or not they did so.
     hourly_rate = Column(Double, nullable=True)
+    compute_multiplier = Column(Double, nullable=True)
 
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
