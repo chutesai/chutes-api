@@ -53,3 +53,7 @@ RATE_LIMIT_SCALE_UP = 0.02
 
 # Maximum size of VLM asset (video/image).
 VLM_MAX_SIZE = 100 * 1024 * 1024
+
+# Private instance multiplier, which we treat as the average concurrency
+# for any given chute at 100% utilization.
+PRIVATE_INSTANCE_MULTIPLIER = 16

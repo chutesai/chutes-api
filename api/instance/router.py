@@ -28,6 +28,7 @@ from api.constants import (
     EXPANSION_UTILIZATION_THRESHOLD,
     UNDERUTILIZED_CAP,
     AUTHORIZATION_HEADER,
+    PRIVATE_INSTANCE_MULTIPLIER,
 )
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute, NodeSelector
@@ -556,6 +557,7 @@ async def claim_launch_config(
             )
 
     # Create the instance now that we've verified the envdump/k8s env.
+    node_selector = NodeSelector(**chute.node_selector)
     instance = Instance(
         instance_id=generate_uuid(),
         host=args.host,
@@ -572,8 +574,12 @@ async def claim_launch_config(
         symmetric_key=secrets.token_bytes(16).hex(),
         config_id=launch_config.config_id,
         port_mappings=[item.model_dump() for item in args.port_mappings],
-        compute_multiplier=NodeSelector(**chute.node_selector).compute_multiplier,
+        compute_multiplier=node_selector.compute_multiplier,
+        billed_to=chute.user_id,
+        hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
     )
+    if launch_config.job_id or not chute.public:
+        instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
     db.add(instance)
 
     # Mark the job as associated with this instance.
@@ -710,7 +716,6 @@ async def activate_launch_config_instance(
         )
         if not chute.public or launch_config.job_id:
             instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
-            instance.billed_to = chute.user_id
         await db.commit()
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
