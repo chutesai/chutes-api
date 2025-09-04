@@ -426,6 +426,11 @@ class ChuteShare(Base):
     chute = relationship("Chute", back_populates="shares", uselist=False)
 
 
+class ChuteShareArgs(BaseModel):
+    chute_id: str
+    user_id: str
+
+
 class LLMDetail(Base):
     __tablename__ = "llm_details"
     chute_id = Column(

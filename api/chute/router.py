@@ -23,6 +23,7 @@ from api.chute.schemas import (
     Chute,
     ChuteArgs,
     ChuteShare,
+    ChuteShareArgs,
     NodeSelector,
     ChuteUpdateArgs,
     RollingUpdate,
@@ -130,6 +131,127 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
             "supported_gpus": node_selector.supported_gpus,
         }
     )
+
+
+@router.post("/share")
+async def share_chute(
+    args: ChuteShareArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+):
+    """
+    Share a chute with another user.
+    """
+    chute = (
+        (
+            await db.execute(
+                select(Chute).where(
+                    or_([Chute.name.ilike(args.chute_id), Chute.chute_id == args.chute_id]),
+                    Chute.user_id == current_user.user_id,
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Did not find target chute {str(args.chute_id)}, or it does not belong to you",
+        )
+    if chute.public:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chute is public, no need to share.",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_([User.username.ilike(args.user_id), User.user_id == args.user_id])
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Could not find target user to share with",
+        )
+    if user.user_id == current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot share a chute with yourself",
+        )
+    stmt = insert(ChuteShare).values(
+        [
+            {
+                "chute_id": chute.chute_id,
+                "shared_by": current_user.user_id,
+                "shared_to": user.user_id,
+                "shared_at": func.now(),
+            }
+        ]
+    )
+    stmt = stmt.on_conflict_do_nothing()
+    await db.execute(stmt)
+    await db.commit()
+    return {"shared": True}
+
+
+@router.post("/unshare")
+async def unshare_chute(
+    args: ChuteShareArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+):
+    """
+    Unshare a chute with another user.
+    """
+    chute = (
+        (
+            await db.execute(
+                select(Chute).where(
+                    or_([Chute.name.ilike(args.chute_id), Chute.chute_id == args.chute_id]),
+                    Chute.user_id == current_user.user_id,
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Did not find target chute {str(args.chute_id)}, or it does not belong to you",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_([User.username.ilike(args.user_id), User.user_id == args.user_id])
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Could not find target user to share with",
+        )
+
+    await db.execute(
+        text(
+            "delete from chute_shares where shared_by = :cuser_id, shared_to = :user_id, chute_id = :chute_id"
+        ),
+        {"cuser_id": current_user.user_id, "user_id": user.user_id, "chute_id": chute.chute_id},
+    )
+    await db.commit()
+    return {"shared": False, "unshared": True}
 
 
 @router.get("/", response_model=PaginatedResponse)
@@ -581,60 +703,6 @@ async def get_chute(
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
     return response
-
-
-@router.post("/{chute_id}/share", response_model=ChuteResponse)
-async def share_chute(
-    chute_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes")),
-):
-    """
-    Share a chute with another user.
-    """
-    body = await request.json()
-    user_id = body.get("user_id")
-    if not isinstance(user_id, str):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please provide a user_id to share to.",
-        )
-
-    # Can be username also, in which case we need to convert from username to the uuid.
-    try:
-        _ = uuid.UUID(user_id)
-    except ValueError:
-        user = (
-            await db.execute(select(User).where(User.username == user_id).limit(1))
-            .unique()
-            .scalar_one_or_none()
-        )
-        user_id = user.user_id
-
-    # Load the chute.
-    chute = await get_one(chute_id)
-    if not chute or chute.user_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or does not belong to you",
-        )
-
-    # Insert the share record.
-    await db.execute(
-        text(
-            """
-            INSERT INTO chute_shares
-              (chute_id, shared_by, shared_to, shared_at)
-            VALUES (:chute_id, :shared_by, :shared_to, NOW())
-            ON CONFLICT (chute_id, shared_by, shared_to)
-            DO NOTHING
-            """
-        ),
-        {"chute_id": chute_id, "shared_by": current_user.user_id, "shared_to": user_id},
-    )
-    await db.commit()
-    return {"ok": True}
 
 
 @router.delete("/{chute_id_or_name:path}")
