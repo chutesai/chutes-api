@@ -821,9 +821,9 @@ async def hostname_invocation(
         if model.startswith("THUDM/"):
             payload["model"] = re.sub(r"^THUDM/", "zai-org/", model)
 
-        # Kimi migration to b200.
-        if model == "moonshotai/Kimi-K2-Instruct":
-            payload["model"] = "moonshotai/Kimi-K2-Instruct-75k"
+        # Kimi K2 Instruct update to moonshotai/Kimi-K2-Instruct-0905
+        if model in ("moonshotai/Kimi-K2-Instruct", "moonshotai/Kimi-K2-Instruct-75k"):
+            payload["model"] = "moonshotai/Kimi-K2-Instruct-0905"
 
         # Hermes 4.
         elif model == "Zenith":
