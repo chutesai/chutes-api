@@ -818,12 +818,8 @@ def is_kubernetes_env(instance: Instance, dump: dict, log_prefix: str):
     return True
 
 
-def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
-    if (
-        "build_sglang_chute(" not in chute.code
-        or chute.standard_template != "vllm"
-        or chute.user_id != "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
-    ):
+async def check_sglang(instance_id: str, chute: Chute, dump: dict, log_prefix: str):
+    if "build_sglang_chute(" not in chute.code or chute.standard_template != "vllm":
         return True
 
     processes = dump["all_processes"]
@@ -841,6 +837,7 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
     model_name = chute.name if not model_match else model_match.group(1)
 
     found_sglang = False
+    sglang_process = None
     for process in processes:
         clean_exe = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["exe"].strip())
         if (
@@ -857,16 +854,32 @@ def check_sglang(instance: Instance, chute: Chute, dump: dict, log_prefix: str):
         ):
             logger.success(f"{log_prefix} found SGLang chute: {process=}")
             found_sglang = True
+            sglang_process = process
             if revision:
                 if revision in process["cmdline"]:
                     logger.success(f"{log_prefix} also found revision identifier")
                 else:
                     logger.warning(f"{log_prefix} did not find chute revision: {revision}")
             break
+
     if not found_sglang:
         logger.error(f"{log_prefix} did not find SGLang process, bad...")
-        # XXX Temporarily disabled because of https://github.com/sgl-project/sglang/commit/5dfcd6c20701d2e949a43a619977c17913fbd712
-        # return False
+        return False
+
+    # Track the process.
+    current_pid = sglang_process["pid"]
+    pid_key = f"sglangpid:{instance_id}"
+    cached = await settings.redis_client.get(pid_key)
+    if cached:
+        previous_pid = int(cached)
+        if previous_pid != current_pid:
+            logger.error(
+                f"{log_prefix} primary SGLang PID has changed from {previous_pid=} to {current_pid=}"
+            )
+            return False
+    else:
+        await settings.redis_client.set(pid_key, f"{current_pid}")
+
     return True
 
 
@@ -915,7 +928,7 @@ async def check_chute(chute_id):
                     failed_envdump = True
 
                 # Check SGLang processes.
-                if not check_sglang(instance, chute, dump, log_prefix):
+                if not await check_sglang(instance.instance_id, chute, dump, log_prefix):
                     logger.error(f"{log_prefix} did not find SGLang process, bad...")
                     failed_envdump = True
 

@@ -58,7 +58,7 @@ from api.util import (
 )
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
-from watchtower import is_kubernetes_env, verify_expected_command
+from watchtower import is_kubernetes_env, verify_expected_command, check_sglang
 
 router = APIRouter()
 
@@ -430,6 +430,9 @@ async def claim_launch_config(
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
 
+    # Generate a tentative instance ID.
+    new_instance_id = generate_uuid()
+
     # Re-check scalable...
     if not launch_config.job_id:
         await _check_scalable(db, chute, launch_config.miner_hotkey)
@@ -491,6 +494,18 @@ async def claim_launch_config(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
+
+        # SGLang check.
+        if not await check_sglang(new_instance_id, chute, dump, log_prefix):
+            logger.error(f"{log_prefix} failed SGLang process check")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Failed SGLang process check."
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+
     else:
         logger.warning("Unable to perform extended validation, skipping...")
 
@@ -556,7 +571,7 @@ async def claim_launch_config(
 
     # Create the instance now that we've verified the envdump/k8s env.
     instance = Instance(
-        instance_id=generate_uuid(),
+        instance_id=new_instance_id,
         host=args.host,
         port=args.port_mappings[0].external_port,
         chute_id=launch_config.chute_id,
