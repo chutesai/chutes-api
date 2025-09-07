@@ -253,7 +253,8 @@ async def do_slurp(instance, payload, encrypted_slurp):
     ) as resp:
         if resp.status == 404:
             logger.warning(
-                f"Failed filesystem check: {path}: {instance.miner_hotkey=} {instance.instance_id=} {instance.chute_id=}"
+                f"Failed filesystem check with 404 for {payload=}: "
+                f"{instance.miner_hotkey=} {instance.instance_id=} {instance.chute_id=}"
             )
             return None
         if encrypted_slurp:
