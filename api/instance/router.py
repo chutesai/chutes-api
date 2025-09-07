@@ -58,7 +58,7 @@ from api.util import (
 )
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
-from watchtower import is_kubernetes_env, verify_expected_command, check_sglang
+from watchtower import is_kubernetes_env, verify_expected_command
 
 router = APIRouter()
 
@@ -227,7 +227,7 @@ async def _check_scalable(db, chute, hotkey):
 
     # Prevent monopolizing capped chutes.
     remaining_slots = target_count - current_count
-    if remaining_slots <= 1 and hotkey_count == current_count:
+    if remaining_slots <= 2 and hotkey_count == current_count:
         logger.warning(
             f"SCALELOCK: chute {chute_id=} {chute.name} - miner {hotkey} already has {hotkey_count} instances, "
             f"only {remaining_slots} slots remaining"
@@ -489,17 +489,6 @@ async def claim_launch_config(
             logger.error(f"{log_prefix} is not running a valid kubernetes environment")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Failed kubernetes environment check."
-            await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=launch_config.verification_error,
-            )
-
-        # SGLang check.
-        if not await check_sglang(new_instance_id, chute, dump, log_prefix):
-            logger.error(f"{log_prefix} failed SGLang process check")
-            launch_config.failed_at = func.now()
-            launch_config.verification_error = "Failed SGLang process check."
             await db.commit()
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,

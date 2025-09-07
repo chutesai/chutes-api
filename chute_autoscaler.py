@@ -315,6 +315,7 @@ async def perform_autoscale(dry_run: bool = False):
             text("""
                 SELECT
                     c.chute_id,
+                    c.name,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
                     COUNT(DISTINCT i.instance_id) as instance_count,
                     EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) as has_rolling_update,
@@ -479,7 +480,9 @@ async def perform_autoscale(dry_run: bool = False):
             # Allow scaling new chutes, to a point.
             failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
             # For new chutes, target is the max of 10, current count, or failsafe
-            target_count = max(10, failsafe_min)
+            target_count = failsafe_min
+            if "affine" not in info.name.lower():
+                target_count = max(10, failsafe_min)
             num_to_add = max(0, target_count - info.instance_count)
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             chute_target_counts[chute_id] = target_count
