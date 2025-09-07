@@ -40,13 +40,15 @@ MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
-    "eb04d6a6-b250-5f44-b91e-079bc938482a": 30,
+    "1a0d9245-582a-5cde-8f5b-2da5b9542339": 30,
     "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 60,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 30,
-    "de510462-c319-543b-9c67-00bcf807d2a7": 30,
-    "561e4875-254d-588f-a36f-57c9cdef8961": 30,
+    "14a91d88-d6d6-5046-aaf4-eb3ad96b7247": 20,
+    "de510462-c319-543b-9c67-00bcf807d2a7": 15,
+    "561e4875-254d-588f-a36f-57c9cdef8961": 15,
+    "07cb1b3a-ec4d-594a-96c2-b547fddcadb0": 15,
 }
 
 
@@ -394,14 +396,14 @@ async def perform_autoscale(dry_run: bool = False):
                 num_to_add = max(3, int(info.instance_count * 0.5))
             elif utilization_basis >= UTILIZATION_SCALE_UP * 1.25:
                 num_to_add = max(2, int(info.instance_count * 0.25))
-            target_count = info.instance_count + num_to_add
+            target_count = max(FAILSAFE.get(chute_id, 0), info.instance_count + num_to_add)
             scale_up_candidates.append((chute_id, num_to_add))
             await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
             chute_actions[chute_id] = "scale_up_candidate"
             chute_target_counts[chute_id] = target_count
             logger.info(
                 f"Scale up candidate: {chute_id} - high utilization: {utilization_basis:.1%} "
-                f"- allowing {num_to_add} additional instances"
+                f"- allowing {num_to_add} additional instances, {target_count=}"
             )
         # Scale up candidate: increasing rate limiting and significant rate limiting
         elif rate_limit_basis >= RATE_LIMIT_SCALE_UP:
@@ -412,7 +414,7 @@ async def perform_autoscale(dry_run: bool = False):
                 num_to_add = max(2, int(info.instance_count * 0.15))
             else:
                 num_to_add = max(1, int(info.instance_count * 0.05))
-            target_count = info.instance_count + num_to_add
+            target_count = max(FAILSAFE.get(chute_id, 0), info.instance_count + num_to_add)
             scale_up_candidates.append((chute_id, num_to_add))
             chute_actions[chute_id] = "scale_up_candidate"
             chute_target_counts[chute_id] = target_count
@@ -420,7 +422,7 @@ async def perform_autoscale(dry_run: bool = False):
             logger.info(
                 f"Scale up candidate: {chute_id} - rate limiting increasing: "
                 f"5m={rate_limit_5m:.1%}, 15m={rate_limit_15m:.1%}, 1h={rate_limit_1h:.1%} "
-                f"- allowing {num_to_add} additional instances"
+                f"- allowing {num_to_add} additional instances, {target_count=}"
             )
 
         # Scale down candidate: low utilization, no rate limiting, and has enough instances

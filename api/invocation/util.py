@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 TOKEN_METRICS_QUERY = """
 CREATE TABLE vllm_metrics_temp AS
-    SELECT * FROM get_vllm_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date)
+    SELECT * FROM get_llm_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date)
     ORDER BY date DESC, name;
 """
 
