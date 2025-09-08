@@ -760,3 +760,27 @@ async def memcache_delete(key: bytes):
     except Exception as exc:
         logger.warning(f"Failed to delete memcached value: {str(exc)}")
     return None
+
+
+async def validate_tool_call_arguments(body: dict) -> None:
+    if not body.get("messages"):
+        return
+    for message in body["messages"]:
+        if message.get("role") == "assistant" and message.get("tool_calls"):
+            for item in message["tool_calls"]:
+                if (
+                    isinstance(item.get("function"), dict)
+                    and "arguments" in item["function"]
+                    and isinstance(item["function"]["arguments"], str)
+                ):
+                    if not item["function"]["arguments"]:
+                        item["function"]["arguments"] = "null"
+                    else:
+                        try:
+                            _ = json.loads(item["function"]["arguments"])
+                        except (ValueError, json.JSONDecodeError) as exc:
+                            logger.warning(f"INVALIDFUNCTIONJSON: {str(exc)}")
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="Invalid tool_calls.function.arguments value, expected JSON",
+                            )

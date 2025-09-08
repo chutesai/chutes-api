@@ -702,6 +702,11 @@ async def activate_launch_config_instance(
             detail="Launch config has not been verified.",
         )
     instance = launch_config.instance
+    if not instance:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Instance has disappeared for launch_{config_id=}",
+        )
     if not instance.active:
         instance.active = True
         await db.commit()
