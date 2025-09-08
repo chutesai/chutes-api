@@ -829,7 +829,7 @@ async def _deploy_chute(
     estimate = await chute_args.node_selector.current_estimated_price()
     deployment_fee = (
         chute_args.node_selector.gpu_count * estimate["usd"]["hour"] * 3
-        if not current_user.has_role(Permissioning.free_account)
+        if not current_user.has_role(Permissioning.free_account) and not chute
         else 0
     )
     if deployment_fee and not accept_fee:
@@ -859,12 +859,15 @@ async def _deploy_chute(
         )
 
     # Deduct the deployment fee.
-    if not current_user.has_role(Permissioning.free_account):
-        current_user.balance -= deployment_fee
-    logger.info(
-        f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
-        f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance}"
-    )
+    if deployment_fee and not current_user.has_role(Permissioning.free_account):
+        await db.execute(
+            text("UPDATE users SET balance = balance - :fee WHERE user_id = :user_id"),
+            {"fee": deployment_fee, "user_id": current_user.user_id},
+        )
+        logger.info(
+            f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
+            f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance}"
+        )
 
     affine_dev = await is_affine_registered(db, current_user)
     if (
@@ -992,7 +995,7 @@ async def _deploy_chute(
         try:
             is_public = (
                 chute_args.public
-                if current_user.has_permission(Permissioning.public_model_deployment)
+                if current_user.has_role(Permissioning.public_model_deployment)
                 else False
             )
             chute = Chute(
