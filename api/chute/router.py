@@ -866,7 +866,7 @@ async def _deploy_chute(
         )
         logger.info(
             f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
-            f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance}"
+            f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance - deployment_fee}"
         )
 
     affine_dev = await is_affine_registered(db, current_user)

@@ -31,7 +31,7 @@ BEGIN
     -- Update the actual user balance table.
     IF OLD.activated_at IS NOT NULL THEN
         v_hours_used := EXTRACT(EPOCH FROM (
-            LEAST(COALESCE(OLD.stop_billing_timestamp, NOW()), NOW()) - OLD.activated_at
+            LEAST(COALESCE(OLD.stop_billing_at, NOW()), NOW()) - OLD.activated_at
         )) / 3600.0;
         v_total_cost := v_hours_used * OLD.hourly_rate;
         v_hour_bucket := date_trunc('hour', NOW());
@@ -41,8 +41,8 @@ BEGIN
         WHERE user_id = v_user_id;
 
         -- Track the amount in the usage_data table.
-        INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens)
-        VALUES (v_user_id::varchar, v_hour_bucket, OLD.chute_id, v_total_cost, 1, 0, 0)
+        INSERT INTO usage_data (user_id, bucket, chute_id, amount, count)
+        VALUES (v_user_id::varchar, v_hour_bucket, OLD.chute_id, v_total_cost, 1)
         ON CONFLICT (user_id, bucket, chute_id)
         DO UPDATE SET amount = usage_data.amount + EXCLUDED.amount;
     END IF;
