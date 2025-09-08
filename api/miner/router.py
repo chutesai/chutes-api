@@ -288,16 +288,22 @@ async def get_stats(
             i.bounty +
             i.compute_multiplier *
             CASE
+                WHEN i.metrics->>'nc' IS NOT NULL
+                    AND (i.metrics->>'nc')::float > 0
+                THEN (i.metrics->>'nc')::float
+
                 WHEN i.metrics->>'steps' IS NOT NULL
                     AND (i.metrics->>'steps')::float > 0
                     AND i.metrics->>'masps' IS NOT NULL
                 THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+
                 WHEN i.metrics->>'it' IS NOT NULL
                     AND i.metrics->>'ot' IS NOT NULL
                     AND (i.metrics->>'it')::float > 0
                     AND (i.metrics->>'ot')::float > 0
                     AND i.metrics->>'maspt' IS NOT NULL
                 THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+
                 ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
             END
         ) AS compute_units
@@ -318,16 +324,22 @@ async def get_stats(
         i.bounty +
         i.compute_multiplier *
         CASE
+            WHEN i.metrics->>'nc' IS NOT NULL
+                AND (i.metrics->>'nc')::float > 0
+            THEN (i.metrics->>'nc')::float
+
             WHEN i.metrics->>'steps' IS NOT NULL
                 AND (i.metrics->>'steps')::float > 0
                 AND i.metrics->>'masps' IS NOT NULL
             THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+
             WHEN i.metrics->>'it' IS NOT NULL
                 AND i.metrics->>'ot' IS NOT NULL
                 AND (i.metrics->>'it')::float > 0
                 AND (i.metrics->>'ot')::float > 0
                 AND i.metrics->>'maspt' IS NOT NULL
             THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+
             ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
         END
     ) > 0
@@ -343,16 +355,22 @@ async def get_stats(
                 i.bounty +
                 i.compute_multiplier *
                 CASE
+                    WHEN i.metrics->>'nc' IS NOT NULL
+                        AND (i.metrics->>'nc')::float > 0
+                    THEN (i.metrics->>'nc')::float
+
                     WHEN i.metrics->>'steps' IS NOT NULL
                         AND (i.metrics->>'steps')::float > 0
                         AND i.metrics->>'masps' IS NOT NULL
                     THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+
                     WHEN i.metrics->>'it' IS NOT NULL
                         AND i.metrics->>'ot' IS NOT NULL
                         AND (i.metrics->>'it')::float > 0
                         AND (i.metrics->>'ot')::float > 0
                         AND i.metrics->>'maspt' IS NOT NULL
                     THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+
                     ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
                 END
             ) AS compute_units
@@ -373,16 +391,22 @@ async def get_stats(
             i.bounty +
             i.compute_multiplier *
             CASE
+                WHEN i.metrics->>'nc' IS NOT NULL
+                    AND (i.metrics->>'nc')::float > 0
+                THEN (i.metrics->>'nc')::float
+
                 WHEN i.metrics->>'steps' IS NOT NULL
                     AND (i.metrics->>'steps')::float > 0
                     AND i.metrics->>'masps' IS NOT NULL
                 THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+
                 WHEN i.metrics->>'it' IS NOT NULL
                     AND i.metrics->>'ot' IS NOT NULL
                     AND (i.metrics->>'it')::float > 0
                     AND (i.metrics->>'ot')::float > 0
                     AND i.metrics->>'maspt' IS NOT NULL
                 THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+
                 ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
             END
         ) > 0

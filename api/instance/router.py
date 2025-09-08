@@ -229,7 +229,7 @@ async def _check_scalable(db, chute, hotkey):
 
     # Prevent monopolizing capped chutes.
     remaining_slots = target_count - current_count
-    if remaining_slots <= 1 and hotkey_count == current_count:
+    if remaining_slots <= 2 and hotkey_count == current_count:
         logger.warning(
             f"SCALELOCK: chute {chute_id=} {chute.name} - miner {hotkey} already has {hotkey_count} instances, "
             f"only {remaining_slots} slots remaining"
@@ -432,6 +432,9 @@ async def claim_launch_config(
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
 
+    # Generate a tentative instance ID.
+    new_instance_id = generate_uuid()
+
     # Re-check scalable...
     if not launch_config.job_id:
         await _check_scalable(db, chute, launch_config.miner_hotkey)
@@ -493,6 +496,7 @@ async def claim_launch_config(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
+
     else:
         logger.warning("Unable to perform extended validation, skipping...")
 
@@ -559,7 +563,7 @@ async def claim_launch_config(
     # Create the instance now that we've verified the envdump/k8s env.
     node_selector = NodeSelector(**chute.node_selector)
     instance = Instance(
-        instance_id=generate_uuid(),
+        instance_id=new_instance_id,
         host=args.host,
         port=args.port_mappings[0].external_port,
         chute_id=launch_config.chute_id,

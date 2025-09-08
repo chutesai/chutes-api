@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 TOKEN_METRICS_QUERY = """
 CREATE TABLE vllm_metrics_temp AS
-    SELECT * FROM get_vllm_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date)
+    SELECT * FROM get_llm_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date)
     ORDER BY date DESC, name;
 """
 
@@ -92,16 +92,22 @@ SELECT
         CASE
             WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN
                 CASE
+                    WHEN i.metrics->>'nc' IS NOT NULL
+                        AND (i.metrics->>'nc')::float > 0
+                    THEN (i.metrics->>'nc')::float
+
                     WHEN i.metrics->>'steps' IS NOT NULL
                         AND (i.metrics->>'steps')::float > 0
                         AND i.metrics->>'masps' IS NOT NULL
                     THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+
                     WHEN i.metrics->>'it' IS NOT NULL
                         AND i.metrics->>'ot' IS NOT NULL
                         AND (i.metrics->>'it')::float > 0
                         AND (i.metrics->>'ot')::float > 0
                         AND i.metrics->>'maspt' IS NOT NULL
                     THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+
                     ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
                 END
             ELSE NULL

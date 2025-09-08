@@ -371,6 +371,7 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
         )
     async with MANAGERS[chute_id].lock:
         MANAGERS[chute_id].instances = {instance.instance_id: instance for instance in instances}
+        MANAGERS[chute_id].concurrency = chute.concurrency or 1
     return MANAGERS[chute_id]
 
 
