@@ -882,15 +882,7 @@ async def invoke(
                     compute_units = result.scalar_one_or_none()
                     balance_used = 0.0
                     override_applied = False
-                    if (
-                        compute_units
-                        and not request.state.free_invocation
-                        and (
-                            chute.public
-                            or has_legacy_private_billing(chute)
-                            or chute.user_id == await chutes_user_id()
-                        )
-                    ):
+                    if compute_units and not request.state.free_invocation:
                         hourly_price = await selector_hourly_price(chute.node_selector)
 
                         if (
@@ -1004,6 +996,25 @@ async def invoke(
                         if user_discount:
                             balance_used -= balance_used * user_discount
 
+                    # For private/user-created chutes, the costs of the chute are offset by
+                    # usage of the chute from users other than the chute owner, i.e.
+                    # when a private chute is shared with another user and that user makes
+                    # use of the chute, that user is charged per request and that balance is
+                    # added to the chute owner's account, reducing their overall cost.
+                    add_balance_to = None
+                    if (
+                        not chute.public
+                        and not has_legacy_private_billing(chute)
+                        and chute.user_id != await chutes_user_id()
+                    ):
+                        if user_id == chute.user_id:
+                            balance_used = 0
+                        else:
+                            add_balance_to = chute.user_id
+                            logger.info(
+                                f"Adding {balance_used} credits to {chute.user_id} due to invocation of {chute.name=} from {user_id=}"
+                            )
+
                     # Ship the data over to usage tracker which actually deducts/aggregates balance/etc.
                     try:
                         pipeline = settings.redis_client.pipeline()
@@ -1014,6 +1025,8 @@ async def invoke(
                             pipeline.hincrby(key, "input_tokens", metrics.get("it", 0))
                             pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
                         pipeline.hset(key, "timestamp", int(time.time()))
+                        if balance_used and add_balance_to:
+                            pipeline.hincrbyfloat(key, "amount", 0 - balance_used)
                         await pipeline.execute()
                     except Exception as exc:
                         logger.error(f"Error updating usage pipeline: {exc}")
@@ -1037,7 +1050,7 @@ async def invoke(
                     if (
                         not chute.public
                         and not has_legacy_private_billing(chute)
-                        or chute.user_id == await chutes_user_id()
+                        and chute.user_id != await chutes_user_id()
                     ):
                         await update_shutdown_timestamp(target.instance_id)
 

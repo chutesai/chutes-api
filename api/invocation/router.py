@@ -29,14 +29,18 @@ from api.chute.util import (
     is_shared,
     count_prompt_tokens,
 )
-from api.util import memcache_get, memcache_set
+from api.util import (
+    memcache_get,
+    memcache_set,
+    recreate_vlm_payload,
+    has_legacy_private_billing,
+)
 from api.user.schemas import User, InvocationQuota
-from api.user.service import get_current_user
+from api.user.service import get_current_user, chutes_user_id
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.util import recreate_vlm_payload
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -331,6 +335,14 @@ async def _invoke(
             pipe.incrbyfloat(key, 0.0)
             pipe.expire(key, 25 * 60 * 60)
             await pipe.execute()
+
+        # No quota for private/user-created chutes.
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            quota = 0
 
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
