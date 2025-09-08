@@ -885,7 +885,11 @@ async def invoke(
                     if (
                         compute_units
                         and not request.state.free_invocation
-                        and (chute.public or has_legacy_private_billing(chute))
+                        and (
+                            chute.public
+                            or has_legacy_private_billing(chute)
+                            or chute.user_id == await chutes_user_id()
+                        )
                     ):
                         hourly_price = await selector_hourly_price(chute.node_selector)
 
@@ -1015,7 +1019,11 @@ async def invoke(
                         logger.error(f"Error updating usage pipeline: {exc}")
 
                     # Increment quota usage value.
-                    if chute.discount < 1.0 and (chute.public or has_legacy_private_billing(chute)):
+                    if chute.discount < 1.0 and (
+                        chute.public
+                        or has_legacy_private_billing(chute)
+                        or chute.user_id == await chutes_user_id()
+                    ):
                         try:
                             value = 1.0 if not reroll else settings.reroll_multiplier
                             key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
@@ -1026,7 +1034,11 @@ async def invoke(
                             )
 
                     # For private chutes, push back the instance termination timestamp.
-                    if not chute.public and not has_legacy_private_billing(chute):
+                    if (
+                        not chute.public
+                        and not has_legacy_private_billing(chute)
+                        or chute.user_id == await chutes_user_id()
+                    ):
                         await update_shutdown_timestamp(target.instance_id)
 
                     await session.commit()

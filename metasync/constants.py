@@ -1,6 +1,7 @@
 # Proportion of weights to assign to each metric.
 FEATURE_WEIGHTS = {
-    "compute_units": 0.72,  # Total amount of compute time (compute multiplier * total time).
+    "compute_units": 0.52,  # Total amount of compute time (compute multiplier * total time).
+    "invocation_count": 0.20,  # Total number of invocations.
     "unique_chute_count": 0.20,  # Average instantaneous unique chutes (gpu scaled) over the scoring period.
     "bounty_count": 0.08,  # Number of bounties received (not bounty values, just counts).
 }
@@ -10,7 +11,8 @@ SCORING_INTERVAL = "7 days"
 NORMALIZED_COMPUTE_QUERY = """
 SELECT
     mn.hotkey,
-    COUNT(CASE WHEN i.bounty > 0 THEN 1 END) AS bounty_count,
+    COUNT(CASE WHEN (i.metrics->>'p')::bool IS NOT TRUE THEN 1 END) as invocation_count,
+    COUNT(CASE WHEN i.bounty > 0 AND (i.metrics->>'p')::bool IS NOT TRUE THEN 1 END) AS bounty_count,
     sum(
         i.bounty +
         i.compute_multiplier *

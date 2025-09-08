@@ -7,8 +7,8 @@ RETURNS TRIGGER AS $$
 DECLARE
     version TEXT;
 BEGIN
-    SELECT INTO version c.version 
-      FROM chutes c 
+    SELECT INTO version c.version
+      FROM chutes c
      WHERE c.chute_id = NEW.chute_id;
 
     INSERT INTO instance_audit (

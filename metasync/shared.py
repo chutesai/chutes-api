@@ -104,6 +104,9 @@ async def get_scoring_data():
             )
             raw_compute_values[miner_hotkey]["bounty_count"] += total_instances
             raw_compute_values[miner_hotkey]["compute_units"] += compute_units
+
+            # XXX Subject to change, but for now give one invocation per second for private instances.
+            raw_compute_values[miner_hotkey]["invocation_count"] += int(seconds)
             raw_compute_values[miner_hotkey].update(
                 {
                     "private_instance_count": total_instances,
