@@ -1,0 +1,41 @@
+# Dockerfile for initializing the test database with SQLAlchemy
+
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install system dependencies needed for building Python packages
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    gcc \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Poetry
+RUN pip install --no-cache-dir poetry
+
+# Configure Poetry
+ENV PYTHONUNBUFFERED=1 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  POETRY_NO_INTERACTION=1 \
+  POETRY_VIRTUALENVS_IN_PROJECT=true \
+  POETRY_CACHE_DIR=/tmp/poetry_cache
+
+# Copy Poetry files
+COPY pyproject.toml poetry.lock* /app/
+
+# Install dependencies only (not the package itself)
+RUN poetry install --only=main --no-root && rm -rf $POETRY_CACHE_DIR
+
+# Activate the virtual environment and run the script
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Copy the initialization script
+COPY tests/scripts/init_db.py /app/init_db.py
+
+# The api directory will be mounted as a volume
+# This ensures we use the latest ORM models
+
+# Default command
+CMD ["/app/.venv/bin/python", "init_db.py", "--create"]
