@@ -332,7 +332,9 @@ class LeastConnManager:
             self._cleanup_task.cancel()
 
 
-async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait: int = 0):
+async def get_chute_target_manager(
+    session: AsyncSession, chute: Chute, max_wait: int = 0, no_bounty: bool = False
+):
     """
     Select target instances by least connections (with random on equal counts).
     """
@@ -359,7 +361,7 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
                 logger.warning(
                     f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
                 )
-            else:
+            elif not no_bounty:
                 if await create_bounty_if_not_exists(chute_id, lifetime=bounty_lifetime):
                     logger.success(f"Successfully created a bounty for {chute_id=}")
                 current_time = int(time.time())
@@ -367,7 +369,8 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
                 notification_key = f"bounty_notification:{chute_id}:{window}"
                 if await settings.redis_client.setnx(notification_key, b"1"):
                     await settings.redis_client.expire(notification_key, 33)
-                    if (amount := await get_bounty_amount(chute_id)) is not None:
+                    amount = await get_bounty_amount(chute_id)
+                    if amount:
                         logger.info(f"Bounty for {chute_id=} is now {amount}")
                         await send_bounty_notification(chute_id, amount)
         if not max_wait or time.time() - started_at >= max_wait:

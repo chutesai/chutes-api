@@ -69,7 +69,7 @@ async def claim_bounty(chute_id: str) -> Optional[int]:
         data = json.loads(bounty_data)
         created_at = data["created_at"]
         seconds_elapsed = int(time.time() - created_at)
-        bounty_amount = min(3 * seconds_elapsed, 86400)
+        bounty_amount = min(3 * seconds_elapsed + 100, 86400)
         return bounty_amount
     except Exception as exc:
         logger.warning(f"Failed to claim bounty: {exc}")
@@ -101,7 +101,7 @@ async def get_bounty_amount(chute_id: str) -> int:
         data = json.loads(bounty_data)
         created_at = data["created_at"]
         seconds_elapsed = int(time.time() - created_at)
-        bounty_amount = int(min(3 * seconds_elapsed, 86400))
+        bounty_amount = min(3 * seconds_elapsed + 100, 86400)
         return bounty_amount
     except (json.JSONDecodeError, KeyError) as exc:
         logger.warning(f"Failed to get bounty info: {exc}")

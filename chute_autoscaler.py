@@ -323,7 +323,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.created_at,
                     c.concurrency,
                     c.max_instances,
-                    c.scaling_threshold,
+                    COALESCE(c.scaling_threshold, 0.75) AS scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
                     COUNT(DISTINCT i.instance_id) AS instance_count,
                     EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
@@ -385,6 +385,7 @@ async def perform_autoscale(dry_run: bool = False):
                         f"Private chute {chute_id=} has fallen to {utilization_basis=} with {info.max_instances=}, removing instance"
                     )
                     to_downsize.append((chute_id, 1))
+                    continue
 
             # No instances, but a bounty exists so we allow one instance.
             elif await check_bounty_exists(chute_id):
@@ -401,6 +402,13 @@ async def perform_autoscale(dry_run: bool = False):
                 chute_actions[chute_id] = "no_action"
                 logger.info(f"Private chute {chute_id=} has no bounty, not scalable.")
                 continue
+
+            # Default, do nothing.
+            await settings.redis_client.set(f"scale:{chute_id}", info.instance_count)
+            chute_target_counts[chute_id] = info.instance_count
+            chute_actions[chute_id] = "no_action"
+            logger.info(f"Private chute {chute_id=} has expected capacity, no-op.")
+            continue
 
         if not info or not info.instance_count:
             # Check if there's a failsafe minimum for this chute

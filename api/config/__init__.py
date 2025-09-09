@@ -172,8 +172,8 @@ class Settings(BaseSettings):
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "1.0"))
 
     # Cosign Settings
-    cosign_password: str = str(os.getenv("COSIGN_PASSWORD"))
-    cosign_key: Path = Path(os.getenv("COSIGN_KEY"))
+    cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")
+    cosign_key: Optional[Path] = Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
 
 
 settings = Settings()

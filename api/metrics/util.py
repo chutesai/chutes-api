@@ -18,7 +18,7 @@ async def update_gauges():
         chutes = (await session.execute(select(Chute))).unique().scalars().all()
         for chute in chutes:
             logger.info(f"Updating gauges for {chute.chute_id=} {chute.name=}")
-            tm = await get_chute_target_manager(session, chute)
+            tm = await get_chute_target_manager(session, chute, no_bounty=True)
             if not tm:
                 logger.warning(f"No instances for {chute.chute_id=} {chute.name=}")
                 track_capacity(

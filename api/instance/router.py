@@ -788,12 +788,19 @@ async def activate_launch_config_instance(
         scale_value = await settings.redis_client.get(f"scale:{chute.chute_id}")
         target_count = int(scale_value) if scale_value else 0
         if active_count >= target_count:
+            reason = "Private chute {chute.chute_id=} {chute.name=} already has >= {target_count=} active instances"
+            logger.warning(reason)
+            await db.delete(instance)
+            await asyncio.create_task(notify_deleted(instance))
+            await db.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                ),
+                {"instance_id": instance.instance_id, "reason": reason},
+            )
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
-                detail=(
-                    f"Private chute {chute.chute_id} already has {active_count} "
-                    f"active instances (target: {target_count}). Cannot activate."
-                ),
+                detail=reason,
             )
 
     # Activate the instance (and trigger tentative billing stop time).
@@ -906,14 +913,20 @@ async def verify_launch_config_instance(
     estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
     max_duration = estimate * 2.15
     if (delta := (now - start).total_seconds()) >= max_duration:
-        message = (
+        reason = (
             f"PoVW encrypted response for {config_id=} and {instance.instance_id=} "
             f"{instance.miner_hotkey=} took {delta} seconds, exceeding maximum estimate of {max_duration}"
         )
-        logger.error(message)
+        logger.error(reason)
         launch_config.failed_at = func.now()
-        launch_config.verification_error = message
+        launch_config.verification_error = reason
         await db.delete(instance)
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": instance.instance_id, "reason": reason},
+        )
         await db.commit()
         asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
@@ -929,12 +942,20 @@ async def verify_launch_config_instance(
         response = aes_decrypt(ciphertext, instance.symmetric_key, iv)
         assert response == f"secret is {launch_config.config_id} {launch_config.seed}".encode()
     except Exception as exc:
-        logger.error(
-            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} was invalid: {exc}\n{traceback.format_exc()}"
+        reason = (
+            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} "
+            f"{instance.miner_hotkey=} was invalid: {exc}\n{traceback.format_exc()}"
         )
+        logger.error(reason)
         launch_config.failed_at = func.now()
-        launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
+        launch_config.verification_error = reason
         await db.delete(instance)
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": instance.instance_id, "reason": reason},
+        )
         await db.commit()
         asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
@@ -950,12 +971,19 @@ async def verify_launch_config_instance(
         logger.info(f"CHECKING PROOF: {work_product=}\n{response_body=}")
         assert await verify_proof(node, launch_config.seed, work_product)
     except Exception as exc:
-        logger.error(
-            f"PoVW proof failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}: {exc}\n{traceback.format_exc()}"
+        reason = (
+            f"PoVW proof failed for {config_id=} and {instance.instance_id=} "
+            f"{instance.miner_hotkey=}: {exc}\n{traceback.format_exc()}"
         )
         launch_config.failed_at = func.now()
-        launch_config.verification_error = f"PoVW proof verification failed: {exc}"
+        launch_config.verification_error = reason
         await db.delete(instance)
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": instance.instance_id, "reason": reason},
+        )
         await db.commit()
         asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
@@ -978,15 +1006,20 @@ async def verify_launch_config_instance(
             result = await task.wait_result()
             expected_hash = result.return_value
             if expected_hash != response_body["fsv"]:
-                logger.error(
+                reason = (
                     f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
                     f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
                 )
+                logger.error(reason)
                 launch_config.failed_at = func.now()
-                launch_config.verification_error = (
-                    "File system verification failure, mismatched hash"
-                )
+                launch_config.verification_error = reason
                 await db.delete(instance)
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id, "reason": reason},
+                )
                 await db.commit()
                 asyncio.create_task(notify_deleted(instance))
                 raise HTTPException(
@@ -1005,6 +1038,15 @@ async def verify_launch_config_instance(
             if port_map["internal_port"] in (8000, 8001):
                 continue
             if not await verify_port_map(instance, port_map):
+                reason = f"Failed port verification on {port_map=} for {instance.instance_id=} {instance.miner_hotkey=}"
+                logger.error(reason)
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id, "reason": reason},
+                )
+                asyncio.create_task(notify_deleted(instance))
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Failed port verification on {port_map=}",
