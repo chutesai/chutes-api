@@ -33,6 +33,7 @@ from api.logo.router import router as logo_router
 from api.job.router import router as jobs_router
 from api.guesser import router as guess_router
 from api.audit.router import router as audit_router
+from api.server.router import router as servers_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
 from api.config import settings
@@ -136,7 +137,7 @@ default_router.include_router(logo_router, prefix="/logos", tags=["Logo"])
 default_router.include_router(guess_router, prefix="/guess", tags=["ConfigGuesser"])
 default_router.include_router(audit_router, prefix="/audit", tags=["Audit"])
 default_router.include_router(jobs_router, prefix="/jobs", tags=["Job"])
-
+default_router.include_router(servers_router, prefix="/servers", tags=["Servers"])
 
 # Do not use app for this, else middleware picks it up
 async def ping():

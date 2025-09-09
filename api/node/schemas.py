@@ -76,6 +76,10 @@ class Node(Base):
     verification_error = Column(String)
     verified_at = Column(DateTime(timezone=True))
 
+    # Add server relationship
+    # ToDo: Maybe want to set on delete to restrict instead?
+    server_id = Column(String, ForeignKey("servers.server_id", ondelete="SET NULL"), nullable=True)
+
     _gpu_specs = None
     _gpu_key = None
 
@@ -87,6 +91,7 @@ class Node(Base):
         uselist=False,
     )
     miner = relationship("MetagraphNode", back_populates="nodes")
+    server = relationship("Server", back_populates="nodes")
     challenges = relationship("Challenge", back_populates="node", cascade="all, delete-orphan")
     challenge_results = relationship(
         "ChallengeResult", back_populates="node", cascade="all, delete-orphan"
