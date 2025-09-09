@@ -61,6 +61,13 @@ spec:
               value: "1"
             - name: BUILDAH_PUSH_JOBS
               value: "16"
+            - name: COSIGN_KEY
+              value: /etc/cosign/cosign.key
+            - name: COSIGN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cosign-signing-key
+                  key: cosign.password 
           securityContext:
             privileged: true
             capabilities:
@@ -72,6 +79,9 @@ spec:
                 - MKNOD
             allowPrivilegeEscalation: true
           volumeMounts:
+            - name: cosign-key
+              mountPath: /etc/cosign
+              readOnly: true
             - name: fuse
               mountPath: /dev/fuse
             {{- with .Values.forge.volumeMounts }}
@@ -84,6 +94,13 @@ spec:
           hostPath:
             path: /dev/fuse
             type: CharDevice
+        - name: cosign-key
+          secret:
+            secretName: cosign-signing-key
+            items:
+            - key: cosign.key
+              path: cosign.key
+              mode: 0400  # read-only for owner only
         {{- with .Values.forge.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
