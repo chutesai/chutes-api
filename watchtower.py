@@ -1541,10 +1541,29 @@ async def slurp(instance, path, offset: int = 0, length: int = 0):
             raise EnvdumpMissing(f"Failed to load and decrypt _eslurp payload: {exc=}")
 
 
+async def report_missing_short_lived_instances():
+    """
+    Continuously report invocations for instances alive less than threshold
+    that didn't get reported from the trigger (in-flight during/after termination timestamp).
+    """
+    while True:
+        logger.info("Reporting short-lived invocations not caught by the trigger.")
+        try:
+            async with get_session() as session:
+                await session.execute(text("SELECT report_missing_short_lived_instances()"))
+        except Exception as exc:
+            logger.warning(f"Failed to execute report_missing_short_lived_instances(): {exc=}")
+        await asyncio.sleep(600)
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
     """
+
+    # Short-lived report cleanup (invocations created after instance deletion date).
+    asyncio.create_task(report_missing_short_lived_instances())
+
     # Rolling update cleanup.
     asyncio.create_task(rolling_update_cleanup())
 

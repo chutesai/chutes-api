@@ -30,7 +30,7 @@ end
 """
 
 
-async def create_bounty_if_not_exists(chute_id: str) -> bool:
+async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> bool:
     """
     Create a bounty timestamp if one doesn't already exist.
     """
@@ -45,7 +45,7 @@ async def create_bounty_if_not_exists(chute_id: str) -> bool:
             1,
             bounty_key,
             json.dumps(bounty_data),
-            86400,
+            lifetime,
         )
         return bool(result)
     except Exception as exc:

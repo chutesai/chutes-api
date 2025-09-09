@@ -22,6 +22,7 @@ from api.database import get_session
 from api.config import settings
 from api.gpu import SUPPORTED_GPUS
 from api.bounty.util import check_bounty_exists
+from api.user.service import chutes_user_id
 from api.util import notify_deleted, has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
@@ -318,6 +319,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.chute_id,
                     c.public,
                     c.name,
+                    c.user_id,
                     c.created_at,
                     c.concurrency,
                     c.max_instances,
@@ -349,7 +351,12 @@ async def perform_autoscale(dry_run: bool = False):
             continue
 
         # Private chute handling, quite different...
-        if info and not info.public and not has_legacy_private_billing(info):
+        if (
+            info
+            and not info.public
+            and not has_legacy_private_billing(info)
+            and info.user_id != await chutes_user_id()
+        ):
             # Private chutes that do already have instances.
             if info.instance_count:
                 utilization_5m = metrics["utilization"].get("5m", 0)
@@ -390,7 +397,6 @@ async def perform_autoscale(dry_run: bool = False):
             # No bounty, no usage, disallow.
             else:
                 await settings.redis_client.set(f"scale:{chute_id}", 0)
-                chute_actions[chute_id]
                 chute_target_counts[chute_id] = 0
                 chute_actions[chute_id] = "no_action"
                 logger.info(f"Private chute {chute_id=} has no bounty, not scalable.")

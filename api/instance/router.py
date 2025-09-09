@@ -265,7 +265,7 @@ async def _check_scalable_private(db, chute):
             status_code=status.HTTP_423_LOCKED,
             detail=f"Private chute {chute_id} has no active bounty and cannot be scaled.",
         )
-    if active_count >= target_count:
+    if active_count >= target_count and target_count > 0:
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail=f"Private chute {chute_id} has reached its target capacity of {target_count} instances.",
@@ -480,7 +480,7 @@ async def claim_launch_config(
             and not has_legacy_private_billing(chute)
             and chute.user_id != await chutes_user_id()
         ):
-            await _check_scalable_private(db, chute, launch_config.miner_hotkey)
+            await _check_scalable_private(db, chute)
         else:
             await _check_scalable(db, chute, launch_config.miner_hotkey)
 

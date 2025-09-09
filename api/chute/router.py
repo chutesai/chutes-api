@@ -18,7 +18,6 @@ from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.dialects.postgresql import insert
 from typing import Optional
-from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.chute.schemas import (
     Chute,
     ChuteArgs,
@@ -563,51 +562,11 @@ async def get_chute_code(
     return Response(content=chute.code, media_type="text/plain")
 
 
-@router.get("/utilization_legacy")
-async def get_chute_utilization():
-    """
-    Get chute utilization data.
-    """
-    async with get_session(readonly=True) as session:
-        query = text("""
-            WITH chute_details AS (
-              SELECT
-                chute_id,
-                (SELECT COUNT(*) FROM instances WHERE instances.chute_id = chutes.chute_id) AS live_instance_count,
-                EXISTS(SELECT FROM rolling_updates WHERE chute_id = chutes.chute_id) AS update_in_progress
-              FROM chutes
-            )
-            SELECT * FROM chute_utilization
-            JOIN chute_details
-            ON chute_details.chute_id = chute_utilization.chute_id;
-        """)
-        results = await session.execute(query)
-        rows = results.mappings().all()
-        utilization_data = [dict(row) for row in rows]
-        for item in utilization_data:
-            item["instance_count"] = item.pop("live_instance_count")
-            if (
-                item["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD
-                and not item["total_rate_limit_errors"]
-                and item["instance_count"] >= UNDERUTILIZED_CAP
-            ):
-                item["scalable"] = False
-            else:
-                item["scalable"] = True
-        return utilization_data
-
-
 @router.get("/utilization")
-async def get_chute_utilization_v2(request: Request):
+async def get_chute_utilization(request: Request):
     """
     Get chute utilization data from the most recent capacity log.
     """
-    cache_key = "chute_utilization_metrics".encode()
-    if request:
-        cached = await memcache_get(cache_key)
-        if cached:
-            return json.loads(cached)
-
     async with get_session(readonly=True) as session:
         query = text("""
             WITH latest_logs AS (
@@ -663,25 +622,14 @@ async def get_chute_utilization_v2(request: Request):
         for row in rows:
             item = dict(row)
             scale_value = await settings.redis_client.get(f"scale:{item['chute_id']}")
-
-            if scale_value:
-                target_count = int(scale_value)
-                current_count = item.get("total_instance_count", 0)
-
-                # Scalable if current instances < target count
-                item["scalable"] = current_count < target_count
-                # Scale allowance is how many more instances can be added
-                item["scale_allowance"] = max(0, target_count - current_count)
-            else:
-                # No Redis entry, fall back to action_taken
-                item["scalable"] = item.get("action_taken") == "scale_up_candidate"
-                item["scale_allowance"] = 0
-
+            target_count = int(scale_value) if scale_value else item.get("target_count", 0)
+            current_count = item.get("total_instance_count", 0)
+            item["scalable"] = current_count < target_count
+            item["scale_allowance"] = max(0, target_count - current_count)
             item["avg_busy_ratio"] = item.get("utilization_1h", 0)
             item["total_invocations"] = item.get("total_requests_1h", 0)
             item["total_rate_limit_errors"] = item.get("rate_limited_requests_1h", 0)
             utilization_data.append(item)
-        await memcache_set(cache_key, json.dumps(utilization_data), exptime=30)
         return utilization_data
 
 

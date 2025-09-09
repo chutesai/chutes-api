@@ -19,6 +19,8 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
+from api.util import has_legacy_private_billing
+from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -338,6 +340,15 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
     instances = await load_chute_targets(chute_id, nonce=0)
     started_at = time.time()
     while not instances:
+        # Private chutes have a very short-lived bounty, so users aren't billed if they stop making requests.
+        bounty_lifetime = 86400
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            bounty_lifetime = 1800
+
         # Increase the bounty.
         async with get_session() as bounty_session:
             update_result = await bounty_session.execute(
@@ -349,7 +360,7 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
                     f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
                 )
             else:
-                if await create_bounty_if_not_exists(chute_id):
+                if await create_bounty_if_not_exists(chute_id, lifetime=bounty_lifetime):
                     logger.success(f"Successfully created a bounty for {chute_id=}")
                 current_time = int(time.time())
                 window = current_time - (current_time % 30)
