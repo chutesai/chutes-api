@@ -3,16 +3,10 @@ Routes for bounties.
 """
 
 from datetime import datetime
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter
 from pydantic import BaseModel
-from sqlalchemy import text, select
-from sqlalchemy.orm import selectinload
-from api.chute.schemas import Chute
 from api.chute.response import ChuteResponse
-from api.database import get_session
-from api.user.schemas import User
-from api.user.service import get_current_user
-from api.config import settings
+from api.bounty.util import list_bounties
 
 router = APIRouter()
 
@@ -24,23 +18,8 @@ class Bounty(BaseModel):
 
 
 @router.get("/")
-async def list_bounties(
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
-):
+async def get_bounty_list():
     """
     List available bounties, if any.
     """
-    async with get_session() as session:
-        query = (
-            select(Chute, text("bounties.bounty"), text("bounties.last_increased_at"))
-            .select_from(
-                Chute.__table__.join(text("bounties"), text("bounties.chute_id = chutes.chute_id"))
-            )
-            .options(selectinload(Chute.instances))
-            .order_by(text("bounties.bounty DESC"))
-        )
-        results = await session.execute(query)
-        bounties = []
-        for chute, bounty, last_increased_at in results.unique().all():
-            bounties.append(Bounty(bounty=bounty, last_increased_at=last_increased_at, chute=chute))
-        return bounties
+    return await list_bounties()

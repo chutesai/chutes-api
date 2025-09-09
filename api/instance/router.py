@@ -46,7 +46,7 @@ from api.instance.util import (
     load_launch_config_from_jwt,
 )
 from api.user.schemas import User
-from api.user.service import get_current_user
+from api.user.service import get_current_user, chutes_user_id
 from api.metasync import get_miner_by_hotkey
 from api.util import (
     semcomp,
@@ -57,7 +57,9 @@ from api.util import (
     notify_deleted,
     notify_verified,
     notify_activated,
+    has_legacy_private_billing,
 )
+from api.bounty.util import check_bounty_exists
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -241,6 +243,35 @@ async def _check_scalable(db, chute, hotkey):
         )
 
 
+async def _check_scalable_private(db, chute):
+    """
+    Special scaling logic for private chutes (without legacy billing).
+    """
+    chute_id = chute.chute_id
+    query = text("""
+        SELECT
+            COUNT(*) AS total_count,
+            COUNT(CASE WHEN active IS true AND verified IS true THEN 1 ELSE NULL END) AS active_count
+        FROM instances
+        WHERE chute_id = :chute_id
+    """)
+    count_result = (await db.execute(query, {"chute_id": chute_id})).mappings().first()
+    active_count = count_result["active_count"]
+    scale_value = await settings.redis_client.get(f"scale:{chute_id}")
+    target_count = int(scale_value) if scale_value else 0
+    bounty_exists = await check_bounty_exists(chute_id)
+    if active_count == 0 and not bounty_exists:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Private chute {chute_id} has no active bounty and cannot be scaled.",
+        )
+    if active_count >= target_count:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Private chute {chute_id} has reached its target capacity of {target_count} instances.",
+        )
+
+
 async def _validate_node(db, chute, node_id: str, hotkey: str):
     node = await get_node_by_id(node_id, db, hotkey)
     if not node:
@@ -349,7 +380,14 @@ async def get_launch_config(
     # Load the chute and check if it's scalable.
     chute = await _load_chute(db, chute_id)
     if not job_id:
-        await _check_scalable(db, chute, hotkey)
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            await _check_scalable_private(db, chute)
+        else:
+            await _check_scalable(db, chute, hotkey)
 
     # Associated with a job?
     disk_gb = None
@@ -437,7 +475,14 @@ async def claim_launch_config(
 
     # Re-check scalable...
     if not launch_config.job_id:
-        await _check_scalable(db, chute, launch_config.miner_hotkey)
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            await _check_scalable_private(db, chute, launch_config.miner_hotkey)
+        else:
+            await _check_scalable(db, chute, launch_config.miner_hotkey)
 
     # IP matches?
     x_forwarded_for = request.headers.get("X-Forwarded-For")
@@ -710,14 +755,42 @@ async def activate_launch_config_instance(
             detail="Launch config has not been verified.",
         )
     instance = launch_config.instance
+    chute = (
+        (await db.execute(select(Chute).where(Chute.chute_id == instance.chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+
+    # Prevent activation of private instances if we're already capped. This is necessary here
+    # because we allow the miners to "race" to deploy so there are potentially more instances
+    # inactive/pending than actually allowed.
+    if (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
+        query = text("""
+            SELECT COUNT(CASE WHEN active IS true AND verified IS true THEN 1 ELSE NULL END) AS active_count
+            FROM instances
+            WHERE chute_id = :chute_id
+        """)
+        count_result = (await db.execute(query, {"chute_id": chute.chute_id})).mappings().first()
+        active_count = count_result["active_count"]
+        scale_value = await settings.redis_client.get(f"scale:{chute.chute_id}")
+        target_count = int(scale_value) if scale_value else 0
+        if active_count >= target_count:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=(
+                    f"Private chute {chute.chute_id} already has {active_count} "
+                    f"active instances (target: {target_count}). Cannot activate."
+                ),
+            )
+
+    # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
         instance.active = True
         instance.activated_at = func.now()
-        chute = (
-            (await db.execute(select(Chute).where(Chute.chute_id == instance.chute_id)))
-            .unique()
-            .scalar_one_or_none()
-        )
         if not chute.public or launch_config.job_id:
             instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
         await db.commit()

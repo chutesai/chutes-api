@@ -21,7 +21,8 @@ from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
 from api.gpu import SUPPORTED_GPUS
-from api.util import notify_deleted
+from api.bounty.util import check_bounty_exists
+from api.util import notify_deleted, has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
 from api.capacity_log.schemas import CapacityLog
@@ -317,6 +318,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.chute_id,
                     c.public,
                     c.name,
+                    c.created_at,
                     c.concurrency,
                     c.max_instances,
                     c.scaling_threshold,
@@ -345,6 +347,54 @@ async def perform_autoscale(dry_run: bool = False):
             # Set default target count for chutes not found in query
             chute_target_counts[chute_id] = UNDERUTILIZED_CAP
             continue
+
+        # Private chute handling, quite different...
+        if info and not info.public and not has_legacy_private_billing(info):
+            # Private chutes that do already have instances.
+            if info.instance_count:
+                utilization_5m = metrics["utilization"].get("5m", 0)
+                utilization_15m = metrics["utilization"].get("15m", 0)
+                utilization_basis = max(utilization_5m, utilization_15m)
+
+                # Need to scale up?
+                if (
+                    utilization_basis >= info.scaling_threshold
+                    and info.instance_count < info.max_instances
+                ):
+                    await settings.redis_client.set(f"scale:{chute_id}", info.instance_count + 1)
+                    chute_target_counts[chute_id] = info.instance_count + 1
+                    chute_actions[chute_id] = "scale_up_candidate"
+                    logger.info(
+                        f"Private chute {chute_id=} has reached {utilization_basis=} with {info.max_instances=}, adding capacity"
+                    )
+                    continue
+
+                # Need to scale down?
+                elif utilization_basis < info.scaling_threshold and info.instance_count > 1:
+                    await settings.redis_client.set(f"scale:{chute_id}", info.instance_count - 1)
+                    chute_target_counts[chute_id] = info.instance_count - 1
+                    chute_actions[chute_id] = "scaled_down"
+                    logger.info(
+                        f"Private chute {chute_id=} has fallen to {utilization_basis=} with {info.max_instances=}, removing instance"
+                    )
+                    to_downsize.append((chute_id, 1))
+
+            # No instances, but a bounty exists so we allow one instance.
+            elif await check_bounty_exists(chute_id):
+                await settings.redis_client.set(f"scale:{chute_id}", 1)
+                chute_target_counts[chute_id] = 1
+                chute_actions[chute_id] = "scale_up_candidate"
+                logger.info(f"Private chute {chute_id=} has an active bounty, adding capacity")
+                continue
+
+            # No bounty, no usage, disallow.
+            else:
+                await settings.redis_client.set(f"scale:{chute_id}", 0)
+                chute_actions[chute_id]
+                chute_target_counts[chute_id] = 0
+                chute_actions[chute_id] = "no_action"
+                logger.info(f"Private chute {chute_id=} has no bounty, not scalable.")
+                continue
 
         if not info or not info.instance_count:
             # Check if there's a failsafe minimum for this chute
