@@ -207,5 +207,15 @@ class Settings(BaseSettings):
     hcaptcha_sitekey: Optional[str] = os.getenv("HCAPTCHA_SITEKEY")
     hcaptcha_secret: Optional[str] = os.getenv("HCAPTCHA_SECRET")
 
+    # TDX Attestation settings
+    boot_expected_mrtd: Optional[str] = os.getenv("BOOT_EXPECTED_MRTD")
+    luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
+    
+    # TDX verification service URLs (if using Intel's remote verification)
+    tdx_verification_url: Optional[str] = os.getenv("TDX_VERIFICATION_URL")
+    tdx_cert_chain_url: Optional[str] = os.getenv("TDX_CERT_CHAIN_URL")
+    
+    # Nonce expiration (minutes)
+    attestation_nonce_expiry: int = int(os.getenv("ATTESTATION_NONCE_EXPIRY", "10"))
 
 settings = Settings()

@@ -43,6 +43,8 @@ def create_metagraph_node_class(base):
         synced_at = Column(DateTime, server_default=func.now())
         blacklist_reason = Column(String)
 
+        servers = relationship("Server", back_populates="miner")
+
     return MetagraphNode
 
 
