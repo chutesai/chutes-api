@@ -1,5 +1,6 @@
 import os
 
+
 def pytest_configure(config):
     """Set up environment variables before any modules are imported."""
     os.environ.setdefault("COSIGN_KEY", os.path.abspath("./tests/integration/keys/cosign.key"))

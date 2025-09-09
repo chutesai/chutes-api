@@ -12,7 +12,6 @@ import tempfile
 import traceback
 import time
 import shutil
-import aiohttp
 import chutes
 import orjson as json
 from loguru import logger
@@ -397,6 +396,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
     await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
     return short_tag
 
+
 async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, bool], None]):
     await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
@@ -450,37 +450,45 @@ async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, 
         await process.communicate()
         raise BuildTimeout(message)
 
+
 async def get_image_digest(image_tag: str) -> str:
     """Get digest using cosign triangulate"""
     process = await asyncio.create_subprocess_exec(
         "cosign",
         "triangulate",
-        f"--allow-http-registry",
+        "--allow-http-registry",
         image_tag,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await process.communicate()
-    
+
     if process.returncode != 0:
         raise SignFailure(f"Failed to get digest for {image_tag}: {stderr.decode()}")
-    
+
     # cosign triangulate returns the signature reference like:
     # localhost:5000/test-sign:sha256-f043a1e0f30aba1263f163794779c6916f13c18871217c0910525818d752c636.sig
     triangulate_output = stdout.decode().strip()
-    
+
     # Extract the digest from the signature reference
     # Format: registry/repo:sha256-<digest>.sig
-    if ':sha256-' in triangulate_output and triangulate_output.endswith('.sig'):
+    if ":sha256-" in triangulate_output and triangulate_output.endswith(".sig"):
         # Extract the part between 'sha256-' and '.sig'
-        digest_part = triangulate_output.split(':sha256-')[1].replace('.sig', '')
+        digest_part = triangulate_output.split(":sha256-")[1].replace(".sig", "")
         digest = f"sha256:{digest_part}"
     else:
         raise SignFailure(f"Unexpected triangulate output format: {triangulate_output}")
-    
+
     return digest
 
-async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, bool], None], started_at: Optional[float] = None, stream: bool = True):
+
+async def sign_image(
+    image,
+    image_tag: str,
+    _capture_logs: Callable[[Any, Any, bool], None],
+    started_at: Optional[float] = None,
+    stream: bool = True,
+):
     """Sign the image using cosign"""
     try:
         image_digest = await get_image_digest(image_tag)
@@ -488,7 +496,7 @@ async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, b
         process = await asyncio.create_subprocess_exec(
             "cosign",
             "sign",
-            f"--allow-http-registry",
+            "--allow-http-registry",
             "--key",
             f"{settings.cosign_key}",
             image_digest_tag,
@@ -498,7 +506,7 @@ async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, b
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await process.communicate(input=f"{settings.cosign_password}\n".encode())
-        
+
         await asyncio.wait_for(
             asyncio.gather(
                 _capture_logs(process.stdout, "stdout"),
@@ -541,9 +549,8 @@ async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, b
             await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
-        raise SignTimeout(
-            f"Sign of {image_tag} timed out after {settings.push_timeout} seconds."
-        )
+        raise SignTimeout(f"Sign of {image_tag} timed out after {settings.push_timeout} seconds.")
+
 
 async def extract_cfsv_data_from_verification_image(verification_tag: str, build_dir: str) -> str:
     """

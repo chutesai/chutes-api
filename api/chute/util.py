@@ -1032,10 +1032,14 @@ async def invoke(
                         logger.error(f"Error updating usage pipeline: {exc}")
 
                     # Increment quota usage value.
-                    if chute.discount < 1.0 and (
-                        chute.public
-                        or has_legacy_private_billing(chute)
-                        or chute.user_id == await chutes_user_id()
+                    if (
+                        request.state.free_invocation
+                        and chute.discount < 1.0
+                        and (
+                            chute.public
+                            or has_legacy_private_billing(chute)
+                            or chute.user_id == await chutes_user_id()
+                        )
                     ):
                         try:
                             value = 1.0 if not reroll else settings.reroll_multiplier

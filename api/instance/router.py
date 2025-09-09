@@ -59,7 +59,7 @@ from api.util import (
     notify_activated,
     has_legacy_private_billing,
 )
-from api.bounty.util import check_bounty_exists
+from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -627,7 +627,11 @@ async def claim_launch_config(
         billed_to=chute.user_id,
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
     )
-    if launch_config.job_id or not chute.public:
+    if launch_config.job_id or (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
         instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
     db.add(instance)
 
@@ -796,8 +800,16 @@ async def activate_launch_config_instance(
     if not instance.active:
         instance.active = True
         instance.activated_at = func.now()
-        if not chute.public or launch_config.job_id:
+        if launch_config.job_id or (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
             instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
+            # For private instances, we need to delete the bounty to prevent scaling back up
+            # if this instance is terminated before a request is made. The miner will still a
+            # bounty, however, since each private instance automatically counts as a bounty (see metasync/shared.py)
+            await delete_bounty(chute.chute_id)
         await db.commit()
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
