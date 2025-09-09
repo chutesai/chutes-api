@@ -41,6 +41,7 @@ from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
+from api.util import recreate_vlm_payload, validate_tool_call_arguments
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -441,6 +442,14 @@ async def _invoke(
             if isinstance(exc, HTTPException):
                 raise
             logger.error(f"Failed to update VLM request payload: {str(exc)}")
+
+        # Validate tool call arguments JSON.
+        try:
+            await validate_tool_call_arguments(request_body)
+        except Exception as exc:
+            if isinstance(exc, HTTPException):
+                raise
+            logger.error(f"Failed to validate tool call arguments: {str(exc)}")
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)

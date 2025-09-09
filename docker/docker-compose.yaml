@@ -1,0 +1,124 @@
+services:
+
+  # Local Docker registry for testing
+  registry:
+    image: registry:2.8
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      REGISTRY_STORAGE_DELETE_ENABLED: true
+      REGISTRY_HTTP_ADDR: 0.0.0.0:5000
+    volumes:
+      - registry-data:/var/lib/registry
+    networks:
+      - test-network
+
+  # Redis for testing queue/streaming functionality
+  redis:
+    image: redis:7-alpine
+    container_name: chutes-test-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - test-network
+
+  # MinIO for S3-compatible storage testing
+  minio:
+    image: minio/minio:latest
+    container_name: chutes-test-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_CONSOLE_ADDRESS: ":9001"
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    networks:
+      - test-network
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: chutes-test-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: chutes_test
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpass
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    # command: >
+    #   postgres
+    #   -c log_statement=all
+    #   -c log_min_messages=info
+    #   -c log_min_error_statement=info
+    #   -c log_min_duration_statement=0
+    #   -c log_line_prefix='%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
+    #   -c log_checkpoints=on
+    #   -c log_destination=stderr
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U testuser -d chutes_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - test-network
+
+  # Database initializer service
+  db-init:
+    image: chutes-db-init
+    build:
+      context: ..
+      dockerfile: tests/docker/Dockerfile.db-init
+    container_name: chutes-test-db-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TEST_DATABASE_URL: "postgresql+asyncpg://testuser:testpass@postgres:5432/chutes_test"
+      COSIGN_KEY: "/app"
+      COSIGN_PASSWORD: "test"
+      AWS_ACCESS_KEY_ID: "minioadmin"
+      AWS_SECRET_ACCESS_KEY: "minioadmin123"
+    volumes:
+      - ../api:/app/api:ro
+      - ../metasync:/app/metasync:ro
+      - ../watchtower.py:/app/watchtower.py:ro
+      - ../pyproject.toml:/app/pyproject.toml:ro
+      - ../tests/scripts/init_db.py:/app/init_db.py:ro
+    networks:
+      - test-network
+    command: /app/.venv/bin/python /app/init_db.py --create
+
+volumes:
+  registry-data:
+    driver: local
+  redis-data:
+    driver: local
+  minio-data:
+    driver: local
+  postgres-data:
+    driver: local
+
+networks:
+  test-network:
+    driver: bridge

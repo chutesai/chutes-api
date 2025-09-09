@@ -3,6 +3,7 @@ Image forge -- build images and push to local registry with buildah.
 """
 
 import asyncio
+from typing import Any, Callable, Optional
 import zipfile
 import uuid
 import os
@@ -11,12 +12,15 @@ import tempfile
 import traceback
 import time
 import shutil
+import aiohttp
 import chutes
 import orjson as json
 from loguru import logger
 from api.config import settings
 from api.database import get_session
 from api.exceptions import (
+    SignFailure,
+    SignTimeout,
     UnsafeExtraction,
     BuildFailure,
     PushFailure,
@@ -306,6 +310,94 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         raise BuildTimeout(message)
 
     # Scan with trivy
+    await trivy_image_scan(image, short_tag, _capture_logs)
+
+    # Push
+    await settings.redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {
+            "data": json.dumps(
+                {"log_type": "stdout", "log": "pushing image to registry..."}
+            ).decode()
+        },
+    )
+    try:
+        verify = str(not settings.registry_insecure).lower()
+        process = await asyncio.create_subprocess_exec(
+            "buildah",
+            f"--tls-verify={verify}",
+            "push",
+            "--compression-format",
+            "gzip",
+            "--compression-level",
+            "1",
+            "--format",
+            "v2s2",
+            full_image_tag,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(
+            asyncio.gather(
+                _capture_logs(process.stdout, "stdout"),
+                _capture_logs(process.stderr, "stderr"),
+                process.wait(),
+            ),
+            timeout=settings.build_timeout,
+        )
+        if process.returncode == 0:
+            logger.success(f"Successfully pushed {full_image_tag}.")
+            delta = time.time() - started_at
+            message = (
+                "\N{HAMMER AND WRENCH} "
+                + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
+            )
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+            )
+            logger.success(message)
+        else:
+            message = "Image push failed, check logs for more details!"
+            logger.error(message)
+            await settings.redis_client.xadd(
+                f"forge:{image.image_id}:stream",
+                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+            )
+            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            raise PushFailure(f"Push of {full_image_tag} failed!")
+    except asyncio.TimeoutError:
+        message = f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
+        logger.error(message)
+        await settings.redis_client.xadd(
+            f"forge:{image.image_id}:stream",
+            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+        )
+        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        process.kill()
+        await process.communicate()
+        raise PushTimeout(
+            f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
+        )
+
+    # SIGN
+    await sign_image(image, full_image_tag, _capture_logs, started_at)
+
+    # DONE!
+    delta = time.time() - started_at
+    message = (
+        "\N{HAMMER AND WRENCH} "
+        + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
+    )
+    await settings.redis_client.xadd(
+        f"forge:{image.image_id}:stream",
+        {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+    )
+    logger.success(message)
+    await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+    return short_tag
+
+async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, bool], None]):
     await settings.redis_client.xadd(
         f"forge:{image.image_id}:stream",
         {
@@ -358,31 +450,55 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         await process.communicate()
         raise BuildTimeout(message)
 
-    # Push
-    await settings.redis_client.xadd(
-        f"forge:{image.image_id}:stream",
-        {
-            "data": json.dumps(
-                {"log_type": "stdout", "log": "pushing image to registry..."}
-            ).decode()
-        },
+async def get_image_digest(image_tag: str) -> str:
+    """Get digest using cosign triangulate"""
+    process = await asyncio.create_subprocess_exec(
+        "cosign",
+        "triangulate",
+        f"--allow-http-registry",
+        image_tag,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
     )
+    stdout, stderr = await process.communicate()
+    
+    if process.returncode != 0:
+        raise SignFailure(f"Failed to get digest for {image_tag}: {stderr.decode()}")
+    
+    # cosign triangulate returns the signature reference like:
+    # localhost:5000/test-sign:sha256-f043a1e0f30aba1263f163794779c6916f13c18871217c0910525818d752c636.sig
+    triangulate_output = stdout.decode().strip()
+    
+    # Extract the digest from the signature reference
+    # Format: registry/repo:sha256-<digest>.sig
+    if ':sha256-' in triangulate_output and triangulate_output.endswith('.sig'):
+        # Extract the part between 'sha256-' and '.sig'
+        digest_part = triangulate_output.split(':sha256-')[1].replace('.sig', '')
+        digest = f"sha256:{digest_part}"
+    else:
+        raise SignFailure(f"Unexpected triangulate output format: {triangulate_output}")
+    
+    return digest
+
+async def sign_image(image, image_tag: str, _capture_logs: Callable[[Any, Any, bool], None], started_at: Optional[float] = None, stream: bool = True):
+    """Sign the image using cosign"""
     try:
-        verify = str(not settings.registry_insecure).lower()
+        image_digest = await get_image_digest(image_tag)
+        image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
         process = await asyncio.create_subprocess_exec(
-            "buildah",
-            f"--tls-verify={verify}",
-            "push",
-            "--compression-format",
-            "gzip",
-            "--compression-level",
-            "1",
-            "--format",
-            "v2s2",
-            full_image_tag,
+            "cosign",
+            "sign",
+            f"--allow-http-registry",
+            "--key",
+            f"{settings.cosign_key}",
+            image_digest_tag,
+            "--yes",
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        stdout, stderr = await process.communicate(input=f"{settings.cosign_password}\n".encode())
+        
         await asyncio.wait_for(
             asyncio.gather(
                 _capture_logs(process.stdout, "stdout"),
@@ -392,54 +508,42 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
             timeout=settings.build_timeout,
         )
         if process.returncode == 0:
-            logger.success(f"Successfull pushed {full_image_tag}, done!")
-            delta = time.time() - started_at
-            message = (
-                "\N{HAMMER AND WRENCH} "
-                + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
-            )
-            await settings.redis_client.xadd(
-                f"forge:{image.image_id}:stream",
-                {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
-            )
-            logger.success(message)
+            logger.success(f"Successfully signed {image_digest_tag}, done!")
+            if stream:
+                delta = time.time() - started_at
+                message = (
+                    "\N{HAMMER AND WRENCH} "
+                    + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
+                )
+                await settings.redis_client.xadd(
+                    f"forge:{image.image_id}:stream",
+                    {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
+                )
+                logger.success(message)
         else:
-            message = "Image push failed, check logs for more details!"
+            message = "Image sign failed, check logs for more details!"
             logger.error(message)
+            if stream:
+                await settings.redis_client.xadd(
+                    f"forge:{image.image_id}:stream",
+                    {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
+                )
+                await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            raise SignFailure(f"Sign of {image_tag} failed!")
+    except asyncio.TimeoutError:
+        message = f"Sign of {image_digest_tag} timed out after {settings.push_timeout} seconds."
+        logger.error(message)
+        if stream:
             await settings.redis_client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
             await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
-            raise PushFailure(f"Push of {full_image_tag} failed!")
-    except asyncio.TimeoutError:
-        message = f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
-        logger.error(message)
-        await settings.redis_client.xadd(
-            f"forge:{image.image_id}:stream",
-            {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-        )
-        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
-        raise PushTimeout(
-            f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
+        raise SignTimeout(
+            f"Sign of {image_tag} timed out after {settings.push_timeout} seconds."
         )
-
-    # DONE!
-    delta = time.time() - started_at
-    message = (
-        "\N{HAMMER AND WRENCH} "
-        + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
-    )
-    await settings.redis_client.xadd(
-        f"forge:{image.image_id}:stream",
-        {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
-    )
-    logger.success(message)
-    await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
-    return short_tag
-
 
 async def extract_cfsv_data_from_verification_image(verification_tag: str, build_dir: str) -> str:
     """
@@ -908,6 +1012,9 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                 f"Error updating chutes lib for {image_id}: {exc}\n{traceback.format_exc()}"
             )
             error_message = str(exc)
+
+        # SIGN
+        await sign_image(image, full_target_tag, _capture_logs, stream=True)
 
     # Update the image with the new patch version, tag, etc.
     affected_chute_ids = []
