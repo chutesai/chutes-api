@@ -597,11 +597,11 @@ async def warm_up_chute(
             if (
                 tm := await get_chute_target_manager(chute=chute, max_wait=max_wait, dynonce=True)
             ) is None:
-                yield 'data: {"status": "cold", "log": "waiting for instances ..."}\n'
+                yield 'data: {"status": "cold", "log": "waiting for instances ..."}\n\n'
                 if not max_wait:
                     max_wait = 5.0
                 continue
-            yield f'data: {{"status": "hot", "log": "chute is hot, {len(tm.instances)} available"}}\n'
+            yield f'data: {{"status": "hot", "log": "chute is hot, {len(tm.instances)} instances available"}}\n\n'
             return
 
     return StreamingResponse(
