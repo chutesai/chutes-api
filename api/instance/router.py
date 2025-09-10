@@ -624,7 +624,7 @@ async def claim_launch_config(
         config_id=launch_config.config_id,
         port_mappings=[item.model_dump() for item in args.port_mappings],
         compute_multiplier=node_selector.compute_multiplier,
-        billed_to=chute.user_id,
+        billed_to=None,
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
     )
     if launch_config.job_id or (
@@ -633,6 +633,8 @@ async def claim_launch_config(
         and chute.user_id != await chutes_user_id()
     ):
         instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
+        instance.billed_to = chute.user_id
+
     db.add(instance)
 
     # Mark the job as associated with this instance.
