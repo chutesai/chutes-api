@@ -935,9 +935,20 @@ async def _deploy_chute(
         chute.updated_at = func.now()
         chute.revision = chute_args.revision
         chute.logging_enabled = chute_args.logging_enabled
-        chute.max_instances = None if chute.public else (chute_args.max_instances or 1)
+        chute.max_instances = (
+            None
+            if chute.public or chute.user_id == await chutes_user_id()
+            else (chute_args.max_instances or 1)
+        )
         chute.shutdown_after_seconds = (
-            None if chute.public else (chute_args.shutdown_after_seconds or 300)
+            None
+            if chute.public or chute.user_id == await chutes_user_id()
+            else (chute_args.shutdown_after_seconds or 300)
+        )
+        chute.scaling_threshold = (
+            None
+            if chute.public or chute.user_id == await chutes_user_id()
+            else (chute_args.scaling_threshold or 0.75)
         )
     else:
         try:
@@ -972,9 +983,14 @@ async def _deploy_chute(
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
                 logging_enabled=chute_args.logging_enabled,
-                max_instances=None if is_public else (chute_args.max_instances or 1),
+                scaling_threshold=None
+                if is_public or chute.user_id == await chutes_user_id()
+                else (chute_args.scaling_threshold or 0.75),
+                max_instances=None
+                if is_public or chute.user_id == await chutes_user_id()
+                else (chute_args.max_instances or 1),
                 shutdown_after_seconds=None
-                if is_public
+                if is_public or chute.user_id == await chutes_user_id()
                 else (chute_args.shutdown_after_seconds or 300),
             )
         except ValueError as exc:

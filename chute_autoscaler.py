@@ -322,7 +322,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.user_id,
                     c.created_at,
                     c.concurrency,
-                    c.max_instances,
+                    COALESCE(c.max_instances, 1) AS max_instances,
                     COALESCE(c.scaling_threshold, 0.75) AS scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
                     COUNT(DISTINCT i.instance_id) AS instance_count,
