@@ -2,9 +2,6 @@
 Calculates and schedules weights every SCORING_PERIOD
 """
 
-from api.database import get_session
-from sqlalchemy import text
-
 import asyncio
 from fiber import SubstrateInterface
 from fiber.chain import weights
@@ -14,14 +11,8 @@ from fiber.networking.models import NodeWithFernet as Node
 from fiber.chain.interface import get_substrate
 from metasync.database import engine, Base
 from metasync.config import settings
+from metasync.shared import get_scoring_data
 from fiber.chain.chain_utils import query_substrate
-from metasync.constants import (
-    UNIQUE_CHUTE_AVERAGE_QUERY,
-    NORMALIZED_COMPUTE_QUERY,
-    JOBS_QUERY,
-    SCORING_INTERVAL,
-    FEATURE_WEIGHTS,
-)
 
 VERSION_KEY = 69420  # Doesn't matter too much in chutes' case
 logger = get_logger(__name__)
@@ -52,155 +43,17 @@ async def _get_weights_to_set(
     - Punish errors more than just ignoring them
     - Have a decaying, normalised reward, rather than a fixed window
     """
-
-    compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
-    unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    jobs_query = text(JOBS_QUERY.format(interval=SCORING_INTERVAL))
-    raw_compute_values = {}
-    highest_unique = 0.0
-    async with get_session() as session:
-        # Metagraph query if we enable multi-uid punishments.
-        metagraph_nodes = await session.execute(
-            text("SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = 64 AND node_id >= 0")
-        )
-        hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
-
-        compute_result = await session.execute(compute_query)
-        unique_result = await session.execute(unique_query)
-        job_result = await session.execute(jobs_query)
-
-        # Compute units, invocation counts, and bounties.
-        for hotkey, invocation_count, bounty_count, compute_units in compute_result:
-            raw_compute_values[hotkey] = {
-                "invocation_count": invocation_count,
-                "bounty_count": bounty_count,
-                "compute_units": compute_units,
-                "unique_chute_count": 0,
-            }
-
-        # Average active unique chute counts.
-        for miner_hotkey, average_active_chutes in unique_result:
-            if miner_hotkey not in raw_compute_values:
-                continue
-            raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
-            if average_active_chutes > highest_unique:
-                highest_unique = average_active_chutes
-
-        # Jobs.
-        for (
-            miner_hotkey,
-            terminated_jobs,
-            running_jobs,
-            completed_jobs,
-            total_jobs,
-            current_compute_units,
-            completed_compute_units,
-            total_compute_units,
-        ) in job_result:
-            logger.info(
-                f"Job stats: {miner_hotkey=} {running_jobs=} {completed_jobs=} {total_jobs=} "
-                f"{current_compute_units=} {completed_compute_units} {total_compute_units=}"
-            )
-
-            # Need to have normal chutes to run jobs, so we can skip scoring here.
-            if miner_hotkey not in raw_compute_values:
-                continue
-            raw_compute_values[miner_hotkey]["bounty_count"] += total_jobs
-            raw_compute_values[miner_hotkey]["compute_units"] += total_compute_units
-
-    # Logging.
-    for hotkey, values in raw_compute_values.items():
-        logger.info(f"{hotkey}: {values}")
-
-    # Normalize the values based on totals so they are all in the range [0.0, 1.0]
-    totals = {
-        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
-    }
-    normalized_values = {}
-
-    unique_scores = [
-        row["unique_chute_count"]
-        for row in raw_compute_values.values()
-        if row["unique_chute_count"]
-    ]
-    unique_scores.sort()
-    n = len(unique_scores)
-    if n > 0:
-        if n % 2 == 0:
-            median_unique_score = (unique_scores[n // 2 - 1] + unique_scores[n // 2]) / 2
-        else:
-            median_unique_score = unique_scores[n // 2]
-    else:
-        median_unique_score = 0
-    for key in FEATURE_WEIGHTS:
-        for hotkey, row in raw_compute_values.items():
-            if hotkey not in normalized_values:
-                normalized_values[hotkey] = {}
-            if key == "unique_chute_count":
-                if row[key] >= median_unique_score:
-                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 1.3
-                else:
-                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 2.2
-            else:
-                normalized_values[hotkey][key] = row[key] / totals[key]
-
-    # Re-normalize unique to [0, 1]
-    unique_sum = sum([val["unique_chute_count"] for val in normalized_values.values()])
-    old_unique_sum = sum([val["unique_chute_count"] for val in raw_compute_values.values()])
-    for hotkey in normalized_values:
-        normalized_values[hotkey]["unique_chute_count"] /= unique_sum
-        old_value = raw_compute_values[hotkey]["unique_chute_count"] / old_unique_sum
-        logger.info(
-            f"Normalized, exponential unique score {hotkey} = {normalized_values[hotkey]['unique_chute_count']}, vs default: {old_value}"
-        )
-
-    # Adjust the values by the feature weights, e.g. compute_time gets more weight than bounty count.
-    pre_final_scores = {
-        hotkey: sum(norm_value * FEATURE_WEIGHTS[key] for key, norm_value in metrics.items())
-        for hotkey, metrics in normalized_values.items()
-    }
-
-    # Punish multi-uid miners.
-    sorted_hotkeys = sorted(
-        pre_final_scores.keys(), key=lambda h: pre_final_scores[h], reverse=True
-    )
-    coldkey_counts = {
-        coldkey: sum([1 for _, ck in hot_cold_map.items() if ck == coldkey])
-        for coldkey in hot_cold_map.values()
-    }
-    penalized_scores = {}
-    coldkey_used = set()
-    for hotkey in sorted_hotkeys:
-        coldkey = hot_cold_map[hotkey]
-        if coldkey in coldkey_used:
-            logger.warning(
-                f"Zeroing multi-uid miner {hotkey=} {coldkey=} count={coldkey_counts[coldkey]}"
-            )
-            penalized_scores[hotkey] = 0.0
-        else:
-            penalized_scores[hotkey] = pre_final_scores[hotkey]
-        coldkey_used.add(coldkey)
-
-    # Normalize final scores by sum of penalized scores, just to make the incentive value match nicely.
-    total = sum([val for hk, val in penalized_scores.items()])
-    final_scores = {key: score / total for key, score in penalized_scores.items() if score > 0}
-    sorted_hotkeys = sorted(final_scores.keys(), key=lambda h: final_scores[h], reverse=True)
-    for hotkey in sorted_hotkeys:
-        coldkey_count = coldkey_counts[hot_cold_map[hotkey]]
-        logger.info(f"{hotkey} ({coldkey_count=}): {final_scores[hotkey]}")
-
-    # Final weights per node.
+    scoring_data = await get_scoring_data()
+    final_scores = scoring_data["final_scores"]
     node_ids = []
     node_weights = []
     for hotkey, compute_score in final_scores.items():
         if hotkey not in hotkeys_to_node_ids:
             logger.debug(f"Miner {hotkey} not found on metagraph. Ignoring.")
             continue
-
         node_weights.append(compute_score)
         node_ids.append(hotkeys_to_node_ids[hotkey])
-        logger.info(f"Normalized score for {hotkey}: {compute_score}")
-
+        logger.info(f"Setting score for {hotkey=} to {compute_score=}")
     return node_ids, node_weights
 
 

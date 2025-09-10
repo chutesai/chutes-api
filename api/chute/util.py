@@ -42,6 +42,7 @@ from api.util import (
     use_encryption_v2,
     use_encrypted_path,
     notify_deleted,
+    has_legacy_private_billing,
 )
 from api.util import memcache_set
 from api.bounty.util import claim_bounty
@@ -50,7 +51,7 @@ from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOve
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager
+from api.instance.util import LeastConnManager, update_shutdown_timestamp
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
@@ -947,21 +948,22 @@ async def invoke(
                             if discount < 1.0:
                                 # LLM per token pricing.
                                 if chute.standard_template == "vllm" and metrics:
+                                    per_million_in = max(
+                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
+                                        LLM_MIN_PRICE_IN,
+                                    )
+                                    per_million_out = max(
+                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
+                                        LLM_MIN_PRICE_OUT,
+                                    )
+                                    if (chute.concurrency or 1) < 16:
+                                        per_million_in *= 16.0 / (chute.concurrency or 1)
+                                        per_million_out *= 16.0 / (chute.concurrency or 1)
                                     in_balance_used = (
-                                        (metrics.get("it", 0) or 0)
-                                        / 1000000.0
-                                        * max(
-                                            hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
-                                            LLM_MIN_PRICE_IN,
-                                        )
+                                        (metrics.get("it", 0) or 0) / 1000000.0 * per_million_in
                                     )
                                     out_balance_used = (
-                                        (metrics.get("ot", 0) or 0)
-                                        / 1000000.0
-                                        * max(
-                                            hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
-                                            LLM_MIN_PRICE_OUT,
-                                        )
+                                        (metrics.get("ot", 0) or 0) / 1000000.0 * per_million_out
                                     )
                                     balance_used = in_balance_used + out_balance_used
                                     balance_used -= balance_used * discount
@@ -994,6 +996,25 @@ async def invoke(
                         if user_discount:
                             balance_used -= balance_used * user_discount
 
+                    # For private/user-created chutes, the costs of the chute are offset by
+                    # usage of the chute from users other than the chute owner, i.e.
+                    # when a private chute is shared with another user and that user makes
+                    # use of the chute, that user is charged per request and that balance is
+                    # added to the chute owner's account, reducing their overall cost.
+                    add_balance_to = None
+                    if (
+                        not chute.public
+                        and not has_legacy_private_billing(chute)
+                        and chute.user_id != await chutes_user_id()
+                    ):
+                        if user_id == chute.user_id:
+                            balance_used = 0
+                        else:
+                            add_balance_to = chute.user_id
+                            logger.info(
+                                f"Adding {balance_used} credits to {chute.user_id} due to invocation of {chute.name=} from {user_id=}"
+                            )
+
                     # Ship the data over to usage tracker which actually deducts/aggregates balance/etc.
                     try:
                         pipeline = settings.redis_client.pipeline()
@@ -1004,12 +1025,22 @@ async def invoke(
                             pipeline.hincrby(key, "input_tokens", metrics.get("it", 0))
                             pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
                         pipeline.hset(key, "timestamp", int(time.time()))
+                        if balance_used and add_balance_to:
+                            pipeline.hincrbyfloat(key, "amount", 0 - balance_used)
                         await pipeline.execute()
                     except Exception as exc:
                         logger.error(f"Error updating usage pipeline: {exc}")
 
                     # Increment quota usage value.
-                    if chute.discount < 1.0:
+                    if (
+                        request.state.free_invocation
+                        and chute.discount < 1.0
+                        and (
+                            chute.public
+                            or has_legacy_private_billing(chute)
+                            or chute.user_id == await chutes_user_id()
+                        )
+                    ):
                         try:
                             value = 1.0 if not reroll else settings.reroll_multiplier
                             key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
@@ -1018,6 +1049,14 @@ async def invoke(
                             logger.error(
                                 f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
                             )
+
+                    # For private chutes, push back the instance termination timestamp.
+                    if (
+                        not chute.public
+                        and not has_legacy_private_billing(chute)
+                        and chute.user_id != await chutes_user_id()
+                    ):
+                        await update_shutdown_timestamp(target.instance_id)
 
                     await session.commit()
 
@@ -1224,6 +1263,9 @@ async def get_and_store_llm_details(chute_id: str):
         if chute.discount:
             per_million_in -= per_million_in * chute.discount
             per_million_out -= per_million_out * chute.discount
+        if (chute.concurrency or 1) < 16:
+            per_million_in *= 16.0 / (chute.concurrency or 1)
+            per_million_out *= 16.0 / (chute.concurrency or 1)
         price = {"input": {"usd": per_million_in}, "output": {"usd": per_million_out}}
         tao_usd = await get_fetcher().get_price("tao")
         if tao_usd:

@@ -21,7 +21,9 @@ from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
 from api.gpu import SUPPORTED_GPUS
-from api.util import notify_deleted
+from api.bounty.util import check_bounty_exists
+from api.user.service import chutes_user_id
+from api.util import notify_deleted, has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
 from api.capacity_log.schemas import CapacityLog
@@ -315,13 +317,22 @@ async def perform_autoscale(dry_run: bool = False):
             text("""
                 SELECT
                     c.chute_id,
+                    c.public,
                     c.name,
+                    c.user_id,
+                    c.created_at,
+                    c.concurrency,
+                    COALESCE(c.max_instances, 1) AS max_instances,
+                    COALESCE(c.scaling_threshold, 0.75) AS scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
-                    COUNT(DISTINCT i.instance_id) as instance_count,
-                    EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) as has_rolling_update,
-                    NOW() as db_now
+                    COUNT(DISTINCT i.instance_id) AS instance_count,
+                    EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
+                    NOW() AS db_now
                 FROM chutes c
                 LEFT JOIN instances i ON c.chute_id = i.chute_id AND i.verified = true AND i.active = true
+                WHERE c.jobs IS NULL
+                      OR c.jobs = '[]'::jsonb
+                      OR c.jobs = '{}'::jsonb
                 GROUP BY c.chute_id
             """)
         )
@@ -337,6 +348,66 @@ async def perform_autoscale(dry_run: bool = False):
             logger.warning(f"Chute {chute_id} found in metrics but not in chute_info query")
             # Set default target count for chutes not found in query
             chute_target_counts[chute_id] = UNDERUTILIZED_CAP
+            continue
+
+        # Private chute handling, quite different...
+        if (
+            info
+            and not info.public
+            and not has_legacy_private_billing(info)
+            and info.user_id != await chutes_user_id()
+        ):
+            # Private chutes that do already have instances.
+            if info.instance_count:
+                utilization_5m = metrics["utilization"].get("5m", 0)
+                utilization_15m = metrics["utilization"].get("15m", 0)
+                utilization_basis = max(utilization_5m, utilization_15m)
+
+                # Need to scale up?
+                if (
+                    utilization_basis >= info.scaling_threshold
+                    and info.instance_count < info.max_instances
+                ):
+                    await settings.redis_client.set(f"scale:{chute_id}", info.instance_count + 1)
+                    chute_target_counts[chute_id] = info.instance_count + 1
+                    chute_actions[chute_id] = "scale_up_candidate"
+                    logger.info(
+                        f"Private chute {chute_id=} has reached {utilization_basis=} with {info.max_instances=}, adding capacity"
+                    )
+                    continue
+
+                # Need to scale down?
+                elif utilization_basis < info.scaling_threshold and info.instance_count > 1:
+                    await settings.redis_client.set(f"scale:{chute_id}", info.instance_count - 1)
+                    chute_target_counts[chute_id] = info.instance_count - 1
+                    chute_actions[chute_id] = "scaled_down"
+                    logger.info(
+                        f"Private chute {chute_id=} has fallen to {utilization_basis=} with {info.max_instances=}, removing instance"
+                    )
+                    to_downsize.append((chute_id, 1))
+                    continue
+
+            # No instances, but a bounty exists so we allow one instance.
+            elif await check_bounty_exists(chute_id):
+                await settings.redis_client.set(f"scale:{chute_id}", 1)
+                chute_target_counts[chute_id] = 1
+                chute_actions[chute_id] = "scale_up_candidate"
+                logger.info(f"Private chute {chute_id=} has an active bounty, adding capacity")
+                continue
+
+            # No bounty, no usage, disallow.
+            else:
+                await settings.redis_client.set(f"scale:{chute_id}", 0)
+                chute_target_counts[chute_id] = 0
+                chute_actions[chute_id] = "no_action"
+                logger.info(f"Private chute {chute_id=} has no bounty, not scalable.")
+                continue
+
+            # Default, do nothing.
+            await settings.redis_client.set(f"scale:{chute_id}", info.instance_count)
+            chute_target_counts[chute_id] = info.instance_count
+            chute_actions[chute_id] = "no_action"
+            logger.info(f"Private chute {chute_id=} has expected capacity, no-op.")
             continue
 
         if not info or not info.instance_count:
@@ -535,7 +606,11 @@ async def perform_autoscale(dry_run: bool = False):
                     await session.execute(
                         select(Chute)
                         .where(Chute.chute_id == chute_id)
-                        .options(selectinload(Chute.instances).selectinload(Instance.nodes))
+                        .options(
+                            selectinload(Chute.instances)
+                            .selectinload(Instance.nodes)
+                            .selectinload(Instance.launch_config)
+                        )
                     )
                 )
                 .unique()
@@ -549,7 +624,11 @@ async def perform_autoscale(dry_run: bool = False):
                 logger.warning(f"Chute has a rolling update in progress: {chute_id=}")
                 continue
 
-            active = [inst for inst in chute.instances if inst.verified and inst.active]
+            active = [
+                inst
+                for inst in chute.instances
+                if inst.verified and inst.active and not inst.launch_config.job_id
+            ]
             instances = []
             for instance in active:
                 if len(instance.nodes) != chute.node_selector.get("gpu_count"):

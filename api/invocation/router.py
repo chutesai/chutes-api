@@ -29,14 +29,19 @@ from api.chute.util import (
     is_shared,
     count_prompt_tokens,
 )
-from api.util import memcache_get, memcache_set
+from api.util import (
+    memcache_get,
+    memcache_set,
+    recreate_vlm_payload,
+    has_legacy_private_billing,
+)
 from api.user.schemas import User, InvocationQuota
-from api.user.service import get_current_user
+from api.user.service import get_current_user, chutes_user_id
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
-from api.util import recreate_vlm_payload, validate_tool_call_arguments
+from api.util import validate_tool_call_arguments
 from api.permissions import Permissioning
 
 router = APIRouter()
@@ -332,9 +337,20 @@ async def _invoke(
             pipe.expire(key, 25 * 60 * 60)
             await pipe.execute()
 
+        # No quota for private/user-created chutes.
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            quota = 0
+
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
-            if current_user.balance <= 0 and not request.state.free_invocation:
+            if (
+                current_user.current_balance.effective_balance <= 0
+                and not request.state.free_invocation
+            ):
                 logger.warning(
                     f"Payment required: attempted invocation of {chute.name} "
                     f"from user {current_user.username} [{origin_ip}] with no balance "
@@ -343,7 +359,7 @@ async def _invoke(
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail=(
-                        f"Quota exceeded and account balance is ${current_user.balance}, "
+                        f"Quota exceeded and account balance is ${current_user.current_balance.effective_balance}, "
                         f"please pay with fiat or send tao to {current_user.payment_address}"
                     ),
                 )
@@ -445,8 +461,7 @@ async def _invoke(
     else:
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
-    async with get_session() as db:
-        manager = await get_chute_target_manager(db, chute, max_wait=0)
+    manager = await get_chute_target_manager(chute, max_wait=0)
     if not manager or not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(
@@ -531,7 +546,7 @@ async def _invoke(
                 await memcache_set(rr_key, b"0")
             try:
                 count = await settings.memcache.incr(rr_key, 1)
-                await settings.memcache.touch(rr_key, 300)
+                await settings.memcache.touch(rr_key, 1200)
                 if count > 1:
                     reroll = True
             except Exception:

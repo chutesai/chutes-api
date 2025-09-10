@@ -140,7 +140,7 @@ async def admin_balance_lookup(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
         )
-    return {"user_id": user.user_id, "balance": user.balance}
+    return {"user_id": user.user_id, "balance": user.current_balance.effective_balance}
 
 
 @router.get("/invoiced_user_list", response_model=list[SelfResponse])
@@ -161,7 +161,12 @@ async def admin_invoiced_user_list(
         )
     )
     result = await db.execute(query)
-    return [SelfResponse.from_orm(user) for user in result.unique().scalars().all()]
+    users = []
+    for user in result.unique().scalars().all():
+        ur = SelfResponse.from_orm(user)
+        ur.balance = user.current_balance.effective_balance
+        users.append(ur)
+    return users
 
 
 @router.post("/admin_balance_change")
@@ -353,7 +358,9 @@ async def admin_enable_invoicing(
         Permissioning.enable(user, Permissioning.unlimited)
     await db.commit()
     await db.refresh(user)
-    return user
+    ur = SelfResponse.from_orm(user)
+    ur.balance = user.current_balance.effective_balance
+    return ur
 
 
 @router.get("/me", response_model=SelfResponse)
@@ -364,7 +371,15 @@ async def me(
     """
     Get a detailed response for the current user.
     """
-    return current_user
+    # Re-load with balance...
+    user = (
+        (await db.execute(select(User).where(User.user_id == current_user.user_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    ur = SelfResponse.from_orm(user)
+    ur.balance = user.current_balance.effective_balance
+    return ur
 
 
 @router.get("/me/quotas")
@@ -515,7 +530,9 @@ async def set_logo(
     user.logo_id = logo_id
     await db.commit()
     await db.refresh(user)
-    return user
+    ur = SelfResponse.from_orm(user)
+    ur.balance = user.current_balance.effective_balance
+    return ur
 
 
 async def _validate_username(db, username):
@@ -878,7 +895,9 @@ async def change_bt_auth(
     if changed:
         await db.commit()
         await db.refresh(user)
-        return user
+        ur = SelfResponse.from_orm(user)
+        ur.balance = user.current_balance.effective_balance
+        return ur
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,
         detail=error_message or "Invalid request, please provide a coldkey and/or hotkey",

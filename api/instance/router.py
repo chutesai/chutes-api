@@ -13,6 +13,7 @@ import asyncio
 import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional
+from datetime import timedelta
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
 from sqlalchemy import select, text, func, update
 from sqlalchemy.orm import joinedload
@@ -27,9 +28,10 @@ from api.constants import (
     EXPANSION_UTILIZATION_THRESHOLD,
     UNDERUTILIZED_CAP,
     AUTHORIZATION_HEADER,
+    PRIVATE_INSTANCE_MULTIPLIER,
 )
 from api.node.util import get_node_by_id
-from api.chute.schemas import Chute
+from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import (
     Instance,
     instance_nodes,
@@ -44,7 +46,7 @@ from api.instance.util import (
     load_launch_config_from_jwt,
 )
 from api.user.schemas import User
-from api.user.service import get_current_user
+from api.user.service import get_current_user, chutes_user_id
 from api.metasync import get_miner_by_hotkey
 from api.util import (
     semcomp,
@@ -55,7 +57,9 @@ from api.util import (
     notify_deleted,
     notify_verified,
     notify_activated,
+    has_legacy_private_billing,
 )
+from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -239,6 +243,35 @@ async def _check_scalable(db, chute, hotkey):
         )
 
 
+async def _check_scalable_private(db, chute):
+    """
+    Special scaling logic for private chutes (without legacy billing).
+    """
+    chute_id = chute.chute_id
+    query = text("""
+        SELECT
+            COUNT(*) AS total_count,
+            COUNT(CASE WHEN active IS true AND verified IS true THEN 1 ELSE NULL END) AS active_count
+        FROM instances
+        WHERE chute_id = :chute_id
+    """)
+    count_result = (await db.execute(query, {"chute_id": chute_id})).mappings().first()
+    active_count = count_result["active_count"]
+    scale_value = await settings.redis_client.get(f"scale:{chute_id}")
+    target_count = int(scale_value) if scale_value else 0
+    bounty_exists = await check_bounty_exists(chute_id)
+    if active_count == 0 and not bounty_exists:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Private chute {chute_id} has no active bounty and cannot be scaled.",
+        )
+    if active_count >= target_count and target_count > 0:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Private chute {chute_id} has reached its target capacity of {target_count} instances.",
+        )
+
+
 async def _validate_node(db, chute, node_id: str, hotkey: str):
     node = await get_node_by_id(node_id, db, hotkey)
     if not node:
@@ -347,7 +380,14 @@ async def get_launch_config(
     # Load the chute and check if it's scalable.
     chute = await _load_chute(db, chute_id)
     if not job_id:
-        await _check_scalable(db, chute, hotkey)
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            await _check_scalable_private(db, chute)
+        else:
+            await _check_scalable(db, chute, hotkey)
 
     # Associated with a job?
     disk_gb = None
@@ -435,7 +475,14 @@ async def claim_launch_config(
 
     # Re-check scalable...
     if not launch_config.job_id:
-        await _check_scalable(db, chute, launch_config.miner_hotkey)
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            await _check_scalable_private(db, chute)
+        else:
+            await _check_scalable(db, chute, launch_config.miner_hotkey)
 
     # IP matches?
     x_forwarded_for = request.headers.get("X-Forwarded-For")
@@ -559,6 +606,7 @@ async def claim_launch_config(
             )
 
     # Create the instance now that we've verified the envdump/k8s env.
+    node_selector = NodeSelector(**chute.node_selector)
     instance = Instance(
         instance_id=new_instance_id,
         host=args.host,
@@ -575,7 +623,18 @@ async def claim_launch_config(
         symmetric_key=secrets.token_bytes(16).hex(),
         config_id=launch_config.config_id,
         port_mappings=[item.model_dump() for item in args.port_mappings],
+        compute_multiplier=node_selector.compute_multiplier,
+        billed_to=None,
+        hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
     )
+    if launch_config.job_id or (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
+        instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
+        instance.billed_to = chute.user_id
+
     db.add(instance)
 
     # Mark the job as associated with this instance.
@@ -707,8 +766,64 @@ async def activate_launch_config_instance(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance has disappeared for launch_{config_id=}",
         )
+    chute = (
+        (await db.execute(select(Chute).where(Chute.chute_id == instance.chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+
+    # Prevent activation of private instances if we're already capped. This is necessary here
+    # because we allow the miners to "race" to deploy so there are potentially more instances
+    # inactive/pending than actually allowed.
+    if (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
+        query = text("""
+            SELECT COUNT(CASE WHEN active IS true AND verified IS true THEN 1 ELSE NULL END) AS active_count
+            FROM instances
+            WHERE chute_id = :chute_id
+        """)
+        count_result = (await db.execute(query, {"chute_id": chute.chute_id})).mappings().first()
+        active_count = count_result["active_count"]
+        scale_value = await settings.redis_client.get(f"scale:{chute.chute_id}")
+        target_count = int(scale_value) if scale_value else 0
+        can_scale = False
+        if not active_count and await check_bounty_exists(chute.chute_id):
+            can_scale = True
+        elif active_count < target_count:
+            can_scale = True
+        if not can_scale:
+            reason = f"Private chute {chute.chute_id=} {chute.name=} already has >= {target_count=} active instances"
+            logger.warning(reason)
+            await db.delete(instance)
+            await asyncio.create_task(notify_deleted(instance))
+            await db.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                ),
+                {"instance_id": instance.instance_id, "reason": reason},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=reason,
+            )
+
+    # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
         instance.active = True
+        instance.activated_at = func.now()
+        if launch_config.job_id or (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
+            # For private instances, we need to delete the bounty to prevent scaling back up
+            # if this instance is terminated before a request is made. The miner will still a
+            # bounty, however, since each private instance automatically counts as a bounty (see metasync/shared.py)
+            await delete_bounty(chute.chute_id)
         await db.commit()
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
@@ -805,14 +920,20 @@ async def verify_launch_config_instance(
     estimate = SUPPORTED_GPUS[instance.nodes[0].gpu_identifier]["graval"]["estimate"]
     max_duration = estimate * 2.15
     if (delta := (now - start).total_seconds()) >= max_duration:
-        message = (
+        reason = (
             f"PoVW encrypted response for {config_id=} and {instance.instance_id=} "
             f"{instance.miner_hotkey=} took {delta} seconds, exceeding maximum estimate of {max_duration}"
         )
-        logger.error(message)
+        logger.error(reason)
         launch_config.failed_at = func.now()
-        launch_config.verification_error = message
+        launch_config.verification_error = reason
         await db.delete(instance)
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": instance.instance_id, "reason": reason},
+        )
         await db.commit()
         asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
@@ -828,12 +949,20 @@ async def verify_launch_config_instance(
         response = aes_decrypt(ciphertext, instance.symmetric_key, iv)
         assert response == f"secret is {launch_config.config_id} {launch_config.seed}".encode()
     except Exception as exc:
-        logger.error(
-            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=} was invalid: {exc}\n{traceback.format_exc()}"
+        reason = (
+            f"PoVW encrypted response for {config_id=} and {instance.instance_id=} "
+            f"{instance.miner_hotkey=} was invalid: {exc}\n{traceback.format_exc()}"
         )
+        logger.error(reason)
         launch_config.failed_at = func.now()
-        launch_config.verification_error = f"PoVW encrypted response was invalid: {exc}"
+        launch_config.verification_error = reason
         await db.delete(instance)
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": instance.instance_id, "reason": reason},
+        )
         await db.commit()
         asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
@@ -849,12 +978,19 @@ async def verify_launch_config_instance(
         logger.info(f"CHECKING PROOF: {work_product=}\n{response_body=}")
         assert await verify_proof(node, launch_config.seed, work_product)
     except Exception as exc:
-        logger.error(
-            f"PoVW proof failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}: {exc}\n{traceback.format_exc()}"
+        reason = (
+            f"PoVW proof failed for {config_id=} and {instance.instance_id=} "
+            f"{instance.miner_hotkey=}: {exc}\n{traceback.format_exc()}"
         )
         launch_config.failed_at = func.now()
-        launch_config.verification_error = f"PoVW proof verification failed: {exc}"
+        launch_config.verification_error = reason
         await db.delete(instance)
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": instance.instance_id, "reason": reason},
+        )
         await db.commit()
         asyncio.create_task(notify_deleted(instance))
         raise HTTPException(
@@ -877,15 +1013,20 @@ async def verify_launch_config_instance(
             result = await task.wait_result()
             expected_hash = result.return_value
             if expected_hash != response_body["fsv"]:
-                logger.error(
+                reason = (
                     f"Filesystem challenge failed for {config_id=} and {instance.instance_id=} {instance.miner_hotkey=}, "
                     f"{expected_hash=} for {image_id=} {patch_version=} but received {response_body['fsv']}"
                 )
+                logger.error(reason)
                 launch_config.failed_at = func.now()
-                launch_config.verification_error = (
-                    "File system verification failure, mismatched hash"
-                )
+                launch_config.verification_error = reason
                 await db.delete(instance)
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id, "reason": reason},
+                )
                 await db.commit()
                 asyncio.create_task(notify_deleted(instance))
                 raise HTTPException(
@@ -904,6 +1045,15 @@ async def verify_launch_config_instance(
             if port_map["internal_port"] in (8000, 8001):
                 continue
             if not await verify_port_map(instance, port_map):
+                reason = f"Failed port verification on {port_map=} for {instance.instance_id=} {instance.miner_hotkey=}"
+                logger.error(reason)
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id, "reason": reason},
+                )
+                asyncio.create_task(notify_deleted(instance))
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=f"Failed port verification on {port_map=}",

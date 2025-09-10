@@ -19,8 +19,9 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
+from api.util import has_legacy_private_billing
+from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text, func
 from sqlalchemy.orm import aliased, joinedload
@@ -29,7 +30,7 @@ from sqlalchemy.orm import aliased, joinedload
 InstanceAlias = aliased(Instance)
 
 
-@alru_cache(maxsize=100, ttl=30)
+@alru_cache(maxsize=200, ttl=60)
 async def load_chute_targets(chute_id: str, nonce: float = 0):
     query = (
         select(Instance)
@@ -330,14 +331,26 @@ class LeastConnManager:
             self._cleanup_task.cancel()
 
 
-async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait: int = 0):
+async def get_chute_target_manager(
+    chute: Chute, max_wait: int = 0, no_bounty: bool = False, dynonce: bool = False
+):
     """
     Select target instances by least connections (with random on equal counts).
     """
     chute_id = chute.chute_id
-    instances = await load_chute_targets(chute_id, nonce=0)
+    nonce = int(time.time()) if dynonce else int(time.time() % 60)
+    instances = await load_chute_targets(chute_id, nonce=nonce)
     started_at = time.time()
     while not instances:
+        # Private chutes have a very short-lived bounty, so users aren't billed if they stop making requests.
+        bounty_lifetime = 86400
+        if (
+            not chute.public
+            and not has_legacy_private_billing(chute)
+            and chute.user_id != await chutes_user_id()
+        ):
+            bounty_lifetime = 1800
+
         # Increase the bounty.
         async with get_session() as bounty_session:
             update_result = await bounty_session.execute(
@@ -348,15 +361,16 @@ async def get_chute_target_manager(session: AsyncSession, chute: Chute, max_wait
                 logger.warning(
                     f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
                 )
-            else:
-                if await create_bounty_if_not_exists(chute_id):
+            elif not no_bounty:
+                if await create_bounty_if_not_exists(chute_id, lifetime=bounty_lifetime):
                     logger.success(f"Successfully created a bounty for {chute_id=}")
                 current_time = int(time.time())
                 window = current_time - (current_time % 30)
                 notification_key = f"bounty_notification:{chute_id}:{window}"
                 if await settings.redis_client.setnx(notification_key, b"1"):
                     await settings.redis_client.expire(notification_key, 33)
-                    if (amount := await get_bounty_amount(chute_id)) is not None:
+                    amount = await get_bounty_amount(chute_id)
+                    if amount:
                         logger.info(f"Bounty for {chute_id=} is now {amount}")
                         await send_bounty_notification(chute_id, amount)
         if not max_wait or time.time() - started_at >= max_wait:
@@ -525,3 +539,26 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=detail,
     )
+
+
+async def update_shutdown_timestamp(instance_id: str):
+    query = """
+WITH target AS (
+    SELECT i.instance_id, c.shutdown_after_seconds
+    FROM instances i
+    JOIN chutes c ON i.chute_id = c.chute_id
+    WHERE i.instance_id = :instance_id
+    FOR UPDATE OF i SKIP LOCKED
+)
+UPDATE instances
+SET stop_billing_at = NOW() + (target.shutdown_after_seconds * INTERVAL '1 second')
+FROM target
+WHERE instances.instance_id = target.instance_id
+RETURNING instances.instance_id;
+"""
+    try:
+        async with get_session() as session:
+            await session.execute(text("SET LOCAL lock_timeout = '1s'"))
+            await session.execute(text(query), {"instance_id": instance_id})
+    except Exception as exc:
+        logger.warning(f"Failed to push back instance shutdown time for {instance_id=}: {str(exc)}")

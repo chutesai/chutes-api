@@ -30,7 +30,7 @@ end
 """
 
 
-async def create_bounty_if_not_exists(chute_id: str) -> bool:
+async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> bool:
     """
     Create a bounty timestamp if one doesn't already exist.
     """
@@ -45,7 +45,7 @@ async def create_bounty_if_not_exists(chute_id: str) -> bool:
             1,
             bounty_key,
             json.dumps(bounty_data),
-            86400,
+            lifetime,
         )
         return bool(result)
     except Exception as exc:
@@ -69,7 +69,7 @@ async def claim_bounty(chute_id: str) -> Optional[int]:
         data = json.loads(bounty_data)
         created_at = data["created_at"]
         seconds_elapsed = int(time.time() - created_at)
-        bounty_amount = min(3 * seconds_elapsed, 86400)
+        bounty_amount = min(3 * seconds_elapsed + 100, 86400)
         return bounty_amount
     except Exception as exc:
         logger.warning(f"Failed to claim bounty: {exc}")
@@ -101,7 +101,7 @@ async def get_bounty_amount(chute_id: str) -> int:
         data = json.loads(bounty_data)
         created_at = data["created_at"]
         seconds_elapsed = int(time.time() - created_at)
-        bounty_amount = int(min(3 * seconds_elapsed, 86400))
+        bounty_amount = min(3 * seconds_elapsed + 100, 86400)
         return bounty_amount
     except (json.JSONDecodeError, KeyError) as exc:
         logger.warning(f"Failed to get bounty info: {exc}")
@@ -150,3 +150,43 @@ async def send_bounty_notification(chute_id: str, bounty: int) -> None:
         )
     except Exception as exc:
         logger.error(f"Failed to send bounty notification: {exc}")
+
+
+async def list_bounties() -> list[dict]:
+    """
+    List all available bounties with their current amounts.
+    """
+    bounties = []
+    try:
+        cursor = 0
+        pattern = "bounty:*"
+        while True:
+            cursor, keys = await settings.redis_client.scan(cursor, match=pattern, count=100)
+            for key in keys:
+                try:
+                    bounty_data = await settings.redis_client.get(key)
+                    if bounty_data:
+                        data = json.loads(bounty_data)
+                        chute_id = data.get("chute_id")
+                        created_at = data.get("created_at")
+                        seconds_elapsed = int(time.time() - created_at)
+                        bounty_amount = min(3 * seconds_elapsed + 100, 86400)
+                        ttl = await settings.redis_client.ttl(key)
+                        bounties.append(
+                            {
+                                "chute_id": chute_id,
+                                "bounty_amount": bounty_amount,
+                                "seconds_elapsed": seconds_elapsed,
+                                "time_remaining": ttl if ttl > 0 else 0,
+                                "created_at": created_at,
+                            }
+                        )
+                except (json.JSONDecodeError, KeyError) as exc:
+                    logger.warning(f"Failed to parse bounty data for key {key}: {exc}")
+                    continue
+            if cursor == 0:
+                break
+        bounties.sort(key=lambda x: x["created_at"])
+    except Exception as exc:
+        logger.error(f"Failed to list bounties: {exc}")
+    return bounties

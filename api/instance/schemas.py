@@ -17,6 +17,7 @@ from sqlalchemy import (
     Index,
     Table,
     Numeric,
+    Double,
     UniqueConstraint,
 )
 from typing import Optional
@@ -74,7 +75,10 @@ class Instance(Base):
     last_queried_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True))
+    activated_at = Column(DateTime(timezone=True), nullable=True)
     last_verified_at = Column(DateTime(timezone=True))
+    stop_billing_at = Column(DateTime, nullable=True)
+    billed_to = Column(String, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=True)
     verification_error = Column(String, nullable=True)
     consecutive_failures = Column(Integer, default=0)
     chutes_version = Column(String, nullable=True)
@@ -88,10 +92,18 @@ class Instance(Base):
     cacert = Column(String, nullable=True)
     port_mappings = Column(JSONB, nullable=True)
 
+    # Hourly rate charged to customer, which may differ from the hourly rate of the actual
+    # GPUs used for this instance due to node selector. For example, if a chute supports
+    # both H100 and A100, the user is only charged the A100 rate since the miners *could*
+    # have run it on A100s, regardless of whether or not they did so.
+    hourly_rate = Column(Double, nullable=True)
+    compute_multiplier = Column(Double, nullable=True)
+
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
     job = relationship("Job", back_populates="instance", uselist=False)
     config = relationship("LaunchConfig", back_populates="instance", lazy="joined")
+    billed_user = relationship("User", back_populates="instances")
 
     __table_args__ = (
         Index(

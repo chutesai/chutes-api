@@ -43,6 +43,15 @@ class AdminUserRequest(BaseModel):
     logo_id: Optional[str] = None
 
 
+class UserCurrentBalance(Base):
+    __tablename__ = "user_current_balance"
+    __table_args__ = {"info": {"is_view": True}}
+    user_id = Column(String, primary_key=True)
+    stored_balance = Column(Double)
+    total_instance_costs = Column(Double)
+    effective_balance = Column(Double)
+
+
 class User(Base):
     __tablename__ = "users"
 
@@ -67,7 +76,7 @@ class User(Base):
     developer_payment_address = Column(String)
     developer_wallet_secret = Column(String)
 
-    # Balance in USD.
+    # Balance in USD (doesn't account for instances still running on private chutes).
     balance = Column(Double, default=0.0)
 
     # Friendly name for the frontend for chute creators
@@ -98,6 +107,16 @@ class User(Base):
     images = relationship("Image", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="user")
+    instances = relationship("Instance", back_populates="billed_user")
+
+    # The "true" balance which also accounts for the private instances.
+    current_balance = relationship(
+        "UserCurrentBalance",
+        primaryjoin="foreign(User.user_id) == remote(UserCurrentBalance.user_id)",
+        viewonly=True,
+        uselist=False,
+        lazy="joined",
+    )
 
     @validates("username")
     def validate_username(self, _, value):
@@ -304,6 +323,7 @@ class PriceOverride(Base):
                 .unique()
                 .scalar_one_or_none()
             )
+
             if override is not None:
                 serialized = json.dumps(
                     {

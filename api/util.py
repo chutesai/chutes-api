@@ -762,6 +762,14 @@ async def memcache_delete(key: bytes):
     return None
 
 
+def has_legacy_private_billing(chute):
+    if chute.public or "/affine" in chute.name.lower():
+        return False
+    return chute.created_at.replace(tzinfo=None) < datetime.datetime(
+        year=2025, month=9, day=10, hour=16, tzinfo=None
+    )
+
+
 async def validate_tool_call_arguments(body: dict) -> None:
     if not body.get("messages"):
         return

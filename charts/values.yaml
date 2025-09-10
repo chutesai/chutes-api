@@ -387,7 +387,7 @@ quotaRedis:
     customArgs: []
 
 registry:
-  image: registry:2
+  image: registry:3.0.0-rc.3
   imagePullPolicy: IfNotPresent
   replicaCount: 2
   nodeSelector: {}
@@ -436,14 +436,21 @@ registryProxy:
 auditExporter:
   enabled: true
   image: parachutes/validator:latest
+  imagePullPolicy: Always
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
 
 failedChuteCleanup:
   enabled: true
   image: parachutes/validator:latest
+  imagePullPolicy: Always
   nodeSelector:
     kubernetes.io/hostname: chutes-prod-0
+
+balanceRefresher:
+  enabled: true
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
 
 memcached:
   image: memcached:1.6.34

@@ -6,21 +6,25 @@ import re
 import random
 import string
 import uuid
+import time
 import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
+from sqlalchemy.dialects.postgresql import insert
 from typing import Optional
-from api.constants import EXPANSION_UTILIZATION_THRESHOLD, UNDERUTILIZED_CAP
 from api.chute.schemas import (
     Chute,
     ChuteArgs,
+    ChuteShare,
+    ChuteShareArgs,
     NodeSelector,
     ChuteUpdateArgs,
     RollingUpdate,
@@ -39,6 +43,7 @@ from api.gpu import SUPPORTED_GPUS
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
 from api.instance.schemas import Instance
+from api.instance.util import get_chute_target_manager
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -79,15 +84,16 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     """
     if chute.standard_template == "vllm":
         hourly = await selector_hourly_price(chute.node_selector)
+        if chute.concurrency and chute.concurrency < 16:
+            hourly *= 16 / chute.concurrency
+        if chute.discount:
+            hourly -= hourly * chute.discount
         per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
         per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
-        if chute.discount:
-            per_million_in -= per_million_in * chute.discount
-            per_million_out -= per_million_out * chute.discount
         response.current_estimated_price = {
             "per_million_tokens": {
-                "input": {"usd": per_million_in},
-                "output": {"usd": per_million_out},
+                "input": {"usd": round(per_million_in, 2)},
+                "output": {"usd": round(per_million_out, 2)},
             }
         }
         tao_usd = await get_fetcher().get_price("tao")
@@ -127,6 +133,141 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
             "supported_gpus": node_selector.supported_gpus,
         }
     )
+
+
+@router.post("/share")
+async def share_chute(
+    args: ChuteShareArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Share a chute with another user.
+    """
+    chute = (
+        (
+            await db.execute(
+                select(Chute).where(
+                    or_(
+                        Chute.name.ilike(args.chute_id_or_name),
+                        Chute.chute_id == args.chute_id_or_name,
+                    ),
+                    Chute.user_id == current_user.user_id,
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Did not find target chute {str(args.chute_id_or_name)}, or it does not belong to you",
+        )
+    if chute.public:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chute is public, no need to share.",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_(
+                        User.username.ilike(args.user_id_or_name),
+                        User.user_id == args.user_id_or_name,
+                    )
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Could not find target user to share with",
+        )
+    if user.user_id == current_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot share a chute with yourself",
+        )
+    stmt = insert(ChuteShare).values(
+        [
+            {
+                "chute_id": chute.chute_id,
+                "shared_by": current_user.user_id,
+                "shared_to": user.user_id,
+                "shared_at": func.now(),
+            }
+        ]
+    )
+    stmt = stmt.on_conflict_do_nothing()
+    await db.execute(stmt)
+    await db.commit()
+    return {"status": f"Successfully shared {chute.name=} with {user.username=}"}
+
+
+@router.post("/unshare")
+async def unshare_chute(
+    args: ChuteShareArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Unshare a chute with another user.
+    """
+    chute = (
+        (
+            await db.execute(
+                select(Chute).where(
+                    or_(
+                        Chute.name.ilike(args.chute_id_or_name),
+                        Chute.chute_id == args.chute_id_or_name,
+                    ),
+                    Chute.user_id == current_user.user_id,
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Did not find target chute {str(args.chute_id_or_name)}, or it does not belong to you",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_(
+                        User.username.ilike(args.user_id_or_name),
+                        User.user_id == args.user_id_or_name,
+                    )
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Could not find target user to share with",
+        )
+
+    await db.execute(
+        text(
+            "delete from chute_shares where shared_by = :cuser_id and shared_to = :user_id and chute_id = :chute_id"
+        ),
+        {"cuser_id": current_user.user_id, "user_id": user.user_id, "chute_id": chute.chute_id},
+    )
+    await db.commit()
+    return {
+        "status": f"Successfully unshared {chute.name=} with {user.username=} (if share exists)"
+    }
 
 
 @router.get("/", response_model=PaginatedResponse)
@@ -438,51 +579,56 @@ async def get_chute_code(
     return Response(content=chute.code, media_type="text/plain")
 
 
-@router.get("/utilization_legacy")
-async def get_chute_utilization():
+@router.get("/warmup/{chute_id_or_name:path}")
+async def warm_up_chute(
+    chute_id_or_name: str,
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+):
     """
-    Get chute utilization data.
+    Warm up a chute.
     """
-    async with get_session(readonly=True) as session:
-        query = text("""
-            WITH chute_details AS (
-              SELECT
-                chute_id,
-                (SELECT COUNT(*) FROM instances WHERE instances.chute_id = chutes.chute_id) AS live_instance_count,
-                EXISTS(SELECT FROM rolling_updates WHERE chute_id = chutes.chute_id) AS update_in_progress
-              FROM chutes
-            )
-            SELECT * FROM chute_utilization
-            JOIN chute_details
-            ON chute_details.chute_id = chute_utilization.chute_id;
-        """)
-        results = await session.execute(query)
-        rows = results.mappings().all()
-        utilization_data = [dict(row) for row in rows]
-        for item in utilization_data:
-            item["instance_count"] = item.pop("live_instance_count")
+    chute = await get_one(chute_id_or_name)
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    if (
+        not chute.public
+        and not chute.user_id == current_user.user_id
+        and not await is_shared(chute.chute_id, current_user.user_id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+
+    started_at = time.time()
+
+    async def _respond():
+        max_wait = 0
+        while time.time() - started_at < 600:
             if (
-                item["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD
-                and not item["total_rate_limit_errors"]
-                and item["instance_count"] >= UNDERUTILIZED_CAP
-            ):
-                item["scalable"] = False
-            else:
-                item["scalable"] = True
-        return utilization_data
+                tm := await get_chute_target_manager(chute=chute, max_wait=max_wait, dynonce=True)
+            ) is None:
+                yield 'data: {"status": "cold", "log": "waiting for instances ..."}\n\n'
+                if not max_wait:
+                    max_wait = 5.0
+                continue
+            yield f'data: {{"status": "hot", "log": "chute is hot, {len(tm.instances)} instances available"}}\n\n'
+            return
+
+    return StreamingResponse(
+        _respond(),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/utilization")
-async def get_chute_utilization_v2(request: Request):
+async def get_chute_utilization(request: Request):
     """
     Get chute utilization data from the most recent capacity log.
     """
-    cache_key = "chute_utilization_metrics".encode()
-    if request:
-        cached = await memcache_get(cache_key)
-        if cached:
-            return json.loads(cached)
-
     async with get_session(readonly=True) as session:
         query = text("""
             WITH latest_logs AS (
@@ -538,25 +684,14 @@ async def get_chute_utilization_v2(request: Request):
         for row in rows:
             item = dict(row)
             scale_value = await settings.redis_client.get(f"scale:{item['chute_id']}")
-
-            if scale_value:
-                target_count = int(scale_value)
-                current_count = item.get("total_instance_count", 0)
-
-                # Scalable if current instances < target count
-                item["scalable"] = current_count < target_count
-                # Scale allowance is how many more instances can be added
-                item["scale_allowance"] = max(0, target_count - current_count)
-            else:
-                # No Redis entry, fall back to action_taken
-                item["scalable"] = item.get("action_taken") == "scale_up_candidate"
-                item["scale_allowance"] = 0
-
+            target_count = int(scale_value) if scale_value else item.get("target_count", 0)
+            current_count = item.get("total_instance_count", 0)
+            item["scalable"] = current_count < target_count
+            item["scale_allowance"] = max(0, target_count - current_count)
             item["avg_busy_ratio"] = item.get("utilization_1h", 0)
             item["total_invocations"] = item.get("total_requests_1h", 0)
             item["total_rate_limit_errors"] = item.get("rate_limited_requests_1h", 0)
             utilization_data.append(item)
-        await memcache_set(cache_key, json.dumps(utilization_data), exptime=30)
         return utilization_data
 
 
@@ -578,60 +713,6 @@ async def get_chute(
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
     return response
-
-
-@router.post("/{chute_id}/share", response_model=ChuteResponse)
-async def share_chute(
-    chute_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes")),
-):
-    """
-    Share a chute with another user.
-    """
-    body = await request.json()
-    user_id = body.get("user_id")
-    if not isinstance(user_id, str):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Please provide a user_id to share to.",
-        )
-
-    # Can be username also, in which case we need to convert from username to the uuid.
-    try:
-        _ = uuid.UUID(user_id)
-    except ValueError:
-        user = (
-            await db.execute(select(User).where(User.username == user_id).limit(1))
-            .unique()
-            .scalar_one_or_none()
-        )
-        user_id = user.user_id
-
-    # Load the chute.
-    chute = await get_one(chute_id)
-    if not chute or chute.user_id != current_user.user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found, or does not belong to you",
-        )
-
-    # Insert the share record.
-    await db.execute(
-        text(
-            """
-            INSERT INTO chute_shares
-              (chute_id, shared_by, shared_to, shared_at)
-            VALUES (:chute_id, :shared_by, :shared_to, NOW())
-            ON CONFLICT (chute_id, shared_by, shared_to)
-            DO NOTHING
-            """
-        ),
-        {"chute_id": chute_id, "shared_by": current_user.user_id, "shared_to": user_id},
-    )
-    await db.commit()
-    return {"ok": True}
 
 
 @router.delete("/{chute_id_or_name:path}")
@@ -700,10 +781,19 @@ async def _deploy_chute(
     db: AsyncSession,
     current_user: User,
     use_rolling_update: bool = True,
+    accept_fee: bool = False,
 ):
     """
     Deploy a chute!
     """
+    if chute_args.public and not current_user.has_role(Permissioning.public_model_deployment):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Chutes no longer supports public chutes. You can instead "
+                "deploy the chute as a private chute and share it with other users."
+            ),
+        )
     image = await get_image_by_id_or_name(chute_args.image, db, current_user)
     if not image:
         raise HTTPException(
@@ -744,6 +834,40 @@ async def _deploy_chute(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not allowed to require 5090s",
         )
+
+    # Fee estimate, as an error, if the user hasn't used the confirmed param.
+    estimate = await chute_args.node_selector.current_estimated_price()
+    deployment_fee = (
+        chute_args.node_selector.gpu_count * estimate["usd"]["hour"] * 3
+        if not current_user.has_role(Permissioning.free_account) and not chute
+        else 0
+    )
+    if deployment_fee and not accept_fee:
+        estimate = chute_args.node_selector.current_estimated_price
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                "DEPLOYMENT FEE NOTICE:\n===\nThere is a deployment fee of (hourly price per GPU * number of GPUs * 3), "
+                f"which for this configuration is for this configuration is: ${round(deployment_fee, 2)}\n "
+                "To acknowledge this fee, ensure you have chutes>=0.3.23 and re-run the deployment command with `--accept-fee`"
+            ),
+        )
+    if current_user.balance <= deployment_fee and not current_user.has_role(
+        Permissioning.free_account
+    ):
+        logger.warning(
+            f"Payment required: attempted deployment of chute {chute_args.name} "
+            f"from user {current_user.username} with balance < {deployment_fee=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=(
+                f"The deployment fee, based on your node selector, is ${deployment_fee}, "
+                f"but you have a balance of {current_user.balance}.\n"
+                f"Please top up your account with tao @ {current_user.payment_address} or via fiat."
+            ),
+        )
+
     affine_dev = await is_affine_registered(db, current_user)
     if (
         current_user.user_id != await chutes_user_id()
@@ -847,7 +971,11 @@ async def _deploy_chute(
         chute.filename = chute_args.filename
         chute.ref_str = chute_args.ref_str
         chute.version = version
-        chute.public = chute_args.public
+        chute.public = (
+            chute_args.public
+            if current_user.has_role(Permissioning.public_model_deployment)
+            else False
+        )
         chute.logo_id = (
             chute_args.logo_id if chute_args.logo_id and chute_args.logo_id.strip() else None
         )
@@ -858,8 +986,28 @@ async def _deploy_chute(
         chute.updated_at = func.now()
         chute.revision = chute_args.revision
         chute.logging_enabled = chute_args.logging_enabled
+        chute.max_instances = (
+            None
+            if chute.public or chute.user_id == await chutes_user_id()
+            else (chute_args.max_instances or 1)
+        )
+        chute.shutdown_after_seconds = (
+            None
+            if chute.public or chute.user_id == await chutes_user_id()
+            else (chute_args.shutdown_after_seconds or 300)
+        )
+        chute.scaling_threshold = (
+            None
+            if chute.public or chute.user_id == await chutes_user_id()
+            else (chute_args.scaling_threshold or 0.75)
+        )
     else:
         try:
+            is_public = (
+                chute_args.public
+                if current_user.has_role(Permissioning.public_model_deployment)
+                else False
+            )
             chute = Chute(
                 chute_id=str(
                     uuid.uuid5(
@@ -877,7 +1025,7 @@ async def _deploy_chute(
                 filename=chute_args.filename,
                 ref_str=chute_args.ref_str,
                 version=version,
-                public=chute_args.public,
+                public=is_public,
                 cords=chute_args.cords,
                 jobs=chute_args.jobs,
                 node_selector=chute_args.node_selector,
@@ -886,7 +1034,15 @@ async def _deploy_chute(
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
                 logging_enabled=chute_args.logging_enabled,
-                discount=-10.0 if "affine" in chute_args.name.lower() else None,
+                scaling_threshold=None
+                if is_public or current_user.user_id == await chutes_user_id()
+                else (chute_args.scaling_threshold or 0.75),
+                max_instances=None
+                if is_public or current_user.user_id == await chutes_user_id()
+                else (chute_args.max_instances or 1),
+                shutdown_after_seconds=None
+                if is_public or current_user.user_id == await chutes_user_id()
+                else (chute_args.shutdown_after_seconds or 300),
             )
         except ValueError as exc:
             raise HTTPException(
@@ -921,9 +1077,29 @@ async def _deploy_chute(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="A chute must define at least one cord() or job() function!",
         )
+    elif chute.cords and chute.jobs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A chute can have jobs or cords not both.",
+        )
 
     await db.commit()
     await db.refresh(chute)
+
+    # Update in usage tracker, only after successful DB commit.
+    if deployment_fee and not current_user.has_role(Permissioning.free_account):
+        logger.info(
+            f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
+            f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance - deployment_fee}"
+        )
+        pipeline = settings.redis_client.pipeline()
+        chute_id = str(
+            uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}")
+        )
+        key = f"balance:{current_user.user_id}:{chute_id}"
+        pipeline.hincrbyfloat(key, "amount", deployment_fee)
+        pipeline.hset(key, "timestamp", int(time.time()))
+        await pipeline.execute()
 
     if old_version:
         if use_rolling_update:
@@ -975,6 +1151,7 @@ async def _deploy_chute(
 @router.post("/", response_model=ChuteResponse)
 async def deploy_chute(
     chute_args: ChuteArgs,
+    accept_fee: Optional[bool] = False,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
@@ -1091,22 +1268,20 @@ async def deploy_chute(
                 detail=json.dumps(response).decode(),
             )
     chute = await _deploy_chute(
-        chute_args, db, current_user, use_rolling_update=not is_affine_model
+        chute_args,
+        db,
+        current_user,
+        use_rolling_update=not is_affine_model,
+        accept_fee=accept_fee,
     )
 
     # Auto-cleanup the other chutes for affine miners.
-    if (
-        is_affine_model
-        and not current_user.has_role(Permissioning.unlimited_dev)
-        and current_user.username.lower() not in ("affine", "affine2", "nonaffine", "unconst")
-    ):
-        old_chutes = (
+    if is_affine_model:
+        af_dev_user_ids = (
             (
                 await db.execute(
-                    select(Chute).where(
-                        Chute.user_id == current_user.user_id,
-                        Chute.name.ilike("%affine%"),
-                        Chute.chute_id != chute.chute_id,  # noqa
+                    select(User.user_id).where(
+                        User.permissions_bitmask.op("&")(Permissioning.affine_dev.bitmask) != 0
                     )
                 )
             )
@@ -1114,20 +1289,22 @@ async def deploy_chute(
             .scalars()
             .all()
         )
-        for old_chute in old_chutes:
-            await db.delete(old_chute)
-            await settings.redis_client.publish(
-                "miner_broadcast",
-                json.dumps(
+        if af_dev_user_ids:
+            stmt = insert(ChuteShare).values(
+                [
                     {
-                        "reason": "chute_deleted",
-                        "data": {"chute_id": old_chute.chute_id, "version": old_chute.version},
+                        "chute_id": chute.chute_id,
+                        "shared_by": current_user.user_id,
+                        "shared_to": user_id,
+                        "shared_at": func.now(),
                     }
-                ).decode(),
+                    for user_id in af_dev_user_ids
+                    if user_id != current_user.user_id
+                ]
             )
-            logger.success(
-                f"Auto-cleaned {old_chute.chute_id=} {old_chute.name=} from {old_chute.user_id=} for affine"
-            )
+            stmt = stmt.on_conflict_do_nothing()
+            await db.execute(stmt)
+
     return chute
 
 

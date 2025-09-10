@@ -38,8 +38,8 @@ class SelfResponse(UserResponse):
     coldkey: str
     payment_address: str
     developer_payment_address: str
-    balance: float
     permissions_bitmask: int
+    balance: Optional[float]
 
     @computed_field
     @property
@@ -50,3 +50,6 @@ class SelfResponse(UserResponse):
                 if self.permissions_bitmask & role.bitmask == role.bitmask:
                     permissions.append(role.description)
         return permissions
+
+    class Config:
+        from_attributes = True

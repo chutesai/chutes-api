@@ -55,6 +55,10 @@ class Permissioning:
         bitmask=1 << 10,
         description="Affine admin",
     )
+    public_model_deployment = Role(
+        bitmask=1 << 11,
+        description="Allow deploying models publicly.",
+    )
 
     @classmethod
     def enabled(cls, user, role):

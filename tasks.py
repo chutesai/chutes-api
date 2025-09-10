@@ -1,4 +1,4 @@
-# flake8: noqa=E402
+# noqa: E402
 
 import os
 import time
