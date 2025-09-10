@@ -170,14 +170,16 @@ WITH billed_instances AS (
         ia.stop_billing_at,
         i.compute_multiplier,
         GREATEST(ia.activated_at, now() - interval '{interval}') as billing_start,
-        LEAST(COALESCE(ia.stop_billing_at, now()), now()) as billing_end
+        LEAST(
+            COALESCE(ia.stop_billing_at, now()),
+            COALESCE(i.deleted_at, now()),
+            now()
+        ) as billing_end
     FROM instance_audit ia
     JOIN instances i ON i.instance_id = ia.instance_id
     WHERE ia.billed_to IS NOT NULL
-      AND (
-        (ia.activated_at >= now() - interval '{interval}' OR ia.activated_at < now() - interval '{interval}')
-        AND (ia.stop_billing_at IS NULL OR ia.stop_billing_at >= now() - interval '{interval}')
-      )
+      AND ia.activated_at IS NOT NULL
+      AND (ia.stop_billing_at IS NULL OR ia.stop_billing_at > now() - interval '{interval}')
 ),
 
 -- Aggregate compute units by miner

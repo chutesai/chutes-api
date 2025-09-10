@@ -18,6 +18,12 @@ BEGIN
     JOIN users u ON u.user_id = c.user_id
     WHERE c.chute_id = OLD.chute_id;
 
+    -- Update the audit table to adjust the billing stop time.
+    UPDATE instance_audit
+       SET stop_billing_at = NOW()
+     WHERE instance_id = OLD.instance_id
+       AND stop_billing_at IS NULL;
+
     -- Skip billing for free users.
     IF (v_user_permissions & 16) = 16 THEN
         RETURN OLD;
