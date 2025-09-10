@@ -78,8 +78,7 @@ SELECT
         CASE
             WHEN i.activated_at IS NOT NULL
                 AND i.stop_billing_at > NOW()
-                AND (u.permissions_bitmask & 16) != 16
-                AND (j.job_id IS NOT NULL OR c.public = false) THEN
+                AND (u.permissions_bitmask & 16) != 16 THEN
                 EXTRACT(EPOCH FROM (
                     LEAST(COALESCE(i.stop_billing_at, NOW()), NOW()) - i.activated_at
                 )) / 3600.0 * i.hourly_rate
@@ -90,8 +89,7 @@ SELECT
         CASE
             WHEN i.activated_at IS NOT NULL
                 AND i.stop_billing_at > NOW()
-                AND (u.permissions_bitmask & 16) != 16
-                AND (j.job_id IS NOT NULL OR c.public = false) THEN
+                AND (u.permissions_bitmask & 16) != 16 THEN
                 EXTRACT(EPOCH FROM (
                     LEAST(COALESCE(i.stop_billing_at, NOW()), NOW()) - i.activated_at
                 )) / 3600.0 * i.hourly_rate
@@ -99,9 +97,7 @@ SELECT
         END
     ), 0) as effective_balance
 FROM users u
-LEFT JOIN chutes c ON c.user_id = u.user_id
-LEFT JOIN instances i ON i.chute_id = c.chute_id
-LEFT JOIN jobs j ON j.instance_id = i.instance_id
+LEFT JOIN instances i ON i.billed_to = u.user_id
 GROUP BY u.user_id, u.balance, u.permissions_bitmask;
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_current_balance_user_id ON user_current_balance(user_id);
