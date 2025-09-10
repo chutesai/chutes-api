@@ -819,7 +819,9 @@ async def activate_launch_config_instance(
             and not has_legacy_private_billing(chute)
             and chute.user_id != await chutes_user_id()
         ):
-            instance.stop_billing_at = func.now() + timedelta(seconds=chute.shutdown_after_seconds)
+            instance.stop_billing_at = func.now() + timedelta(
+                seconds=chute.shutdown_after_seconds or 300
+            )
             # For private instances, we need to delete the bounty to prevent scaling back up
             # if this instance is terminated before a request is made. The miner will still a
             # bounty, however, since each private instance automatically counts as a bounty (see metasync/shared.py)

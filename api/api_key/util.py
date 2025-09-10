@@ -6,9 +6,11 @@ import re
 import pickle
 from async_lru import alru_cache
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 from fastapi import Request, HTTPException, status
 from api.api_key.schemas import APIKey
 from api.database import get_session
+from api.user.schemas import User
 from api.util import memcache_get, memcache_set, memcache_delete
 
 
@@ -19,12 +21,12 @@ def reinject_dash(uuid_str: str) -> str:
     return f"{uuid_str[0:8]}-{uuid_str[8:12]}-{uuid_str[12:16]}-{uuid_str[16:20]}-{uuid_str[20:32]}"
 
 
-@alru_cache(maxsize=1000, ttl=600)
+@alru_cache(maxsize=1000, ttl=60)
 async def _load_key(token_id: str):
     """
     Load API key from database with memcache caching.
     """
-    cache_key = f"api_key:{token_id}".encode()
+    cache_key = f"akey:{token_id}".encode()
     cached = await memcache_get(cache_key)
     if cached:
         try:
@@ -33,13 +35,23 @@ async def _load_key(token_id: str):
             await memcache_delete(cache_key)
     async with get_session() as session:
         api_key = (
-            (await session.execute(select(APIKey).where(APIKey.api_key_id == token_id)))
+            (
+                await session.execute(
+                    select(APIKey)
+                    .options(joinedload(APIKey.user).joinedload(User.current_balance))
+                    .where(APIKey.api_key_id == token_id)
+                )
+            )
             .unique()
             .scalar_one_or_none()
         )
         if api_key:
+            if api_key.user:
+                _ = api_key.user.current_balance
+                if api_key.user.current_balance:
+                    _ = api_key.user.current_balance.effective_balance
             serialized = pickle.dumps(api_key)
-            await memcache_set(cache_key, serialized, exptime=600)
+            await memcache_set(cache_key, serialized, exptime=60)
         return api_key
 
 

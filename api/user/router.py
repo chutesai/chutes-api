@@ -140,7 +140,10 @@ async def admin_balance_lookup(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
         )
-    return {"user_id": user.user_id, "balance": user.current_balance.effective_balance}
+    return {
+        "user_id": user.user_id,
+        "balance": user.current_balance.effective_balance if user.current_balance else 0.0,
+    }
 
 
 @router.get("/invoiced_user_list", response_model=list[SelfResponse])
@@ -164,7 +167,7 @@ async def admin_invoiced_user_list(
     users = []
     for user in result.unique().scalars().all():
         ur = SelfResponse.from_orm(user)
-        ur.balance = user.current_balance.effective_balance
+        ur.balance = user.current_balance.effective_balance if user.current_balance else 0.0
         users.append(ur)
     return users
 
@@ -359,7 +362,7 @@ async def admin_enable_invoicing(
     await db.commit()
     await db.refresh(user)
     ur = SelfResponse.from_orm(user)
-    ur.balance = user.current_balance.effective_balance
+    ur.balance = user.current_balance.effective_balance if user.current_balance else 0.0
     return ur
 
 
@@ -378,7 +381,7 @@ async def me(
         .scalar_one_or_none()
     )
     ur = SelfResponse.from_orm(user)
-    ur.balance = user.current_balance.effective_balance
+    ur.balance = user.current_balance.effective_balance if user.current_balance else 0.0
     return ur
 
 
@@ -531,7 +534,7 @@ async def set_logo(
     await db.commit()
     await db.refresh(user)
     ur = SelfResponse.from_orm(user)
-    ur.balance = user.current_balance.effective_balance
+    ur.balance = user.current_balance.effective_balance if user.current_balance else 0.0
     return ur
 
 
@@ -896,7 +899,7 @@ async def change_bt_auth(
         await db.commit()
         await db.refresh(user)
         ur = SelfResponse.from_orm(user)
-        ur.balance = user.current_balance.effective_balance
+        ur.balance = user.current_balance.effective_balance if user.current_balance else 0.0
         return ur
     raise HTTPException(
         status_code=status.HTTP_400_BAD_REQUEST,

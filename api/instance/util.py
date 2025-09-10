@@ -544,7 +544,7 @@ async def load_job_from_jwt(db, job_id: str, token: str, filename: str = None) -
 async def update_shutdown_timestamp(instance_id: str):
     query = """
 WITH target AS (
-    SELECT i.instance_id, c.shutdown_after_seconds
+    SELECT i.instance_id, COALESCE(c.shutdown_after_seconds, 300) AS shutdown_after_seconds
     FROM instances i
     JOIN chutes c ON i.chute_id = c.chute_id
     WHERE i.instance_id = :instance_id
