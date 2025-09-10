@@ -2,7 +2,7 @@
 CREATE OR REPLACE FUNCTION update_balance_on_instance_delete()
 RETURNS TRIGGER AS $$
 DECLARE
-    v_user_id TEXT;
+    v_billed_to_user_id TEXT;
     v_is_public BOOLEAN;
     v_user_permissions INTEGER;
     v_has_job BOOLEAN;
@@ -10,12 +10,18 @@ DECLARE
     v_hours_used DECIMAL(10,6);
     v_hour_bucket TIMESTAMP;
 BEGIN
-    -- Get the user_id, public status, and check if instance has a job.
-    SELECT c.user_id, c.public, u.permissions_bitmask,
+    -- Skip if the instance doesn't have a billed_to (user_id) value.
+    IF OLD.billed_to IS NULL THEN
+        RETURN OLD;
+    END IF;
+    v_billed_to_user_id := OLD.billed_to;
+
+    -- Get the chute's public status, user permissions, and check if instance has a job.
+    SELECT c.public, u.permissions_bitmask,
            EXISTS(SELECT 1 FROM jobs j WHERE j.instance_id = OLD.instance_id)
-    INTO v_user_id, v_is_public, v_user_permissions, v_has_job
+    INTO v_is_public, v_user_permissions, v_has_job
     FROM chutes c
-    JOIN users u ON u.user_id = c.user_id
+    JOIN users u ON u.user_id = v_billed_to_user_id
     WHERE c.chute_id = OLD.chute_id;
 
     -- Update the audit table to adjust the billing stop time.
@@ -44,14 +50,15 @@ BEGIN
 
         UPDATE users
         SET balance = balance - v_total_cost
-        WHERE user_id = v_user_id;
+        WHERE user_id = v_billed_to_user_id;
 
         -- Track the amount in the usage_data table.
         INSERT INTO usage_data (user_id, bucket, chute_id, amount, count)
-        VALUES (v_user_id::varchar, v_hour_bucket, OLD.chute_id, v_total_cost, 1)
+        VALUES (v_billed_to_user_id, v_hour_bucket, OLD.chute_id, v_total_cost, 1)
         ON CONFLICT (user_id, bucket, chute_id)
         DO UPDATE SET amount = usage_data.amount + EXCLUDED.amount;
     END IF;
+
     RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;
