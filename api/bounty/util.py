@@ -170,7 +170,7 @@ async def list_bounties() -> list[dict]:
                         chute_id = data.get("chute_id")
                         created_at = data.get("created_at")
                         seconds_elapsed = int(time.time() - created_at)
-                        bounty_amount = min(3 * seconds_elapsed, 86400)
+                        bounty_amount = min(3 * seconds_elapsed + 100, 86400)
                         ttl = await settings.redis_client.ttl(key)
                         bounties.append(
                             {
