@@ -25,8 +25,7 @@ from api.database import Base, generate_uuid
 class BootAttestationArgs(BaseModel):
     """Request model for boot attestation."""
     quote: str = Field(..., description="Base64 encoded TDX quote")
-    nonce: str = Field(..., description="Nonce for replay protection")
-    hardware_id: Optional[str] = Field(None, description="Hardware identifier for linking")
+    vm_id: Optional[str] = Field(None, description="VM identifier for linking")
 
 
 class RuntimeAttestationArgs(BaseModel):
@@ -37,7 +36,7 @@ class RuntimeAttestationArgs(BaseModel):
 
 class ServerArgs(BaseModel):
     """Request model for server registration."""
-    hardware_id: Optional[str] = Field(None, description="Hardware identifier to link boot attestations")
+    vm_id: Optional[str] = Field(None, description="VM identifier to link boot attestations")
     name: str = Field(..., description="Server name/identifier")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional server metadata")
 
