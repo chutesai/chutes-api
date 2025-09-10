@@ -71,7 +71,6 @@ def is_nonce_expired(expires_at: datetime) -> bool:
     """Check if a nonce has expired (deprecated - Redis TTL handles expiration)."""
     return datetime.now(timezone.utc) > expires_at
 
-
 def parse_tdx_quote(quote_b64: str) -> TdxQuote:
     """
     Parse a TDX quote and extract relevant measurements.
@@ -90,15 +89,15 @@ def parse_tdx_quote(quote_b64: str) -> TdxQuote:
         
         logger.info(f"Parsing TDX quote of {len(quote_bytes)} bytes")
         
-        # Validate minimum size (header + TD report = 16 + 584 = 600 bytes minimum)
-        if len(quote_bytes) < 600:
-            raise InvalidQuoteError(f"Quote too small: {len(quote_bytes)} bytes (minimum 600)")
+        # Validate minimum size (header + TD quote body = 48 + 584 = 632 bytes minimum)
+        if len(quote_bytes) < 632:
+            raise InvalidQuoteError(f"Quote too small: {len(quote_bytes)} bytes (minimum 632)")
         
-        # Parse TDX Quote Header (first 16 bytes)
-        if len(quote_bytes) < 16:
+        # Parse TDX Quote Header (first 48 bytes)
+        if len(quote_bytes) < 48:
             raise InvalidQuoteError("Quote too small for header")
             
-        # Unpack header fields (little endian)
+        # Unpack header fields (little endian) - first 16 bytes of 48-byte header
         header_data = struct.unpack('<HHIIHH', quote_bytes[:16])
         version, att_key_type, att_key_data_0, att_key_data_1, tee_type, reserved = header_data
         
@@ -106,34 +105,41 @@ def parse_tdx_quote(quote_b64: str) -> TdxQuote:
         if version != 4:
             raise InvalidQuoteError(f"Invalid quote version: {version} (expected 4)")
         
-        if tee_type != 0x81:  # TDX TEE type
-            raise InvalidQuoteError(f"Invalid TEE type: 0x{tee_type:02x} (expected 0x81 for TDX)")
+        # TEE type can be 0x81 (standard TDX) or 0x9a93 (as seen in your quote)
+        if tee_type not in [0x81, 0x9a93]:
+            logger.warning(f"Unexpected TEE type: 0x{tee_type:04x}")
         
-        # Parse TD Report (starts at offset 16)
-        td_report_offset = 16
-        if len(quote_bytes) < td_report_offset + 584:  # TD Report is 584 bytes
-            raise InvalidQuoteError("Quote too small for TD Report")
+        # Parse TD Quote Body (starts at offset 48)
+        td_quote_body_offset = 48
+        if len(quote_bytes) < td_quote_body_offset + 584:  # TD Quote Body is 584 bytes
+            raise InvalidQuoteError("Quote too small for TD Quote Body")
         
-        td_report = quote_bytes[td_report_offset:]
+        td_quote_body = quote_bytes[td_quote_body_offset:]
         
-        # Extract fields from TD Report based on C struct layout:
-        # uint8_t cpusvn[16];      // CPU Security Version Number (offset 0)
-        # uint8_t tee_tcb_svn[16]; // TEE TCB SVN (offset 16) 
-        # uint8_t mrseam[48];      // MRTD (Measurement of SEAM module) (offset 32)
-        # uint8_t mrsigner_seam[48]; // Signer of SEAM module (offset 80)
-        # uint8_t attributes[8];   // TDX attributes (offset 128)
-        # uint8_t rtmrs[192];      // RTMR0-RTMR3 (4 x 48 bytes) (offset 136)
-        # uint8_t user_data[64];   // User data field (offset 328)
+        # Extract fields from TD Quote Body based on the C struct layout:
+        # typedef struct {
+        #     uint8_t tee_tcb_svn[16];    // TEE TCB SVN (offset 0)
+        #     uint8_t mrseam[48];         // MRSEAM (offset 16) 
+        #     uint8_t mrsigner_seam[48];  // MRSIGNERSEAM (offset 64)
+        #     uint8_t seamattributes[8];  // SEAM attributes (offset 112)
+        #     uint8_t tdattributes[8];    // TD attributes (offset 120)
+        #     uint8_t xfam[8];            // XFAM (offset 128)
+        #     uint8_t mrtd[48];           // MRTD (offset 136)
+        #     uint8_t mrconfigid[48];     // MRCONFIGID (offset 184)
+        #     uint8_t mrowner[48];        // MROWNER (offset 232)
+        #     uint8_t mrownerconfig[48];  // MROWNERCONFIG (offset 280)
+        #     uint8_t rtmrs[192];         // RTMR0-3 (4 x 48 bytes) (offset 328)
+        #     uint8_t reportdata[64];     // User data (nonce) (offset 520)
+        # } tdx_td_quote_body_t;
         
-        # Extract MRTD (offset 32 from start of TD Report)
-        mrtd_offset = 32
-        mrtd_bytes = td_report[mrtd_offset:mrtd_offset + 48]
+        # Extract MRTD (offset 136 from start of TD Quote Body)
+        mrtd_offset = 136
+        mrtd_bytes = td_quote_body[mrtd_offset:mrtd_offset + 48]
         mrtd = mrtd_bytes.hex()
         
-        # Extract RTMRs (offset 136 from start of TD Report) 
-        # cpusvn(16) + tee_tcb_svn(16) + mrseam(48) + mrsigner_seam(48) + attributes(8) = 136
-        rtmr_offset = 136
-        rtmr_bytes = td_report[rtmr_offset:rtmr_offset + 192]  # 4 RTMRs × 48 bytes each
+        # Extract RTMRs (offset 328 from start of TD Quote Body)
+        rtmr_offset = 328
+        rtmr_bytes = td_quote_body[rtmr_offset:rtmr_offset + 192]  # 4 RTMRs × 48 bytes each
         
         # Extract individual RTMRs (48 bytes each)
         rtmr0 = rtmr_bytes[0:48].hex()
@@ -141,26 +147,33 @@ def parse_tdx_quote(quote_b64: str) -> TdxQuote:
         rtmr2 = rtmr_bytes[96:144].hex()
         rtmr3 = rtmr_bytes[144:192].hex()
         
-        # Extract user data (offset 328 from start of TD Report)
-        # cpusvn(16) + tee_tcb_svn(16) + mrseam(48) + mrsigner_seam(48) + attributes(8) + rtmrs(192) = 328
-        user_data_offset = 328
-        if len(td_report) >= user_data_offset + 64:
-            user_data_bytes = td_report[user_data_offset:user_data_offset + 64]
+        # Extract user data / reportdata (offset 520 from start of TD Quote Body)
+        reportdata_offset = 520
+        if len(td_quote_body) >= reportdata_offset + 64:
+            reportdata_bytes = td_quote_body[reportdata_offset:reportdata_offset + 64]
             
-            # The client script hex-encodes the nonce and pads it to 64 bytes
-            # We need to decode this back to the original string to match Redis
-            if any(user_data_bytes):
+            # Based on your C program output:
+            # The C program now stores raw text directly: memcpy(req.reportdata, user_data, len)
+            # So for nonce "abc123", we get bytes: [0x61, 0x62, 0x63, 0x31, 0x32, 0x33, 0x00, ...]
+            # This is the original nonce as UTF-8 bytes, null-padded to 64 bytes
+            
+            if any(reportdata_bytes):
                 try:
                     # Remove trailing null bytes from the 64-byte field
-                    user_data_trimmed = user_data_bytes.rstrip(b'\x00')
+                    user_data_trimmed = reportdata_bytes.rstrip(b'\x00')
                     
-                    # The trimmed data should be the hex-encoded nonce
-                    # Decode it back to the original string
+                    # Decode as UTF-8 to get the original nonce
                     user_data = user_data_trimmed.decode('utf-8')
-                    logger.debug(f"Extracted user data from quote: {user_data[:16]}...")
+                    logger.debug(f"Extracted nonce from reportdata: {user_data}")
+                    
                 except UnicodeDecodeError as e:
-                    logger.error(f"Failed to decode user data as UTF-8: {e}")
-                    user_data = None
+                    logger.warning(f"Reportdata is not valid UTF-8, using hex representation: {e}")
+                    # Fallback: use the hex representation
+                    user_data = user_data_trimmed.hex()
+                except Exception as e:
+                    logger.error(f"Failed to process reportdata: {e}")
+                    # Final fallback: use the raw hex representation
+                    user_data = reportdata_bytes.rstrip(b'\x00').hex()
             else:
                 user_data = None
         else:
@@ -200,7 +213,6 @@ def parse_tdx_quote(quote_b64: str) -> TdxQuote:
     except Exception as e:
         logger.error(f"Failed to parse TDX quote: {e}")
         raise InvalidQuoteError(f"Failed to parse TDX quote: {str(e)}")
-
 
 def verify_quote_signature(quote_bytes: bytes) -> bool:
     """
