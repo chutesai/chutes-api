@@ -319,12 +319,13 @@ async def list_chutes(
                 or_(
                     Chute.public.is_(True),
                     Chute.user_id == current_user.user_id,
+                    Chute.name.ilike("%/affine%"),
                 )
             )
         else:
             query = query.where(Chute.user_id == current_user.user_id)
     else:
-        query = query.where(Chute.public.is_(True))
+        query = query.where(or_(Chute.public.is_(True), Chute.name.ilike("%/affine%")))
 
     # Filter by name/tag/etc.
     if name and name.strip():

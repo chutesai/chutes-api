@@ -238,10 +238,11 @@ async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_insta
                 Chute.public.is_(True),
                 Chute.user_id == current_user.user_id,
                 ChuteShare.shared_to == current_user.user_id,
+                Chute.name.ilike("%/affine%"),
             )
         )
     else:
-        query = query.where(Chute.public.is_(True))
+        query = query.where(or_(Chute.public.is_(True), Chute.name.ilike("%/affine%")))
 
     if load_instances:
         query = query.options(selectinload(Chute.instances))
