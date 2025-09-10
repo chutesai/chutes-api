@@ -1282,7 +1282,7 @@ async def deploy_chute(
             (
                 await db.execute(
                     select(User.user_id).where(
-                        User.permissions_bitmask.op("&")(Permissioning.affine_dev.bitmask) != 0
+                        User.permissions_bitmask.op("&")(Permissioning.affine_admin.bitmask) != 0
                     )
                 )
             )
