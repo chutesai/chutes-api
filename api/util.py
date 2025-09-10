@@ -766,7 +766,7 @@ def has_legacy_private_billing(chute):
     if chute.public or "/affine" in chute.name.lower():
         return False
     return chute.created_at.replace(tzinfo=None) < datetime.datetime(
-        year=2025, month=9, day=10, hour=14, tzinfo=None
+        year=2025, month=9, day=10, hour=16, tzinfo=None
     )
 
 
