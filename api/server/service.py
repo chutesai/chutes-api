@@ -22,7 +22,7 @@ from api.server.exceptions import (
 from api.server.util import (
     parse_tdx_quote, verify_quote_signature, verify_boot_measurements,
     verify_runtime_measurements, validate_nonce_in_quote, get_luks_passphrase,
-    generate_nonce, get_nonce_expiry_seconds
+    generate_nonce, get_nonce_expiry_seconds, TdxQuote
 )
 
 
@@ -125,33 +125,35 @@ async def process_boot_attestation(
         InvalidQuoteError: If quote is invalid
         MeasurementMismatchError: If measurements don't match
     """
-    logger.info(f"Processing boot attestation for hardware_id: {args.hardware_id}")
-    
-    # Validate nonce
-    await validate_and_consume_nonce(args.nonce, "boot")
+    logger.info(f"Processing boot attestation for hardware_id: {args.vm_id}")
     
     # Parse and verify quote
     try:
-        parsed_quote = parse_tdx_quote(args.quote)
+        quote = parse_tdx_quote(args.quote)
+
+        # Validate nonce
+        await validate_and_consume_nonce(quote.user_data, "boot")
         
         # Verify quote signature
         quote_bytes = base64.b64decode(args.quote)
         if not verify_quote_signature(quote_bytes):
             raise InvalidQuoteError("Quote signature verification failed")
-        
+
+        # ToDo: Update to retrieve quote from redis        
+        expected_nonce = None
         # Validate nonce in quote user data
-        if not validate_nonce_in_quote(parsed_quote, args.nonce):
+        if not validate_nonce_in_quote(quote, expected_nonce):
             raise InvalidQuoteError("Nonce validation in quote failed")
         
         # Verify boot measurements
-        verify_boot_measurements(parsed_quote)
+        verify_boot_measurements(quote)
         
         # Create boot attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
-            hardware_id=args.hardware_id,
-            mrtd=parsed_quote.get('mrtd'),
-            verification_result=parsed_quote,
+            hardware_id=args.vm_id,
+            mrtd=quote.mrtd,
+            verification_result=quote.to_dict(),
             verified=True,
             nonce_used=args.nonce,
             verified_at=func.now()
@@ -173,7 +175,7 @@ async def process_boot_attestation(
         # Create failed attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
-            hardware_id=args.hardware_id,
+            hardware_id=args.vm_id,
             verified=False,
             verification_error=str(e),
             nonce_used=args.nonce
@@ -208,7 +210,7 @@ async def register_server(
     try:
         server = Server(
             name=args.name,
-            hardware_id=args.hardware_id,
+            hardware_id=args.vm_id,
             miner_hotkey=miner_hotkey,
             metadata=args.metadata
         )
@@ -293,29 +295,30 @@ async def process_runtime_attestation(
     
     # Parse and verify quote
     try:
-        parsed_quote = parse_tdx_quote(args.quote)
+        quote = parse_tdx_quote(args.quote)
         
         # Verify quote signature
-        import base64
         quote_bytes = base64.b64decode(args.quote)
         if not verify_quote_signature(quote_bytes):
             raise InvalidQuoteError("Quote signature verification failed")
-        
+
+        # ToDo: Get expected nonce from redis        
+        expected_nonce = None
         # Validate nonce in quote user data
-        if not validate_nonce_in_quote(parsed_quote, args.nonce):
+        if not validate_nonce_in_quote(quote, expected_nonce):
             raise InvalidQuoteError("Nonce validation in quote failed")
         
         # Verify runtime measurements if configured
         if server.expected_measurements:
-            verify_runtime_measurements(parsed_quote, server.expected_measurements)
+            verify_runtime_measurements(quote, server.expected_measurements)
         
         # Create runtime attestation record
         attestation = ServerAttestation(
             server_id=server_id,
             quote_data=args.quote,
-            mrtd=parsed_quote.get('mrtd'),
-            rtmrs=parsed_quote.get('rtmrs'),
-            verification_result=parsed_quote,
+            mrtd=quote.mrtd,
+            rtmrs=quote.rtmrs,
+            verification_result=quote.to_dict(),
             verified=True,
             nonce_used=args.nonce,
             verified_at=func.now()
