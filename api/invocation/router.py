@@ -461,8 +461,7 @@ async def _invoke(
     else:
         args = base64.b64encode(gzip.compress(pickle.dumps((request_body,)))).decode()
         kwargs = base64.b64encode(gzip.compress(pickle.dumps({}))).decode()
-    async with get_session() as db:
-        manager = await get_chute_target_manager(db, chute, max_wait=0)
+    manager = await get_chute_target_manager(chute, max_wait=0)
     if not manager or not manager.instances:
         chute_id = request.state.chute_id
         raise HTTPException(

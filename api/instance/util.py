@@ -22,7 +22,6 @@ from api.database import get_session
 from api.util import has_legacy_private_billing
 from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import text, func
 from sqlalchemy.orm import aliased, joinedload
@@ -31,7 +30,7 @@ from sqlalchemy.orm import aliased, joinedload
 InstanceAlias = aliased(Instance)
 
 
-@alru_cache(maxsize=100, ttl=30)
+@alru_cache(maxsize=200, ttl=60)
 async def load_chute_targets(chute_id: str, nonce: float = 0):
     query = (
         select(Instance)
@@ -333,13 +332,14 @@ class LeastConnManager:
 
 
 async def get_chute_target_manager(
-    session: AsyncSession, chute: Chute, max_wait: int = 0, no_bounty: bool = False
+    chute: Chute, max_wait: int = 0, no_bounty: bool = False, dynonce: bool = False
 ):
     """
     Select target instances by least connections (with random on equal counts).
     """
     chute_id = chute.chute_id
-    instances = await load_chute_targets(chute_id, nonce=0)
+    nonce = int(time.time()) if dynonce else int(time.time() % 60)
+    instances = await load_chute_targets(chute_id, nonce=nonce)
     started_at = time.time()
     while not instances:
         # Private chutes have a very short-lived bounty, so users aren't billed if they stop making requests.

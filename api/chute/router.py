@@ -6,12 +6,14 @@ import re
 import random
 import string
 import uuid
+import time
 import orjson as json
 import aiohttp
 from loguru import logger
 from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import HTMLResponse, JSONResponse
+from starlette.responses import StreamingResponse
 from sqlalchemy import or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -41,6 +43,7 @@ from api.gpu import SUPPORTED_GPUS
 from api.chute.response import ChuteResponse
 from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
 from api.instance.schemas import Instance
+from api.instance.util import get_chute_target_manager
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
@@ -136,7 +139,7 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
 async def share_chute(
     args: ChuteShareArgs,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+    current_user: User = Depends(get_current_user()),
 ):
     """
     Share a chute with another user.
@@ -204,7 +207,7 @@ async def share_chute(
 async def unshare_chute(
     args: ChuteShareArgs,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+    current_user: User = Depends(get_current_user()),
 ):
     """
     Unshare a chute with another user.
@@ -560,6 +563,51 @@ async def get_chute_code(
             detail="Chute not found, or does not belong to you",
         )
     return Response(content=chute.code, media_type="text/plain")
+
+
+@router.get("/warmup/{chute_id_or_name:path}")
+async def warm_up_chute(
+    chute_id_or_name: str,
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+):
+    """
+    Warm up a chute.
+    """
+    chute = await get_one(chute_id_or_name)
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+    if (
+        not chute.public
+        and not chute.user_id == current_user.user_id
+        and not await is_shared(chute.chute_id, current_user.user_id)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+
+    started_at = time.time()
+
+    async def _respond():
+        max_wait = 0
+        while time.time() - started_at < 600:
+            if (
+                tm := await get_chute_target_manager(chute=chute, max_wait=max_wait, dynonce=True)
+            ) is None:
+                yield 'data: {"status": "cold", "log": "waiting for instances ..."}\n'
+                if not max_wait:
+                    max_wait = 5.0
+                continue
+            yield f'data: {{"status": "hot", "log": "chute is hot, {len(tm.instances)} available"}}\n'
+            return
+
+    return StreamingResponse(
+        _respond(),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/utilization")

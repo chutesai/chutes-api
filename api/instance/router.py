@@ -789,8 +789,13 @@ async def activate_launch_config_instance(
         active_count = count_result["active_count"]
         scale_value = await settings.redis_client.get(f"scale:{chute.chute_id}")
         target_count = int(scale_value) if scale_value else 0
-        if active_count >= target_count:
-            reason = "Private chute {chute.chute_id=} {chute.name=} already has >= {target_count=} active instances"
+        can_scale = False
+        if not active_count and await check_bounty_exists(chute.chute_id):
+            can_scale = True
+        elif active_count < target_count:
+            can_scale = True
+        if not can_scale:
+            reason = f"Private chute {chute.chute_id=} {chute.name=} already has >= {target_count=} active instances"
             logger.warning(reason)
             await db.delete(instance)
             await asyncio.create_task(notify_deleted(instance))
