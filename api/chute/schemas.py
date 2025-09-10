@@ -427,8 +427,8 @@ class ChuteShare(Base):
 
 
 class ChuteShareArgs(BaseModel):
-    chute_id: str
-    user_id: str
+    chute_id_or_name: str
+    user_id_or_name: str
 
 
 class LLMDetail(Base):

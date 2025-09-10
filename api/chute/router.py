@@ -148,7 +148,10 @@ async def share_chute(
         (
             await db.execute(
                 select(Chute).where(
-                    or_([Chute.name.ilike(args.chute_id), Chute.chute_id == args.chute_id]),
+                    or_(
+                        Chute.name.ilike(args.chute_id_or_name),
+                        Chute.chute_id == args.chute_id_or_name,
+                    ),
                     Chute.user_id == current_user.user_id,
                 )
             )
@@ -159,7 +162,7 @@ async def share_chute(
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Did not find target chute {str(args.chute_id)}, or it does not belong to you",
+            detail=f"Did not find target chute {str(args.chute_id_or_name)}, or it does not belong to you",
         )
     if chute.public:
         raise HTTPException(
@@ -170,7 +173,10 @@ async def share_chute(
         (
             await db.execute(
                 select(User).where(
-                    or_([User.username.ilike(args.user_id), User.user_id == args.user_id])
+                    or_(
+                        User.username.ilike(args.user_id_or_name),
+                        User.user_id == args.user_id_or_name,
+                    )
                 )
             )
         )
@@ -200,7 +206,7 @@ async def share_chute(
     stmt = stmt.on_conflict_do_nothing()
     await db.execute(stmt)
     await db.commit()
-    return {"shared": True}
+    return {"status": f"Successfully shared {chute.name=} with {user.username=}"}
 
 
 @router.post("/unshare")
@@ -216,7 +222,10 @@ async def unshare_chute(
         (
             await db.execute(
                 select(Chute).where(
-                    or_([Chute.name.ilike(args.chute_id), Chute.chute_id == args.chute_id]),
+                    or_(
+                        Chute.name.ilike(args.chute_id_or_name),
+                        Chute.chute_id == args.chute_id_or_name,
+                    ),
                     Chute.user_id == current_user.user_id,
                 )
             )
@@ -227,13 +236,16 @@ async def unshare_chute(
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Did not find target chute {str(args.chute_id)}, or it does not belong to you",
+            detail=f"Did not find target chute {str(args.chute_id_or_name)}, or it does not belong to you",
         )
     user = (
         (
             await db.execute(
                 select(User).where(
-                    or_([User.username.ilike(args.user_id), User.user_id == args.user_id])
+                    or_(
+                        User.username.ilike(args.user_id_or_name),
+                        User.user_id == args.user_id_or_name,
+                    )
                 )
             )
         )
@@ -248,12 +260,14 @@ async def unshare_chute(
 
     await db.execute(
         text(
-            "delete from chute_shares where shared_by = :cuser_id, shared_to = :user_id, chute_id = :chute_id"
+            "delete from chute_shares where shared_by = :cuser_id and shared_to = :user_id and chute_id = :chute_id"
         ),
         {"cuser_id": current_user.user_id, "user_id": user.user_id, "chute_id": chute.chute_id},
     )
     await db.commit()
-    return {"shared": False, "unshared": True}
+    return {
+        "status": f"Successfully unshared {chute.name=} with {user.username=} (if share exists)"
+    }
 
 
 @router.get("/", response_model=PaginatedResponse)
