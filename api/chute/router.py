@@ -1361,6 +1361,12 @@ async def easy_deploy_vllm_chute(
     """
     Easy/templated vLLM deployment.
     """
+    # XXX disabled
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Easy deployment is currently disabled!",
+    )
+
     if await is_affine_registered(db, current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -1501,6 +1507,12 @@ async def easy_deploy_diffusion_chute(
     """
     Easy/templated diffusion deployment.
     """
+    # XXX disabled right now.
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Easy deployment is currently disabled!",
+    )
+
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
@@ -1540,6 +1552,12 @@ async def easy_deploy_tei_chute(
     """
     Easy/templated text-embeddings-inference deployment.
     """
+    # XXX disabled
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Easy deployment is currently disabled!",
+    )
+
     await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
