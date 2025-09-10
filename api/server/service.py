@@ -21,8 +21,8 @@ from api.server.exceptions import (
 )
 from api.server.util import (
     parse_tdx_quote, verify_quote_signature, verify_boot_measurements,
-    verify_runtime_measurements, validate_nonce_in_quote, get_luks_passphrase,
-    generate_nonce, get_nonce_expiry_seconds, TdxQuote
+    verify_runtime_measurements, get_luks_passphrase,
+    generate_nonce, get_nonce_expiry_seconds
 )
 
 
@@ -138,12 +138,6 @@ async def process_boot_attestation(
         quote_bytes = base64.b64decode(args.quote)
         if not verify_quote_signature(quote_bytes):
             raise InvalidQuoteError("Quote signature verification failed")
-
-        # ToDo: Update to retrieve quote from redis        
-        expected_nonce = None
-        # Validate nonce in quote user data
-        if not validate_nonce_in_quote(quote, expected_nonce):
-            raise InvalidQuoteError("Nonce validation in quote failed")
         
         # Verify boot measurements
         verify_boot_measurements(quote)
@@ -290,23 +284,17 @@ async def process_runtime_attestation(
     # Get server and verify ownership
     server = await get_server_by_id(db, server_id, miner_hotkey)
     
-    # Validate nonce
-    await validate_and_consume_nonce(args.nonce, "runtime", server_id)
-    
     # Parse and verify quote
     try:
         quote = parse_tdx_quote(args.quote)
         
+        # Validate nonce
+        await validate_and_consume_nonce(quote.user_data, "runtime", server_id)
+
         # Verify quote signature
         quote_bytes = base64.b64decode(args.quote)
         if not verify_quote_signature(quote_bytes):
             raise InvalidQuoteError("Quote signature verification failed")
-
-        # ToDo: Get expected nonce from redis        
-        expected_nonce = None
-        # Validate nonce in quote user data
-        if not validate_nonce_in_quote(quote, expected_nonce):
-            raise InvalidQuoteError("Nonce validation in quote failed")
         
         # Verify runtime measurements if configured
         if server.expected_measurements:

@@ -255,7 +255,7 @@ def verify_boot_measurements(quote: TdxQuote) -> bool:
         MeasurementMismatchError: If measurements don't match
     """
     try:
-        expected_mrtd = getattr(settings, 'boot_expected_mrtd', None)
+        expected_mrtd = settings.boot_expected_mrtd
         if not expected_mrtd:
             logger.warning("No expected boot MRTD configured")
             return True  # Skip verification if not configured
@@ -315,38 +315,6 @@ def verify_runtime_measurements(quote: TdxQuote, expected_measurements: Dict[str
         raise MeasurementMismatchError(f"Runtime measurement verification error: {str(e)}")
 
 
-def validate_nonce_in_quote(quote: TdxQuote, expected_nonce: str) -> bool:
-    """
-    Validate that the nonce is embedded in the quote user data.
-    
-    Args:
-        quote: Parsed TDX quote
-        expected_nonce: Expected nonce value
-        
-    Returns:
-        True if nonce is valid
-    """
-    try:
-        if quote.user_data is None:
-            logger.error("No user data in quote for nonce validation")
-            return False
-            
-        # The user data should contain the original nonce string
-        # (already decoded from hex in parse_tdx_quote)
-        embedded_nonce = quote.user_data.strip()
-        
-        if embedded_nonce != expected_nonce:
-            logger.error(f"Nonce mismatch in quote user data: expected '{expected_nonce}', got '{embedded_nonce}'")
-            return False
-            
-        logger.info(f"Successfully validated nonce in quote user data: {expected_nonce[:8]}...")
-        return True
-        
-    except Exception as e:
-        logger.error(f"Nonce validation failed: {e}")
-        return False
-
-
 def extract_nonce_from_quote(quote: TdxQuote) -> Optional[str]:
     """
     Extract the nonce from the quote user data.
@@ -389,7 +357,7 @@ def get_luks_passphrase() -> str:
     # - K8s secret
     # - Secure key management service
     
-    passphrase = getattr(settings, 'luks_passphrase', None)
+    passphrase = settings.luks_passphrase
     if not passphrase:
         logger.warning("No LUKS passphrase configured")
         # Return a placeholder for now
