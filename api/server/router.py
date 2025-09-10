@@ -106,7 +106,7 @@ async def create_server(
     Register a new server.
     
     This is called via CLI after the server has booted and decrypted its disk.
-    Links the server to any existing boot attestation history via hardware_id.
+    Links the server to any existing boot attestation history via vm_id.
     """
     try:
         server = await register_server(db, args, hotkey)
@@ -143,7 +143,7 @@ async def list_user_servers(
             {
                 "server_id": server.server_id,
                 "name": server.name,
-                "hardware_id": server.hardware_id,
+                "vm_id": server.vm_id,
                 "active": server.active,
                 "created_at": server.created_at.isoformat(),
                 "updated_at": server.updated_at.isoformat() if server.updated_at else None,
@@ -176,7 +176,7 @@ async def get_server_details(
         return {
             "server_id": server.server_id,
             "name": server.name,
-            "hardware_id": server.hardware_id,
+            "vm_id": server.vm_id,
             "active": server.active,
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,

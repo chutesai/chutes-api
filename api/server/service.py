@@ -125,7 +125,7 @@ async def process_boot_attestation(
         InvalidQuoteError: If quote is invalid
         MeasurementMismatchError: If measurements don't match
     """
-    logger.info(f"Processing boot attestation for hardware_id: {args.vm_id}")
+    logger.info(f"Processing boot attestation for vm id:: {args.vm_id}")
     
     # Parse and verify quote
     try:
@@ -151,7 +151,7 @@ async def process_boot_attestation(
         # Create boot attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
-            hardware_id=args.vm_id,
+            vm_id=args.vm_id,
             mrtd=quote.mrtd,
             verification_result=quote.to_dict(),
             verified=True,
@@ -175,7 +175,7 @@ async def process_boot_attestation(
         # Create failed attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
-            hardware_id=args.vm_id,
+            vm_id=args.vm_id,
             verified=False,
             verification_error=str(e),
             nonce_used=args.nonce
@@ -210,7 +210,7 @@ async def register_server(
     try:
         server = Server(
             name=args.name,
-            hardware_id=args.vm_id,
+            vm_id=args.vm_id,
             miner_hotkey=miner_hotkey,
             metadata=args.metadata
         )
@@ -225,7 +225,7 @@ async def register_server(
     except IntegrityError as e:
         await db.rollback()
         logger.error(f"Server registration failed: {str(e)}")
-        raise ServerRegistrationError("Server registration failed - duplicate hardware_id or other constraint violation")
+        raise ServerRegistrationError("Server registration failed - duplicate vm id or other constraint violation")
     except Exception as e:
         await db.rollback()
         logger.error(f"Unexpected error during server registration: {str(e)}")

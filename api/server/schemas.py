@@ -70,7 +70,7 @@ class BootAttestation(Base):
     
     attestation_id = Column(String, primary_key=True, default=generate_uuid)
     quote_data = Column(Text, nullable=False)  # Base64 encoded quote
-    hardware_id = Column(String, nullable=True)  # For later linking to server
+    vm_id = Column(String, nullable=True)  # For later linking to server
     mrtd = Column(String, nullable=True)  # Extracted MRTD from quote
     verification_result = Column(JSONB, nullable=True)  # Detailed verification results
     verified = Column(Boolean, default=False)
@@ -80,7 +80,7 @@ class BootAttestation(Base):
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        Index("idx_boot_hardware_id", "hardware_id"),
+        Index("idx_boot_vm_id", "vm_id"),
         Index("idx_boot_created", "created_at"),
         Index("idx_boot_verified", "verified"),
     )
@@ -92,11 +92,10 @@ class Server(Base):
     
     server_id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String, nullable=False)
-    hardware_id = Column(String, nullable=True, unique=True)  # Links to boot attestations
+    vm_id = Column(String, nullable=True, unique=True)  # Links to boot attestations
     miner_hotkey = Column(
         String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
     )
-    metadata = Column(JSONB, nullable=True)  # Additional server info
     expected_measurements = Column(JSONB, nullable=True)  # Runtime MRTD/RTMRs or K8s secret refs
     active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
