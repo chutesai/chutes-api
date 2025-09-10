@@ -22,7 +22,7 @@ BEGIN
     UPDATE instance_audit
        SET stop_billing_at = NOW()
      WHERE instance_id = OLD.instance_id
-       AND stop_billing_at IS NULL;
+       AND stop_billing_at > NOW();
 
     -- Skip billing for free users.
     IF (v_user_permissions & 16) = 16 THEN
