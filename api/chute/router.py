@@ -874,6 +874,16 @@ async def _deploy_chute(
             text("UPDATE users SET balance = balance - :fee WHERE user_id = :user_id"),
             {"fee": deployment_fee, "user_id": current_user.user_id},
         )
+
+        # Update in usage tracker.
+        pipeline = settings.redis_client.pipeline()
+        chute_id = str(
+            uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}")
+        )
+        key = f"balance:{current_user.user_id}:{chute_id}"
+        pipeline.hincrbyfloat(key, "amount", deployment_fee)
+        pipeline.hset(key, "timestamp", int(time.time()))
+        await pipeline.execute()
         logger.info(
             f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
             f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance - deployment_fee}"
