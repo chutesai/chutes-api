@@ -1027,7 +1027,8 @@ async def invoke(
                             pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
                         pipeline.hset(key, "timestamp", int(time.time()))
                         if balance_used and add_balance_to:
-                            pipeline.hincrbyfloat(key, "amount", 0 - balance_used)
+                            transfer_key = f"balance:{chute.user_id}:{chute.chute_id}"
+                            pipeline.hincrbyfloat(transfer_key, "amount", 0 - balance_used)
                         await pipeline.execute()
                     except Exception as exc:
                         logger.error(f"Error updating usage pipeline: {exc}")

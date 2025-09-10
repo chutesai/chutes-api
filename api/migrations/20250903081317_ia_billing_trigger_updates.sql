@@ -20,7 +20,8 @@ BEGIN
 	region,
 	billed_to,
 	stop_billing_at,
-	compute_multiplier
+	compute_multiplier,
+	hourly_rate
     ) VALUES (
         NEW.instance_id,
         NEW.chute_id,
@@ -30,7 +31,8 @@ BEGIN
 	NEW.region,
 	NEW.billed_to,
 	NEW.stop_billing_at,
-	NEW.compute_multiplier
+	NEW.compute_multiplier,
+	NEW.hourly_rate
     );
     RETURN NEW;
 END;
@@ -60,6 +62,13 @@ BEGIN
     IF NEW.billed_to IS DISTINCT FROM OLD.billed_to AND NEW.billed_to IS NOT NULL THEN
         UPDATE instance_audit
            SET billed_to = NEW.billed_to
+         WHERE instance_id = NEW.instance_id;
+    END IF;
+
+   -- Hourly rate.
+    IF NEW.hourly_rate IS DISTINCT FROM OLD.hourly_rate AND NEW.hourly_rate IS NOT NULL THEN
+        UPDATE instance_audit
+           SET hourly_rate = NEW.hourly_rate
          WHERE instance_id = NEW.instance_id;
     END IF;
 
