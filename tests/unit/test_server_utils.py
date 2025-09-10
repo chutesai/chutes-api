@@ -18,7 +18,6 @@ from api.server.util import (
     verify_quote_signature,
     verify_boot_measurements,
     verify_runtime_measurements,
-    validate_nonce_in_quote,
     extract_nonce_from_quote,
     get_luks_passphrase,
 )
@@ -729,64 +728,6 @@ def test_verify_runtime_measurements_empty():
     
     result = verify_runtime_measurements(quote, {})
     assert result is True
-
-
-# Nonce validation tests
-def test_validate_nonce_in_quote_success(test_nonce):
-    """Test successful nonce validation in quote."""
-    quote = TdxQuote(
-        version=4, att_key_type=2, tee_type=0x9a93,
-        mrtd="a" * 96, rtmr0="b" * 96, rtmr1="c" * 96, 
-        rtmr2="d" * 96, rtmr3="e" * 96,
-        user_data=test_nonce, raw_quote_size=4096,
-        parsed_at="2025-01-01T00:00:00Z"
-    )
-    
-    result = validate_nonce_in_quote(quote, test_nonce)
-    assert result is True
-
-
-def test_validate_nonce_in_quote_no_user_data():
-    """Test nonce validation with no user data in quote."""
-    quote = TdxQuote(
-        version=4, att_key_type=2, tee_type=0x9a93,
-        mrtd="a" * 96, rtmr0="b" * 96, rtmr1="c" * 96, 
-        rtmr2="d" * 96, rtmr3="e" * 96,
-        user_data=None, raw_quote_size=4096,
-        parsed_at="2025-01-01T00:00:00Z"
-    )
-    
-    result = validate_nonce_in_quote(quote, "any_nonce")
-    assert result is False
-
-
-def test_validate_nonce_in_quote_mismatch():
-    """Test nonce validation with mismatched nonce."""
-    quote = TdxQuote(
-        version=4, att_key_type=2, tee_type=0x9a93,
-        mrtd="a" * 96, rtmr0="b" * 96, rtmr1="c" * 96, 
-        rtmr2="d" * 96, rtmr3="e" * 96,
-        user_data="wrong_nonce", raw_quote_size=4096,
-        parsed_at="2025-01-01T00:00:00Z"
-    )
-    
-    result = validate_nonce_in_quote(quote, "expected_nonce")
-    assert result is False
-
-
-def test_validate_nonce_in_quote_with_whitespace():
-    """Test nonce validation with whitespace in user data."""
-    quote = TdxQuote(
-        version=4, att_key_type=2, tee_type=0x9a93,
-        mrtd="a" * 96, rtmr0="b" * 96, rtmr1="c" * 96, 
-        rtmr2="d" * 96, rtmr3="e" * 96,
-        user_data="  test_nonce  ", raw_quote_size=4096,
-        parsed_at="2025-01-01T00:00:00Z"
-    )
-    
-    result = validate_nonce_in_quote(quote, "test_nonce")
-    assert result is True
-
 
 # Nonce extraction tests
 def test_extract_nonce_from_quote_valid():

@@ -31,7 +31,6 @@ class BootAttestationArgs(BaseModel):
 class RuntimeAttestationArgs(BaseModel):
     """Request model for runtime attestation."""
     quote: str = Field(..., description="Base64 encoded TDX quote")
-    nonce: str = Field(..., description="Nonce for replay protection")
 
 
 class ServerArgs(BaseModel):
