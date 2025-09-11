@@ -798,9 +798,6 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
             dockerfile_content = f"""FROM {full_source_tag}
 USER root
 RUN rm -f /etc/chutesfs.index
-ENV DEBIAN_FRONTEND=noninteractive
-ENV NEEDRESTART_SUSPEND=y
-RUN apt update && apt -y upgrade
 USER chutes
 RUN pip install --upgrade chutes=={chutes_version}
 """

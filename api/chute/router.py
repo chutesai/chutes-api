@@ -565,11 +565,16 @@ async def get_chute_code(
             detail="Chute not found, or does not belong to you",
         )
     authorized = False
-    if chute.public or (
-        current_user
-        and (
-            current_user.user_id == chute.user_id or await is_shared(chute_id, current_user.user_id)
+    if (
+        chute.public
+        or (
+            current_user
+            and (
+                current_user.user_id == chute.user_id
+                or await is_shared(chute_id, current_user.user_id)
+            )
         )
+        or "/affine" in chute.name.lower()
     ):
         authorized = True
     if not authorized:
