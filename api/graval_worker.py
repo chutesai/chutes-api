@@ -715,7 +715,7 @@ async def handle_rolling_update(chute_id: str, version: str, reason: str = "code
 
 @broker.task
 async def generate_fs_hash(
-    image_id: str, patch_version: str, seed: int, sparse: bool, exclude_path: str
+    image_id: str, patch_version: str, seed: str, sparse: bool, exclude_path: str
 ):
     """
     Use the new cfsv mechanism to generate the expected filesystem hash for a given image/seed pair.
