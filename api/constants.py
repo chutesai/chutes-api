@@ -42,8 +42,6 @@ DIFFUSION_PRICE_MULT_PER_STEP = 0.005
 
 # Minimum utilization of a chute before additional instances can be added.
 UTILIZATION_SCALE_UP = 0.35
-# XXX Legacy value.
-EXPANSION_UTILIZATION_THRESHOLD = 0.02
 
 # Cap on number of instances for an underutilized chute.
 UNDERUTILIZED_CAP = 5

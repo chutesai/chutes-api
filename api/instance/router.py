@@ -25,8 +25,6 @@ from api.config import settings
 from api.permissions import Permissioning
 from api.constants import (
     HOTKEY_HEADER,
-    EXPANSION_UTILIZATION_THRESHOLD,
-    UNDERUTILIZED_CAP,
     AUTHORIZATION_HEADER,
     PRIVATE_INSTANCE_MULTIPLIER,
 )
@@ -95,65 +93,6 @@ async def _check_blacklisted(db, hotkey):
             detail=f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}",
         )
     return mgnode
-
-
-async def _check_scalable_legacy(db, chute, hotkey):
-    chute_id = chute.chute_id
-
-    # Check utilization.
-    query = text("""
-        SELECT * FROM chute_utilization
-        WHERE chute_id = :chute_id
-        AND NOT EXISTS (
-          SELECT FROM chutes
-          WHERE chute_id = :chute_id
-          AND updated_at >= now() - INTERVAL '1 hour'
-        )
-    """)
-    results = await db.execute(query, {"chute_id": chute_id})
-    utilization = results.mappings().first()
-    low_utilization = False
-    if utilization and utilization["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD:
-        low_utilization = True
-
-    # When there is a rolling update in progress (and it's not low utilization),
-    # only allow the miner hotkeys that had instances before the event was triggered.
-    if chute.rolling_update and not low_utilization:
-        limit = chute.rolling_update.permitted.get(hotkey, 0) or 0
-        if limit <= 0 and chute.rolling_update.permitted:
-            logger.warning(
-                f"SCALELOCK: chute {chute_id=} {chute.name} is currently undergoing a rolling update"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=f"Chute {chute_id} is currently undergoing a rolling update and you have no quota, try again later.",
-            )
-        elif limit:
-            chute.rolling_update.permitted[hotkey] -= 1
-        return
-
-    # When there's no rolling update, just use the utilization ratios.
-    if (
-        utilization
-        and utilization["avg_busy_ratio"] < EXPANSION_UTILIZATION_THRESHOLD
-        and not utilization["total_rate_limit_errors"]
-    ):
-        query = text(
-            "SELECT COUNT(CASE WHEN active AND verified THEN 1 ELSE NULL END) AS total_count, "
-            "COUNT(CASE WHEN miner_hotkey = :hotkey THEN 1 ELSE NULL END) AS hotkey_count "
-            "FROM instances WHERE chute_id = :chute_id AND active = true AND verified = true"
-        )
-        count_result = (
-            (await db.execute(query, {"chute_id": chute_id, "hotkey": hotkey})).mappings().first()
-        )
-        if count_result["total_count"] >= UNDERUTILIZED_CAP or count_result.hotkey_count:
-            logger.warning(
-                f"SCALELOCK: chute {chute_id=} {chute.name} is currently capped: {count_result}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_423_LOCKED,
-                detail=f"Chute {chute_id} is underutilized and either at capacity or you already have an instance.",
-            )
 
 
 async def _check_scalable(db, chute, hotkey):
