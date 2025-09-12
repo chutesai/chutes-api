@@ -349,7 +349,7 @@ async def get_chute_target_manager(
             and not has_legacy_private_billing(chute)
             and chute.user_id != await chutes_user_id()
         ):
-            bounty_lifetime = 1800
+            bounty_lifetime = 3600 if "/affine" not in chute.name.lower() else 7200
 
         # Increase the bounty.
         async with get_session() as bounty_session:

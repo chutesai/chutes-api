@@ -961,7 +961,7 @@ async def _deploy_chute(
             ),
             {"chute_id": chute.chute_id},
         )
-        if chute.instances:
+        if use_rolling_update and chute.instances:
             rolling_update = RollingUpdate(
                 chute_id=chute.chute_id,
                 old_version=chute.version,

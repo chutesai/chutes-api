@@ -13,7 +13,7 @@ import decimal
 import traceback
 from loguru import logger
 from pydantic import BaseModel, ValidationError, Field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, UTC
 from io import BytesIO, StringIO
 from typing import Optional
 from fastapi_cache.decorator import cache
@@ -316,6 +316,7 @@ async def _invoke(
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
 
     # Check account quotas if not free/invoiced.
+    quota_date = date.today()
     if not (
         current_user.has_role(Permissioning.free_account)
         or current_user.has_role(Permissioning.invoice_billing)
@@ -356,13 +357,26 @@ async def _invoke(
                     f"from user {current_user.username} [{origin_ip}] with no balance "
                     f"and {request_count=} of {quota=}"
                 )
-                raise HTTPException(
-                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                    detail=(
-                        f"Quota exceeded and account balance is ${current_user.current_balance.effective_balance}, "
-                        f"please pay with fiat or send tao to {current_user.payment_address}"
-                    ),
-                )
+                error_kwargs = {
+                    "status_code": status.HTTP_402_PAYMENT_REQUIRED,
+                    "detail": {
+                        "message": (
+                            f"Quota exceeded and account balance is ${current_user.current_balance.effective_balance}, "
+                            f"please pay with fiat or send tao to {current_user.payment_address}"
+                        ),
+                    },
+                }
+                if quota:
+                    quota_reset = quota_date + timedelta(days=1)
+                    quota_reset = quota_reset = datetime(
+                        year=quota_reset.year,
+                        month=quota_reset.month,
+                        day=quota_reset.day,
+                        tzinfo=UTC,
+                    ).isoformat()
+                    error_kwargs["detail"]["quota_reset_timestamp"] = quota_reset
+
+                raise HTTPException(**error_kwargs)
         else:
             # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
             request.state.free_invocation = True
