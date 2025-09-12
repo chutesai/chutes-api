@@ -128,64 +128,6 @@ UPDATE partitioned_invocations_{suffix} SET
     error_message = CAST(:error_message AS TEXT)
 WHERE invocation_id = :invocation_id
 """
-UTILIZATION_QUERY = """
-CREATE TABLE chute_utilization AS
-WITH current_instances AS (
-    SELECT
-        i.instance_id,
-        i.chute_id,
-        EXTRACT(EPOCH FROM (clock_timestamp() - i.created_at)) AS online_seconds
-    FROM   instances i
-    WHERE  i.verified = TRUE
-),
-instance_utilisation AS (
-    SELECT
-        inv.instance_id,
-        SUM(
-            CASE
-                WHEN inv.error_message IS NULL
-                     AND inv.completed_at IS NOT NULL
-                THEN EXTRACT(EPOCH FROM (inv.completed_at - inv.started_at))
-                ELSE 0
-            END
-        ) AS processing_seconds,
-        COUNT(*) AS invocation_count,
-        SUM(CASE WHEN inv.error_message = 'RATE_LIMIT' AND inv.started_at >= now() - interval '1 hours' THEN 1 ELSE 0 END) AS rate_limit_count
-    FROM invocations  inv
-    JOIN current_instances ci ON ci.instance_id = inv.instance_id where inv.started_at >= now() - interval '1 day'
-    GROUP BY inv.instance_id
-),
-instance_busy AS (
-    SELECT
-        ci.chute_id,
-        ci.instance_id,
-        ROUND(COALESCE(iu.processing_seconds,0) / ci.online_seconds , 6) AS busy_ratio,
-        iu.invocation_count,
-        iu.rate_limit_count
-    FROM current_instances ci
-    LEFT JOIN instance_utilisation iu ON iu.instance_id = ci.instance_id
-),
-chute_averages AS (
-    SELECT
-        chute_id,
-        AVG(busy_ratio) AS avg_busy_ratio,
-        SUM(invocation_count) AS total_invocations,
-        SUM(rate_limit_count) AS total_rate_limit_errors,
-        COUNT(*) AS instance_count
-    FROM instance_busy
-    GROUP BY chute_id
-)
-SELECT
-    c.chute_id,
-    ROUND(COALESCE(ca.avg_busy_ratio,0), 6) AS avg_busy_ratio,
-    COALESCE(ca.instance_count,0) AS instance_count,
-    COALESCE(ca.total_invocations,0) AS total_invocations,
-    COALESCE(ca.total_rate_limit_errors,0) AS total_rate_limit_errors
-FROM chutes c
-LEFT JOIN chute_averages ca ON ca.chute_id = c.chute_id
-WHERE c.created_at <= now() - INTERVAL '1 day'
-ORDER BY avg_busy_ratio DESC;
-"""
 
 
 async def get_miner_session(instance: Instance) -> aiohttp.ClientSession:
@@ -1412,15 +1354,6 @@ async def count_str_tokens(output_str):
             f"Error estimating tokens: {exc}, defaulting to dumb method: {output_str.__class__}"
         )
     return int(len(output_str) / 4)
-
-
-async def update_chute_utilization():
-    logger.info("Updating chute utilization ratios...")
-    async with get_session() as session:
-        await session.execute(text("DROP TABLE IF EXISTS chute_utilization"))
-        await session.execute(text(UTILIZATION_QUERY))
-        await session.commit()
-        logger.success("Successfully updated chute utilization ratios")
 
 
 async def update_llm_means():

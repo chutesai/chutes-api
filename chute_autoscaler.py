@@ -43,7 +43,7 @@ PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Any manual overrides per chute...
 LIMIT_OVERRIDES = {
     "1a0d9245-582a-5cde-8f5b-2da5b9542339": 30,
-    "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 60,
+    "b5326e54-8d9e-590e-bed4-f3db35d9d4cd": 30,
 }
 FAILSAFE = {
     "154ad01c-a431-5744-83c8-651215124360": 30,

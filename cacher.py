@@ -10,7 +10,7 @@ from api.config import settings
 from api.database import get_session
 from sqlalchemy import text
 import api.database.orms  # noqa
-from api.chute.util import update_chute_utilization, refresh_all_llm_details, update_llm_means
+from api.chute.util import refresh_all_llm_details, update_llm_means
 from api.invocation.util import generate_invocation_history_metrics
 
 
@@ -98,7 +98,6 @@ async def main():
     await warm_up_chute_history()
     await warm_up_cache()
     await generate_invocation_history_metrics()
-    await update_chute_utilization()
 
 
 if __name__ == "__main__":

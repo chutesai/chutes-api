@@ -52,8 +52,7 @@ AND NOT EXISTS (
     WHERE invocation_id = i.parent_invocation_id
     AND confirmed_at IS NOT NULL
 )
-GROUP BY mn.hotkey
-ORDER BY compute_units DESC;
+GROUP BY mn.hotkey;
 """
 # Query to calculate the average number of unique chutes active at any single point in time, i.e. unique_chute_count.
 UNIQUE_CHUTE_AVERAGE_QUERY = """
@@ -156,8 +155,7 @@ complete_dataset AS (
 -- Calculate average GPU-weighted chutes per miner across all time points
 SELECT miner_hotkey, AVG(gpu_weighted_chutes)::integer AS avg_gpu_weighted_chutes
 FROM complete_dataset
-GROUP BY miner_hotkey
-ORDER BY avg_gpu_weighted_chutes DESC;
+GROUP BY miner_hotkey;
 """
 
 # Private instances, including jobs.
@@ -197,8 +195,7 @@ SELECT
     total_instances,
     COALESCE(compute_seconds, 0) as compute_seconds,
     COALESCE(compute_units, 0) as compute_units
-FROM miner_compute_units
-ORDER BY compute_units DESC;
+FROM miner_compute_units;
 """
 
 # Unique chute history.
@@ -207,7 +204,6 @@ UNIQUE_CHUTE_HISTORY_QUERY = (
         "SELECT miner_hotkey, AVG", "SELECT miner_hotkey, time_point::text, AVG"
     )
     .replace("GROUP BY miner_hotkey", "GROUP BY miner_hotkey, time_point")
-    .replace("ORDER BY avg_gpu_weighted_chutes DESC", "ORDER BY miner_hotkey ASC, time_point DESC")
     .replace(
         "FROM complete_dataset",
         "FROM complete_dataset WHERE miner_hotkey IN (SELECT hotkey FROM metagraph_nodes WHERE netuid = 64)",
