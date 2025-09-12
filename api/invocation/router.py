@@ -850,7 +850,7 @@ async def hostname_invocation(
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
         payload = await request.json()
         # MistralAI gated this model for some reason.......
-        model = payload.get("model")
+        model = payload.get("model", "")
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":
             payload["model"] = "chutesai/Mistral-Small-3.1-24B-Instruct-2503"
 
