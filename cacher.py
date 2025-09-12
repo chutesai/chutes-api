@@ -31,7 +31,7 @@ async def warm_up_cache():
     """
     Keep some of the DB-heavy endpoints warm in cache so API requests are always fast.
     """
-    from api.miner.router import get_scores, get_stats, get_utilization, get_utilization_instances
+    from api.miner.router import get_scores, get_stats
     from api.invocation.router import get_usage
 
     logger.info("Warming up miner and chute usage endpoints...")
@@ -45,10 +45,6 @@ async def warm_up_cache():
         await session.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY daily_revenue_summary;"))
     await get_scores(hotkey=None, request=None)
     logger.success("Warmed up scores endpoint")
-    await get_utilization(hotkey=None, request=None)
-    logger.success("Warmed up utilization score endpoint")
-    await get_utilization_instances(hotkey=None, request=None)
-    logger.success("Warmed up utilization per instance endpoint")
     await get_usage(request=None)
     logger.success("Warmed up usage metrics")
     await refresh_all_llm_details()
