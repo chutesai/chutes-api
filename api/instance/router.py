@@ -19,6 +19,7 @@ from sqlalchemy import select, text, func, update
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
@@ -227,11 +228,14 @@ async def _validate_node(db, chute, node_id: str, hotkey: str):
         )
 
     # Already associated with an instance?
-    if node.instance:
-        instance = node.instance
+    result = await db.execute(
+        select(instance_nodes.c.instance_id).where(instance_nodes.c.node_id == node_id)
+    )
+    existing_instance_id = result.scalar()
+    if existing_instance_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"GPU {node_id} is already assigned to an instance: {instance.instance_id=} {instance.chute_id=}",
+            detail=f"GPU {node_id} is already assigned to instance: {existing_instance_id}",
         )
 
     # Valid GPU for this chute?
@@ -265,10 +269,18 @@ async def _validate_nodes(db, chute, node_ids: list[str], hotkey: str, instance:
         nodes.append(node)
         node_hosts.add(node.verification_host)
 
-        # Create the association record.
-        await db.execute(
-            instance_nodes.insert().values(instance_id=instance.instance_id, node_id=node_id)
+        # Create the association record, handling dupes.
+        stmt = (
+            insert(instance_nodes)
+            .values(instance_id=instance.instance_id, node_id=node_id)
+            .on_conflict_do_nothing(index_elements=["node_id"])
         )
+        result = await db.execute(stmt)
+        if result.rowcount == 0:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Node {node_id} is already assigned to another instance",
+            )
 
     # The hostname used in verifying the node must match the hostname of the instance.
     if len(node_hosts) > 1 or list(node_hosts)[0].lower() != host.lower():
@@ -611,6 +623,11 @@ async def claim_launch_config(
             )
 
     # Verify the GPUs are suitable.
+    if len(set([node["uuid"] for node in args.gpus])) != len(args.gpus):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate GPUs in request!",
+        )
     node_ids = [node["uuid"] for node in args.gpus]
     try:
         nodes = await _validate_nodes(

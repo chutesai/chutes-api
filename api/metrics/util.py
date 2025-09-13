@@ -6,6 +6,7 @@ import asyncio
 import traceback
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.orm import noload
 import api.database.orms  # noqa
 from api.chute.schemas import Chute
 from api.database import get_session
@@ -15,7 +16,9 @@ from api.metrics.capacity import track_capacity
 
 async def update_gauges():
     async with get_session() as session:
-        chutes = (await session.execute(select(Chute))).unique().scalars().all()
+        chutes = (
+            (await session.execute(select(Chute).options(noload("*")))).unique().scalars().all()
+        )
     for chute in chutes:
         logger.info(f"Updating gauges for {chute.chute_id=} {chute.name=}")
         tm = await get_chute_target_manager(chute, no_bounty=True)

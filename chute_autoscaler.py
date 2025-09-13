@@ -322,6 +322,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.user_id,
                     c.created_at,
                     c.concurrency,
+                    MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
                     COALESCE(c.max_instances, 1) AS max_instances,
                     COALESCE(c.scaling_threshold, 0.75) AS scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
@@ -330,6 +331,7 @@ async def perform_autoscale(dry_run: bool = False):
                     NOW() AS db_now
                 FROM chutes c
                 LEFT JOIN instances i ON c.chute_id = i.chute_id AND i.verified = true AND i.active = true
+                LEFT JOIN user_current_balance ucb on ucb.user_id = c.user_id
                 WHERE c.jobs IS NULL
                       OR c.jobs = '[]'::jsonb
                       OR c.jobs = '{}'::jsonb
@@ -357,6 +359,14 @@ async def perform_autoscale(dry_run: bool = False):
             and not has_legacy_private_billing(info)
             and info.user_id != await chutes_user_id()
         ):
+            # User has no balance, can't scale up of course.
+            if info.user_balance <= 0:
+                await settings.redis_client.set(f"scale:{chute_id}", 0)
+                chute_target_counts[chute_id] = 0
+                chute_actions[chute_id] = "no_action"
+                logger.info(f"Private chute {chute_id=} has no balance, unable to scale.")
+                continue
+
             # Private chutes that do already have instances.
             if info.instance_count:
                 utilization_5m = metrics["utilization"].get("5m", 0)

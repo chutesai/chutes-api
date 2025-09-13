@@ -30,7 +30,7 @@ from sqlalchemy.orm import aliased, joinedload
 InstanceAlias = aliased(Instance)
 
 
-@alru_cache(maxsize=200, ttl=60)
+@alru_cache(maxsize=1000, ttl=60)
 async def load_chute_targets(chute_id: str, nonce: float = 0):
     query = (
         select(Instance)

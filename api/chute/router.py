@@ -608,6 +608,14 @@ async def warm_up_chute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
+    balance = (
+        current_user.current_balance.effective_balance if current_user.current_balance else 0.0
+    )
+    if balance <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail=f"Account balance is ${balance}, please top-up with fiat or send tao to {current_user.payment_address}",
+        )
 
     started_at = time.time()
 

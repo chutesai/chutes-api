@@ -315,6 +315,25 @@ async def _invoke(
     # Check account balance.
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
 
+    # Prevent calling private chutes when the owner has no balance.
+    if (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
+        owner_balance = (
+            chute.user.current_balance.effective_balance if chute.user.current_balance else 0.0
+        )
+        if owner_balance <= 0:
+            logger.warning(
+                f"Preventing execution of chute {chute.name=} {chute.chute_id=}, "
+                f"creator has insufficient balance {owner_balance=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="Chute unavailable because the creator of this chute {chute.user_id=} has zero balance.",
+            )
+
     # Check account quotas if not free/invoiced.
     quota_date = date.today()
     if not (
@@ -339,6 +358,9 @@ async def _invoke(
             await pipe.execute()
 
         # No quota for private/user-created chutes.
+        effective_balance = (
+            current_user.current_balance.effective_balance if current_user.current_balance else 0.0
+        )
         if (
             not chute.public
             and not has_legacy_private_billing(chute)
@@ -348,10 +370,7 @@ async def _invoke(
 
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
-            if (
-                current_user.current_balance.effective_balance <= 0
-                and not request.state.free_invocation
-            ):
+            if effective_balance <= 0 and not request.state.free_invocation:
                 logger.warning(
                     f"Payment required: attempted invocation of {chute.name} "
                     f"from user {current_user.username} [{origin_ip}] with no balance "
@@ -848,7 +867,14 @@ async def hostname_invocation(
 
     # Mega LLM/diffusion request handler.
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except (json.decoder.JSONDecodeError, ValueError, TypeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid request JSON",
+            )
+
         # MistralAI gated this model for some reason.......
         model = payload.get("model", "")
         if model == "mistralai/Mistral-Small-3.1-24B-Instruct-2503":

@@ -44,7 +44,7 @@ from api.util import (
     notify_deleted,
     has_legacy_private_billing,
 )
-from api.util import memcache_set
+from api.util import memcache_get, memcache_set, memcache_delete
 from api.bounty.util import claim_bounty
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOverride
@@ -261,14 +261,24 @@ async def chute_id_by_slug(slug: str):
     return None
 
 
-@alru_cache(maxsize=100, ttl=30)
+@alru_cache(maxsize=1000, ttl=180)
 async def get_one(name_or_id: str):
     """
     Load a chute by it's name or ID.
     """
+    # Memcached lookup first.
+    cache_key = f"_chute:{name_or_id}".encode()
+    cached = await memcache_get(cache_key)
+    if cached:
+        try:
+            return pickle.loads(cached)
+        except Exception:
+            await memcache_delete(cache_key)
+
+    # Load from DB.
     chute_user = await chutes_user_id()
     async with get_session() as db:
-        return (
+        chute = (
             (
                 await db.execute(
                     select(Chute)
@@ -285,6 +295,20 @@ async def get_one(name_or_id: str):
             .unique()
             .scalar_one_or_none()
         )
+        if chute:
+            # Warm up the relationships for the serialization.
+            _ = chute.image
+            _ = chute.logo
+            _ = chute.rolling_update
+            _ = chute.user
+            if chute.user:
+                _ = chute.user.current_balance
+            if chute.image:
+                _ = chute.image.user
+                _ = chute.image.logo
+            serialized = pickle.dumps(chute)
+            await memcache_set(cache_key, serialized, exptime=180)
+        return chute
 
 
 async def is_shared(chute_id: str, user_id: str):
