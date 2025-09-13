@@ -20,7 +20,7 @@ from api.server.exceptions import (
     NonceError, ServerNotFoundError, ServerRegistrationError
 )
 from api.server.util import (
-    parse_tdx_quote, verify_quote_signature, verify_boot_measurements,
+    parse_tdx_quote, verify_quote, verify_boot_measurements,
     verify_runtime_measurements, get_luks_passphrase,
     generate_nonce, get_nonce_expiry_seconds
 )
@@ -136,7 +136,7 @@ async def process_boot_attestation(
         
         # Verify quote signature
         quote_bytes = base64.b64decode(args.quote)
-        if not verify_quote_signature(quote_bytes):
+        if not verify_quote(quote_bytes):
             raise InvalidQuoteError("Quote signature verification failed")
         
         # Verify boot measurements
@@ -293,7 +293,7 @@ async def process_runtime_attestation(
 
         # Verify quote signature
         quote_bytes = base64.b64decode(args.quote)
-        if not verify_quote_signature(quote_bytes):
+        if not verify_quote(quote_bytes):
             raise InvalidQuoteError("Quote signature verification failed")
         
         # Verify runtime measurements if configured
