@@ -2,13 +2,13 @@
 TDX quote parsing, crypto operations, and server helper functions.
 """
 
-import base64
 import secrets
 import struct
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 from loguru import logger
+from dcap_qvl import get_collateral_and_verify
 from api.config import settings
 from api.server.exceptions import InvalidQuoteError, MeasurementMismatchError
 
@@ -29,6 +29,7 @@ class TdxQuote:
     user_data: Optional[str]
     raw_quote_size: int
     parsed_at: str
+    verification_result: Optional[Dict[str, Any]] = None
     
     @property
     def rtmrs(self) -> Dict[str, str]:
@@ -49,6 +50,8 @@ class TdxQuote:
             "user_data": self.user_data,
             "raw_quote_size": self.raw_quote_size,
             "parsed_at": self.parsed_at,
+            "tcb_level": self.tcb_level,
+            "verification_result": self.verification_result,
             "header": {
                 "version": self.version,
                 "att_key_type": self.att_key_type,
@@ -67,118 +70,56 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     return minutes * 60
 
 
-def is_nonce_expired(expires_at: datetime) -> bool:
-    """Check if a nonce has expired (deprecated - Redis TTL handles expiration)."""
-    return datetime.now(timezone.utc) > expires_at
-
-def parse_tdx_quote(quote_b64: str) -> TdxQuote:
+def parse_tdx_quote(quote_bytes: bytes) -> TdxQuote:
     """
-    Parse a TDX quote and extract relevant measurements.
+    Parse TDX quote using manual byte parsing based on TDX quote structure.
     
     Args:
-        quote_b64: Base64 encoded TDX quote
+        quote_bytes: Raw quote bytes
         
     Returns:
-        TdxQuote object containing parsed quote data
+        TdxQuote object with parsed data
         
     Raises:
-        InvalidQuoteError: If quote is malformed or invalid
+        InvalidQuoteError: If parsing fails
     """
     try:
-        quote_bytes = base64.b64decode(quote_b64)
-        
-        logger.info(f"Parsing TDX quote of {len(quote_bytes)} bytes")
-        
-        # Validate minimum size (header + TD quote body = 48 + 584 = 632 bytes minimum)
+        # Validate minimum size (header + TD report = 48 + 584)
         if len(quote_bytes) < 632:
-            raise InvalidQuoteError(f"Quote too small: {len(quote_bytes)} bytes (minimum 632)")
-        
-        # Parse TDX Quote Header (first 48 bytes)
-        if len(quote_bytes) < 48:
-            raise InvalidQuoteError("Quote too small for header")
-            
-        # Unpack header fields (little endian) - first 16 bytes of 48-byte header
-        header_data = struct.unpack('<HHIIHH', quote_bytes[:16])
-        version, att_key_type, att_key_data_0, att_key_data_1, tee_type, reserved = header_data
-        
-        # Validate TDX quote
+            raise InvalidQuoteError(f"Quote too short: {len(quote_bytes)} bytes")
+
+        # Parse header (48 bytes, little-endian)
+        header_format = "<HHI16s20s"  # uint16 version, uint16 att_key_type, uint32 tee_type, 16s QE Vendor ID, 20s User Data
+        header = struct.unpack_from(header_format, quote_bytes, 0)
+        version, att_key_type, tee_type, qe_vendor_id, header_user_data = header
+
+        # Validate header
         if version != 4:
             raise InvalidQuoteError(f"Invalid quote version: {version} (expected 4)")
-        
-        # TEE type can be 0x81 (standard TDX) or 0x9a93 (as seen in your quote)
-        if tee_type not in [0x81, 0x9a93]:
-            logger.warning(f"Unexpected TEE type: 0x{tee_type:04x}")
-        
-        # Parse TD Quote Body (starts at offset 48)
-        td_quote_body_offset = 48
-        if len(quote_bytes) < td_quote_body_offset + 584:  # TD Quote Body is 584 bytes
-            raise InvalidQuoteError("Quote too small for TD Quote Body")
-        
-        td_quote_body = quote_bytes[td_quote_body_offset:]
-        
-        # Extract fields from TD Quote Body based on the C struct layout:
-        # typedef struct {
-        #     uint8_t tee_tcb_svn[16];    // TEE TCB SVN (offset 0)
-        #     uint8_t mrseam[48];         // MRSEAM (offset 16) 
-        #     uint8_t mrsigner_seam[48];  // MRSIGNERSEAM (offset 64)
-        #     uint8_t seamattributes[8];  // SEAM attributes (offset 112)
-        #     uint8_t tdattributes[8];    // TD attributes (offset 120)
-        #     uint8_t xfam[8];            // XFAM (offset 128)
-        #     uint8_t mrtd[48];           // MRTD (offset 136)
-        #     uint8_t mrconfigid[48];     // MRCONFIGID (offset 184)
-        #     uint8_t mrowner[48];        // MROWNER (offset 232)
-        #     uint8_t mrownerconfig[48];  // MROWNERCONFIG (offset 280)
-        #     uint8_t rtmrs[192];         // RTMR0-3 (4 x 48 bytes) (offset 328)
-        #     uint8_t reportdata[64];     // User data (nonce) (offset 520)
-        # } tdx_td_quote_body_t;
-        
-        # Extract MRTD (offset 136 from start of TD Quote Body)
-        mrtd_offset = 136
-        mrtd_bytes = td_quote_body[mrtd_offset:mrtd_offset + 48]
-        mrtd = mrtd_bytes.hex()
-        
-        # Extract RTMRs (offset 328 from start of TD Quote Body)
-        rtmr_offset = 328
-        rtmr_bytes = td_quote_body[rtmr_offset:rtmr_offset + 192]  # 4 RTMRs × 48 bytes each
-        
-        # Extract individual RTMRs (48 bytes each)
-        rtmr0 = rtmr_bytes[0:48].hex()
-        rtmr1 = rtmr_bytes[48:96].hex()
-        rtmr2 = rtmr_bytes[96:144].hex()
-        rtmr3 = rtmr_bytes[144:192].hex()
-        
-        # Extract user data / reportdata (offset 520 from start of TD Quote Body)
-        reportdata_offset = 520
-        if len(td_quote_body) >= reportdata_offset + 64:
-            reportdata_bytes = td_quote_body[reportdata_offset:reportdata_offset + 64]
-            
-            # Based on your C program output:
-            # The C program now stores raw text directly: memcpy(req.reportdata, user_data, len)
-            # So for nonce "abc123", we get bytes: [0x61, 0x62, 0x63, 0x31, 0x32, 0x33, 0x00, ...]
-            # This is the original nonce as UTF-8 bytes, null-padded to 64 bytes
-            
-            if any(reportdata_bytes):
-                try:
-                    # Remove trailing null bytes from the 64-byte field
-                    user_data_trimmed = reportdata_bytes.rstrip(b'\x00')
-                    
-                    # Decode as UTF-8 to get the original nonce
-                    user_data = user_data_trimmed.decode('utf-8')
-                    logger.debug(f"Extracted nonce from reportdata: {user_data}")
-                    
-                except UnicodeDecodeError as e:
-                    logger.warning(f"Reportdata is not valid UTF-8, using hex representation: {e}")
-                    # Fallback: use the hex representation
-                    user_data = user_data_trimmed.hex()
-                except Exception as e:
-                    logger.error(f"Failed to process reportdata: {e}")
-                    # Final fallback: use the raw hex representation
-                    user_data = reportdata_bytes.rstrip(b'\x00').hex()
-            else:
-                user_data = None
-        else:
-            user_data = None
-        
+        if tee_type != 0x81:
+            raise InvalidQuoteError(f"Invalid TEE type: {tee_type:08x} (expected 0x81 for TDX)")
+        if att_key_type not in (2, 3):  # ECDSA-256 or ECDSA-384
+            raise InvalidQuoteError(f"Invalid attestation key type: {att_key_type}")
+
+        # TD report starts at offset 48
+        td_report = quote_bytes[48:]
+
+        # Extract fields using corrected offsets from Intel API verification
+        mrtd = td_report[136:184].hex().upper()
+        rtmr0 = td_report[328:376].hex().upper()
+        rtmr1 = td_report[376:424].hex().upper()
+        rtmr2 = td_report[424:472].hex().upper()
+        rtmr3 = td_report[472:520].hex().upper()
+        report_data = td_report[520:584]
+
+        # Extract nonce from report_data (first printable ASCII portion)
+        user_data = ""
+        for i, b in enumerate(report_data):
+            if b == 0 or not (32 <= b <= 126):  # Stop at null or non-printable
+                break
+            user_data += chr(b)
+
+        # Create TdxQuote object
         quote = TdxQuote(
             version=version,
             att_key_type=att_key_type,
@@ -192,53 +133,118 @@ def parse_tdx_quote(quote_b64: str) -> TdxQuote:
             raw_quote_size=len(quote_bytes),
             parsed_at=datetime.now(timezone.utc).isoformat()
         )
-        
-        # Validate extracted measurements
-        if len(quote.mrtd) != 96:  # 48 bytes = 96 hex chars
-            raise InvalidQuoteError(f"Invalid MRTD length: {len(quote.mrtd)} (expected 96)")
-        
-        for rtmr_name, rtmr_value in quote.rtmrs.items():
-            if len(rtmr_value) != 96:  # 48 bytes = 96 hex chars
-                raise InvalidQuoteError(f"Invalid {rtmr_name} length: {len(rtmr_value)} (expected 96)")
-        
+
         logger.success(f"Successfully parsed TDX quote: MRTD={quote.mrtd[:16]}...")
         return quote
-        
-    except base64.binascii.Error as e:
-        logger.error(f"Failed to decode base64 quote: {e}")
-        raise InvalidQuoteError("Quote is not valid base64")
-    except struct.error as e:
-        logger.error(f"Failed to unpack quote header: {e}")
-        raise InvalidQuoteError(f"Invalid quote structure: {e}")
-    except Exception as e:
-        logger.error(f"Failed to parse TDX quote: {e}")
-        raise InvalidQuoteError(f"Failed to parse TDX quote: {str(e)}")
 
-def verify_quote_signature(quote_bytes: bytes) -> bool:
+    except Exception as e:
+        logger.error(f"Failed to parse quote: {e}")
+        raise InvalidQuoteError(f"Failed to parse quote: {str(e)}")
+
+
+def _bytes_to_hex(data: Any) -> str:
+    """Convert bytes to uppercase hex string, handling various input types."""
+    if isinstance(data, bytes):
+        return data.hex().upper()
+    elif isinstance(data, str):
+        return data.upper()
+    else:
+        return str(data).upper()
+
+
+def _extract_user_data_from_bytes(reportdata_bytes: bytes) -> Optional[str]:
+    """Extract user data from report data bytes."""
+    if not reportdata_bytes or not any(reportdata_bytes):
+        return None
+    
+    try:
+        # Remove trailing null bytes from the 64-byte field
+        user_data_trimmed = reportdata_bytes.rstrip(b'\x00')
+        
+        # Decode as UTF-8 to get the original nonce
+        user_data = user_data_trimmed.decode('utf-8')
+        logger.debug(f"Extracted nonce from reportdata: {user_data}")
+        return user_data
+        
+    except UnicodeDecodeError as e:
+        logger.warning(f"Reportdata is not valid UTF-8, using hex representation: {e}")
+        # Fallback: use the hex representation
+        user_data = user_data_trimmed.hex()
+        return user_data
+    except Exception as e:
+        logger.error(f"Failed to process reportdata: {e}")
+        # Final fallback: use the raw hex representation
+        return reportdata_bytes.rstrip(b'\x00').hex()
+
+
+def _validate_measurements(quote: TdxQuote) -> None:
+    """Validate that extracted measurements have correct format."""
+    if len(quote.mrtd) != 96:  # 48 bytes = 96 hex chars
+        raise InvalidQuoteError(f"Invalid MRTD length: {len(quote.mrtd)} (expected 96)")
+    
+    for rtmr_name, rtmr_value in quote.rtmrs.items():
+        if len(rtmr_value) != 96:  # 48 bytes = 96 hex chars
+            raise InvalidQuoteError(f"Invalid {rtmr_name} length: {len(rtmr_value)} (expected 96)")
+
+
+async def verify_quote(quote_bytes: bytes) -> bool:
     """
-    Verify the cryptographic signature of a TDX quote.
+    Verify the cryptographic signature of a TDX quote using dcap-qvl.
     
     Args:
         quote_bytes: Raw TDX quote bytes
+        verify_collateral: Whether to verify against Intel's collateral (requires PCCS)
         
     Returns:
         True if signature is valid, False otherwise
     """
-    try:
-        # TODO: Implement actual signature verification
-        # This would involve:
-        # - Extracting the signature from the quote
-        # - Verifying against Intel's certificate chain
-        # - Checking certificate validity and trust chain
+
+    logger.info("Verifying TDX quote signature using dcap-qvl")
+    
+    # Perform quote verification
+    verification_result = await get_collateral_and_verify(
+        quote_bytes, 
+        # "https://localhost:8081/sgx/certification/v4"
+    )
+    
+    # Check if verification was successful
+    is_valid = verification_result.get('status') == 'OK'
+    
+    if is_valid:
+        logger.success("TDX quote signature verification successful")
+    else:
+        error_msg = verification_result.get('error', 'Unknown verification error')
+        logger.error(f"TDX quote signature verification failed: {error_msg}")
+    
+    return is_valid
+
+
+# def verify_quote_with_collateral(quote_bytes: bytes) -> Dict[str, Any]:
+#     """
+#     Verify quote against Intel's collateral and return detailed results.
+    
+#     Args:
+#         quote_bytes: Raw TDX quote bytes
         
-        logger.info("Verifying TDX quote signature (placeholder)")
+#     Returns:
+#         Dictionary containing verification results
         
-        # Placeholder verification - always returns True for now
-        return True
+#     Raises:
+#         InvalidQuoteError: If verification fails or library not available
+#     """
+
+#     try:
+#         logger.info("Performing full TDX quote verification with collateral")
         
-    except Exception as e:
-        logger.error(f"Quote signature verification failed: {e}")
-        return False
+#         # Perform comprehensive verification
+#         verification_result = quote_verification.verify_quote_with_collateral(quote_bytes)
+        
+#         logger.info(f"Quote verification completed with status: {verification_result.get('status')}")
+#         return verification_result
+        
+#     except Exception as e:
+#         logger.error(f"Quote collateral verification failed: {e}")
+#         raise InvalidQuoteError(f"Quote verification failed: {str(e)}")
 
 
 def verify_boot_measurements(quote: TdxQuote) -> bool:
@@ -260,7 +266,7 @@ def verify_boot_measurements(quote: TdxQuote) -> bool:
             logger.warning("No expected boot MRTD configured")
             return True  # Skip verification if not configured
             
-        if quote.mrtd != expected_mrtd:
+        if quote.mrtd.upper() != expected_mrtd.upper():
             logger.error(f"MRTD mismatch: expected {expected_mrtd}, got {quote.mrtd}")
             raise MeasurementMismatchError(f"MRTD verification failed")
             
@@ -292,7 +298,7 @@ def verify_runtime_measurements(quote: TdxQuote, expected_measurements: Dict[str
         # Verify MRTD
         expected_mrtd = expected_measurements.get('mrtd')
         if expected_mrtd:
-            if quote.mrtd != expected_mrtd:
+            if quote.mrtd.upper() != expected_mrtd.upper():
                 logger.error(f"Runtime MRTD mismatch: expected {expected_mrtd}, got {quote.mrtd}")
                 raise MeasurementMismatchError("Runtime MRTD verification failed")
         
@@ -301,7 +307,7 @@ def verify_runtime_measurements(quote: TdxQuote, expected_measurements: Dict[str
         
         for rtmr_name, expected_value in expected_rtmrs.items():
             actual_value = quote.rtmrs.get(rtmr_name)
-            if actual_value != expected_value:
+            if actual_value and actual_value.upper() != expected_value.upper():
                 logger.error(f"RTMR {rtmr_name} mismatch: expected {expected_value}, got {actual_value}")
                 raise MeasurementMismatchError(f"RTMR {rtmr_name} verification failed")
         
