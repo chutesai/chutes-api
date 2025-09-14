@@ -1292,8 +1292,8 @@ async def deploy_chute(
         accept_fee=accept_fee,
     )
 
-    # Auto-cleanup the other chutes for affine miners.
-    if is_affine_model:
+    # Auto-share affine chutes with affine admin users.
+    if "/affine" in chute.name.lower():
         af_dev_user_ids = (
             (
                 await db.execute(

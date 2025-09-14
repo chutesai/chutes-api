@@ -262,7 +262,7 @@ async def chute_id_by_slug(slug: str):
 
 
 @alru_cache(maxsize=1000, ttl=180)
-async def get_one(name_or_id: str):
+async def _get_one(name_or_id: str, nonce: int = None):
     """
     Load a chute by it's name or ID.
     """
@@ -309,6 +309,15 @@ async def get_one(name_or_id: str):
             serialized = pickle.dumps(chute)
             await memcache_set(cache_key, serialized, exptime=180)
         return chute
+
+
+async def get_one(name_or_id: str):
+    """
+    Wrapper around the actual cached get_one with 30 second nonce to force refresh.
+    """
+    nonce = int(time.time())
+    nonce -= nonce % 30
+    return await _get_one(name_or_id, nonce=nonce)
 
 
 async def is_shared(chute_id: str, user_id: str):
