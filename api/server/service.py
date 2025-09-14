@@ -11,18 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from api.config import settings
+from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote, TdxVerificationResult
 from api.server.schemas import (
     Server, ServerAttestation, BootAttestation,
     BootAttestationArgs, RuntimeAttestationArgs, ServerArgs
 )
 from api.server.exceptions import (
-    AttestationError, InvalidQuoteError, MeasurementMismatchError, 
+    InvalidQuoteError, MeasurementMismatchError, 
     NonceError, ServerNotFoundError, ServerRegistrationError
 )
 from api.server.util import (
-    parse_tdx_quote, verify_quote, verify_boot_measurements,
-    verify_runtime_measurements, get_luks_passphrase,
-    generate_nonce, get_nonce_expiry_seconds
+    extract_nonce, verify_measurements, get_luks_passphrase,
+    generate_nonce, get_nonce_expiry_seconds, verify_quote_signature
 )
 
 
@@ -105,6 +105,16 @@ async def validate_and_consume_nonce(
     
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}...")
 
+async def verify_quote(quote: TdxQuote) -> TdxVerificationResult:
+    # Validate nonce
+    nonce = extract_nonce(quote)
+    await validate_and_consume_nonce(nonce, quote.quote_type)
+
+    result = await verify_quote_signature(quote)
+
+    verify_measurements(quote)
+
+    return result
 
 async def process_boot_attestation(
     db: AsyncSession, 
@@ -128,28 +138,20 @@ async def process_boot_attestation(
     logger.info(f"Processing boot attestation for vm id:: {args.vm_id}")
     
     # Parse and verify quote
-    try:
-        quote = parse_tdx_quote(args.quote)
+    try:# Verify quote signature
 
-        # Validate nonce
-        await validate_and_consume_nonce(quote.user_data, "boot")
-        
-        # Verify quote signature
-        quote_bytes = base64.b64decode(args.quote)
-        if not verify_quote(quote_bytes):
-            raise InvalidQuoteError("Quote signature verification failed")
-        
-        # Verify boot measurements
-        verify_boot_measurements(quote)
+        quote = BootTdxQuote.from_base64(args.quote)
+
+        result = await verify_quote(quote)
         
         # Create boot attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
             vm_id=args.vm_id,
             mrtd=quote.mrtd,
-            verification_result=quote.to_dict(),
+            verification_result=result.to_dict(),
             verified=True,
-            nonce_used=args.nonce,
+            nonce_used=extract_nonce(quote),
             verified_at=func.now()
         )
         
@@ -226,7 +228,7 @@ async def register_server(
         raise ServerRegistrationError(f"Server registration failed: {str(e)}")
 
 
-async def get_server_by_id(db: AsyncSession, server_id: str, miner_hotkey: str) -> Server:
+async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey: str) -> Server:
     """
     Get a server by ID, ensuring it belongs to the authenticated miner.
     
@@ -282,23 +284,13 @@ async def process_runtime_attestation(
     logger.info(f"Processing runtime attestation for server: {server_id}")
     
     # Get server and verify ownership
-    server = await get_server_by_id(db, server_id, miner_hotkey)
+    await check_server_ownership(db, server_id, miner_hotkey)
     
     # Parse and verify quote
     try:
-        quote = parse_tdx_quote(args.quote)
-        
-        # Validate nonce
-        await validate_and_consume_nonce(quote.user_data, "runtime", server_id)
-
         # Verify quote signature
-        quote_bytes = base64.b64decode(args.quote)
-        if not verify_quote(quote_bytes):
-            raise InvalidQuoteError("Quote signature verification failed")
-        
-        # Verify runtime measurements if configured
-        if server.expected_measurements:
-            verify_runtime_measurements(quote, server.expected_measurements)
+        quote = RuntimeTdxQuote.from_base64(args.quote)
+        result = await verify_quote(quote)
         
         # Create runtime attestation record
         attestation = ServerAttestation(
@@ -306,9 +298,9 @@ async def process_runtime_attestation(
             quote_data=args.quote,
             mrtd=quote.mrtd,
             rtmrs=quote.rtmrs,
-            verification_result=quote.to_dict(),
+            verification_result=result.to_dict(),
             verified=True,
-            nonce_used=args.nonce,
+            nonce_used=extract_nonce(quote),
             verified_at=func.now()
         )
         
@@ -358,7 +350,7 @@ async def get_server_attestation_status(
         Dictionary containing attestation status
     """
     # Verify server ownership
-    server = await get_server_by_id(db, server_id, miner_hotkey)
+    server = await check_server_ownership(db, server_id, miner_hotkey)
     
     # Get latest attestation
     query = select(ServerAttestation).where(
@@ -427,7 +419,7 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     Raises:
         ServerNotFoundError: If server not found
     """
-    server = await get_server_by_id(db, server_id, miner_hotkey)
+    server = await check_server_ownership(db, server_id, miner_hotkey)
     
     # Mark as inactive instead of hard delete to preserve attestation history
     server.active = False

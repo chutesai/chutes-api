@@ -16,3 +16,5 @@ def pytest_configure(config):
 
 
 pytest_configure(None)
+
+from fixtures.tdx import *
