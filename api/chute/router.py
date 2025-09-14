@@ -270,6 +270,44 @@ async def unshare_chute(
     }
 
 
+@router.get("/affine_available")
+async def list_available_affine_chutes():
+    """
+    Get a list of affine chutes where the creator/user has a non-zero balance.
+    """
+    async with get_session() as session:
+        query = text("""
+            SELECT
+                c.chute_id,
+                c.user_id,
+                c.name,
+                n.hotkey,
+                CASE WHEN COUNT(i.chute_id) > 0 THEN true ELSE false END as has_active_instance
+            FROM chutes c
+            JOIN users u ON c.user_id = u.user_id
+            JOIN user_current_balance b ON b.user_id = u.user_id
+            LEFT JOIN metagraph_nodes n ON n.hotkey = u.hotkey
+            LEFT JOIN instances i ON i.chute_id = c.chute_id AND i.active = true
+            WHERE
+                c.name ILIKE '%affine%'
+                AND b.effective_balance > 0
+                AND n.netuid = 120
+            GROUP BY c.chute_id, c.user_id, c.name, n.hotkey;
+        """)
+        result = await session.execute(query)
+        rows = result.fetchall()
+        return [
+            {
+                "chute_id": row.chute_id,
+                "user_id": row.user_id,
+                "name": row.name,
+                "hotkey": row.hotkey,
+                "has_active_instance": row.has_active_instance,
+            }
+            for row in rows
+        ]
+
+
 @router.get("/", response_model=PaginatedResponse)
 async def list_chutes(
     include_public: Optional[bool] = False,
