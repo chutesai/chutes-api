@@ -290,8 +290,7 @@ async def list_available_affine_chutes():
             LEFT JOIN instances i ON i.chute_id = c.chute_id AND i.active = true
             WHERE
                 c.name ILIKE '%affine%'
-                AND b.effective_balance > 0
-                AND n.netuid = 120
+                AND ((b.effective_balance > 0 AND n.netuid = 120) OR (u.permissions_bitmask & 1024) = 1024)
             GROUP BY c.chute_id, c.user_id, c.name, n.hotkey;
         """)
         result = await session.execute(query)
