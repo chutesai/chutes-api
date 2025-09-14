@@ -20,7 +20,7 @@ from api.server.schemas import (
 )
 from api.server.service import (
     create_nonce, process_boot_attestation, register_server,
-    get_server_by_id, process_runtime_attestation, get_server_attestation_status,
+    check_server_ownership, process_runtime_attestation, get_server_attestation_status,
     list_servers, delete_server
 )
 from api.server.exceptions import (
@@ -171,7 +171,7 @@ async def get_server_details(
     Get details for a specific server.
     """
     try:
-        server = await get_server_by_id(db, server_id, hotkey)
+        server = await check_server_ownership(db, server_id, hotkey)
         
         return {
             "server_id": server.server_id,
@@ -236,7 +236,7 @@ async def get_runtime_nonce(
     """
     try:
         # Verify server ownership
-        await get_server_by_id(db, server_id, hotkey)
+        await check_server_ownership(db, server_id, hotkey)
         
         nonce_info = await create_nonce("runtime", server_id)
         

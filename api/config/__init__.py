@@ -11,7 +11,7 @@ import json
 from functools import cached_property
 import redis.asyncio as redis
 from boto3.session import Config
-from typing import Optional
+from typing import Dict, Optional
 from bittensor_wallet.keypair import Keypair
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from contextlib import asynccontextmanager
@@ -176,7 +176,9 @@ class Settings(BaseSettings):
     cosign_key: Optional[Path] = Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
 
     # TDX Attestation settings
-    boot_expected_mrtd: Optional[str] = os.getenv("BOOT_EXPECTED_MRTD")
+    expected_mrtd: Optional[str] = os.getenv("TDX_EXPECTED_MRTD")
+    expected_boot_rmtrs: Optional[Dict[str, str]] = os.getenv("TDX_BOOT_RMTRS")
+    expected_runtime_rmtrs: Optional[Dict[str, str]] = os.getenv("TDX_RUNTIME_RMTRS")
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     
     # TDX verification service URLs (if using Intel's remote verification)

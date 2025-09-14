@@ -16,6 +16,11 @@ class InvalidQuoteError(AttestationError):
     def __init__(self, detail: str = "Invalid TDX quote"):
         super().__init__(detail=detail)
 
+class InvalidSignatureError(AttestationError):
+    """Raised when TDX quote signature verification fails."""
+    def __init__(self, detail: str = "Invalid TDX quote signature"):
+        super().__init__(detail=detail)
+
 
 class MeasurementMismatchError(AttestationError):
     """Raised when measurements don't match expected values."""
