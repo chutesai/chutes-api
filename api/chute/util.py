@@ -1369,7 +1369,7 @@ async def count_prompt_tokens(body):
             return await count_str_tokens(prompt)
     except Exception as exc:
         logger.warning(f"Error estimating tokens: {exc}, defaulting to dumb method.")
-    return int(len(json.dumps(body)) / 4)
+    return int(len(repr(body).encode("utf-8", errors="ignore")) / 4)
 
 
 async def count_str_tokens(output_str):
