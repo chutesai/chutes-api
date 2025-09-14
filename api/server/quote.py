@@ -1,5 +1,6 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 import base64
+import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
@@ -13,7 +14,7 @@ from api.config import settings
 
 
 @dataclass
-class TdxQuote:
+class TdxQuote(ABC):
     """
     Parsed TDX quote with extracted measurements.
     """
@@ -29,7 +30,6 @@ class TdxQuote:
     raw_quote_size: int
     parsed_at: str
     raw_bytes: bytes
-    verification_result: "TdxVerificationResult"
     
     @property
     def rtmrs(self) -> Dict[str, str]:
@@ -48,8 +48,11 @@ class TdxQuote:
     
     @classmethod
     def from_base64(cls, quote_base64: str) -> "TdxQuote":
-        quote_bytes = base64.b64decode(quote_base64)
-        return TdxQuote.from_bytes(quote_bytes)
+        try:
+            quote_bytes = base64.b64decode(quote_base64)
+            return cls.from_bytes(quote_bytes)
+        except binascii.Error:
+            raise InvalidQuoteError("Invalid base64 quote.")
 
     @classmethod
     def from_bytes(cls, quote_bytes: bytes) -> "TdxQuote":
@@ -126,7 +129,6 @@ class TdxQuote:
             "user_data": self.user_data,
             "raw_quote_size": self.raw_quote_size,
             "parsed_at": self.parsed_at,
-            "verification_result": self.verification_result,
             "header": {
                 "version": self.version,
                 "att_key_type": self.att_key_type,
