@@ -616,11 +616,7 @@ async def perform_autoscale(dry_run: bool = False):
                     await session.execute(
                         select(Chute)
                         .where(Chute.chute_id == chute_id)
-                        .options(
-                            selectinload(Chute.instances)
-                            .selectinload(Instance.nodes)
-                            .selectinload(Instance.launch_config)
-                        )
+                        .options(selectinload(Chute.instances).selectinload(Instance.nodes))
                     )
                 )
                 .unique()
