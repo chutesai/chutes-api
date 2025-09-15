@@ -633,7 +633,7 @@ async def perform_autoscale(dry_run: bool = False):
             active = [
                 inst
                 for inst in chute.instances
-                if inst.verified and inst.active and not inst.launch_config.job_id
+                if inst.verified and inst.active and not inst.config.job_id
             ]
             instances = []
             for instance in active:

@@ -102,7 +102,7 @@ class Instance(Base):
     nodes = relationship("Node", secondary=instance_nodes, back_populates="instance")
     chute = relationship("Chute", back_populates="instances")
     job = relationship("Job", back_populates="instance", uselist=False)
-    launch_config = relationship("LaunchConfig", back_populates="instance", lazy="joined")
+    config = relationship("LaunchConfig", back_populates="instance", lazy="joined")
     billed_user = relationship("User", back_populates="instances")
 
     __table_args__ = (
