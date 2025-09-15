@@ -307,7 +307,8 @@ async def _invoke(
     if not chute or (not chute.public and chute.user_id != current_user.user_id):
         if not chute or not await is_shared(chute.chute_id, current_user.user_id):
             if not (
-                "/affine" in chute.name.lower()
+                chute
+                and "/affine" in chute.name.lower()
                 and current_user.has_role(Permissioning.affine_admin)
             ):
                 raise HTTPException(

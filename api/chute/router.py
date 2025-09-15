@@ -899,7 +899,7 @@ async def _deploy_chute(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=(
                 "DEPLOYMENT FEE NOTICE:\n===\nThere is a deployment fee of (hourly price per GPU * number of GPUs * 3), "
-                f"which for this configuration is for this configuration is: ${round(deployment_fee, 2)}\n "
+                f"which for this configuration is: ${round(deployment_fee, 2)}\n "
                 "To acknowledge this fee, ensure you have chutes>=0.3.23 and re-run the deployment command with `--accept-fee`"
             ),
         )
