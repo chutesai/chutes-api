@@ -106,6 +106,7 @@ class Server(Base):
     miner = relationship("MetagraphNode", back_populates="servers")
 
     __table_args__ = (
+        UniqueConstraint("name", "miner_hotkey", name="uq_server_name_miner"),
         Index("idx_server_miner", "miner_hotkey"),
         Index("idx_server_active", "active"),
     )
