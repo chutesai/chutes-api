@@ -105,10 +105,11 @@ async def validate_and_consume_nonce(
     
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}...")
 
-async def verify_quote(quote: TdxQuote) -> TdxVerificationResult:
+async def verify_quote(quote: TdxQuote, server: Optional[Server] = None) -> TdxVerificationResult:
     # Validate nonce
     nonce = extract_nonce(quote)
-    await validate_and_consume_nonce(nonce, quote.quote_type)
+    server_id = server.server_id if server else None
+    await validate_and_consume_nonce(nonce, quote.quote_type, server_id)
 
     result = await verify_quote_signature(quote)
 
@@ -138,10 +139,11 @@ async def process_boot_attestation(
     logger.info(f"Processing boot attestation for vm id:: {args.vm_id}")
     
     # Parse and verify quote
+    nonce = None
     try:# Verify quote signature
 
         quote = BootTdxQuote.from_base64(args.quote)
-
+        nonce = extract_nonce(quote)
         result = await verify_quote(quote)
         
         # Create boot attestation record
@@ -151,7 +153,7 @@ async def process_boot_attestation(
             mrtd=quote.mrtd,
             verification_result=result.to_dict(),
             verified=True,
-            nonce_used=extract_nonce(quote),
+            nonce_used=nonce,
             verified_at=func.now()
         )
         
@@ -173,8 +175,8 @@ async def process_boot_attestation(
             quote_data=args.quote,
             vm_id=args.vm_id,
             verified=False,
-            verification_error=str(e),
-            nonce_used=args.nonce
+            verification_error=str(e.detail),
+            nonce_used=nonce
         )
         
         db.add(boot_attestation)
@@ -284,13 +286,15 @@ async def process_runtime_attestation(
     logger.info(f"Processing runtime attestation for server: {server_id}")
     
     # Get server and verify ownership
-    await check_server_ownership(db, server_id, miner_hotkey)
+    server = await check_server_ownership(db, server_id, miner_hotkey)
     
     # Parse and verify quote
+    nonce = None
     try:
         # Verify quote signature
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        result = await verify_quote(quote)
+        nonce = extract_nonce(quote)
+        result = await verify_quote(quote, server)
         
         # Create runtime attestation record
         attestation = ServerAttestation(
@@ -300,7 +304,7 @@ async def process_runtime_attestation(
             rtmrs=quote.rtmrs,
             verification_result=result.to_dict(),
             verified=True,
-            nonce_used=extract_nonce(quote),
+            nonce_used=nonce,
             verified_at=func.now()
         )
         
@@ -322,8 +326,8 @@ async def process_runtime_attestation(
             server_id=server_id,
             quote_data=args.quote,
             verified=False,
-            verification_error=str(e),
-            nonce_used=args.nonce
+            verification_error=str(e.detail),
+            nonce_used=nonce
         )
         
         db.add(attestation)

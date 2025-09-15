@@ -17,4 +17,5 @@ def pytest_configure(config):
 
 pytest_configure(None)
 
+import api.database.orms  # noqa: F401
 from fixtures.tdx import *
