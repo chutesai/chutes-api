@@ -4,11 +4,10 @@ TDX quote parsing, crypto operations, and server helper functions.
 
 import secrets
 from typing import Dict, Any, Optional
-from jwt import InvalidSignatureError
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
 from api.config import settings
-from api.server.exceptions import MeasurementMismatchError
+from api.server.exceptions import InvalidSignatureError, MeasurementMismatchError
 from api.server.quote import TdxQuote, TdxVerificationResult
 
 def generate_nonce() -> str:

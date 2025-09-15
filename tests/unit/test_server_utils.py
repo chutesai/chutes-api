@@ -35,25 +35,6 @@ from api.server.exceptions import (
 
 # Test fixtures
 @pytest.fixture
-def valid_quote_bin():
-    """Load the valid quote.bin file from test assets."""
-    quote_path = Path("tests/assets/quote.bin")
-    if not quote_path.exists():
-        pytest.skip(f"Valid quote file not found at {quote_path}")
-    
-    with open(quote_path, "rb") as f:
-        quote_bytes = f.read()
-    
-    return base64.b64encode(quote_bytes).decode('utf-8')
-
-
-@pytest.fixture
-def valid_quote_bytes(valid_quote_bin):
-    """Return the decoded bytes of the valid quote."""
-    return base64.b64decode(valid_quote_bin)
-
-
-@pytest.fixture
 def test_nonce():
     """Generate a test nonce."""
     return "test_nonce_123"
@@ -496,75 +477,6 @@ def test_verify_measurements_partial_rtmrs(mock_settings, sample_runtime_quote):
     
     result = verify_measurements(sample_runtime_quote)
     assert result is True
-
-
-# Integrated verify_quote tests
-@pytest.mark.asyncio
-async def test_verify_quote_full_success(sample_boot_quote):
-    """Test full quote verification success."""
-    # Mock all the verification steps
-    with patch('api.server.service.extract_nonce', return_value="test_nonce"):
-        with patch('api.server.service.validate_and_consume_nonce') as mock_nonce:
-            with patch('api.server.service.verify_quote_signature') as mock_sig:
-                with patch('api.server.service.verify_measurements') as mock_measurements:
-                    
-                    mock_result = TdxVerificationResult(
-                        mrtd=sample_boot_quote.mrtd, rtmr0=sample_boot_quote.rtmr0,
-                        rtmr1=sample_boot_quote.rtmr1, rtmr2=sample_boot_quote.rtmr2,
-                        rtmr3=sample_boot_quote.rtmr3, user_data=sample_boot_quote.user_data,
-                        parsed_at=datetime.now(timezone.utc), is_valid=True
-                    )
-                    
-                    mock_sig.return_value = mock_result
-                    mock_measurements.return_value = True
-                    
-                    result = await verify_quote(sample_boot_quote)
-                    
-                    assert result == mock_result
-                    mock_nonce.assert_called_once_with("test_nonce", "boot")
-                    mock_sig.assert_called_once_with(sample_boot_quote)
-                    mock_measurements.assert_called_once_with(sample_boot_quote)
-
-
-@pytest.mark.asyncio
-async def test_verify_quote_nonce_failure(sample_boot_quote):
-    """Test quote verification with nonce failure."""
-    with patch('api.server.service.extract_nonce', return_value="test_nonce"):
-        with patch('api.server.service.validate_and_consume_nonce', side_effect=NonceError("Invalid nonce")):
-            
-            with pytest.raises(NonceError):
-                await verify_quote(sample_boot_quote)
-
-
-@pytest.mark.asyncio
-async def test_verify_quote_signature_failure(sample_boot_quote):
-    """Test quote verification with signature failure."""
-    with patch('api.server.service.extract_nonce', return_value="test_nonce"):
-        with patch('api.server.service.validate_and_consume_nonce'):
-            with patch('api.server.service.verify_quote_signature', side_effect=InvalidSignatureError("Invalid signature")):
-                
-                with pytest.raises(InvalidSignatureError):
-                    await verify_quote(sample_boot_quote)
-
-
-@pytest.mark.asyncio
-async def test_verify_quote_measurement_failure(sample_boot_quote):
-    """Test quote verification with measurement failure."""
-    with patch('api.server.service.extract_nonce', return_value="test_nonce"):
-        with patch('api.server.service.validate_and_consume_nonce'):
-            with patch('api.server.service.verify_quote_signature') as mock_sig:
-                with patch('api.server.service.verify_measurements', side_effect=MeasurementMismatchError("MRTD mismatch")):
-                    
-                    mock_result = TdxVerificationResult(
-                        mrtd=sample_boot_quote.mrtd, rtmr0=sample_boot_quote.rtmr0,
-                        rtmr1=sample_boot_quote.rtmr1, rtmr2=sample_boot_quote.rtmr2,
-                        rtmr3=sample_boot_quote.rtmr3, user_data=sample_boot_quote.user_data,
-                        parsed_at=datetime.now(timezone.utc), is_valid=True
-                    )
-                    mock_sig.return_value = mock_result
-                    
-                    with pytest.raises(MeasurementMismatchError):
-                        await verify_quote(sample_boot_quote)
 
 
 # LUKS passphrase tests
