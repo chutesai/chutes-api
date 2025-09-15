@@ -873,10 +873,10 @@ async def hostname_invocation(
     if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
         try:
             payload = await request.json()
-        except (json.decoder.JSONDecodeError, ValueError, TypeError):
+        except Exception:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid request JSON",
+                detail="Invalid request JSON: {str(exc)}",
             )
 
         # MistralAI gated this model for some reason.......
