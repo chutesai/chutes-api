@@ -299,7 +299,7 @@ class PriceOverride(Base):
 
     @staticmethod
     async def get(user_id: str, chute_id: str):
-        key = f"idiscount:{user_id}:{chute_id}".encode()
+        key = f"priceoverride:{user_id}:{chute_id}".encode()
         cached = (await memcache_get(key) or b"").decode()
         if cached:
             try:
@@ -335,6 +335,6 @@ class PriceOverride(Base):
                         "chute_id": override.chute_id,
                     }
                 )
-                await memcache_set(key, serialized, exptime=1800)
+                await memcache_set(key, serialized, exptime=600)
                 return override
             return None

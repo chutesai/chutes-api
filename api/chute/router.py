@@ -41,7 +41,13 @@ from api.chute.templates import (
 )
 from api.gpu import SUPPORTED_GPUS
 from api.chute.response import ChuteResponse
-from api.chute.util import get_chute_by_id_or_name, selector_hourly_price, get_one, is_shared
+from api.chute.util import (
+    get_chute_by_id_or_name,
+    selector_hourly_price,
+    get_one,
+    is_shared,
+    get_mtoken_price,
+)
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager
 from api.user.schemas import User
@@ -56,10 +62,6 @@ from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
 from api.constants import (
-    LLM_MIN_PRICE_IN,
-    LLM_MIN_PRICE_OUT,
-    LLM_PRICE_MULT_PER_MILLION_IN,
-    LLM_PRICE_MULT_PER_MILLION_OUT,
     DIFFUSION_PRICE_MULT_PER_STEP,
 )
 from api.util import (
@@ -83,17 +85,11 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     Inject the current estimated price data into a response.
     """
     if chute.standard_template == "vllm":
-        hourly = await selector_hourly_price(chute.node_selector)
-        if chute.concurrency and chute.concurrency < 16:
-            hourly *= 16 / chute.concurrency
-        if chute.discount:
-            hourly -= hourly * chute.discount
-        per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
-        per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
+        per_million_in, per_million_out = await get_mtoken_price("global", chute.chute_id)
         response.current_estimated_price = {
             "per_million_tokens": {
-                "input": {"usd": round(per_million_in, 2)},
-                "output": {"usd": round(per_million_out, 2)},
+                "input": {"usd": per_million_in},
+                "output": {"usd": per_million_out},
             }
         }
         tao_usd = await get_fetcher().get_price("tao")
