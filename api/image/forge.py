@@ -3,7 +3,7 @@ Image forge -- build images and push to local registry with buildah.
 """
 
 import asyncio
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 import zipfile
 import uuid
 import os
@@ -183,9 +183,9 @@ async def build_and_push_image(image, build_dir):
         fsv_dockerfile_content = f"""FROM {original_tag}
 ARG CFSV_OP
 COPY cfsv /cfsv
-RUN /cfsv index / /tmp/chutesfs.index && \\
-    CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data && \\
-    ls -la /tmp/chutesfs.*
+RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
+RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
+RUN ls -la /tmp/chutesfs.*
 """
         fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
         with open(fsv_dockerfile_path, "w") as f:
@@ -380,7 +380,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         )
 
     # SIGN
-    await sign_image(image, full_image_tag, _capture_logs, started_at)
+    await sign_image(image, full_image_tag, _capture_logs)
 
     # DONE!
     delta = time.time() - started_at
@@ -486,10 +486,10 @@ async def sign_image(
     image,
     image_tag: str,
     _capture_logs: Callable[[Any, Any, bool], None],
-    started_at: Optional[float] = None,
     stream: bool = True,
 ):
     """Sign the image using cosign"""
+    started_at = time.time()
     try:
         image_digest = await get_image_digest(image_tag)
         image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
@@ -604,6 +604,7 @@ async def extract_cfsv_data_from_verification_image(verification_tag: str, build
 
         # Use shutil to copy the file
         shutil.copy2(source_path, data_file_path)
+        shutil.copy2(os.path.join(mount_path, "tmp", "chutesfs.index"), "/tmp/NEW.index")
         logger.info(f"Successfully copied data file from {source_path} to {data_file_path}")
 
         return data_file_path
@@ -650,7 +651,7 @@ async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
-    os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
 
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
@@ -726,14 +727,15 @@ async def forge(image_id: str):
     )
 
     # Cleanup
-    os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
 
 
 @broker.task
-async def update_chutes_lib(image_id: str, chutes_version: str):
+async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = False):
     """
     Update the chutes library in an existing image without rebuilding from scratch.
     """
+    patch_version = hashlib.sha256(f"{image_id}:{chutes_version}".encode()).hexdigest()[:12]
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -742,10 +744,10 @@ async def update_chutes_lib(image_id: str, chutes_version: str):
             return
         if image.chutes_version == chutes_version:
             logger.info(f"Image {image_id} already has chutes version {chutes_version}")
-            return
+            if not force:
+                return
+            patch_version = hashlib.sha256(f"{image_id}:{time.time()}".encode()).hexdigest()[:12]
         await session.refresh(image, ["user"])
-
-    patch_version = hashlib.sha256(f"{image_id}:{chutes_version}".encode()).hexdigest()[:12]
 
     # Determine source and target tags
     base_tag = f"{image.user.username}/{image.name}:{image.tag}"
@@ -850,9 +852,9 @@ RUN pip install --upgrade chutes=={chutes_version}
             fsv_dockerfile_content = f"""FROM {updated_tag}
 ARG CFSV_OP
 COPY cfsv /cfsv
-RUN /cfsv index / /tmp/chutesfs.index && \\
-    CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data && \\
-    ls -la /tmp/chutesfs.*
+RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
+RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
+RUN ls -la /tmp/chutesfs.*
 """
             fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
             with open(fsv_dockerfile_path, "w") as f:
@@ -999,14 +1001,18 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
             error_message = str(exc)
 
         # SIGN
-        await sign_image(image, full_target_tag, _capture_logs, stream=True)
+        if success:
+            await sign_image(image, full_target_tag, _capture_logs, stream=True)
 
     # Update the image with the new patch version, tag, etc.
     affected_chute_ids = []
     if success:
         async with get_session() as session:
-            result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
-            image = result.scalar_one_or_none()
+            image = (
+                (await session.execute(select(Image).where(Image.image_id == image_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
             chutes = []
             if image:
                 image.patch_version = patch_version
@@ -1089,4 +1095,4 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         logger.error(f"Failed to update chutes lib for image {image_id}: {error_message}")
 
     # Cleanup
-    os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    # os.system("bash /usr/local/bin/buildah_cleanup.sh")

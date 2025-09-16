@@ -1119,13 +1119,13 @@ files = [
 
 [[package]]
 name = "chutes"
-version = "0.3.0"
+version = "0.3.31rc1"
 description = "Chutes development kit and CLI."
 optional = false
 python-versions = "*"
 groups = ["main"]
 files = [
-    {file = "chutes-0.3.0-py3-none-any.whl", hash = "sha256:b78d9b42a9a523b4bb19d7f6447bf8af4e845eb2795f472dd8dfb00dd7e7181a"},
+    {file = "chutes-0.3.31rc1-py3-none-any.whl", hash = "sha256:daf360fe3cd32ba78cd3e18f6616c1c43b63d1352e2e404398b45db66c728f2d"},
 ]
 
 [package.dependencies]
@@ -1133,9 +1133,9 @@ aiofiles = ">=23"
 aiohttp = {version = ">=3.10,<4", extras = ["speedups"]}
 backoff = ">=2.2,<3"
 cryptography = "*"
-fastapi = ">=0.115"
+fastapi = ">=0.110"
 fickling = "0.1.3"
-graval = ">=0.2.5"
+graval = "0.2.6"
 loguru = "0.7.2"
 netifaces = "*"
 orjson = ">=3.10"
@@ -1146,6 +1146,7 @@ pyjwt = ">=2.10.1"
 pyudev = "*"
 requests = ">=2.32"
 rich = ">=13.0.0"
+semver = "*"
 setuptools = ">=0.75"
 substrate-interface = ">=1.7.11"
 typer = ">=0.12.5"
@@ -6290,4 +6291,4 @@ type = ["pytest-mypy"]
 [metadata]
 lock-version = "2.1"
 python-versions = "<3.13,>=3.9"
-content-hash = "673b675a02cb9447cbbbdcc04dccb966eaeb513b97e12e28184e9a6c653d0bf2"
+content-hash = "4305f5e3ab0d68d7e88f770aca391a95276c0dd59b2eaeb20f42496149898bba"
