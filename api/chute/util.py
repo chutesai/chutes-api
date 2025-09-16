@@ -1179,7 +1179,7 @@ async def get_mtoken_price(user_id: str, chute_id: str) -> tuple[float, float]:
     """
     Get the per-million token price for an LLM.
     """
-    cache_key = f"mtoken_price:{user_id}:{chute_id}"
+    cache_key = f"mtokenprice:{user_id}:{chute_id}"
     cached = await memcache_get(cache_key)
     if cached is not None:
         try:
@@ -1194,12 +1194,21 @@ async def get_mtoken_price(user_id: str, chute_id: str) -> tuple[float, float]:
     # using the standard node-selector based calculation.
     per_million_in, per_million_out = None, None
     override = await PriceOverride.get(user_id, chute_id)
+    user_discount = None
+    if not override or override.user_id != user_id:
+        user_discount = await InvocationDiscount.get(user_id, chute_id)
+        if user_discount:
+            logger.info(f"BALANCE: Applying additional user discount: {user_id=} {user_discount=}")
     chute = await get_one(chute_id)
     if override:
         if override.per_million_in is not None:
             per_million_in = override.per_million_in
+            if user_discount:
+                per_million_in -= per_million_in * user_discount
         if override.per_million_out is not None:
             per_million_out = override.per_million_out
+            if user_discount:
+                per_million_out -= per_million_out * user_discount
 
     # Standard compute-based calcs.
     if per_million_in is None or per_million_out is None:
@@ -1210,12 +1219,16 @@ async def get_mtoken_price(user_id: str, chute_id: str) -> tuple[float, float]:
                 per_million_in -= per_million_in * chute.discount
                 if (chute.concurrency or 1) < 16:
                     per_million_in *= 16.0 / (chute.concurrency or 1)
+            if user_discount:
+                per_million_in -= per_million_in * user_discount
         if per_million_out is None:
             per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
             if chute.discount:
                 per_million_out -= per_million_out * chute.discount
                 if (chute.concurrency or 1) < 16:
                     per_million_out *= 16.0 / (chute.concurrency or 1)
+            if user_discount:
+                per_million_out -= per_million_out * user_discount
 
     per_million_in = round(per_million_in, 2)
     per_million_out = round(per_million_out, 2)
