@@ -872,9 +872,6 @@ async def invoke(
                                 metrics.get("ot", 0) or 0
                             ) / 1000000.0 * per_million_out
                             override_applied = True
-                            logger.info(
-                                f"BALANCE: using LLM mtoken pricing {per_million_in=} {per_million_out=} for {chute.name=} and {user_id=}"
-                            )
 
                         elif (
                             price_override := await PriceOverride.get(user_id, chute.chute_id)

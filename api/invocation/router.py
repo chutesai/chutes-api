@@ -304,16 +304,19 @@ async def _invoke(
 ):
     # Check if the user has access.
     chute = await get_one(request.state.chute_id)
-    if not chute or (not chute.public and chute.user_id != current_user.user_id):
-        if not chute or not await is_shared(chute.chute_id, current_user.user_id):
-            if not (
-                chute
-                and "/affine" in chute.name.lower()
-                and current_user.has_role(Permissioning.affine_admin)
-            ):
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
-                )
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
+        )
+    if not (
+        chute.public
+        or chute.user_id == current_user.user_id
+        or await is_shared(chute.chute_id, current_user.user_id)
+        or ("/affine" in chute.name.lower() and current_user.has_role(Permissioning.affine_admin))
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
+        )
     if chute.discount == 1.0:
         request.state.free_invocation = True
 
