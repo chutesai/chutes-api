@@ -861,43 +861,22 @@ async def invoke(
                     if compute_units and not request.state.free_invocation:
                         hourly_price = await selector_hourly_price(chute.node_selector)
 
-                        if (
+                        # Per megatoken pricing.
+                        if chute.standard_template == "vllm" and metrics:
+                            per_million_in, per_million_out = await get_mtoken_price(
+                                user_id, chute.chute_id
+                            )
+                            balance_used = (
+                                metrics.get("it", 0) or 0
+                            ) / 1000000.0 * per_million_in + (
+                                metrics.get("ot", 0) or 0
+                            ) / 1000000.0 * per_million_out
+                            override_applied = True
+
+                        elif (
                             price_override := await PriceOverride.get(user_id, chute.chute_id)
                         ) is not None:
-                            # LLM per token pricing
                             if (
-                                chute.standard_template == "vllm"
-                                and metrics
-                                and (
-                                    price_override.per_million_in is not None
-                                    or price_override.per_million_out is not None
-                                )
-                            ):
-                                per_million_in = (
-                                    price_override.per_million_in
-                                    if price_override.per_million_in is not None
-                                    else max(
-                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
-                                        LLM_MIN_PRICE_IN,
-                                    )
-                                )
-                                per_million_out = (
-                                    price_override.per_million_out
-                                    if price_override.per_million_out is not None
-                                    else max(
-                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
-                                        LLM_MIN_PRICE_OUT,
-                                    )
-                                )
-                                balance_used = (
-                                    metrics.get("it", 0) or 0
-                                ) / 1000000.0 * per_million_in + (
-                                    metrics.get("ot", 0) or 0
-                                ) / 1000000.0 * per_million_out
-                                override_applied = True
-
-                            # Diffusion per step pricing
-                            elif (
                                 chute.standard_template == "diffusion"
                                 and price_override.per_step is not None
                             ):
@@ -922,30 +901,8 @@ async def invoke(
                                 discount = chute.discount
 
                             if discount < 1.0:
-                                # LLM per token pricing.
-                                if chute.standard_template == "vllm" and metrics:
-                                    per_million_in = max(
-                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_IN,
-                                        LLM_MIN_PRICE_IN,
-                                    )
-                                    per_million_out = max(
-                                        hourly_price * LLM_PRICE_MULT_PER_MILLION_OUT,
-                                        LLM_MIN_PRICE_OUT,
-                                    )
-                                    if (chute.concurrency or 1) < 16:
-                                        per_million_in *= 16.0 / (chute.concurrency or 1)
-                                        per_million_out *= 16.0 / (chute.concurrency or 1)
-                                    in_balance_used = (
-                                        (metrics.get("it", 0) or 0) / 1000000.0 * per_million_in
-                                    )
-                                    out_balance_used = (
-                                        (metrics.get("ot", 0) or 0) / 1000000.0 * per_million_out
-                                    )
-                                    balance_used = in_balance_used + out_balance_used
-                                    balance_used -= balance_used * discount
-
                                 # Diffusion per step pricing.
-                                elif chute.standard_template == "diffusion":
+                                if chute.standard_template == "diffusion":
                                     balance_used = (
                                         (metrics.get("steps", 0) or 0)
                                         * hourly_price
@@ -957,8 +914,10 @@ async def invoke(
                                     compute_units * COMPUTE_UNIT_PRICE_BASIS / 3600.0
                                 )
                                 default_balance_used -= default_balance_used * discount
-
                                 if not balance_used:
+                                    logger.info(
+                                        f"BALANCE: defaulting to time-based pricing: {default_balance_used=} for {chute.name=}"
+                                    )
                                     balance_used = default_balance_used
 
                     # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
@@ -1213,6 +1172,67 @@ async def load_llm_details(chute, target):
             return info["data"][0]
 
 
+async def get_mtoken_price(user_id: str, chute_id: str) -> tuple[float, float]:
+    """
+    Get the per-million token price for an LLM.
+    """
+    cache_key = f"mtokenprice:{user_id}:{chute_id}"
+    cached = await memcache_get(cache_key)
+    if cached is not None:
+        try:
+            parts = cached.decode().split(":")
+            if len(parts) == 2:
+                return float(parts[0]), float(parts[1])
+            await memcache_delete(cache_key)
+        except Exception:
+            await memcache_delete(cache_key)
+
+    # Inject the pricing information, first by checking price overrides, then
+    # using the standard node-selector based calculation.
+    per_million_in, per_million_out = None, None
+    override = await PriceOverride.get(user_id, chute_id)
+    user_discount = None
+    if not override or override.user_id != user_id:
+        user_discount = await InvocationDiscount.get(user_id, chute_id)
+        if user_discount:
+            logger.info(f"BALANCE: Applying additional user discount: {user_id=} {user_discount=}")
+    chute = await get_one(chute_id)
+    if override:
+        if override.per_million_in is not None:
+            per_million_in = override.per_million_in
+            if user_discount:
+                per_million_in -= per_million_in * user_discount
+        if override.per_million_out is not None:
+            per_million_out = override.per_million_out
+            if user_discount:
+                per_million_out -= per_million_out * user_discount
+
+    # Standard compute-based calcs.
+    if per_million_in is None or per_million_out is None:
+        hourly = await selector_hourly_price(chute.node_selector)
+        if per_million_in is None:
+            per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
+            if chute.discount:
+                per_million_in -= per_million_in * chute.discount
+                if (chute.concurrency or 1) < 16:
+                    per_million_in *= 16.0 / (chute.concurrency or 1)
+            if user_discount:
+                per_million_in -= per_million_in * user_discount
+        if per_million_out is None:
+            per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
+            if chute.discount:
+                per_million_out -= per_million_out * chute.discount
+                if (chute.concurrency or 1) < 16:
+                    per_million_out *= 16.0 / (chute.concurrency or 1)
+            if user_discount:
+                per_million_out -= per_million_out * user_discount
+
+    per_million_in = round(per_million_in, 2)
+    per_million_out = round(per_million_out, 2)
+    await memcache_set(cache_key, f"{per_million_in}:{per_million_out}".encode(), exptime=300)
+    return per_million_in, per_million_out
+
+
 async def get_and_store_llm_details(chute_id: str):
     """
     Load the data from /v1/models for a given LLM, cache it for later.
@@ -1233,16 +1253,10 @@ async def get_and_store_llm_details(chute_id: str):
             logger.error(f"Chute not found: {chute_id}")
             return
 
-        # Calculate pricing.
-        hourly = await selector_hourly_price(chute.node_selector)
-        per_million_in = max(hourly * LLM_PRICE_MULT_PER_MILLION_IN, LLM_MIN_PRICE_IN)
-        per_million_out = max(hourly * LLM_PRICE_MULT_PER_MILLION_OUT, LLM_MIN_PRICE_OUT)
-        if chute.discount:
-            per_million_in -= per_million_in * chute.discount
-            per_million_out -= per_million_out * chute.discount
-        if (chute.concurrency or 1) < 16:
-            per_million_in *= 16.0 / (chute.concurrency or 1)
-            per_million_out *= 16.0 / (chute.concurrency or 1)
+        # Load the price per million tokens (in USD).
+        per_million_in, per_million_out = await get_mtoken_price("global", chute_id)
+
+        # Inject the tao price.
         price = {"input": {"usd": per_million_in}, "output": {"usd": per_million_out}}
         tao_usd = await get_fetcher().get_price("tao")
         if tao_usd:
