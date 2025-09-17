@@ -1,0 +1,32 @@
+[project]
+name = "chutes-nvattest"
+version = "0.1.0"
+description = "NVTrust services for Chutes"
+authors = [
+    {name = "kyle@chutes.ai"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+license="MIT"
+
+[tool.poetry.dependencies]
+python = ">=3.12,<4.0"
+nv-attestation-sdk = "^2.6.2"
+nv-local-gpu-verifier = "^2.6.2"
+nv-ppcie-verifier = "^1.6.3"
+
+[tool.poetry.group.dev.dependencies]
+bandit = "^1.8.6"
+black = "^24.3.0"
+flake8 = "^7.3.0"
+isort = ">=4.2.5,<5.13.0"
+mypy = "^1.18.1"
+autoflake = "^2.3.1"
+
+[[tool.mypy.overrides]]
+module = "nv_attestation_sdk.*"
+follow_untyped_imports = true
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
