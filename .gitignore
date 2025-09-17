@@ -174,3 +174,4 @@ cython_debug/
 #.idea/
 tests/integration/keys
 .vscode
+*.code-workspace
