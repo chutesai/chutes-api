@@ -972,11 +972,11 @@ async def _deploy_chute(
         )
 
     # Prevent deploying images with old chutes SDK versions.
-    if not image.chutes_version or semcomp(image.chutes_version, "0.3.28") < 0:
+    if not image.chutes_version or semcomp(image.chutes_version, "0.3.31") < 0:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
-                "Unable to deploy chutes with legacy images (chutes SDK < 0.3.28), please upgrade "
+                "Unable to deploy chutes with legacy images (chutes SDK < 0.3.31.rc1), please upgrade "
                 f"(or ask chutes team to upgrade) {image.name=} {image.image_id=} currently {image.chutes_version}"
             ),
         )
