@@ -1,7 +1,8 @@
 import asyncio
 from loguru import logger
-from sqlalchemy import select
 from api.config import settings
+from sqlalchemy import select, text
+from api.util import notify_deleted
 from api.database import get_session
 import api.miner_client as miner_client
 from api.instance.schemas import Instance
@@ -67,7 +68,15 @@ async def handle_check_result(instance_id: str, success: bool):
                     f"❌ max consecutive logging server check failures encountered for {instance.instance_id=} of {instance.miner_hotkey=} for {instance.chute_id=}"
                 )
                 await session.delete(instance)
-                await notify_deleted(instance, message="Failed 3 or more consecutive logging server probes.")
+                await session.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = 'Failed 3 or more consecutive logging server probes.' WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id},
+                )
+                await notify_deleted(
+                    instance, message="Failed 3 or more consecutive logging server probes."
+                )
                 await session.commit()
 
 
