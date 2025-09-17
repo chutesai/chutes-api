@@ -979,6 +979,8 @@ async def invoke(
                     ):
                         try:
                             value = 1.0 if not reroll else settings.reroll_multiplier
+                            if chute.name.endswith("-turbo"):
+                                value *= 2.0
                             key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
                             _ = await settings.quota_client.incrbyfloat(key, value)
                         except Exception as exc:

@@ -1534,8 +1534,18 @@ async def slurp(instance, path, offset: int = 0, length: int = 0):
     ) as resp:
         if resp.status != 200:
             raise EnvdumpMissing(f"Received invalid response code on /_eslurp: {resp.status=}")
+        body = None
         try:
             body = await resp.json()
+        except Exception as exc:
+            raise EnvdumpMissing(
+                f"Failed to load and decrypt _eslurp payload, invalid response JSON: {str(exc)}"
+            )
+        if not body.get("result"):
+            raise EnvdumpMissing(
+                f"Failed to load and decrypt _eslurp payload, result object was null: {body=}"
+            )
+        try:
             return DUMPER.decrypt(key, body["result"])
         except Exception as exc:
             raise EnvdumpMissing(f"Failed to load and decrypt _eslurp payload: {exc=}")
