@@ -62,6 +62,7 @@ from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
+from log_prober import check_instance_logging_server
 
 router = APIRouter()
 
@@ -585,6 +586,19 @@ async def claim_launch_config(
     ):
         instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
         instance.billed_to = chute.user_id
+
+    # Verify the logging server is running.
+    if not await check_instance_logging_server(instance):
+        logger.error(
+            f"Instance failed logging server probe: {instance.instance_id=} {instance.miner_hotkey=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Failed logging server scan! Be sure to expose ALL services for all chutes, "
+                "particularly port 8000 (standard chute port) and 8001 (logging port)"
+            ),
+        )
 
     db.add(instance)
 

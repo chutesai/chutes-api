@@ -871,7 +871,6 @@ async def _deploy_chute(
             detail=f"Chute with name={chute_args.name}, {version=} and public={chute_args.public} already exists",
         )
 
-    # Limit h200 and b200 usage.
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
@@ -924,29 +923,26 @@ async def _deploy_chute(
         if (
             chute_args.node_selector
             and chute_args.node_selector.min_vram_gb_per_gpu
-            and chute_args.node_selector.min_vram_gb_per_gpu > 80
+            and chute_args.node_selector.min_vram_gb_per_gpu > 140
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not allowed to require > 80gb VRAM per GPU at this time.",
+                detail="You are not allowed to require > 140gb VRAM per GPU at this time.",
             )
         if not chute_args.node_selector.exclude:
             chute_args.node_selector.exclude = []
         chute_args.node_selector.exclude = list(
-            set(chute_args.node_selector.exclude or [] + ["h200", "b200", "mi300x"])
+            set(chute_args.node_selector.exclude or [] + ["b200", "mi300x"])
         )
-
         if not chute_args.node_selector.supported_gpus:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="No supported GPUs based on node selector!",
             )
-
-        # Limit h/b 200 access for now.
-        if not set(chute_args.node_selector.supported_gpus) - set(["b200", "h200", "mi300x"]):
+        if not set(chute_args.node_selector.supported_gpus) - set(["b200", "mi300x"]):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="You are not allowed to require h200, b200 or mi300x at this time.",
+                detail="You are not allowed to limit deployments to b200/mi300x at this time.",
             )
 
     # Disable non-chutes official images for affine.
@@ -1266,11 +1262,9 @@ async def deploy_chute(
                     detail=f"Unable to properly evaluate requested model {chute_args.name}: {str(e)}",
                 )
 
-        # Force exclude GPU types: 5090 because the inference engines don't support them,
-        # mi300x because we don't have containers/miners that support them yet,
-        # and b200s because we simply don't have sufficient quantity and need them for kimi-k2.
+        # Prevent mi300x for now.
         chute_args.node_selector.exclude = list(
-            set(chute_args.node_selector.exclude or [] + ["b200", "mi300x"])
+            set(chute_args.node_selector.exclude or [] + ["mi300x"])
         )
 
         # Check that our best guess for model config matches the node selector.

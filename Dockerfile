@@ -162,5 +162,6 @@ ADD --chown=chutes cacher.py /app/cacher.py
 ADD --chown=chutes chute_autoscaler.py /app/chute_autoscaler.py
 ADD --chown=chutes balance_refresher.py /app/balance_refresher.py
 ADD --chown=chutes data/cache_hit_cluster_params.json /app/cache_hit_cluster_params.json
+ADD --chown=chutes log_prober.py /app/log_prober.py
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
