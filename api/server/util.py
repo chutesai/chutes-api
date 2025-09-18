@@ -111,7 +111,7 @@ def verify_measurements(quote: TdxQuote) -> bool:
     Raises:
         MeasurementMismatchError: If any measurements don't match
     """
-    expected_rtmrs = settings.expected_boot_rmtrs if quote.quote_type == "boot" else settings.exepected_runtime_rmtrs
+    expected_rtmrs = settings.expected_boot_rmtrs if quote.quote_type == "boot" else settings.expected_runtime_rmtrs
     return _verify_measurements(quote, expected_rtmrs)
 
 

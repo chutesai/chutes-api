@@ -21,30 +21,14 @@ from sqlalchemy import (
 from typing import Optional, Dict, Any
 from api.database import Base, generate_uuid
 
-
-class BootAttestationArgs(BaseModel):
-    """Request model for boot attestation."""
-    quote: str = Field(..., description="Base64 encoded TDX quote")
-    vm_id: Optional[str] = Field(None, description="VM identifier for linking")
-
-
-class RuntimeAttestationArgs(BaseModel):
-    """Request model for runtime attestation."""
-    quote: str = Field(..., description="Base64 encoded TDX quote")
-
-
-class ServerArgs(BaseModel):
-    """Request model for server registration."""
-    vm_id: Optional[str] = Field(None, description="VM identifier to link boot attestations")
-    name: str = Field(..., description="Server name/identifier")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional server metadata")
-
-
 class NonceResponse(BaseModel):
     """Response model for nonce generation."""
     nonce: str
     expires_at: str
 
+class BootAttestationArgs(BaseModel):
+    """Request model for boot attestation."""
+    quote: str = Field(..., description="Base64 encoded TDX quote")
 
 class BootAttestationResponse(BaseModel):
     """Response model for successful boot attestation."""
@@ -52,6 +36,9 @@ class BootAttestationResponse(BaseModel):
     attestation_id: str
     verified_at: str
 
+class RuntimeAttestationArgs(BaseModel):
+    """Request model for runtime attestation."""
+    quote: str = Field(..., description="Base64 encoded TDX quote")
 
 class RuntimeAttestationResponse(BaseModel):
     """Response model for runtime attestation."""
@@ -59,9 +46,19 @@ class RuntimeAttestationResponse(BaseModel):
     verified_at: str
     status: str
 
+class GpuAttestationArgs(BaseModel):
+    evidence: str = Field(..., description="Base64 encoded GPU evidence")
 
-# AttestationNonce removed - using Redis instead
+class GpuAttestationResponse(BaseModel):
+    attestation_id: str
+    verified_at: str
+    gpu_info: Dict[str, Any]  # GPU details from evidence
 
+class ServerArgs(BaseModel):
+    """Request model for server registration."""
+    name: str = Field(..., description="Server name/identifier")
+    quote: str = Field(..., description="Base64 encoded TDX quote")
+    evidence: str = Field(..., description="Base64 encoded GPU evidence")
 
 class BootAttestation(Base):
     """Track anonymous boot attestations (pre-registration)."""
@@ -69,7 +66,7 @@ class BootAttestation(Base):
     
     attestation_id = Column(String, primary_key=True, default=generate_uuid)
     quote_data = Column(Text, nullable=False)  # Base64 encoded quote
-    vm_id = Column(String, nullable=True)  # For later linking to server
+    server_ip = Column(String, nullable=True)  # For later linking to server
     mrtd = Column(String, nullable=True)  # Extracted MRTD from quote
     verification_result = Column(JSONB, nullable=True)  # Detailed verification results
     verified = Column(Boolean, default=False)
@@ -79,7 +76,7 @@ class BootAttestation(Base):
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
-        Index("idx_boot_vm_id", "vm_id"),
+        Index("idx_boot_server_id", "server_ip"),
         Index("idx_boot_created", "created_at"),
         Index("idx_boot_verified", "verified"),
     )
@@ -91,7 +88,7 @@ class Server(Base):
     
     server_id = Column(String, primary_key=True, default=generate_uuid)
     name = Column(String, nullable=False)
-    vm_id = Column(String, nullable=True, unique=True)  # Links to boot attestations
+    ip = Column(String, nullable=False, unique=True)  # Links to boot attestations
     miner_hotkey = Column(
         String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
     )
