@@ -592,13 +592,13 @@ async def claim_launch_config(
         logger.error(
             f"Instance failed logging server probe: {instance.instance_id=} {instance.miner_hotkey=}"
         )
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Failed logging server scan! Be sure to expose ALL services for all chutes, "
-                "particularly port 8000 (standard chute port) and 8001 (logging port)"
-            ),
-        )
+        # raise HTTPException(
+        #     status_code=status.HTTP_403_FORBIDDEN,
+        #     detail=(
+        #         "Failed logging server scan! Be sure to expose ALL services for all chutes, "
+        #         "particularly port 8000 (standard chute port) and 8001 (logging port)"
+        #     ),
+        # )
 
     db.add(instance)
 

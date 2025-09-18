@@ -600,9 +600,7 @@ async def recreate_vlm_payload(request_body: dict):
                     futures.append(_inject_b64(url, visual_data, "url", visual_type))
 
                 elif isinstance(visual_data, str):
-                    if visual_data.startswith(f"data:{visual_type}") or visual_data.startswith(
-                        "data:"
-                    ):
+                    if visual_data[:5].lower() == "data:":
                         continue
                     parsed_url = urlparse(visual_data)
                     if parsed_url.scheme != "https":
