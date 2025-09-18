@@ -5,7 +5,7 @@ Payments router.
 import orjson as json
 from typing import Optional
 from pydantic import BaseModel
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, status, HTTPException, Depends, Request
 from fastapi_cache.decorator import cache
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,22 +35,15 @@ async def get_daily_revenue_summary(db: AsyncSession = Depends(get_db_session)):
     """
     result = await db.execute(text("SELECT * FROM daily_revenue_summary ORDER BY date DESC"))
     rows = result.fetchall()
-    inst_result = await db.execute(
-        text("SELECT SUM(total_instance_costs) FROM user_current_balance")
-    )
-    pending_instance_revenue = inst_result.scalar() or 0.0
-    today = date.today()
     return [
         {
             "date": row.date.isoformat() if row.date else None,
             "new_subscriber_count": row.new_subscriber_count,
             "new_subscriber_revenue": float(row.new_subscriber_revenue),
             "paygo_revenue": float(row.paygo_revenue),
-            "total_revenue": float(row.new_subscriber_revenue + row.paygo_revenue),
-            **(
-                {"pending_instance_revenue": float(pending_instance_revenue)}
-                if row.date and row.date == today
-                else {}
+            "pending_instance_revenue": float(row.instance_revenue),
+            "total_revenue": float(
+                row.new_subscriber_revenue + row.paygo_revenue + row.instance_revenue
             ),
         }
         for row in rows

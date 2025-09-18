@@ -473,7 +473,9 @@ async def perform_autoscale(dry_run: bool = False):
         threshold = info.scaling_threshold or UTILIZATION_SCALE_UP
         if utilization_basis >= threshold:
             num_to_add = 1
-            if utilization_basis >= threshold * 1.5:
+            if utilization_basis >= 0.85:
+                num_to_add = max(5, int(info.instance_count * 0.8))
+            elif utilization_basis >= threshold * 1.5:
                 num_to_add = max(3, int(info.instance_count * 0.5))
             elif utilization_basis >= threshold * 1.25:
                 num_to_add = max(2, int(info.instance_count * 0.25))
@@ -519,7 +521,6 @@ async def perform_autoscale(dry_run: bool = False):
             num_to_remove = 1
             # Calculate the number of instances to remove, based on how far away the
             # current utilization is from the scale-up threshold.
-            headroom_ratio = (threshold - utilization_basis) / threshold
             excess_instances = info.instance_count - UNDERUTILIZED_CAP
             if utilization_basis < threshold * 0.25:
                 removal_percentage = 0.3 + (0.1 * (1 - utilization_basis / (threshold * 0.25)))

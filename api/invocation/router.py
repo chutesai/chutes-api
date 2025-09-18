@@ -896,6 +896,10 @@ async def hostname_invocation(
         if model in ("moonshotai/Kimi-K2-Instruct", "moonshotai/Kimi-K2-Instruct-75k"):
             payload["model"] = "moonshotai/Kimi-K2-Instruct-0905"
 
+        # GLM-4.5V
+        if model.lower() == "zai-org/glm-4.5v-fp8":
+            payload["model"] = "zai-org/GLM-4.5V"
+
         # Hermes 4.
         elif model == "Zenith":
             payload["model"] = "NousResearch/Hermes-4-405B-FP8"
