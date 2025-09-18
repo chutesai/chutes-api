@@ -3,6 +3,7 @@ Unit tests for api/server/service module.
 Tests nonce management, attestation processing, server registration, and management operations.
 """
 
+import os
 import pytest
 import secrets
 from datetime import datetime, timezone
@@ -42,6 +43,17 @@ from api.server.exceptions import (
 )
 from tests.fixtures.gpus import TEST_GPU_NONCE
 
+@pytest.fixture()
+def nv_attest():
+    if not os.path.exists("./nv-attest/.venv/bin/chutes-nvattest"):
+        pytest.skip("chutes-nvattest CLI is not available.")
+    
+    original_path = os.environ.get("PATH")
+    os.environ["PATH"] = f"{original_path}:{os.path.join(os.getcwd(), "nv-attest/.venv/bin")}"
+
+    yield
+
+    os.environ["PATH"] = original_path
 
 @pytest.fixture
 def mock_redis_client():
@@ -1122,10 +1134,10 @@ async def test_verify_quote_with_different_quote_types(mock_verify_quote_signatu
         assert mock_verify_measurements.call_count == 2
 
 @pytest.mark.asyncio
-async def test_verify_gpu_evidence_success(sample_gpu_evidence):
+async def test_verify_gpu_evidence_success(sample_gpu_evidence, nv_attest):
     assert await verify_gpu_evidence(sample_gpu_evidence, TEST_GPU_NONCE)
 
 @pytest.mark.asyncio
-async def test_verify_gpu_evidence_bad_nonce(sample_gpu_evidence):
+async def test_verify_gpu_evidence_bad_nonce(sample_gpu_evidence, nv_attest):
     with pytest.raises(Exception):
         await verify_gpu_evidence(sample_gpu_evidence, "abcd1234")
