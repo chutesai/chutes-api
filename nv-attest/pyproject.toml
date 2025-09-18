@@ -14,6 +14,7 @@ python = ">=3.12,<4.0"
 nv-attestation-sdk = "^2.6.2"
 nv-local-gpu-verifier = "^2.6.2"
 nv-ppcie-verifier = "^1.6.3"
+typer = "^0.17.4"
 
 [tool.poetry.group.dev.dependencies]
 bandit = "^1.8.6"
@@ -22,6 +23,9 @@ flake8 = "^7.3.0"
 isort = ">=4.2.5,<5.13.0"
 mypy = "^1.18.1"
 autoflake = "^2.3.1"
+
+[tool.poetry.scripts]
+chutes-nvattest = "chutes_nvattest.cli:app"
 
 [[tool.mypy.overrides]]
 module = "nv_attestation_sdk.*"

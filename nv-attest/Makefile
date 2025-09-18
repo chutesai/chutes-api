@@ -1,5 +1,5 @@
 SHELL := /bin/bash -e -o pipefail
-PROJECT ?= nv-attestation-service
+PROJECT ?= nv-attest
 BRANCH_NAME ?= local
 BUILD_NUMBER ?= 0
 IMAGE ?= ${PROJECT}:${BRANCH_NAME}-${BUILD_NUMBER}
