@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from loguru import logger
 from api.config import settings
 from sqlalchemy import select, text
@@ -39,9 +40,9 @@ async def check_instance_logging_server(instance: Instance) -> bool:
                 f"✅ logging server running for {instance.instance_id=} of {instance.miner_hotkey=} for {instance.chute_id=} on http://{instance.host}:{log_port}"
             )
             return True
-    except Exception:
+    except Exception as exc:
         logger.error(
-            f"❌ logging server check failure for {instance.instance_id=} of {instance.miner_hotkey=} for {instance.chute_id=} on http://{instance.host}:{log_port or '???'}"
+            f"❌ logging server check failure for {instance.instance_id=} of {instance.miner_hotkey=} for {instance.chute_id=} on http://{instance.host}:{log_port or '???'}: {str(exc)}\n{traceback.format_exc()}"
         )
         return False
 

@@ -324,7 +324,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.concurrency,
                     MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
                     COALESCE(c.max_instances, 1) AS max_instances,
-                    COALESCE(c.scaling_threshold, 0.75) AS scaling_threshold,
+                    c.scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
                     COUNT(DISTINCT i.instance_id) AS instance_count,
                     EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
@@ -374,10 +374,8 @@ async def perform_autoscale(dry_run: bool = False):
                 utilization_basis = max(utilization_5m, utilization_15m)
 
                 # Need to scale up?
-                if (
-                    utilization_basis >= info.scaling_threshold
-                    and info.instance_count < info.max_instances
-                ):
+                threshold = info.scaling_threshold or 0.75
+                if utilization_basis >= threshold and info.instance_count < info.max_instances:
                     await settings.redis_client.set(f"scale:{chute_id}", info.instance_count + 1)
                     chute_target_counts[chute_id] = info.instance_count + 1
                     chute_actions[chute_id] = "scale_up_candidate"
@@ -387,7 +385,7 @@ async def perform_autoscale(dry_run: bool = False):
                     continue
 
                 # Need to scale down?
-                elif utilization_basis < info.scaling_threshold and info.instance_count > 1:
+                elif utilization_basis < threshold and info.instance_count > 1:
                     await settings.redis_client.set(f"scale:{chute_id}", info.instance_count - 1)
                     chute_target_counts[chute_id] = info.instance_count - 1
                     chute_actions[chute_id] = "scaled_down"
@@ -472,11 +470,12 @@ async def perform_autoscale(dry_run: bool = False):
         utilization_basis = max(utilization_1h, utilization_15m)
 
         # Scale up candidate: high utilization
-        if utilization_basis >= UTILIZATION_SCALE_UP:
+        threshold = info.scaling_threshold or UTILIZATION_SCALE_UP
+        if utilization_basis >= threshold:
             num_to_add = 1
-            if utilization_basis >= UTILIZATION_SCALE_UP * 1.5:
+            if utilization_basis >= threshold * 1.5:
                 num_to_add = max(3, int(info.instance_count * 0.5))
-            elif utilization_basis >= UTILIZATION_SCALE_UP * 1.25:
+            elif utilization_basis >= threshold * 1.25:
                 num_to_add = max(2, int(info.instance_count * 0.25))
             target_count = max(FAILSAFE.get(chute_id, 0), info.instance_count + num_to_add)
             scale_up_candidates.append((chute_id, num_to_add))
@@ -510,7 +509,7 @@ async def perform_autoscale(dry_run: bool = False):
         # Scale down candidate: low utilization, no rate limiting, and has enough instances
         elif (
             info.instance_count >= UNDERUTILIZED_CAP
-            and utilization_basis < UTILIZATION_SCALE_UP
+            and utilization_basis < threshold
             and rate_limit_5m == 0
             and rate_limit_15m == 0
             and rate_limit_1h == 0
@@ -518,11 +517,28 @@ async def perform_autoscale(dry_run: bool = False):
             and chute_id not in LIMIT_OVERRIDES
         ):
             num_to_remove = 1
-            if info.instance_count > UNDERUTILIZED_CAP:
-                if utilization_basis < 0.1:
-                    num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.2))
-                elif utilization_basis < 0.2:
-                    num_to_remove = max(1, int((info.instance_count - UNDERUTILIZED_CAP) * 0.1))
+            # Calculate the number of instances to remove, based on how far away the
+            # current utilization is from the scale-up threshold.
+            headroom_ratio = (threshold - utilization_basis) / threshold
+            excess_instances = info.instance_count - UNDERUTILIZED_CAP
+            if utilization_basis < threshold * 0.25:
+                removal_percentage = 0.3 + (0.1 * (1 - utilization_basis / (threshold * 0.25)))
+            elif utilization_basis < threshold * 0.5:
+                removal_percentage = 0.2 + (0.1 * (1 - utilization_basis / (threshold * 0.5)))
+            else:
+                removal_percentage = 0.1 + (0.1 * (1 - utilization_basis / threshold))
+            removal_percentage = min(removal_percentage, 0.4)
+            num_to_remove = max(1, int(excess_instances * removal_percentage))
+            post_removal_count = info.instance_count - num_to_remove
+            post_removal_utilization = (
+                utilization_basis * info.instance_count
+            ) / post_removal_count
+            if post_removal_utilization > threshold * 0.9:
+                safe_count = max(
+                    UNDERUTILIZED_CAP,
+                    int((utilization_basis * info.instance_count) / (threshold * 0.9)),
+                )
+                num_to_remove = info.instance_count - safe_count
 
             # Check failsafe minimum
             failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
