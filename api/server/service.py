@@ -7,13 +7,15 @@ import base64
 from datetime import datetime, timezone, timedelta
 import json
 import tempfile
-from typing import Optional, Dict, Any
+from typing import Dict, Any
+from fastapi import Depends, HTTPException, Header, Request, status
 from loguru import logger
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from api.config import settings
+from api.constants import NONCE_HEADER
 from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote, TdxVerificationResult
 from api.server.schemas import (
     Server, ServerAttestation, BootAttestation,
@@ -27,6 +29,7 @@ from api.server.util import (
     extract_nonce, verify_measurements, get_luks_passphrase,
     generate_nonce, get_nonce_expiry_seconds, verify_quote_signature
 )
+from api.util import extract_ip
 
 
 async def create_nonce(
@@ -63,7 +66,7 @@ async def create_nonce(
 
 async def validate_and_consume_nonce(
     nonce_value: str, 
-    server_ip: str = None
+    server_ip: str
 ) -> None:
     """
     Validate and consume a nonce using Redis.
@@ -102,11 +105,33 @@ async def validate_and_consume_nonce(
     
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}...")
 
-async def verify_quote(quote: TdxQuote, server_ip: str) -> TdxVerificationResult:
+
+async def validate_request_nonce():
+    
+    async def _validate_request_nonce(
+        request: Request,
+        nonce: str | None = Header(None, alias=NONCE_HEADER)
+    ):
+        server_ip = extract_ip(request)
+
+        try:
+            await validate_and_consume_nonce(nonce, server_ip)
+
+            return nonce
+        except NonceError as e:
+            logger.error(f"Request nonce validation failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied"
+            )
+
+    return _validate_request_nonce
+
+async def verify_quote(quote: TdxQuote, expected_nonce: str) -> TdxVerificationResult:
     # Validate nonce
     nonce = extract_nonce(quote)
-    # NOTE: Need to rework to either use difference nonces or a single validate/consume before verification
-    await validate_and_consume_nonce(nonce, server_ip)
+    if nonce != expected_nonce:
+        raise NonceError("Quote nonce does not match expected nonce.")
 
     result = await verify_quote_signature(quote)
 
@@ -114,7 +139,7 @@ async def verify_quote(quote: TdxQuote, server_ip: str) -> TdxVerificationResult
 
     return result
 
-async def verify_gpu_evidence(evidence: list[Dict[str, str]], nonce: str) -> TdxVerificationResult:
+async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:
 
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as fp:
@@ -125,7 +150,7 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], nonce: str) -> Tdx
             verify_gpus_cmd = [
                 "chutes-nvattest",
                 "--nonce",
-                nonce,
+                expected_nonce,
                 "--evidence",
                 fp.name
             ]
@@ -139,14 +164,14 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], nonce: str) -> Tdx
             if process.returncode != 0:
                 raise Exception()
 
-            return True
     except Exception as e:
         raise Exception()
 
 async def process_boot_attestation(
     db: AsyncSession, 
     server_ip: str,
-    args: BootAttestationArgs
+    args: BootAttestationArgs,
+    nonce: str
 ) -> Dict[str, str]:
     """
     Process a boot attestation request.
@@ -166,12 +191,10 @@ async def process_boot_attestation(
     logger.info(f"Processing boot attestation for server:: {server_ip}")
     
     # Parse and verify quote
-    nonce = None
     try:# Verify quote signature
 
         quote = BootTdxQuote.from_base64(args.quote)
-        nonce = extract_nonce(quote)
-        result = await verify_quote(quote)
+        result = await verify_quote(quote, nonce)
         
         # Create boot attestation record
         boot_attestation = BootAttestation(
@@ -217,7 +240,8 @@ async def register_server(
     db: AsyncSession, 
     actual_ip: str,
     args: ServerArgs, 
-    miner_hotkey: str
+    miner_hotkey: str,
+    expected_nonce: str
 ) -> Server:
     """
     Register a new server.
@@ -236,10 +260,10 @@ async def register_server(
     try:
 
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        await verify_quote(quote)
+        await verify_quote(quote, expected_nonce)
 
-        gpu_evidence = json.loads(args.evidence)
-        await verify_gpu_evidence(gpu_evidence)
+        gpu_evidence = json.loads(base64.b64decode(args.evidence))
+        await verify_gpu_evidence(gpu_evidence, expected_nonce)
 
         server = Server(
             name=args.name,
@@ -300,7 +324,8 @@ async def process_runtime_attestation(
     server_id: str,
     actual_ip: str,
     args: RuntimeAttestationArgs,
-    miner_hotkey: str
+    miner_hotkey: str,
+    expected_nonce: str
 ) -> Dict[str, str]:
     """
     Process a runtime attestation request.
@@ -329,12 +354,10 @@ async def process_runtime_attestation(
         raise Exception()
     
     # Parse and verify quote
-    nonce = None
     try:
         # Verify quote signature
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        nonce = extract_nonce(quote)
-        result = await verify_quote(quote, server.ip)
+        result = await verify_quote(quote, expected_nonce)
         
         # Create runtime attestation record
         attestation = ServerAttestation(
@@ -344,7 +367,7 @@ async def process_runtime_attestation(
             rtmrs=quote.rtmrs,
             verification_result=result.to_dict(),
             verified=True,
-            nonce_used=nonce,
+            nonce_used=expected_nonce,
             verified_at=func.now()
         )
         
@@ -367,7 +390,7 @@ async def process_runtime_attestation(
             quote_data=args.quote,
             verified=False,
             verification_error=str(e.detail),
-            nonce_used=nonce
+            nonce_used=expected_nonce
         )
         
         db.add(attestation)
