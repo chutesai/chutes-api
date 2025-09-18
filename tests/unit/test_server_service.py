@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from api.server.service import (
     create_nonce,
     validate_and_consume_nonce,
+    verify_gpu_evidence,
     verify_quote,
     process_boot_attestation,
     process_runtime_attestation,
@@ -39,6 +40,7 @@ from api.server.exceptions import (
     ServerRegistrationError,
     InvalidSignatureError,
 )
+from tests.fixtures.gpus import TEST_GPU_NONCE
 
 
 @pytest.fixture
@@ -1002,7 +1004,7 @@ async def test_register_server_with_none_values(mock_db_session):
     # Verify the server object has None values handled correctly
     call_args = mock_db_session.add.call_args[0][0]
     assert isinstance(call_args, Server)
-    assert call_args.vm_id is None
+    assert call_args.ip is None
     assert call_args.metadata is None
 
 
@@ -1118,3 +1120,12 @@ async def test_verify_quote_with_different_quote_types(mock_verify_quote_signatu
         # Verify both were processed
         assert mock_verify_quote_signature.call_count == 2
         assert mock_verify_measurements.call_count == 2
+
+@pytest.mark.asyncio
+async def test_verify_gpu_evidence_success(sample_gpu_evidence):
+    assert await verify_gpu_evidence(sample_gpu_evidence, TEST_GPU_NONCE)
+
+@pytest.mark.asyncio
+async def test_verify_gpu_evidence_bad_nonce(sample_gpu_evidence):
+    with pytest.raises(Exception):
+        await verify_gpu_evidence(sample_gpu_evidence, "abcd1234")

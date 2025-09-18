@@ -19,3 +19,4 @@ pytest_configure(None)
 
 import api.database.orms  # noqa: F401
 from fixtures.tdx import *
+from fixtures.gpus import *

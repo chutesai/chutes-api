@@ -2,8 +2,11 @@
 Core server management and TDX attestation logic.
 """
 
+import asyncio
 import base64
 from datetime import datetime, timezone, timedelta
+import json
+import tempfile
 from typing import Optional, Dict, Any
 from loguru import logger
 from sqlalchemy import select, func
@@ -27,8 +30,7 @@ from api.server.util import (
 
 
 async def create_nonce(
-    attestation_type: str, 
-    server_id: Optional[str] = None
+    server_ip: str
 ) -> Dict[str, str]:
     """
     Create a new attestation nonce using Redis.
@@ -45,13 +47,13 @@ async def create_nonce(
     
     # Use Redis to store nonce with TTL
     redis_key = f"nonce:{nonce}"
-    redis_value = f"{attestation_type}:{server_id or 'boot'}"
+    redis_value = f"{server_ip}"
     
     await settings.redis_client.setex(redis_key, expiry_seconds, redis_value)
     
     expires_at = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=expiry_seconds)
     
-    logger.info(f"Created {attestation_type} nonce: {nonce[:8]}... for server {server_id}")
+    logger.info(f"Created nonce: {nonce[:8]}... for server {server_ip}")
     
     return {
         "nonce": nonce,
@@ -61,8 +63,7 @@ async def create_nonce(
 
 async def validate_and_consume_nonce(
     nonce_value: str, 
-    attestation_type: str,
-    server_id: Optional[str] = None
+    server_ip: str = None
 ) -> None:
     """
     Validate and consume a nonce using Redis.
@@ -85,16 +86,12 @@ async def validate_and_consume_nonce(
     
     # Parse the stored value
     try:
-        stored_type, stored_server = redis_value.decode().split(":", 1)
+        stored_server = redis_value.decode()
     except (ValueError, AttributeError):
         raise NonceError("Invalid nonce format")
     
-    # Validate attestation type
-    if stored_type != attestation_type:
-        raise NonceError(f"Nonce type mismatch: expected {attestation_type}, got {stored_type}")
-    
     # Validate server ID
-    expected_server = server_id or 'boot'
+    expected_server = server_ip
     if stored_server != expected_server:
         raise NonceError(f"Nonce server mismatch: expected {expected_server}, got {stored_server}")
     
@@ -105,11 +102,11 @@ async def validate_and_consume_nonce(
     
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}...")
 
-async def verify_quote(quote: TdxQuote, server: Optional[Server] = None) -> TdxVerificationResult:
+async def verify_quote(quote: TdxQuote, server_ip: str) -> TdxVerificationResult:
     # Validate nonce
     nonce = extract_nonce(quote)
-    server_id = server.server_id if server else None
-    await validate_and_consume_nonce(nonce, quote.quote_type, server_id)
+    # NOTE: Need to rework to either use difference nonces or a single validate/consume before verification
+    await validate_and_consume_nonce(nonce, server_ip)
 
     result = await verify_quote_signature(quote)
 
@@ -117,8 +114,38 @@ async def verify_quote(quote: TdxQuote, server: Optional[Server] = None) -> TdxV
 
     return result
 
+async def verify_gpu_evidence(evidence: list[Dict[str, str]], nonce: str) -> TdxVerificationResult:
+
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as fp:
+
+            json.dump(evidence, fp)
+            fp.flush()
+
+            verify_gpus_cmd = [
+                "./nv-attest/.venv/bin/chutes-nvattest",
+                "--nonce",
+                nonce,
+                "--evidence",
+                fp.name
+            ]
+
+            process = await asyncio.create_subprocess_exec(
+                *verify_gpus_cmd
+            )
+
+            await asyncio.gather(process.wait())
+
+            if process.returncode != 0:
+                raise Exception()
+
+            return True
+    except Exception as e:
+        raise Exception()
+
 async def process_boot_attestation(
     db: AsyncSession, 
+    server_ip: str,
     args: BootAttestationArgs
 ) -> Dict[str, str]:
     """
@@ -136,7 +163,7 @@ async def process_boot_attestation(
         InvalidQuoteError: If quote is invalid
         MeasurementMismatchError: If measurements don't match
     """
-    logger.info(f"Processing boot attestation for vm id:: {args.vm_id}")
+    logger.info(f"Processing boot attestation for server:: {server_ip}")
     
     # Parse and verify quote
     nonce = None
@@ -149,7 +176,7 @@ async def process_boot_attestation(
         # Create boot attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
-            vm_id=args.vm_id,
+            server_ip=server_ip,
             mrtd=quote.mrtd,
             verification_result=result.to_dict(),
             verified=True,
@@ -173,7 +200,7 @@ async def process_boot_attestation(
         # Create failed attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
-            vm_id=args.vm_id,
+            server_ip=server_ip,
             verified=False,
             verification_error=str(e.detail),
             nonce_used=nonce
@@ -188,6 +215,7 @@ async def process_boot_attestation(
 
 async def register_server(
     db: AsyncSession, 
+    actual_ip: str,
     args: ServerArgs, 
     miner_hotkey: str
 ) -> Server:
@@ -206,11 +234,17 @@ async def register_server(
         ServerRegistrationError: If registration fails
     """
     try:
+
+        quote = RuntimeTdxQuote.from_base64(args.quote)
+        await verify_quote(quote)
+
+        gpu_evidence = json.loads(args.evidence)
+        await verify_gpu_evidence(gpu_evidence)
+
         server = Server(
             name=args.name,
-            vm_id=args.vm_id,
-            miner_hotkey=miner_hotkey,
-            metadata=args.metadata
+            ip=actual_ip,
+            miner_hotkey=miner_hotkey
         )
         
         db.add(server)
@@ -219,11 +253,13 @@ async def register_server(
         
         logger.success(f"Registered server: {server.server_id} for miner: {miner_hotkey}")
         return server
-        
+    except (InvalidQuoteError, MeasurementMismatchError) as e:
+        await db.rollback()
+        pass
     except IntegrityError as e:
         await db.rollback()
         logger.error(f"Server registration failed: {str(e)}")
-        raise ServerRegistrationError("Server registration failed - duplicate vm id or other constraint violation")
+        raise ServerRegistrationError("Server registration failed - constraint violation")
     except Exception as e:
         await db.rollback()
         logger.error(f"Unexpected error during server registration: {str(e)}")
@@ -262,6 +298,7 @@ async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey:
 async def process_runtime_attestation(
     db: AsyncSession,
     server_id: str,
+    actual_ip: str,
     args: RuntimeAttestationArgs,
     miner_hotkey: str
 ) -> Dict[str, str]:
@@ -288,13 +325,16 @@ async def process_runtime_attestation(
     # Get server and verify ownership
     server = await check_server_ownership(db, server_id, miner_hotkey)
     
+    if server.ip != actual_ip:
+        raise Exception()
+    
     # Parse and verify quote
     nonce = None
     try:
         # Verify quote signature
         quote = RuntimeTdxQuote.from_base64(args.quote)
         nonce = extract_nonce(quote)
-        result = await verify_quote(quote, server)
+        result = await verify_quote(quote, server.ip)
         
         # Create runtime attestation record
         attestation = ServerAttestation(

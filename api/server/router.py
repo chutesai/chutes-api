@@ -3,7 +3,7 @@ FastAPI routes for server management and TDX attestation.
 """
 
 from typing import List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, status, Header
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
@@ -26,6 +26,7 @@ from api.server.service import (
 from api.server.exceptions import (
     AttestationError, NonceError, ServerNotFoundError, ServerRegistrationError
 )
+from api.util import extract_ip
 
 
 router = APIRouter()
@@ -33,8 +34,10 @@ router = APIRouter()
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
 
-@router.get("/boot/nonce", response_model=NonceResponse)
-async def get_boot_nonce():
+@router.get("/nonce", response_model=NonceResponse)
+async def get_nonce(
+    request: Request
+):
     """
     Generate a nonce for boot attestation.
     
@@ -42,7 +45,8 @@ async def get_boot_nonce():
     No authentication required as the VM doesn't exist in the system yet.
     """
     try:
-        nonce_info = await create_nonce("boot")
+        server_ip = extract_ip(request)
+        nonce_info = await create_nonce(server_ip)
         
         return NonceResponse(
             nonce=nonce_info["nonce"],
@@ -58,6 +62,7 @@ async def get_boot_nonce():
 
 @router.post("/boot/attestation", response_model=BootAttestationResponse)
 async def verify_boot_attestation(
+    request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session)
 ):
@@ -68,7 +73,8 @@ async def verify_boot_attestation(
     and returns the LUKS passphrase for disk decryption if valid.
     """
     try:
-        result = await process_boot_attestation(db, args)
+        server_ip = extract_ip(request)
+        result = await process_boot_attestation(db, server_ip, args)
         
         return BootAttestationResponse(
             luks_passphrase=result["luks_passphrase"],
@@ -92,11 +98,11 @@ async def verify_boot_attestation(
             detail="Boot attestation failed"
         )
 
-
 # Server Management Endpoints (Post-boot via CLI)
 # ToDo: Not sure we will want to keep this, ideally want to integrate with miner add-node command
 @router.post("/", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
 async def create_server(
+    request: Request,
     args: ServerArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
@@ -106,10 +112,11 @@ async def create_server(
     Register a new server.
     
     This is called via CLI after the server has booted and decrypted its disk.
-    Links the server to any existing boot attestation history via vm_id.
+    Links the server to any existing boot attestation history via server ip.
     """
     try:
-        server = await register_server(db, args, hotkey)
+        actual_ip = extract_ip(request)
+        server = await register_server(db, actual_ip, args, hotkey)
         
         return {
             "server_id": server.server_id,
@@ -143,7 +150,7 @@ async def list_user_servers(
             {
                 "server_id": server.server_id,
                 "name": server.name,
-                "vm_id": server.vm_id,
+                "ip": server.ip,
                 "active": server.active,
                 "created_at": server.created_at.isoformat(),
                 "updated_at": server.updated_at.isoformat() if server.updated_at else None,
@@ -176,7 +183,7 @@ async def get_server_details(
         return {
             "server_id": server.server_id,
             "name": server.name,
-            "vm_id": server.vm_id,
+            "ip": server.ip,
             "active": server.active,
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,
@@ -226,6 +233,7 @@ async def remove_server(
 
 @router.get("/{server_id}/nonce", response_model=NonceResponse)
 async def get_runtime_nonce(
+    request: Request,
     server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
@@ -236,9 +244,13 @@ async def get_runtime_nonce(
     """
     try:
         # Verify server ownership
-        await check_server_ownership(db, server_id, hotkey)
+        server = await check_server_ownership(db, server_id, hotkey)
         
-        nonce_info = await create_nonce("runtime", server_id)
+        actual_ip = extract_ip(request)
+        if server.ip != actual_ip:
+            raise Exception()
+
+        nonce_info = await create_nonce(server.ip)
         
         return NonceResponse(
             nonce=nonce_info["nonce"],
@@ -257,6 +269,7 @@ async def get_runtime_nonce(
 
 @router.post("/{server_id}/attestation", response_model=RuntimeAttestationResponse)
 async def verify_runtime_attestation(
+    request: Request,
     server_id: str,
     args: RuntimeAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
@@ -267,7 +280,8 @@ async def verify_runtime_attestation(
     Verify runtime attestation with full measurement validation.
     """
     try:
-        result = await process_runtime_attestation(db, server_id, args, hotkey)
+        actual_ip = extract_ip(request)
+        result = await process_runtime_attestation(db, server_id, actual_ip, args, hotkey)
         
         return RuntimeAttestationResponse(
             attestation_id=result["attestation_id"],
