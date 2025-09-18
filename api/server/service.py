@@ -123,7 +123,7 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], nonce: str) -> Tdx
             fp.flush()
 
             verify_gpus_cmd = [
-                "./nv-attest/.venv/bin/chutes-nvattest",
+                "chutes-nvattest",
                 "--nonce",
                 nonce,
                 "--evidence",
