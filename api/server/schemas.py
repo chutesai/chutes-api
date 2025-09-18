@@ -92,8 +92,6 @@ class Server(Base):
     miner_hotkey = Column(
         String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
     )
-    expected_measurements = Column(JSONB, nullable=True)  # Runtime MRTD/RTMRs or K8s secret refs
-    active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 

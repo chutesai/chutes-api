@@ -21,7 +21,7 @@ from api.server.schemas import (
 from api.server.service import (
     create_nonce, process_boot_attestation, register_server,
     check_server_ownership, process_runtime_attestation, get_server_attestation_status,
-    list_servers, delete_server
+    list_servers, delete_server, validate_request_nonce
 )
 from api.server.exceptions import (
     AttestationError, NonceError, ServerNotFoundError, ServerRegistrationError
@@ -64,7 +64,8 @@ async def get_nonce(
 async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
-    db: AsyncSession = Depends(get_db_session)
+    db: AsyncSession = Depends(get_db_session),
+    nonce = Depends(validate_request_nonce())
 ):
     """
     Verify boot attestation and return LUKS passphrase.
@@ -74,7 +75,7 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = extract_ip(request)
-        result = await process_boot_attestation(db, server_ip, args)
+        result = await process_boot_attestation(db, server_ip, args, nonce)
         
         return BootAttestationResponse(
             luks_passphrase=result["luks_passphrase"],
@@ -106,7 +107,8 @@ async def create_server(
     args: ServerArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid))
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    nonce = Depends(validate_request_nonce())
 ):
     """
     Register a new server.
@@ -116,7 +118,7 @@ async def create_server(
     """
     try:
         actual_ip = extract_ip(request)
-        server = await register_server(db, actual_ip, args, hotkey)
+        server = await register_server(db, actual_ip, args, hotkey, nonce)
         
         return {
             "server_id": server.server_id,
@@ -274,7 +276,8 @@ async def verify_runtime_attestation(
     args: RuntimeAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid))
+    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    nonce = Depends(validate_request_nonce())
 ):
     """
     Verify runtime attestation with full measurement validation.
