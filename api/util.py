@@ -146,10 +146,12 @@ async def get_resolved_ips(host: str) -> Set[IPv4Address | IPv6Address]:
     except Exception as exc:
         raise ValueError(f"DNS resolution failed for host {host}: {str(exc)}")
 
+
 def extract_ip(request: Request) -> str:
     x_forwarded_for = request.headers.get("X-Forwarded-For")
     actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
     return actual_ip
+
 
 async def is_valid_host(host: str) -> bool:
     """

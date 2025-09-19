@@ -177,23 +177,32 @@ class Settings(BaseSettings):
 
     # TDX Attestation settings
     expected_mrtd: Optional[str] = os.getenv("TDX_EXPECTED_MRTD")
-    expected_boot_rmtrs: Optional[Dict[str, str]] = {
-        pair.split("=")[0]: pair.split("=")[1]
-        for pair in os.getenv("TDX_BOOT_RMTRS", "").split(",")
-        if pair and "=" in pair and len(pair.split("=")) == 2
-    } if os.getenv("TDX_BOOT_RMTRS") else None
-    expected_runtime_rmtrs: Optional[Dict[str, str]] = {
-        pair.split("=")[0]: pair.split("=")[1]
-        for pair in os.getenv("TDX_RUNTIME_RMTRS", "").split(",")
-        if pair and "=" in pair and len(pair.split("=")) == 2
-    } if os.getenv("TDX_RUNTIME_RMTRS") else None
+    expected_boot_rmtrs: Optional[Dict[str, str]] = (
+        {
+            pair.split("=")[0]: pair.split("=")[1]
+            for pair in os.getenv("TDX_BOOT_RMTRS", "").split(",")
+            if pair and "=" in pair and len(pair.split("=")) == 2
+        }
+        if os.getenv("TDX_BOOT_RMTRS")
+        else None
+    )
+    expected_runtime_rmtrs: Optional[Dict[str, str]] = (
+        {
+            pair.split("=")[0]: pair.split("=")[1]
+            for pair in os.getenv("TDX_RUNTIME_RMTRS", "").split(",")
+            if pair and "=" in pair and len(pair.split("=")) == 2
+        }
+        if os.getenv("TDX_RUNTIME_RMTRS")
+        else None
+    )
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
-    
+
     # TDX verification service URLs (if using Intel's remote verification)
     tdx_verification_url: Optional[str] = os.getenv("TDX_VERIFICATION_URL")
     tdx_cert_chain_url: Optional[str] = os.getenv("TDX_CERT_CHAIN_URL")
-    
+
     # Nonce expiration (minutes)
     attestation_nonce_expiry: int = int(os.getenv("ATTESTATION_NONCE_EXPIRY", "10"))
+
 
 settings = Settings()

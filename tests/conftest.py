@@ -24,5 +24,5 @@ def pytest_configure(config):
 pytest_configure(None)
 
 import api.database.orms  # noqa: F401
-from fixtures.tdx import *
-from fixtures.gpus import *
+from fixtures.tdx import *  # noqa: F402,F403
+from fixtures.gpus import *  # noqa: F402,F403
