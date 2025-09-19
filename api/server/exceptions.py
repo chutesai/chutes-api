@@ -27,6 +27,15 @@ class MeasurementMismatchError(AttestationError):
     def __init__(self, detail: str = "Measurement verification failed"):
         super().__init__(detail=detail)
 
+class GpuEvidenceError(AttestationError):
+    "Raised for an unexpected error during GPU evidence verification"
+    def __init__(self, detail: str = "Failed to verify GPU evidence"):
+        super().__init__(detail=detail)
+
+class InvalidGpuEvidenceError(AttestationError):
+    "Raised for invalid GPU evidence"
+    def __init__(self, detail: str = "Invalid GPU evidence"):
+        super().__init__(detail=detail)
 
 class NonceError(AttestationError):
     """Raised when nonce validation fails."""

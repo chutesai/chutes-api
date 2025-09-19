@@ -11,6 +11,12 @@ def pytest_configure(config):
     os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "minioadmin123")
     os.environ.setdefault("AWS_ENDPOINT_URL", "http://localhost:9000")
 
+    from fixtures.tdx import EXPECTED_MRTD, TDX_BOOT_RMTRS, TDX_RUNTIME_RMTRS
+
+    os.environ.setdefault("TDX_EXPECTED_MRTD", EXPECTED_MRTD)
+    os.environ.setdefault("TDX_BOOT_RMTRS", TDX_BOOT_RMTRS)
+    os.environ.setdefault("TDX_RUNTIME_RMTRS", TDX_RUNTIME_RMTRS)
+
     # Print confirmation for debugging
     print("Environment variables set up for testing!")
 

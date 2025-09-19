@@ -10,8 +10,11 @@ EXPECTED_RMTR2="95521b8702c3e2b43d9a938653762fe4a86a65bcf31b58c2821bc339e56ef806
 EXPECTED_RMTR3="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".upper()
 EXPECTED_USER_DATA="61626364313233340000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".upper()
 
+TDX_BOOT_RMTRS=f"rtmr0={EXPECTED_RMTR0},rtmr1={EXPECTED_RMTR1},rtmr2={EXPECTED_RMTR2},rtmr3={EXPECTED_RMTR3}"
+TDX_RUNTIME_RMTRS=f"rtmr0={EXPECTED_RMTR0},rtmr1={EXPECTED_RMTR1},rtmr2={EXPECTED_RMTR2},rtmr3={EXPECTED_RMTR3}"
+
 @pytest.fixture
-def valid_quote_bin():
+def valid_quote_base64():
     """Load the valid quote.bin file from test assets."""
     quote_path = Path("tests/assets/quote.bin")
     if not quote_path.exists():
@@ -24,6 +27,6 @@ def valid_quote_bin():
 
 
 @pytest.fixture
-def valid_quote_bytes(valid_quote_bin):
+def valid_quote_bytes(valid_quote_base64):
     """Return the decoded bytes of the valid quote."""
-    return base64.b64decode(valid_quote_bin)
+    return base64.b64decode(valid_quote_base64)

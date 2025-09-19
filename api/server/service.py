@@ -22,7 +22,7 @@ from api.server.schemas import (
     BootAttestationArgs, RuntimeAttestationArgs, ServerArgs
 )
 from api.server.exceptions import (
-    InvalidQuoteError, MeasurementMismatchError, 
+    GpuEvidenceError, InvalidGpuEvidenceError, InvalidQuoteError, MeasurementMismatchError, 
     NonceError, ServerNotFoundError, ServerRegistrationError
 )
 from api.server.util import (
@@ -162,10 +162,16 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
             await asyncio.gather(process.wait())
 
             if process.returncode != 0:
-                raise Exception()
-
+                raise InvalidGpuEvidenceError()
+            
+            logger.info("GPU evidence verified successfully.")
+            
+    except FileNotFoundError as e:
+        logger.error(f"Failed to verify GPU evidence.  chutes-nvattest command not found?:\n{e}")
+        raise GpuEvidenceError("Failed to verify GPU evidence.")
     except Exception as e:
-        raise Exception()
+        logger.error(f"Unexepected exception encoutnered verifying GPU evidence:\n{e}")
+        raise GpuEvidenceError("Encountered an unexpected exception verifying GPU evidence.")
 
 async def process_boot_attestation(
     db: AsyncSession, 
@@ -279,7 +285,7 @@ async def register_server(
         return server
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         await db.rollback()
-        pass
+        raise ServerRegistrationError("Server registartion failed: invalid quote")
     except IntegrityError as e:
         await db.rollback()
         logger.error(f"Server registration failed: {str(e)}")
@@ -430,7 +436,6 @@ async def get_server_attestation_status(
     status = {
         "server_id": server_id,
         "server_name": server.name,
-        "active": server.active,
         "last_attestation": None,
         "attestation_status": "never_attested"
     }
@@ -460,8 +465,7 @@ async def list_servers(db: AsyncSession, miner_hotkey: str) -> list[Server]:
         List of server objects
     """
     query = select(Server).where(
-        Server.miner_hotkey == miner_hotkey,
-        Server.active == True
+        Server.miner_hotkey == miner_hotkey
     ).order_by(Server.created_at.desc())
     
     result = await db.execute(query)
@@ -473,7 +477,7 @@ async def list_servers(db: AsyncSession, miner_hotkey: str) -> list[Server]:
 
 async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> bool:
     """
-    Delete a server (mark as inactive).
+    Delete a server.
     
     Args:
         db: Database session
@@ -487,12 +491,11 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
         ServerNotFoundError: If server not found
     """
     server = await check_server_ownership(db, server_id, miner_hotkey)
-    
-    # Mark as inactive instead of hard delete to preserve attestation history
-    server.active = False
-    server.updated_at = func.now()
+
+    # NOTE: Do we want to do a soft delete to keep attestation history?
+    db.delete(server)
     
     await db.commit()
     
-    logger.info(f"Marked server as inactive: {server_id}")
+    logger.info(f"Deleted server: {server_id} [{server.name}({server.ip})]")
     return True
