@@ -34,6 +34,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "logProber.labels" -}}
+app.kubernetes.io/name: log-prober
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 redis-access: "true"

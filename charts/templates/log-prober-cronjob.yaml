@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: log-prober
+  labels:
+    {{- include "logProber.labels" . | nindent 4 }}
+spec:
+  schedule: "*/3 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 10
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 15000
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            {{- include "logProber.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- with .Values.logProber.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.logProber.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.logProber.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: log-prober
+              image: "{{ .Values.logProber.image }}"
+              imagePullPolicy: {{ .Values.logProber.imagePullPolicy }}
+              command: ["poetry", "run", "python", "log_prober.py"]
+              env:
+                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
+                {{- include "chutes.commonEnv" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.logProber.resources | nindent 16 }}
