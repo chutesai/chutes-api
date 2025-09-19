@@ -233,9 +233,9 @@ def test_get_nonce_expiry_seconds_parametrized(minutes, expected_seconds):
 
 
 # Quote parsing tests - Valid cases
-def test_boot_quote_from_base64(valid_quote_bin):
+def test_boot_quote_from_base64(valid_quote_base64):
     """Test parsing a valid TDX boot quote from base64."""
-    quote = BootTdxQuote.from_base64(valid_quote_bin)
+    quote = BootTdxQuote.from_base64(valid_quote_base64)
     
     assert isinstance(quote, BootTdxQuote)
     assert quote.quote_type == "boot"
@@ -247,9 +247,9 @@ def test_boot_quote_from_base64(valid_quote_bin):
     assert quote.parsed_at is not None
 
 
-def test_runtime_quote_from_base64(valid_quote_bin):
+def test_runtime_quote_from_base64(valid_quote_base64):
     """Test parsing a valid TDX runtime quote from base64."""
-    quote = RuntimeTdxQuote.from_base64(valid_quote_bin)
+    quote = RuntimeTdxQuote.from_base64(valid_quote_base64)
     
     assert isinstance(quote, RuntimeTdxQuote)
     assert quote.quote_type == "runtime"

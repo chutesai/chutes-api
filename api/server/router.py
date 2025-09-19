@@ -153,10 +153,8 @@ async def list_user_servers(
                 "server_id": server.server_id,
                 "name": server.name,
                 "ip": server.ip,
-                "active": server.active,
                 "created_at": server.created_at.isoformat(),
-                "updated_at": server.updated_at.isoformat() if server.updated_at else None,
-                "metadata": server.metadata
+                "updated_at": server.updated_at.isoformat() if server.updated_at else None
             }
             for server in servers
         ]
@@ -186,11 +184,8 @@ async def get_server_details(
             "server_id": server.server_id,
             "name": server.name,
             "ip": server.ip,
-            "active": server.active,
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,
-            "metadata": server.metadata,
-            "expected_measurements": server.expected_measurements
         }
         
     except ServerNotFoundError as e:
@@ -211,7 +206,7 @@ async def remove_server(
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid))
 ):
     """
-    Remove a server (mark as inactive).
+    Remove a server.
     """
     try:
         await delete_server(db, server_id, hotkey)

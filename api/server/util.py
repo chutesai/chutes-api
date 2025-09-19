@@ -119,15 +119,17 @@ def _verify_measurements(quote: TdxQuote, expected_rtmrs: Dict[str, str]) -> boo
     try:
         # Verify MRTD
         expected_mrtd = settings.expected_mrtd
-        if expected_mrtd:
-            if quote.mrtd.upper() != expected_mrtd.upper():
-                logger.error(f"MRTD mismatch: expected {expected_mrtd}, got {quote.mrtd}")
-                raise MeasurementMismatchError("MRTD verification failed")
+        if quote.mrtd.upper() != expected_mrtd.upper():
+            logger.error(f"MRTD mismatch: expected {expected_mrtd}, got {quote.mrtd}")
+            raise MeasurementMismatchError("MRTD verification failed")
         
         # Verify RTMRs
         for rtmr_name, expected_value in expected_rtmrs.items():
             actual_value = quote.rtmrs.get(rtmr_name)
-            if actual_value and actual_value.upper() != expected_value.upper():
+            if not actual_value:
+                raise MeasurementMismatchError(f"Quote missing excepted RTMR[{rtmr_name}]")
+            
+            if actual_value.upper() != expected_value.upper():
                 logger.error(f"RTMR {rtmr_name} mismatch: expected {expected_value}, got {actual_value}")
                 raise MeasurementMismatchError(f"RTMR {rtmr_name} verification failed")
         
