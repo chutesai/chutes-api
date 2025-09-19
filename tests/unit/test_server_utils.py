@@ -494,8 +494,8 @@ def test_verify_measurements_no_expected_mrtd(mock_settings, sample_boot_quote):
     mock_settings.expected_mrtd = None
     mock_settings.expected_boot_rmtrs = {}
 
-    result = verify_measurements(sample_boot_quote)
-    assert result is True
+    with pytest.raises(MeasurementMismatchError):
+        verify_measurements(sample_boot_quote)
 
 
 @patch("api.server.util.settings")
