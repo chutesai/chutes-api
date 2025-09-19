@@ -9,8 +9,7 @@ from typing import Any, Dict, Optional
 from dcap_qvl import VerifiedReport
 from loguru import logger
 
-from api.server.exceptions import InvalidQuoteError, MeasurementMismatchError
-from api.config import settings
+from api.server.exceptions import InvalidQuoteError
 
 
 @dataclass
@@ -18,6 +17,7 @@ class TdxQuote(ABC):
     """
     Parsed TDX quote with extracted measurements.
     """
+
     version: int
     att_key_type: int
     tee_type: int
@@ -30,7 +30,7 @@ class TdxQuote(ABC):
     raw_quote_size: int
     parsed_at: str
     raw_bytes: bytes
-    
+
     @property
     def rtmrs(self) -> Dict[str, str]:
         """Get RTMRs as a dictionary."""
@@ -43,9 +43,8 @@ class TdxQuote(ABC):
 
     @property
     @abstractmethod
-    def quote_type(self):
-        ...
-    
+    def quote_type(self): ...
+
     @classmethod
     def from_base64(cls, quote_base64: str) -> "TdxQuote":
         try:
@@ -58,13 +57,13 @@ class TdxQuote(ABC):
     def from_bytes(cls, quote_bytes: bytes) -> "TdxQuote":
         """
         Parse TDX quote using manual byte parsing based on TDX quote structure.
-        
+
         Args:
             quote_bytes: Raw quote bytes
-            
+
         Returns:
             TdxQuote object with parsed data
-            
+
         Raises:
             InvalidQuoteError: If parsing fails
         """
@@ -110,7 +109,7 @@ class TdxQuote(ABC):
                 user_data=report_data,
                 raw_quote_size=len(quote_bytes),
                 raw_bytes=quote_bytes,
-                parsed_at=datetime.now(timezone.utc).isoformat()
+                parsed_at=datetime.now(timezone.utc).isoformat(),
             )
 
             logger.success(f"Successfully parsed TDX quote: MRTD={quote.mrtd[:16]}...")
@@ -133,26 +132,28 @@ class TdxQuote(ABC):
                 "version": self.version,
                 "att_key_type": self.att_key_type,
                 "tee_type": f"0x{self.tee_type:02x}",
-            }
+            },
         }
-    
-class BootTdxQuote(TdxQuote):
 
+
+class BootTdxQuote(TdxQuote):
     @property
     def quote_type(self):
         return "boot"
 
-class RuntimeTdxQuote(TdxQuote):
 
+class RuntimeTdxQuote(TdxQuote):
     @property
     def quote_type(self):
         return "runtime"
+
 
 @dataclass
 class TdxVerificationResult:
     """
     Parsed TDX quote with extracted measurements.
     """
+
     mrtd: str
     rtmr0: str
     rtmr1: str
@@ -161,7 +162,7 @@ class TdxVerificationResult:
     user_data: Optional[str]
     parsed_at: datetime
     is_valid: bool
-    
+
     @property
     def rtmrs(self) -> Dict[str, str]:
         """Get RTMRs as a dictionary."""
@@ -171,7 +172,7 @@ class TdxVerificationResult:
             "rtmr2": self.rtmr2,
             "rtmr3": self.rtmr3,
         }
-    
+
     @classmethod
     def from_report(cls, verified_report: VerifiedReport) -> "TdxQuote":
         _json = json.loads(verified_report.to_json())
@@ -184,10 +185,9 @@ class TdxVerificationResult:
             rtmr3=_report.get("rt_mr3"),
             user_data=_report.get("report_data"),
             parsed_at=datetime.now(timezone.utc),
-            is_valid=bool(verified_report.status == 'UpToDate'),
-
+            is_valid=bool(verified_report.status == "UpToDate"),
         )
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format for compatibility."""
         return {

@@ -142,6 +142,7 @@ default_router.include_router(secrets_router, prefix="/secrets", tags=["Secret"]
 default_router.include_router(misc_router, prefix="/misc", tags=["Miscellaneous"])
 default_router.include_router(servers_router, prefix="/servers", tags=["Servers"])
 
+
 # Do not use app for this, else middleware picks it up
 async def ping():
     try:
