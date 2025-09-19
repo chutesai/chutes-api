@@ -103,7 +103,6 @@ def verify_measurements(quote: TdxQuote) -> bool:
 
     Args:
         quote: Parsed TDX quote
-        expected_measurements: Expected RTMRs
 
     Returns:
         True if all measurements match
@@ -116,7 +115,25 @@ def verify_measurements(quote: TdxQuote) -> bool:
         if quote.quote_type == "boot"
         else settings.expected_runtime_rmtrs
     )
+    logger.info("Verifying quote against configured MRTD and RTMRS.")
     return _verify_measurements(quote, expected_rtmrs)
+
+def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
+    """
+    Verify quote measurements against verification result values.
+
+    Args:
+        quote: Parsed TDX quote
+        result: The verification result from DCAP
+
+    Returns:
+        True if all measurements match
+
+    Raises:
+        MeasurementMismatchError: If any measurements don't match
+    """
+    logger.info("Verifying quote against verification result MRTD and RTMRS.")
+    return _verify_measurements(quote, result.rtmrs)
 
 
 def _verify_measurements(quote: TdxQuote, expected_rtmrs: Dict[str, str]) -> bool:
