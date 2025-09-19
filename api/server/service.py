@@ -41,6 +41,7 @@ from api.server.util import (
     generate_nonce,
     get_nonce_expiry_seconds,
     verify_quote_signature,
+    verify_result,
 )
 from api.util import extract_ip
 
@@ -140,6 +141,9 @@ async def verify_quote(quote: TdxQuote, expected_nonce: str) -> TdxVerificationR
 
     result = await verify_quote_signature(quote)
 
+    # Verify the quote against the result to ensure it was parsed properly
+    verify_result(quote, result)
+    # Verify the quote against configured MRTD/RMTRs
     verify_measurements(quote)
 
     return result
