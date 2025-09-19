@@ -68,3 +68,9 @@ class ServerRegistrationError(HTTPException):
 
     def __init__(self, detail: str = "Server registration failed"):
         super().__init__(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+class InvalidTdxConfiguration(HTTPException):
+    """Raised if invalid configuration is encouted during TDX validation."""
+
+    def __init__(self, detail: str = "Missing or invalid configuration for TDX verification."):
+        super().__init__(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
