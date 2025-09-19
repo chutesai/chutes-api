@@ -7,7 +7,7 @@ from typing import Dict, Any, Optional
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
 from api.config import settings
-from api.server.exceptions import InvalidSignatureError, MeasurementMismatchError
+from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError
 from api.server.quote import TdxQuote, TdxVerificationResult
 
 
@@ -173,16 +173,10 @@ def get_luks_passphrase() -> str:
     Returns:
         LUKS passphrase string
     """
-    # TODO: Implement secure passphrase retrieval
-    # This could come from:
-    # - Environment variable
-    # - K8s secret
-    # - Secure key management service
 
     passphrase = settings.luks_passphrase
     if not passphrase:
-        logger.warning("No LUKS passphrase configured")
-        # Return a placeholder for now
-        passphrase = "placeholder_luks_passphrase"
+        logger.error("No LUKS passphrase configured")
+        raise InvalidTdxConfiguration("Missing LUKS phassphrase configuration")
 
     return passphrase
