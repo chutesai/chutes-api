@@ -50,6 +50,7 @@ transformers = "<4.49.0"
 dnslib = "^0.9.26"
 semver = "^3.0.4"
 bittensor-wallet = "^3.1.0"
+dcap-qvl = "^0.3.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -62,3 +63,9 @@ pytest-asyncio = "^1.1.0"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
+[tool.ruff.lint.extend-per-file-ignores]
+"tests/*" = ["E402"]
+"**/conftest.py" = ["E401", "E402"]
+
+[tool.ruff]
+extend-exclude = ["nv-attest"]

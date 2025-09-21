@@ -145,6 +145,8 @@ FROM base AS api
 RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
 RUN mkdir -p /app && chown chutes:chutes /app
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
 USER chutes
 RUN curl -sSL https://install.python-poetry.org | python3 -
 ENV PATH=$PATH:/home/chutes/.local/bin
@@ -163,5 +165,22 @@ ADD --chown=chutes chute_autoscaler.py /app/chute_autoscaler.py
 ADD --chown=chutes balance_refresher.py /app/balance_refresher.py
 ADD --chown=chutes data/cache_hit_cluster_params.json /app/cache_hit_cluster_params.json
 ADD --chown=chutes log_prober.py /app/log_prober.py
+
+USER root
+# Setup chutes-attest CLI
+WORKDIR /tmp/nv-attest
+COPY --chown=chutes:chutes nv-attest /tmp/nv-attest
+RUN poetry build -f wheel \
+    && python -m venv /app/nv-attest \
+    && /app/nv-attest/bin/pip install --no-cache-dir dist/*.whl
+
+WORKDIR /app
+
+USER root
+RUN rm -rf /tmp/nv-attest
+RUN ln -s /app/nv-attest/bin/chutes-nvattest /usr/bin/chutes-nvattest
+
+USER chutes
+
 ENV PYTHONPATH=/app
 ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

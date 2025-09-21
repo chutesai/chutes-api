@@ -29,7 +29,7 @@ from api.metasync import MetagraphNode
 from api.payment.schemas import Payment
 from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
-from fastapi import status, HTTPException
+from fastapi import Request, status, HTTPException
 from sqlalchemy import func, or_, and_, exists
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding, hashes
@@ -145,6 +145,12 @@ async def get_resolved_ips(host: str) -> Set[IPv4Address | IPv6Address]:
         return resolved_ips
     except Exception as exc:
         raise ValueError(f"DNS resolution failed for host {host}: {str(exc)}")
+
+
+def extract_ip(request: Request) -> str:
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+    return actual_ip
 
 
 async def is_valid_host(host: str) -> bool:
