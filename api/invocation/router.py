@@ -492,6 +492,16 @@ async def _invoke(
                 raise
             logger.error(f"Failed to validate tool call arguments: {str(exc)}")
 
+        # Fix LongCat thinking chat template...
+        if chute.name == "meituan-longcat/LongCat-Flash-Thinking-FP8":
+            try:
+                for message in request_body.get("messages", []):
+                    if message.get("role") == "tool":
+                        if "name" not in message:
+                            message["name"] = message.get("tool_call_id", "__unknown__")
+            except Exception as exc:
+                logger.warning(f"Failed to fix longcat flash thinking tool calls: {str(exc)}")
+
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
 
