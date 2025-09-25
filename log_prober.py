@@ -1,6 +1,6 @@
 import asyncio
 import traceback
-import api.database.orms
+import api.database.orms  # noqa
 from loguru import logger
 from api.config import settings
 from sqlalchemy import select, text

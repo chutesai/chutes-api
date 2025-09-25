@@ -924,6 +924,7 @@ async def hostname_invocation(
             if payload.get("model")
             in (
                 "deepseek-ai/DeepSeek-V3.1",
+                "deepseek-ai/DeepSeek-V3.1-Terminus",
                 "NousResearch/Hermes-4-70B",
                 "NousResearch/Hermes-4-405B-FP8",
                 "NousResearch/Hermes-4-14B",
@@ -940,6 +941,10 @@ async def hostname_invocation(
             if "chat_template_kwargs" not in payload:
                 payload["chat_template_kwargs"] = {}
             payload["chat_template_kwargs"][thinking_key] = True
+
+        # Auto tool choice default.
+        if payload.get("tools") and "tool_choice" not in payload:
+            payload["tool_choice"] = "auto"
 
         model = payload.get("model")
         chute = None

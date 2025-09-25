@@ -175,5 +175,9 @@ class Settings(BaseSettings):
     cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")
     cosign_key: Optional[Path] = Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
 
+    # hCaptcha
+    hcaptcha_sitekey: Optional[str] = os.getenv("HCAPTCHA_SITEKEY")
+    hcaptcha_secret: Optional[str] = os.getenv("HCAPTCHA_SECRET")
+
 
 settings = Settings()

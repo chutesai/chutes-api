@@ -651,7 +651,7 @@ async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
-    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")
 
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
@@ -727,7 +727,7 @@ async def forge(image_id: str):
     )
 
     # Cleanup
-    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")
 
 
 @broker.task
@@ -1095,4 +1095,4 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
         logger.error(f"Failed to update chutes lib for image {image_id}: {error_message}")
 
     # Cleanup
-    # os.system("bash /usr/local/bin/buildah_cleanup.sh")
+    os.system("bash /usr/local/bin/buildah_cleanup.sh")

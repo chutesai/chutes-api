@@ -16,12 +16,14 @@ import secrets
 import hashlib
 import datetime
 import traceback
+import ipaddress
 from io import BytesIO
 from PIL import Image
 import orjson as json
 from typing import Set
 from loguru import logger
 from api.config import settings
+from async_lru import alru_cache
 from urllib.parse import urlparse
 from sqlalchemy.future import select
 from api.constants import VLM_MAX_SIZE
@@ -766,6 +768,30 @@ def has_legacy_private_billing(chute):
     return chute.created_at.replace(tzinfo=None) < datetime.datetime(
         year=2025, month=9, day=10, hour=16, tzinfo=None
     )
+
+
+@alru_cache(maxsize=1)
+async def get_cloudflare_ips():
+    ipv4_url = "https://www.cloudflare.com/ips-v4"
+    ipv6_url = "https://www.cloudflare.com/ips-v6"
+    cloudflare_ranges = []
+    async with aiohttp.ClientSession() as session:
+        response = await session.get(ipv4_url)
+        for line in (await response.text()).strip().split("\n"):
+            cloudflare_ranges.append(ipaddress.ip_network(line))
+        response = await session.get(ipv6_url)
+        for line in (await response.text()).strip().split("\n"):
+            cloudflare_ranges.append(ipaddress.ip_network(line))
+    return cloudflare_ranges
+
+
+async def is_cloudflare_ip(ip_address):
+    cloudflare_ranges = await get_cloudflare_ips()
+    ip = ipaddress.ip_address(ip_address)
+    for cf_range in cloudflare_ranges:
+        if ip in cf_range:
+            return True
+    return False
 
 
 async def validate_tool_call_arguments(body: dict) -> None:

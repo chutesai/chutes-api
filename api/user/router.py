@@ -2,8 +2,10 @@
 User routes.
 """
 
+import re
 import uuid
 import time
+import aiohttp
 import secrets
 import hashlib
 import orjson as json
@@ -12,6 +14,7 @@ from datetime import datetime
 from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
+from fastapi.responses import HTMLResponse
 from api.database import get_db_session
 from api.user.schemas import (
     UserRequest,
@@ -21,7 +24,7 @@ from api.user.schemas import (
     InvocationQuota,
     InvocationDiscount,
 )
-from api.util import memcache_get, memcache_set, memcache_delete
+from api.util import memcache_get, memcache_set, memcache_delete, is_cloudflare_ip
 from api.user.response import RegistrationResponse, SelfResponse
 from api.user.service import get_current_user
 from api.user.events import generate_uid as generate_user_uid
@@ -588,7 +591,6 @@ async def check_username(username: str, db: AsyncSession = Depends(get_db_sessio
     return {"valid": True, "available": True}
 
 
-# NOTE: Allow registertation without a hotkey and coldkey, for normal plebs?
 @router.post(
     "/register",
     response_model=RegistrationResponse,
@@ -596,6 +598,7 @@ async def check_username(username: str, db: AsyncSession = Depends(get_db_sessio
 async def register(
     user_args: UserRequest,
     request: Request,
+    token: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(raise_not_found=False)),
     hotkey: str = Header(..., description="The hotkey of the user", alias=HOTKEY_HEADER),
@@ -615,8 +618,29 @@ async def register(
             detail="Too may registration requests.",
         )
 
+    # Check the registration token.
+    if not token:
+        logger.warning(
+            f"RTOK: Attempted registration without token: {x_forwarded_for=} {actual_ip=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing registration token in URL query params, please ensure you have upgraded to chutes>=0.3.33 and try again.",
+        )
+    allowed_ip = None
+    if re.match(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", token, re.I):
+        allowed_ip = await memcache_get(f"regtoken:{token}".encode())
+        if allowed_ip:
+            allowed_ip = allowed_ip.decode()
+    if actual_ip != allowed_ip:
+        logger.warning(f"RTOK: Expected IP {allowed_ip=} but got {actual_ip=}")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid registration token, or registration token does not match expected IP address",
+        )
+
+    # Prevent duplicate hotkeys.
     if current_user:
-        # NOTE: Change when we allow register without a hotkey
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="This hotkey is already registered to a user!",
@@ -657,6 +681,287 @@ async def register(
     await settings.redis_client.expire(f"user_signup:{actual_ip}", 24 * 60 * 60)
 
     return _registration_response(user, fingerprint)
+
+
+@router.get("/registration_token")
+async def get_registration_token(request: Request):
+    """
+    Initial form with cloudflare + hcaptcha to generate a registration token.
+    """
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Registration Token Request</title>
+        <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+        <style>
+            body {{
+                margin: 0;
+                padding: 20px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: #f0f2f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                width: 400px;
+                text-align: center;
+            }}
+            .label {{
+                color: #666;
+                font-size: 12px;
+                margin-bottom: 20px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            .h-captcha {{
+                display: inline-block;
+                margin: 20px 0;
+            }}
+            .submit-btn {{
+                background: #4CAF50;
+                color: white;
+                border: none;
+                padding: 10px 30px;
+                border-radius: 4px;
+                font-size: 14px;
+                cursor: pointer;
+                margin-top: 20px;
+                transition: background 0.3s;
+            }}
+            .submit-btn:hover {{
+                background: #45a049;
+            }}
+            .info {{
+                margin-top: 15px;
+                font-size: 11px;
+                color: #999;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="label">Chutes CLI Registration Token Request</div>
+            <form action="/users/registration_token" method="POST">
+                <div class="h-captcha" data-sitekey="{settings.hcaptcha_sitekey}"></div>
+                <br />
+                <input type="submit" class="submit-btn" value="Get Token" />
+            </form>
+            <div class="info">Please complete the verification to receive your token</div>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+@router.post("/registration_token")
+async def post_rtok(request: Request):
+    """
+    Verify hCaptcha and get a short-lived registration token.
+    """
+    # Check Cloudflare IP
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    ip_chain = (x_forwarded_for or "").split(",")
+    cf_ip = ip_chain[1].strip() if len(ip_chain) >= 2 else None
+    actual_ip = ip_chain[0].strip() if ip_chain else None
+    logger.info(f"RTOK: {x_forwarded_for=} {actual_ip=} {cf_ip=}")
+    if not cf_ip or not await is_cloudflare_ip(cf_ip):
+        logger.warning(
+            f"RTOK: request attempted to bypass cloudflare: {x_forwarded_for=} {actual_ip=} {cf_ip=}"
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No.")
+
+    # Validate captcha.
+    form_data = await request.form()
+    h_captcha_response = form_data.get("h-captcha-response")
+    if not h_captcha_response:
+        logger.warning(f"RTOK: missing hCaptcha response from {actual_ip}")
+        return HTMLResponse(content=error_html("hCaptcha verification required"), status_code=400)
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                "https://hcaptcha.com/siteverify",
+                data={
+                    "secret": settings.hcaptcha_secret,
+                    "response": h_captcha_response,
+                    "remoteip": actual_ip,
+                },
+            ) as response:
+                verify_data = await response.json()
+                if not verify_data.get("success"):
+                    logger.warning(
+                        f"RTOK: hCaptcha verification failed for {actual_ip}: {verify_data}"
+                    )
+                    return HTMLResponse(
+                        content=error_html("hCaptcha verification failed. Please try again."),
+                        status_code=400,
+                    )
+        except Exception as e:
+            logger.error(f"RTOK: hCaptcha verification error: {e}")
+            return HTMLResponse(
+                content=error_html("Verification error. Please try again."), status_code=500
+            )
+
+    # Create the token and render it.
+    token = str(uuid.uuid4())
+    await memcache_set(f"regtoken:{token}".encode(), actual_ip.encode(), exptime=300)
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Registration Token</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 20px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: #f0f2f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                width: 400px;
+                text-align: center;
+            }}
+            .label {{
+                color: #666;
+                font-size: 12px;
+                margin-bottom: 10px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }}
+            .token {{
+                font-family: monospace;
+                font-size: 14px;
+                word-break: break-all;
+                color: #333;
+                background: #f8f9fa;
+                padding: 10px;
+                border-radius: 4px;
+                user-select: all;
+                cursor: pointer;
+                position: relative;
+            }}
+            .token:hover {{
+                background: #e9ecef;
+            }}
+            .expires {{
+                margin-top: 15px;
+                font-size: 11px;
+                color: #999;
+            }}
+            .copy-hint {{
+                margin-top: 10px;
+                font-size: 11px;
+                color: #666;
+            }}
+        </style>
+        <script>
+            function copyToken() {{
+                const token = document.querySelector('.token');
+                const selection = window.getSelection();
+                const range = document.createRange();
+                range.selectNodeContents(token);
+                selection.removeAllRanges();
+                selection.addRange(range);
+                document.execCommand('copy');
+                const hint = document.querySelector('.copy-hint');
+                hint.textContent = 'Copied!';
+                setTimeout(() => {{
+                    hint.textContent = 'Click token to select all';
+                }}, 2000);
+            }}
+        </script>
+    </head>
+    <body>
+        <div class="container">
+            <div class="label">Chutes CLI Registration Token</div>
+            <div class="token" onclick="copyToken()">{token}</div>
+            <div class="copy-hint">Click token to select all</div>
+            <div class="expires">Expires in 5 minutes</div>
+        </div>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
+def error_html(message: str) -> str:
+    """
+    Generate error HTML page.
+    """
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <title>Error</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 20px;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: #f0f2f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 8px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+                width: 400px;
+                text-align: center;
+            }}
+            .error-icon {{
+                color: #f44336;
+                font-size: 48px;
+                margin-bottom: 20px;
+            }}
+            .message {{
+                color: #333;
+                font-size: 14px;
+                margin-bottom: 20px;
+            }}
+            .back-link {{
+                color: #4CAF50;
+                text-decoration: none;
+                font-size: 14px;
+            }}
+            .back-link:hover {{
+                text-decoration: underline;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="error-icon">✕</div>
+            <div class="message">{message}</div>
+            <a href="/rtok" class="back-link">← Try again</a>
+        </div>
+    </body>
+    </html>
+    """
 
 
 @router.post(

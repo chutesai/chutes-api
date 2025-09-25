@@ -123,6 +123,16 @@ app.kubernetes.io/name: registry-proxy
 {{- end }}
 
 {{- define "chutes.sensitiveEnv" -}}
+- name: HCAPTCHA_SITEKEY
+  valueFrom:
+   secretKeyRef:
+     key: sitekey
+     name: hcaptcha-config
+- name: HCAPTCHA_SECRET
+  valueFrom:
+   secretKeyRef:
+     key: secret
+     name: hcaptcha-config
 - name: CFSV_OP
   valueFrom:
    secretKeyRef:
