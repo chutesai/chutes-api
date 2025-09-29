@@ -1,0 +1,66 @@
+{{- if .Values.btTxTracker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bt-tx-tracker
+  labels:
+    {{- include "btTxTracker.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "btTxTracker.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "btTxTracker.labels" . | nindent 8 }}
+    spec:
+      {{- with .Values.btTxTracker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.btTxTracker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.btTxTracker.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: bt-tx-tracker
+          image: "{{ .Values.btTxTracker.image }}"
+          imagePullPolicy: {{ .Values.btTxTracker.imagePullPolicy }}
+          command: ["poetry", "run", "uvicorn", "api.payment.history_tracker:app", "--host", "0.0.0.0", "--port", "{{ .Values.btTxTracker.service.targetPort }}"]
+          env:
+            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: SUBTENSOR_ADDRESS
+              value: {{ .Values.btTxTracker.subtensor }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.btTxTracker.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: {{ .Values.btTxTracker.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.btTxTracker.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.btTxTracker.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.btTxTracker.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.btTxTracker.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: {{ .Values.btTxTracker.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.btTxTracker.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.btTxTracker.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.btTxTracker.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.btTxTracker.readinessProbe.failureThreshold | default 3 }}
+          resources:
+            {{- toYaml .Values.btTxTracker.resources | nindent 12 }}
+{{- end }}

@@ -58,108 +58,57 @@ AND NOT EXISTS (
 GROUP BY mn.hotkey;
 """
 # Query to calculate the average number of unique chutes active at any single point in time, i.e. unique_chute_count.
-UNIQUE_CHUTE_AVERAGE_QUERY = """
+UNIQUE_CHUTE_BASE = """
 WITH time_series AS (
-  SELECT
-    generate_series(
-      date_trunc('hour', now() - INTERVAL '{interval}'),
-      date_trunc('hour', now()),
-      INTERVAL '1 hour'
-    ) AS time_point
+  SELECT generate_series(
+    date_trunc('hour', now() - INTERVAL '{interval}'),
+    date_trunc('hour', now()),
+    INTERVAL '1 hour'
+  ) AS time_point
 ),
--- Get all instances that had at least one successful invocation (ever) while the instance was alive.
-instances_with_success AS (
-  SELECT DISTINCT
-    instance_id
-  FROM invocations ii
-  WHERE
-    error_message IS NULL
-    AND completed_at IS NOT NULL
-    AND miner_uid >= 0
-    AND NOT EXISTS (
-        SELECT 1
-        FROM reports
-        WHERE invocation_id = ii.parent_invocation_id
-        AND confirmed_at IS NOT NULL
-    )
+-- Get the latest gpu_count per chute (most recent entry only)
+latest_chute_config AS (
+  SELECT DISTINCT ON (chute_id)
+    chute_id,
+    (node_selector->>'gpu_count')::integer AS gpu_count
+  FROM chute_history
+  ORDER BY chute_id, created_at DESC
 ),
--- Get all unique miner_hotkeys from instance_audit relevant to the network
-all_miners AS (
-  SELECT DISTINCT ia.miner_uid, ia.miner_hotkey
-  FROM instance_audit ia
-  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey
-  WHERE mn.netuid = 64 AND mn.node_id >= 0
-),
--- For each time point, find active instances that have had successful invocations
-active_instances_per_timepoint AS (
-  SELECT
+active_chutes AS (
+  SELECT DISTINCT ON (ts.time_point, ia.chute_id, ia.miner_hotkey)
     ts.time_point,
-    ia.instance_id,
     ia.chute_id,
     ia.miner_hotkey
   FROM time_series ts
-  JOIN instance_audit ia ON
-    ia.verified_at <= ts.time_point AND
-    (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point)
-  JOIN metagraph_nodes mn ON ia.miner_hotkey = mn.hotkey
-  JOIN instances_with_success iws ON
-    ia.instance_id = iws.instance_id
-  WHERE mn.netuid = 64 AND mn.node_id >= 0
-),
--- Pre-calculate the most recent GPU count for each chute from chute_history
-chute_latest_gpu_history AS (
-  SELECT DISTINCT ON (ch.chute_id) -- Get only the latest record per chute_id
-      ch.chute_id,
-      (ch.node_selector->>'gpu_count')::integer AS latest_gpu_count
-  FROM chute_history ch
-  WHERE ch.node_selector ? 'gpu_count'
-    AND jsonb_typeof(ch.node_selector->'gpu_count') = 'number'
-  ORDER BY ch.chute_id, ch.created_at DESC
-),
--- Calculate GPU-weighted chute count per miner per time point using historical max GPU count
-active_chutes_per_timepoint AS (
-  SELECT
-    aipt.time_point,
-    aipt.miner_hotkey,
-    -- Sum the latest_gpu_count, defaulting to 1 if no valid history exists for the chute
-    SUM(COALESCE(clgh.latest_gpu_count, 1)) AS gpu_weighted_chutes
-  FROM (
-    -- Get distinct chute_ids per time point and miner
-    SELECT DISTINCT
-      time_point,
-      miner_hotkey,
-      chute_id
-    FROM active_instances_per_timepoint
-  ) aipt
-  -- LEFT JOIN with the pre-calculated *latest* GPU count per chute from history
-  LEFT JOIN chute_latest_gpu_history clgh ON -- Join with the new CTE
-    aipt.chute_id = clgh.chute_id
-  GROUP BY aipt.time_point, aipt.miner_hotkey
-),
--- Create a cross join of all time points with all miners
-all_timepoints_for_all_miners AS (
-  SELECT
-    ts.time_point,
-    am.miner_hotkey
-  FROM time_series ts
-  CROSS JOIN all_miners am
-),
--- Join with active_chutes to get complete dataset with zeros
-complete_dataset AS (
-  SELECT
-    atm.miner_hotkey,
-    atm.time_point,
-    COALESCE(acpt.gpu_weighted_chutes, 0) AS gpu_weighted_chutes
-  FROM all_timepoints_for_all_miners atm
-  LEFT JOIN active_chutes_per_timepoint acpt ON
-    atm.time_point = acpt.time_point AND
-    atm.miner_hotkey = acpt.miner_hotkey
+  JOIN instance_audit ia
+    ON ia.activated_at <= ts.time_point
+   AND (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point)
+   AND ia.activated_at IS NOT NULL
+   AND (
+        ia.billed_to IS NOT NULL
+        OR (COALESCE(ia.deleted_at, ts.time_point) - ia.activated_at >= interval '1 hour')
+   )
 )
--- Calculate average GPU-weighted chutes per miner across all time points
-SELECT miner_hotkey, AVG(gpu_weighted_chutes)::integer AS avg_gpu_weighted_chutes
-FROM complete_dataset
-GROUP BY miner_hotkey;
 """
+UNIQUE_CHUTE_AVERAGE_QUERY = (
+    UNIQUE_CHUTE_BASE
+    + """
+SELECT ac.miner_hotkey, AVG(COALESCE(lcc.gpu_count, 1))::integer AS avg_gpu_weighted_chutes
+"""
+)
+UNIQUE_CHUTE_HISTORY_QUERY = (
+    UNIQUE_CHUTE_BASE
+    + """
+SELECT
+  ac.time_point::text,
+  ac.miner_hotkey,
+  SUM(COALESCE(lcc.gpu_count, 1)) AS avg_gpu_weighted_chutes
+FROM active_chutes ac
+LEFT JOIN latest_chute_config lcc
+  ON ac.chute_id = lcc.chute_id
+GROUP BY ac.time_point, ac.miner_hotkey;
+"""
+)
 
 # Private instances, including jobs.
 PRIVATE_INSTANCES_QUERY = """
@@ -179,6 +128,7 @@ WITH billed_instances AS (
     FROM instance_audit ia
     WHERE ia.billed_to IS NOT NULL
       AND ia.activated_at IS NOT NULL
+      AND ia.deletion_reason != 'miner initialized'
       AND (ia.stop_billing_at IS NULL OR ia.stop_billing_at >= now() - interval '{interval}')
 ),
 
@@ -200,15 +150,3 @@ SELECT
     COALESCE(compute_units, 0) as compute_units
 FROM miner_compute_units;
 """
-
-# Unique chute history.
-UNIQUE_CHUTE_HISTORY_QUERY = (
-    UNIQUE_CHUTE_AVERAGE_QUERY.replace(
-        "SELECT miner_hotkey, AVG", "SELECT miner_hotkey, time_point::text, AVG"
-    )
-    .replace("GROUP BY miner_hotkey", "GROUP BY miner_hotkey, time_point")
-    .replace(
-        "FROM complete_dataset",
-        "FROM complete_dataset WHERE miner_hotkey IN (SELECT hotkey FROM metagraph_nodes WHERE netuid = 64)",
-    )
-)

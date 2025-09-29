@@ -22,6 +22,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "btTxTracker.labels" -}}
+app.kubernetes.io/name: bt-tx-tracker
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "usageTracker.labels" -}}
 app.kubernetes.io/name: usage-tracker
 redis-access: "true"

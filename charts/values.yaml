@@ -240,10 +240,44 @@ chuteAutoscaler:
   tolerations: []
 
 paymentWatcher:
+  enabled: true
   image: parachutes/validator:latest
   imagePullPolicy: Always
   subtensor: wss://entrypoint-finney.opentensor.ai
   recovery_blocks: 500
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "8Gi"
+    limits:
+      cpu: "1"
+      memory: "8Gi"
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity: {}
+  tolerations: []
+
+btTxTracker:
+  enabled: true
+  image: parachutes/validator:latest
+  imagePullPolicy: Always
+  subtensor: wss://entrypoint-finney.opentensor.ai
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10

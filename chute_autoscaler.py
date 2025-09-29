@@ -69,11 +69,11 @@ async def instance_cleanup():
                         or_(
                             and_(
                                 Instance.config_id.isnot(None),
-                                Instance.created_at <= func.now() - timedelta(hours=1),
+                                Instance.created_at <= func.now() - timedelta(hours=1, minutes=30),
                             ),
                             and_(
                                 Instance.config_id.is_(None),
-                                Instance.created_at <= func.now() - timedelta(hours=1, minutes=15),
+                                Instance.created_at <= func.now() - timedelta(hours=1, minutes=30),
                             ),
                         ),
                     ),
@@ -81,7 +81,7 @@ async def instance_cleanup():
                         Instance.verified.is_(True),
                         Instance.active.is_(False),
                         Instance.config_id.isnot(None),
-                        LaunchConfig.verified_at <= func.now() - timedelta(minutes=30),
+                        LaunchConfig.verified_at <= func.now() - timedelta(hours=1, minutes=30),
                     ),
                 )
             )

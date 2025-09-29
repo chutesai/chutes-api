@@ -77,3 +77,27 @@ class AdminBalanceChange(Base):
     amount = Column(Double, nullable=False)
     reason = Column(String, nullable=False)
     timestamp = Column(DateTime)
+
+
+class BTTransferMonitorState(Base):
+    __tablename__ = "bt_transfer_monitor_state"
+
+    instance_id = Column(String, nullable=False, primary_key=True)
+    block_number = Column(BigInteger, nullable=False)
+    block_hash = Column(String, nullable=False)
+    is_locked = Column(Boolean, default=False, nullable=False)
+    lock_holder = Column(String)
+    locked_at = Column(DateTime)
+    last_updated_at = Column(DateTime, default=func.now(), nullable=False)
+
+
+class BTTxHistory(Base):
+    __tablename__ = "bt_tx_history"
+
+    extrinsic_id = Column(String, primary_key=True, nullable=False)
+    block = Column(BigInteger, nullable=False)
+    rao_amount = Column(BigInteger, nullable=False)
+    transaction_hash = Column(String)
+    created_at = Column(DateTime, nullable=False, default=func.now())
+    source = Column(String, nullable=False)
+    dest = Column(String, nullable=False)

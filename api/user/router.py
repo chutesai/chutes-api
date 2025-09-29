@@ -632,8 +632,11 @@ async def register(
         allowed_ip = await memcache_get(f"regtoken:{token}".encode())
         if allowed_ip:
             allowed_ip = allowed_ip.decode()
-    if actual_ip != allowed_ip:
-        logger.warning(f"RTOK: Expected IP {allowed_ip=} but got {actual_ip=}")
+    # if actual_ip != allowed_ip:
+    if not allowed_ip:
+        logger.warning(f"RTOK: token not found: {token=}")
+        await memcache_delete(f"regtoken:{token}".encode())
+        # logger.warning(f"RTOK: Expected IP {allowed_ip=} but got {actual_ip=}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid registration token, or registration token does not match expected IP address",
@@ -688,6 +691,18 @@ async def get_registration_token(request: Request):
     """
     Initial form with cloudflare + hcaptcha to generate a registration token.
     """
+    x_forwarded_for = request.headers.get("X-Forwarded-For")
+    ip_chain = (x_forwarded_for or "").split(",")
+    cf_ip = ip_chain[1].strip() if len(ip_chain) >= 2 else None
+    actual_ip = ip_chain[0].strip() if ip_chain else None
+    logger.info(f"RTOK [get token]: {x_forwarded_for=} {actual_ip=} {cf_ip=}")
+    hostname = (request.headers.get("host", "") or "").lower()
+    if not cf_ip or not await is_cloudflare_ip(cf_ip) or hostname != "rtok.chutes.ai":
+        logger.warning(
+            f"RTOK [get token]: request attempted to bypass cloudflare: {x_forwarded_for=} {actual_ip=} {cf_ip=}"
+        )
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="No.")
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -957,7 +972,6 @@ def error_html(message: str) -> str:
         <div class="container">
             <div class="error-icon">✕</div>
             <div class="message">{message}</div>
-            <a href="/rtok" class="back-link">← Try again</a>
         </div>
     </body>
     </html>

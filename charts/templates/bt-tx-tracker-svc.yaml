@@ -1,0 +1,17 @@
+{{- if .Values.btTxTracker.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: bt-tx-tracker
+  labels:
+    {{- include "btTxTracker.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.btTxTracker.service.type }}
+  ports:
+    - nodePort: {{ .Values.btTxTracker.service.nodePort }}
+      port: {{ .Values.btTxTracker.service.port }}
+      targetPort: {{ .Values.btTxTracker.service.targetPort }}
+      name: validator-api
+  selector:
+    {{- include "btTxTracker.labels" . | nindent 4 }}
+{{- end }}
