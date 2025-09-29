@@ -102,8 +102,8 @@ class Settings(BaseSettings):
     registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "7200"))
-    push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "1800"))
-    scan_timeout: int = int(os.getenv("SCAN_TIMEOUT", "1800"))
+    push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "7200"))
+    scan_timeout: int = int(os.getenv("SCAN_TIMEOUT", "7200"))
     netuid: int = int(os.getenv("NETUID", "64"))
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
     developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "250.0"))

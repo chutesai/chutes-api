@@ -48,6 +48,9 @@ class Job(Base):
     # Job args, e.g. ports, timeout, etc.
     job_args = Column(JSONB, nullable=False)
 
+    # Node selector, when the chute has dynamic/per-job option.
+    node_selector = Column(JSONB, nullable=True)
+
     # Final result.
     status = Column(String, nullable=False, default="pending")
     result = Column(JSONB, nullable=True)

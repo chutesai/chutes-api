@@ -1245,7 +1245,7 @@ async def get_and_store_llm_details(chute_id: str):
                 await session.execute(
                     select(Chute)
                     .where(Chute.chute_id == chute_id)
-                    .options(selectinload(Chute.instances))
+                    .options(selectinload(Chute.instances), selectinload(Chute.llm_detail))
                 )
             )
             .unique()
@@ -1280,6 +1280,14 @@ async def get_and_store_llm_details(chute_id: str):
                     "prompt": per_million_in,
                     "completion": per_million_out,
                 }
+                if chute.llm_detail and isinstance(chute.llm_detail.overrides, dict):
+                    model_info.update(
+                        {
+                            k: v
+                            for k, v in chute.llm_detail.overrides.items()
+                            if k not in ("price", "pricing", "id", "root", "max_model_len")
+                        }
+                    )
                 break
             except Exception as exc:
                 logger.error(

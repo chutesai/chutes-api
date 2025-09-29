@@ -74,6 +74,7 @@ class NodeSelector(BaseModel):
     min_vram_gb_per_gpu: Optional[int] = Field(16, ge=16, le=140)
     exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
+    dynamic: Optional[bool] = False
 
     def __init__(self, **data):
         """
@@ -438,5 +439,6 @@ class LLMDetail(Base):
     )
     details = Column(JSONB, nullable=False)
     updated_at = Column(DateTime, server_default=func.now())
+    overrides = Column(JSONB, nullable=True)
 
     chute = relationship("Chute", back_populates="llm_detail", uselist=False)
