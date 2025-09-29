@@ -30,7 +30,7 @@ async def get_unique_chute_history():
     values = {}
     async with get_session() as session:
         result = await session.execute(query)
-        for hotkey, timepoint, count in result:
+        for timepoint, hotkey, count in result:
             if hotkey not in values:
                 values[hotkey] = []
             values[hotkey].append({"time": timepoint, "count": count})

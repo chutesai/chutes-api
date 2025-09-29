@@ -92,8 +92,25 @@ active_chutes AS (
 """
 UNIQUE_CHUTE_AVERAGE_QUERY = (
     UNIQUE_CHUTE_BASE
-    + """
-SELECT ac.miner_hotkey, AVG(COALESCE(lcc.gpu_count, 1))::integer AS avg_gpu_weighted_chutes
+    + """,
+-- Calculate GPU-weighted chutes per miner per time point
+gpu_weighted_per_timepoint AS (
+  SELECT
+    ac.time_point,
+    ac.miner_hotkey,
+    SUM(COALESCE(lcc.gpu_count, 1)) AS gpu_weighted_chutes
+  FROM active_chutes ac
+  LEFT JOIN latest_chute_config lcc
+    ON ac.chute_id = lcc.chute_id
+  GROUP BY ac.time_point, ac.miner_hotkey
+)
+-- Calculate the average across all time points
+SELECT
+  miner_hotkey,
+  AVG(gpu_weighted_chutes)::integer AS avg_gpu_weighted_chutes
+FROM gpu_weighted_per_timepoint
+GROUP BY miner_hotkey
+ORDER BY avg_gpu_weighted_chutes DESC;
 """
 )
 UNIQUE_CHUTE_HISTORY_QUERY = (
