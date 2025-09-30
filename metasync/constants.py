@@ -11,14 +11,14 @@ SCORING_INTERVAL = "7 days"
 NORMALIZED_COMPUTE_QUERY = """
 SELECT
     mn.hotkey,
-    COUNT(CASE WHEN (i.metrics->>'p')::bool IS NOT TRUE THEN 1 END) as invocation_count,
-    COUNT(CASE WHEN i.bounty > 0 AND (i.metrics->>'p')::bool IS NOT TRUE THEN 1 END) AS bounty_count,
+    COUNT(CASE WHEN (i.metrics->>'p')::bool IS NOT TRUE OR chute_id = '561e4875-254d-588f-a36f-57c9cdef8961' THEN 1 END) as invocation_count,
+    COUNT(CASE WHEN i.bounty > 0 AND ((i.metrics->>'p')::bool IS NOT TRUE OR chute_id = '561e4875-254d-588f-a36f-57c9cdef8961') THEN 1 END) AS bounty_count,
     sum(
         i.bounty +
         i.compute_multiplier *
         CASE
             -- Private chutes/jobs/etc are accounted for by instance data instead of here.
-            WHEN (i.metrics->>'p')::bool IS TRUE THEN 0::float
+            WHEN (i.metrics->>'p')::bool IS TRUE AND chute_id != '561e4875-254d-588f-a36f-57c9cdef8961' THEN 0::float
 
             -- For token-based computations (nc = normalized compute, handles prompt & completion tokens).
             WHEN i.metrics->>'nc' IS NOT NULL

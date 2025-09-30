@@ -61,12 +61,12 @@ class PerfTracker:
         chute_id: str,
         duration: float,
         metrics: dict,
-        public: bool = True,
+        private_billing: bool = False,
     ) -> dict[str, float]:
         if duration <= 0:
             return {}
         updates = {}
-        if not public:
+        if private_billing:
             updates["p"] = True
         steps = metrics.get("steps")
         if steps and steps > 0:

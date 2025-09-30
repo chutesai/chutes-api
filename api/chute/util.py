@@ -362,6 +362,13 @@ async def _invoke_one(
     response = None
     payload = {"args": args, "kwargs": kwargs}
 
+    # Set the 'p' private flag on invocations.
+    private_billing = (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    )
+
     iv = None
     if use_encryption_v2(target.chutes_version):
         if not target.symmetric_key:
@@ -536,7 +543,7 @@ async def _invoke_one(
                     chute_id=chute.chute_id,
                     duration=total_time,
                     metrics=metrics,
-                    public=chute.public,
+                    private_billing=private_billing,
                 )
                 metrics.update(ma_updates)
 
@@ -661,7 +668,7 @@ async def _invoke_one(
                         chute_id=chute.chute_id,
                         duration=total_time,
                         metrics=metrics,
-                        public=chute.public,
+                        private_billing=private_billing,
                     )
                     metrics.update(ma_updates)
                     if random.random() <= 0.1:
@@ -681,7 +688,7 @@ async def _invoke_one(
                     chute_id=chute.chute_id,
                     duration=delta,
                     metrics=metrics,
-                    public=chute.public,
+                    private_billing=private_billing,
                 )
                 metrics.update(ma_updates)
 

@@ -282,11 +282,13 @@ async def get_stats(
     compute_query = """
     SELECT
         i.miner_hotkey,
-        COUNT(*) AS total_invocations,
+        COUNT(CASE WHEN (i.metrics->>'p')::bool IS NOT TRUE OR chute_id = '561e4875-254d-588f-a36f-57c9cdef8961' THEN 1 END) AS total_invocations,
         SUM(
             i.bounty +
             i.compute_multiplier *
             CASE
+                WHEN (i.metrics->>'p')::bool IS TRUE AND chute_id != '561e4875-254d-588f-a36f-57c9cdef8961' THEN 0::float
+
                 WHEN i.metrics->>'nc' IS NOT NULL
                     AND (i.metrics->>'nc')::float > 0
                 THEN (i.metrics->>'nc')::float
@@ -323,6 +325,8 @@ async def get_stats(
         i.bounty +
         i.compute_multiplier *
         CASE
+            WHEN (i.metrics->>'p')::bool IS TRUE AND chute_id != '561e4875-254d-588f-a36f-57c9cdef8961' THEN 0::float
+
             WHEN i.metrics->>'nc' IS NOT NULL
                 AND (i.metrics->>'nc')::float > 0
             THEN (i.metrics->>'nc')::float
@@ -349,11 +353,13 @@ async def get_stats(
         SELECT
             i.miner_hotkey,
             i.chute_id,
-            COUNT(*) AS total_invocations,
+            COUNT(CASE WHEN (i.metrics->>'p')::bool IS NOT TRUE OR chute_id = '561e4875-254d-588f-a36f-57c9cdef8961' THEN 1 END) AS total_invocations,
             SUM(
                 i.bounty +
                 i.compute_multiplier *
                 CASE
+                    WHEN (i.metrics->>'p')::bool IS TRUE AND chute_id != '561e4875-254d-588f-a36f-57c9cdef8961' THEN 0::float
+
                     WHEN i.metrics->>'nc' IS NOT NULL
                         AND (i.metrics->>'nc')::float > 0
                     THEN (i.metrics->>'nc')::float
@@ -390,6 +396,8 @@ async def get_stats(
             i.bounty +
             i.compute_multiplier *
             CASE
+                WHEN (i.metrics->>'p')::bool IS TRUE AND chute_id != '561e4875-254d-588f-a36f-57c9cdef8961' THEN 0::float
+
                 WHEN i.metrics->>'nc' IS NOT NULL
                     AND (i.metrics->>'nc')::float > 0
                 THEN (i.metrics->>'nc')::float
