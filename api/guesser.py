@@ -51,17 +51,14 @@ class ConfigGuesser:
         Calculate minimum number of GPUs needed and VRAM per GPU.
         """
         num_attention_heads = config.get("num_attention_heads", 0)
-        num_kv_heads = config.get("num_key_value_heads", num_attention_heads)
         hidden_size = config.get("hidden_size", 0)
 
         best_gpu_count = float("inf")
         best_vram_size = float("inf")
 
         for gpu_count in range(1, 9):
-            if (
-                (num_attention_heads and num_attention_heads % gpu_count != 0)
-                or (num_kv_heads and num_kv_heads % gpu_count != 0)
-                or (hidden_size and hidden_size % gpu_count != 0)
+            if (num_attention_heads and num_attention_heads % gpu_count != 0) or (
+                hidden_size and hidden_size % gpu_count != 0
             ):
                 continue
 
