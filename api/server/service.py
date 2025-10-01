@@ -114,7 +114,7 @@ async def validate_and_consume_nonce(nonce_value: str, server_ip: str) -> None:
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}...")
 
 
-async def validate_request_nonce():
+def validate_request_nonce():
     async def _validate_request_nonce(
         request: Request, nonce: str | None = Header(None, alias=NONCE_HEADER)
     ):
