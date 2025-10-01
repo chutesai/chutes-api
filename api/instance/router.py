@@ -443,6 +443,7 @@ async def claim_launch_config(
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
+    miner = await _check_blacklisted(db, launch_config.miner_hotkey)
 
     # Generate a tentative instance ID.
     new_instance_id = generate_uuid()
@@ -454,7 +455,7 @@ async def claim_launch_config(
             and not has_legacy_private_billing(chute)
             and chute.user_id != await chutes_user_id()
         ):
-            await _check_scalable_private(db, chute)
+            await _check_scalable_private(db, chute, miner)
         else:
             await _check_scalable(db, chute, launch_config.miner_hotkey)
 
