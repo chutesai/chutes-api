@@ -184,7 +184,7 @@ async def _check_scalable(db, chute, hotkey):
         )
 
 
-async def _check_scalable_private(db, chute):
+async def _check_scalable_private(db, chute, miner):
     """
     Special scaling logic for private chutes (without legacy billing).
     """
@@ -210,6 +210,28 @@ async def _check_scalable_private(db, chute):
         raise HTTPException(
             status_code=status.HTTP_423_LOCKED,
             detail=f"Private chute {chute_id} has reached its target capacity of {target_count} instances.",
+        )
+
+    # Require miners to have public chutes deployed to deploy any private chutes.
+    public_chute_query = text("""
+        SELECT COUNT(DISTINCT i.instance_id) AS public_instance_count, COUNT(DISTINCT nn.node_id) AS public_instance_gpu_count
+        FROM instances i
+        JOIN instance_nodes nn ON i.instance_id = nn.instance_id
+        JOIN chutes c ON i.chute_id = c.chute_id
+        WHERE i.miner_hotkey = :miner_hotkey
+        AND i.activated_at IS NOT NULL
+        AND c.public IS true
+    """)
+    public_result = (
+        (await db.execute(public_chute_query, {"miner_hotkey": miner.hotkey})).mappings().first()
+    )
+    if (
+        public_result["public_instance_count"] < 2
+        or public_result["public_instance_gpu_count"] < 16
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Miner {miner.hotkey} must have at least 2 public chutes deployed (and 16 GPUs for public chutes) to deploy private chutes.",
         )
 
 
@@ -337,7 +359,7 @@ async def get_launch_config(
             and not has_legacy_private_billing(chute)
             and chute.user_id != await chutes_user_id()
         ):
-            await _check_scalable_private(db, chute)
+            await _check_scalable_private(db, chute, miner)
         else:
             await _check_scalable(db, chute, hotkey)
 
