@@ -19,6 +19,7 @@ class MinimalChuteResponse(BaseModel):
     version: str
     slug: str
     chutes_version: str
+    preemptible: bool
     image: MinimalImageResponse
 
     class Config:
@@ -57,6 +58,7 @@ class ChuteResponse(BaseModel):
     max_instances: Optional[int] = None
     scaling_threshold: Optional[float] = None
     shutdown_after_seconds: Optional[int] = None
+    preemptible: bool
 
     class Config:
         from_attributes = True

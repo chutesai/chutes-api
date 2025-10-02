@@ -368,6 +368,17 @@ class Chute(Base):
     def supported_gpus(self) -> List[str]:
         return NodeSelector(**self.node_selector).supported_gpus
 
+    @computed_field
+    @property
+    def preemptible(self) -> bool:
+        from api.util import has_legacy_private_billing
+
+        return (
+            self.public
+            or has_legacy_private_billing(self)
+            or self.user_id == "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f"
+        )
+
 
 class ChuteHistory(Base):
     __tablename__ = "chute_history"
