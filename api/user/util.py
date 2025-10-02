@@ -6,7 +6,6 @@ from bittensor_wallet.keypair import Keypair
 from loguru import logger
 from api.config import settings
 from api.database import get_session
-from api.permissions import Permissioning
 from api.payment.util import encrypt_wallet_secret, decrypt_wallet_secret
 
 
@@ -72,8 +71,7 @@ async def refund_deposit(user_id: str, destination: str):
             },
         )
 
-        # Perform the actual transfer, but remove developer permissions first.
-        Permissioning.disable(user, Permissioning.developer)
+        # Perform the actual transfer.
         await session.commit()
         await session.refresh(user)
         logger.info(

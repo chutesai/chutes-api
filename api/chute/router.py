@@ -66,7 +66,6 @@ from api.constants import (
 )
 from api.util import (
     semcomp,
-    ensure_is_developer,
     limit_deployments,
     get_current_hf_commit,
     is_affine_registered,
@@ -1205,20 +1204,13 @@ async def deploy_chute(
     Standard deploy from the CDK.
     """
     is_affine_model = False
-    http_exc = await ensure_is_developer(db, current_user, raise_=False)
     affine_checked = False
-    if http_exc is not None:
-        if not await is_affine_registered(db, current_user):
-            logger.warning(
-                f"Attempted chute creation from non-dev and non-affine user: {current_user.user_id=}"
+    if await is_affine_registered(db, current_user):
+        if not re.match(r"[^/]+/affine.*", chute_args.name, re.I):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Affine miners may only deploy chutes named */affine*",
             )
-            raise http_exc
-        else:
-            if not re.match(r"[^/]+/affine.*", chute_args.name, re.I):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="Affine miners may only deploy chutes named */affine*",
-                )
         affine_checked = True
 
     # Affine special handling.
@@ -1415,7 +1407,6 @@ async def easy_deploy_vllm_chute(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Easy vllm deployment method not supported for Affine currently.",
         )
-    await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
     # Set revision to current main if not specified.
@@ -1556,7 +1547,6 @@ async def easy_deploy_diffusion_chute(
         detail="Easy deployment is currently disabled!",
     )
 
-    await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
     image = await _find_latest_image(db, "diffusion")
@@ -1601,7 +1591,6 @@ async def easy_deploy_tei_chute(
         detail="Easy deployment is currently disabled!",
     )
 
-    await ensure_is_developer(db, current_user)
     await limit_deployments(db, current_user)
 
     image = await _find_latest_image(db, "tei")

@@ -28,7 +28,6 @@ class RegistrationResponse(UserResponse):
     hotkey: str
     coldkey: str
     payment_address: str
-    developer_payment_address: str
     fingerprint: str
     api_key: Optional[APIKeyCreationResponse] = None
 
@@ -37,7 +36,6 @@ class SelfResponse(UserResponse):
     hotkey: str
     coldkey: str
     payment_address: str
-    developer_payment_address: str
     permissions_bitmask: int
     balance: Optional[float]
 

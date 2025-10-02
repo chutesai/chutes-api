@@ -23,7 +23,8 @@ from api.config import settings
 from api.image.response import ImageResponse
 from api.image.util import get_image_by_id_or_name
 from api.pagination import PaginatedResponse
-from api.util import ensure_is_developer, limit_images
+from api.util import limit_images
+from api.permissions import Permissioning
 
 router = APIRouter()
 
@@ -248,8 +249,18 @@ async def create_image(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Cannot make images for users other than yourself!",
         )
-    await ensure_is_developer(db, current_user)
     await limit_images(db, current_user)
+
+    # Make sure user has reasonable balance before allowing image creation.
+    if not current_user.has_role(Permissioning.unlimited_dev):
+        effective_balance = (
+            current_user.current_balance.effective_balance if current_user.current_balance else 0.0
+        )
+        if effective_balance < 50.0:
+            raise HTTPException(
+                status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                detail="You must have a balance of >= $50 to create images.",
+            )
 
     image_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{username.lower()}/{name}:{tag}"))
     query = select(
@@ -271,7 +282,7 @@ async def create_image(
         )
 
     # Force installation of chutes with the specified version.
-    dockerfile += f"\n\nRUN pip install --upgrade chutes=={settings.chutes_version}"
+    dockerfile += f"\n\nRUN pip install chutes=={settings.chutes_version}"
 
     # Upload the build context to our S3-compatible storage backend.
     for obj, destination in (

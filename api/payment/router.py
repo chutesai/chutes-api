@@ -5,7 +5,6 @@ Payments router.
 import orjson as json
 from typing import Optional
 from pydantic import BaseModel
-from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, status, HTTPException, Depends, Request
 from fastapi_cache.decorator import cache
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -151,19 +150,6 @@ async def get_pricing():
     }
 
 
-@router.get("/developer_deposit")
-async def get_developer_deposit():
-    """
-    Get the USD/tao amount required to enable developer mode.
-    """
-    current_tao_price = await get_fetcher().get_price("tao")
-    return {
-        "usd": settings.developer_deposit,
-        "tao_estimate": settings.developer_deposit / current_tao_price,
-        "message": "Price fluctuations dictate you should probably send a bit more than the estimate.",
-    }
-
-
 @router.post("/return_developer_deposit")
 async def return_developer_deposit(
     args: ReturnDepositArgs,
@@ -182,11 +168,6 @@ async def return_developer_deposit(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"You have not made any payments to the developer deposit address: {current_user.developer_payment_address}",
-        )
-    if datetime.now(timezone.utc) - recent_payment.created_at <= timedelta(days=7):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"You must wait at least 7 days between payment and cancellation, most recent payment: {recent_payment.created_at}",
         )
     result, message = await refund_deposit(current_user.user_id, args.address)
     if not result:

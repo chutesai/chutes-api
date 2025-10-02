@@ -106,7 +106,6 @@ class Settings(BaseSettings):
     scan_timeout: int = int(os.getenv("SCAN_TIMEOUT", "7200"))
     netuid: int = int(os.getenv("NETUID", "64"))
     subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
-    developer_deposit: float = float(os.getenv("DEVELOPER_DEPOSIT", "250.0"))
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "128"))
     device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20"))
     skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"

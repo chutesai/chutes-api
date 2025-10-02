@@ -28,8 +28,6 @@ from urllib.parse import urlparse
 from sqlalchemy.future import select
 from api.constants import VLM_MAX_SIZE
 from api.metasync import MetagraphNode
-from api.payment.schemas import Payment
-from api.fmv.fetcher import get_fetcher
 from api.permissions import Permissioning
 from fastapi import status, HTTPException
 from sqlalchemy import func, or_, and_, exists
@@ -169,32 +167,6 @@ async def is_valid_host(host: str) -> bool:
         except ValueError:
             return False
     return False
-
-
-async def ensure_is_developer(session, user, raise_: bool = True):
-    """
-    Ensure a user is a developer, otherwise raise exception with helpful info.
-    """
-    if user.has_role(Permissioning.developer):
-        return None
-    total_query = select(func.sum(Payment.usd_amount)).where(
-        Payment.user_id == user.user_id, Payment.purpose == "developer"
-    )
-    total_payments = (await session.execute(total_query)).scalar() or 0
-    fetcher = get_fetcher()
-    fmv = await fetcher.get_price("tao")
-    required_tao = (settings.developer_deposit - total_payments) / fmv
-    exc = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail=(
-            "You do not have developer permissions, to enable developer permissions, "
-            f"deposit ${settings.developer_deposit} USD worth of tao (currently ~{required_tao} tao) "
-            f"to your developer deposit address: {user.developer_payment_address}"
-        ),
-    )
-    if not raise_:
-        return exc
-    raise exc
 
 
 async def is_affine_registered(session, user):

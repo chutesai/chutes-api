@@ -23,7 +23,6 @@ from api.fmv.fetcher import get_fetcher
 import api.database.orms  # noqa: F401
 from api.user.schemas import User
 from api.payment.schemas import Payment, PaymentMonitorState
-from api.permissions import Permissioning
 from api.config import settings
 from api.database import get_session, engine, Base
 from api.autostaker import stake
@@ -36,7 +35,6 @@ class PaymentMonitor:
         self.lock_timeout = timedelta(minutes=5)
         self.max_recover_blocks = 32
         self._payment_addresses = set()
-        self._developer_payment_addresses = set()
         self._is_running = False
         self.instance_id = str(uuid.uuid4())
         self._user_refresh_timestamp = None
@@ -166,16 +164,11 @@ class PaymentMonitor:
         Refresh the set of payment addresses from database.
         """
         async with get_session() as session:
-            query = select(User.payment_address, User.developer_payment_address, User.updated_at)
-            # if self._user_refresh_timestamp:
-            #    query = query.where(User.updated_at > self._user_refresh_timestamp)
+            query = select(User.payment_address, User.updated_at)
             query = query.order_by(User.updated_at.asc())
             result = await session.execute(query)
-            for payment_address, developer_payment_address, updated_at in result:
+            for payment_address, updated_at in result:
                 self._payment_addresses.add(payment_address)
-                if developer_payment_address:
-                    self._developer_payment_addresses.add(developer_payment_address)
-                # logger.info(f"Addresses: {payment_address=} {developer_payment_address=}")
                 self._user_refresh_timestamp = updated_at
 
     async def _handle_payment(
@@ -245,74 +238,6 @@ class PaymentMonitor:
 
             # Autostake the payment tao to chutes.
             await stake.kiq(user.user_id)
-
-    async def _handle_developer_deposit(
-        self,
-        to_address: str,
-        from_address: str,
-        amount: int,
-        block: int,
-        block_hash: str,
-        fmv: float,
-        extrinsic_idx: int,
-    ):
-        """
-        Process an incoming transfer to enable developement (create images/chutes).
-        """
-        async with get_session() as session:
-            user = (
-                await session.execute(
-                    select(User).where(User.developer_payment_address == to_address)
-                )
-            ).scalar_one_or_none()
-            if not user:
-                logger.warning(f"Failed to find user with payment address {to_address}")
-                return
-
-            # Sum payments prior to this one.
-            total_query = select(func.sum(Payment.usd_amount)).where(
-                Payment.user_id == user.user_id, Payment.purpose == "developer"
-            )
-            total_payments = (await session.execute(total_query)).scalar() or 0
-
-            # Store the payment record.
-            payment_id = str(
-                uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{to_address}:{from_address}:{amount}")
-            )
-            delta = amount * fmv / 1e9
-            payment = Payment(
-                payment_id=payment_id,
-                user_id=user.user_id,
-                source_address=from_address,
-                block=block,
-                rao_amount=amount,
-                usd_amount=delta,
-                fmv=fmv,
-                transaction_hash=block_hash,
-                purpose="developer",
-                extrinsic_idx=extrinsic_idx,
-            )
-            session.add(payment)
-
-            new_total = total_payments + delta
-            if new_total >= settings.developer_deposit:
-                logger.success(
-                    f"User {user.user_id} total developer deposits has reached ${new_total}, enabling development!"
-                )
-                Permissioning.enable(user, Permissioning.developer)
-
-            try:
-                await session.commit()
-            except IntegrityError as exc:
-                if "UniqueViolationError" in str(exc):
-                    logger.warning(f"Skipping (apparent) duplicate transaction: {payment_id=}")
-                    await session.rollback()
-                    return
-                else:
-                    raise
-            logger.success(
-                f"Received developer deposit [user_id={user.user_id} username={user.username}]: {amount} rao @ ${fmv} FMV = ${delta} deposit, total deposit ${new_total}"
-            )
 
     async def _get_state(self) -> Tuple[int, str]:
         """
@@ -391,7 +316,6 @@ class PaymentMonitor:
                     current_block_hash = self.get_block_hash(current_block_number)
                     events = self.get_events(current_block_hash)
                     payments = 0
-                    developer_deposits = 0
                     logger.info(f"Processing block {current_block_number}...")
                     for raw_event in events:
                         event = raw_event.get("event")
@@ -421,20 +345,9 @@ class PaymentMonitor:
                                 raw_event.get("extrinsic_idx"),
                             )
                             payments += 1
-                        if to_address in self._developer_payment_addresses:
-                            await self._handle_developer_deposit(
-                                to_address,
-                                from_address,
-                                amount,
-                                current_block_number,
-                                current_block_hash,
-                                fmv,
-                                raw_event.get("extrinsic_idx"),
-                            )
-                            developer_deposits += 1
-                    if payments or developer_deposits:
+                    if payments:
                         logger.success(
-                            f"Processed {payments} payment(s), {developer_deposits} deposit(s) in block: {current_block_number}"
+                            f"Processed {payments} payment(s) in block: {current_block_number}"
                         )
 
                     # Update state and continue to next block.
