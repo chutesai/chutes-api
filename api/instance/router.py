@@ -29,8 +29,9 @@ from api.constants import (
     AUTHORIZATION_HEADER,
     PRIVATE_INSTANCE_MULTIPLIER,
 )
+from api.payment.utils import decrypt_secret
 from api.node.util import get_node_by_id
-from api.chute.schemas import Chute, NodeSelector
+from api.chute.schemas import Chute, NodeSelector, ChuteSecret
 from api.instance.schemas import (
     Instance,
     instance_nodes,
@@ -1085,15 +1086,23 @@ async def verify_launch_config_instance(
             }
         )
 
-    # Stealth models...
-    if instance.chute.name in ("Zenith", "Meridian", "Proxima"):
-        return_value.update(
-            {
-                "secrets": {
-                    "HUGGING_FACE_HUB_TOKEN": os.getenv("STEALTH_0_TOKEN"),
-                },
-            }
+    # Secrets, e.g. private HF tokens etc.
+    secrets = (
+        (
+            await db.execute(
+                select(ChuteSecret).where(ChuteSecret.chute_id == launch_config.chute_id)
+            )
         )
+        .unique()
+        .scalars()
+        .all()
+    )
+    if secrets:
+        return_value["secrets"] = {}
+        for secret in secrets:
+            key = await decrypt_secret(secret.key)
+            value = await decrypt_secret(secret.value)
+            return_value["secrets"][key] = value
 
     return_value["activation_url"] = (
         f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
