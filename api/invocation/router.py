@@ -884,7 +884,7 @@ async def hostname_invocation(
         )
 
     # Mega LLM/diffusion request handler.
-    if request.state.chute_id in ("__megallm__", "__megadiffuser__"):
+    if request.state.chute_id in ("__megallm__", "__megadiffuser__", "__megaembed__"):
         try:
             payload = await request.json()
         except Exception:
@@ -948,7 +948,13 @@ async def hostname_invocation(
 
         model = payload.get("model")
         chute = None
-        template = "vllm" if "llm" in request.state.chute_id else "diffusion"
+        template = (
+            "vllm"
+            if "llm" in request.state.chute_id
+            else "embedding"
+            if "embed" in request.state.chute_id
+            else "diffusion"
+        )
         if model:
             if (chute := await get_one(model)) is None:
                 raise HTTPException(
