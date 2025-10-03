@@ -57,7 +57,7 @@ from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
 from api.image.util import get_image_by_id_or_name
 from api.permissions import Permissioning
-from api.payment.utils import encrypt_secret
+from api.payment.util import encrypt_secret
 
 # XXX from api.instance.util import discover_chute_targets
 from api.database import get_db_session, get_session

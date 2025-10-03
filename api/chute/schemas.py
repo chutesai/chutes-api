@@ -245,6 +245,9 @@ class Chute(Base):
     shares = relationship(
         "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
+    secrets = relationship(
+        "ChuteSecret", back_populates="chute", lazy="select", cascade="all, delete-orphan"
+    )
     llm_detail = relationship(
         "LLMDetail",
         back_populates="chute",
