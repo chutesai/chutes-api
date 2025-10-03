@@ -12,7 +12,7 @@ from api.database import get_session
 from api.config import settings
 
 
-async def encrypt_wallet_secret(secret: str) -> bytes:
+async def encrypt_secret(secret: str) -> bytes:
     """
     Encrypt a payment wallet secret.
     """
@@ -36,7 +36,7 @@ async def encrypt_wallet_secret(secret: str) -> bytes:
         return row.encrypted_data.hex()
 
 
-async def decrypt_wallet_secret(encrypted_secret: str) -> str:
+async def decrypt_secret(encrypted_secret: str) -> str:
     """
     Decrypt a payment wallet secret.
     """
@@ -60,7 +60,7 @@ async def decrypt_wallet_secret(encrypted_secret: str) -> str:
 
 
 async def main():
-    print(await decrypt_wallet_secret(await encrypt_wallet_secret("testing")))
+    print(await decrypt_secret(await encrypt_secret("testing")))
 
 
 if __name__ == "__main__":

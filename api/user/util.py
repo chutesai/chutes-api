@@ -6,7 +6,7 @@ from bittensor_wallet.keypair import Keypair
 from loguru import logger
 from api.config import settings
 from api.database import get_session
-from api.payment.util import encrypt_wallet_secret, decrypt_wallet_secret
+from api.payment.util import encrypt_secret, decrypt_secret
 
 
 async def generate_payment_address() -> Tuple[str, str]:
@@ -16,7 +16,7 @@ async def generate_payment_address() -> Tuple[str, str]:
     mnemonic = Keypair.generate_mnemonic(n_words=24)
     keypair = Keypair.create_from_mnemonic(mnemonic)
     payment_address = keypair.ss58_address
-    wallet_secret = await encrypt_wallet_secret(mnemonic)
+    wallet_secret = await encrypt_secret(mnemonic)
     return payment_address, wallet_secret
 
 
@@ -59,9 +59,7 @@ async def refund_deposit(user_id: str, destination: str):
             logger.warning(message)
             return False, message
 
-        keypair = Keypair.create_from_mnemonic(
-            await decrypt_wallet_secret(user.developer_wallet_secret)
-        )
+        keypair = Keypair.create_from_mnemonic(await decrypt_secret(user.developer_wallet_secret))
         call = substrate.compose_call(
             call_module="Balances",
             call_function="transfer_all",

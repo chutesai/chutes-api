@@ -245,6 +245,9 @@ class Chute(Base):
     shares = relationship(
         "ChuteShare", back_populates="chute", lazy="select", cascade="all, delete-orphan"
     )
+    secrets = relationship(
+        "ChuteSecret", back_populates="chute", lazy="select", cascade="all, delete-orphan"
+    )
     llm_detail = relationship(
         "LLMDetail",
         back_populates="chute",
@@ -453,3 +456,21 @@ class LLMDetail(Base):
     overrides = Column(JSONB, nullable=True)
 
     chute = relationship("Chute", back_populates="llm_detail", uselist=False)
+
+
+class ChuteSecret(Base):
+    __tablename__ = "chute_secrets"
+    chute_id = Column(
+        String, ForeignKey("chutes.chute_id", ondelete="CASCADE"), nullable=False, primary_key=True
+    )
+    created_at = Column(DateTime, server_default=func.now())
+    key = Column(String, nullable=False)
+    value = Column(String, nullable=False)
+
+    chute = relationship("Chute", back_populates="secrets", uselist=False)
+
+
+class ChuteSecretArgs(BaseModel):
+    chute_id_or_name: str
+    key: str
+    value: str

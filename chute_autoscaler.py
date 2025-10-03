@@ -720,7 +720,9 @@ async def perform_autoscale(dry_run: bool = False):
                 established_instances = [
                     instance
                     for instance in instances
-                    if db_now - instance.created_at >= timedelta(hours=1)
+                    if instance.active
+                    and db_now.replace(tzinfo=None) - instance.activated_at.replace(tzinfo=None)
+                    >= timedelta(minutes=63)
                 ]
                 if not established_instances:
                     logger.warning(

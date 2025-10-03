@@ -6,7 +6,7 @@ from typing import Optional
 from loguru import logger
 from api.database import get_session
 from api.user.schemas import User
-from api.payment.util import decrypt_wallet_secret
+from api.payment.util import decrypt_secret
 from sqlalchemy.future import select
 from api.config import settings
 from async_substrate_interface.sync_substrate import SubstrateInterface
@@ -270,7 +270,7 @@ async def stake(user_id: str) -> None:
 
     # Load the keypair.
     try:
-        keypair = Keypair.create_from_mnemonic(await decrypt_wallet_secret(user.wallet_secret))
+        keypair = Keypair.create_from_mnemonic(await decrypt_secret(user.wallet_secret))
     except Exception as exc:
         logger.error(f"Failed to initialize wallet: {exc}")
         return
