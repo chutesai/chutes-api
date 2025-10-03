@@ -925,6 +925,8 @@ async def hostname_invocation(
             in (
                 "deepseek-ai/DeepSeek-V3.1",
                 "deepseek-ai/DeepSeek-V3.1-Terminus",
+                "deepseek-ai/DeepSeek-V3.2-Exp",
+                "deepseek-ai/DeepSeek-V3.1-turbo",
                 "NousResearch/Hermes-4-70B",
                 "NousResearch/Hermes-4-405B-FP8",
                 "NousResearch/Hermes-4-14B",
