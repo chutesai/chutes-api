@@ -2,85 +2,54 @@ import json
 import asyncio
 from loguru import logger
 from sqlalchemy import text, select
-from sqlalchemy.orm import selectinload
 import api.database.orms  # noqa
 from api.config import settings
-from api.database import get_session
 from api.chute.schemas import Chute
-
+from api.database import get_session
+from api.user.service import chutes_user_id
 
 QUERY = """
-WITH verified_deployments AS (
-    SELECT DISTINCT chute_id, version
-    FROM instance_audit
-    WHERE verified_at IS NOT NULL
-),
-miner_counts AS (
+WITH deployment_attempts AS (
+  SELECT instance_audit.chute_id,
+    COUNT(CASE WHEN activated_at IS NOT NULL THEN 1 END) AS activated_count,
+    COUNT(*) AS total_count,
+    COUNT(DISTINCT(miner_hotkey)) AS hotkey_count
+  FROM instance_audit
+  JOIN chutes
+  ON chutes.chute_id = instance_audit.chute_id AND chutes.version = instance_audit.version
+  WHERE instance_audit.created_at >= NOW() - INTERVAL '1 week'
+  AND instance_audit.created_at <= NOW() - INTERVAL '8 hours'
+  AND NOT EXISTS (
     SELECT
-        chute_id,
-        version,
-        COUNT(DISTINCT miner_hotkey) as miner_count
-    FROM instance_audit
-    WHERE created_at < NOW() - INTERVAL '90 minutes'
-    GROUP BY chute_id, version
-),
-active_instances AS (
-    SELECT DISTINCT instance_id
     FROM instances
+    WHERE chute_id = instance_audit.chute_id
+    AND active
+  )
+  GROUP BY instance_audit.chute_id
 )
-SELECT
-    c.name,
-    c.chute_id,
-    c.version,
-    c.created_at,
-    TRUE as never_deployed,
-    mc.miner_count >= 5 as has_five_miners
-FROM chutes c
-LEFT JOIN verified_deployments vd
-    ON c.chute_id = vd.chute_id
-    AND c.version = vd.version
-LEFT JOIN miner_counts mc
-    ON c.chute_id = mc.chute_id
-    AND c.version = mc.version
-LEFT JOIN active_instances ai
-    ON c.chute_id = ai.instance_id
-WHERE (c.jobs IS NULL OR c.jobs = '{}' OR c.jobs = '[]')
-    AND vd.chute_id IS NULL
-    AND ai.instance_id IS NULL
-    AND COALESCE(mc.miner_count, 0) >= 5;
+SELECT chutes.chute_id, name, activated_count, total_count, hotkey_count
+FROM deployment_attempts
+JOIN chutes ON deployment_attempts.chute_id = chutes.chute_id
+WHERE activated_count = 0
+AND total_count > 20
+AND hotkey_count >= 3;
 """
 
 
 async def clean_failed_chutes():
-    """
-    Find chutes that were attempted to be deployed by at least 5 miners
-    without success and are at least 90 minutes old. These will never
-    work and should be culled.
-    """
     to_broadcast = []
     async with get_session() as session:
         result = await session.execute(text(QUERY))
-        for name, chute_id, version, created_at, _, __ in result:
+        for chute_id, name, activated_count, total_count, hotkey_count in result:
             chute = (
-                (
-                    await session.execute(
-                        select(Chute)
-                        .where(Chute.chute_id == chute_id, Chute.version == version)
-                        .options(selectinload(Chute.instances))
-                    )
-                )
+                (await session.execute(select(Chute).where(Chute.chute_id == chute_id)))
                 .unique()
                 .scalar_one_or_none()
             )
-            if not chute:
-                continue  # how would it possibly get here?
-            if chute.instances:
-                logger.warning(
-                    f"{chute.chute_id=} {chute.name=} has instances, refusing to clean up..."
-                )
+            if not chute or chute.user_id == await chutes_user_id():
                 continue
             logger.warning(
-                f"Chute {name} {chute_id} created {created_at} failed to deploy, wiping..."
+                f"Deleting chute that failed all deployment attempts: {chute_id=} {name=} {activated_count=} {total_count=} {hotkey_count=}"
             )
             to_broadcast.append(
                 {
