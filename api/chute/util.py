@@ -938,8 +938,12 @@ async def invoke(
                         if user_discount:
                             balance_used -= balance_used * user_discount
 
-                    # Never charge the chute owner for usage of their own private chute, since they
-                    # are billed on the standard hourly pricing for the instance and usage is irrelevant.
+                    # For private/user-created chutes, the costs of the chute are offset by
+                    # usage of the chute from users other than the chute owner, i.e.
+                    # when a private chute is shared with another user and that user makes
+                    # use of the chute, that user is charged per request and that balance is
+                    # added to the chute owner's account, reducing their overall cost.
+                    add_balance_to = None
                     if (
                         not chute.public
                         and not has_legacy_private_billing(chute)
@@ -947,6 +951,11 @@ async def invoke(
                     ):
                         if user_id == chute.user_id:
                             balance_used = 0
+                        else:
+                            add_balance_to = chute.user_id
+                            logger.info(
+                                f"Adding {balance_used} credits to {chute.user_id} due to invocation of {chute.name=} from {user_id=}"
+                            )
 
                     # Ship the data over to usage tracker which actually deducts/aggregates balance/etc.
                     try:
@@ -958,6 +967,9 @@ async def invoke(
                             pipeline.hincrby(key, "input_tokens", metrics.get("it", 0))
                             pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
                         pipeline.hset(key, "timestamp", int(time.time()))
+                        if balance_used and add_balance_to:
+                            transfer_key = f"balance:{chute.user_id}:{chute.chute_id}"
+                            pipeline.hincrbyfloat(transfer_key, "amount", 0 - balance_used)
                         await pipeline.execute()
                     except Exception as exc:
                         logger.error(f"Error updating usage pipeline: {exc}")

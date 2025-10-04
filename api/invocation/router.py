@@ -919,20 +919,6 @@ async def hostname_invocation(
             payload["model"] = "NousResearch/Hermes-4-14B"
 
         # Header and/or model name options to enable thinking mode for various models.
-        thinking_key = (
-            "thinking"
-            if payload.get("model")
-            in (
-                "deepseek-ai/DeepSeek-V3.1",
-                "deepseek-ai/DeepSeek-V3.1-Terminus",
-                "deepseek-ai/DeepSeek-V3.2-Exp",
-                "deepseek-ai/DeepSeek-V3.1-turbo",
-                "NousResearch/Hermes-4-70B",
-                "NousResearch/Hermes-4-405B-FP8",
-                "NousResearch/Hermes-4-14B",
-            )
-            else "enable_thinking"
-        )
         enable_thinking = False
         if (request.headers.get("X-Enable-Thinking") or "").lower() == "true":
             enable_thinking = True
@@ -942,7 +928,12 @@ async def hostname_invocation(
         if enable_thinking:
             if "chat_template_kwargs" not in payload:
                 payload["chat_template_kwargs"] = {}
-            payload["chat_template_kwargs"][thinking_key] = True
+            payload["chat_template_kwargs"].update(
+                {
+                    "thinking": True,
+                    "enable_thinking": True,
+                }
+            )
 
         # Auto tool choice default.
         if payload.get("tools") and "tool_choice" not in payload:

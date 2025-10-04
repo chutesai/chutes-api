@@ -134,8 +134,7 @@ FULL OUTER JOIN (
         instance_revenue
     FROM daily_instance_revenue
 ) ir ON COALESCE(iq.date, ud.date) = ir.date
-ORDER BY date DESC
-LIMIT 30;
+ORDER BY date DESC;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_revenue_summary_date ON daily_revenue_summary(date);
 
 CREATE OR REPLACE FUNCTION update_balance_on_instance_delete()
