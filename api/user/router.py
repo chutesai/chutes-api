@@ -272,6 +272,42 @@ async def admin_quotas_change(
     return quotas
 
 
+@router.get("/{user_id}/discounts")
+async def admin_list_discounts(
+    user_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(or_(User.user_id == user_id, User.username == user_id))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+    discounts = (
+        (
+            await db.execute(
+                select(InvocationDiscount).where(InvocationDiscount.user_id == user.user_id)
+            )
+        )
+        .unique()
+        .scalars()
+        .all()
+    )
+    return discounts
+
+
 @router.post("/{user_id}/discounts")
 async def admin_discounts_change(
     user_id: str,
