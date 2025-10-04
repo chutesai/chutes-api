@@ -107,7 +107,7 @@ async def delete_secret(
         )
     await db.delete(secret)
     await db.commit()
-    return {"status": f"Successfully deleted secret {secret_id}"}
+    return {"status": f"Successfully deleted secret {secret_id}", "secret_id": secret_id}
 
 
 @router.post("/")
