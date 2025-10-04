@@ -108,6 +108,7 @@ class User(Base):
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")
     jobs = relationship("Job", back_populates="user")
     instances = relationship("Instance", back_populates="billed_user")
+    secrets = relationship("Secret", back_populates="user", cascade="all, delete-orphan")
 
     # The "true" balance which also accounts for the private instances.
     current_balance = relationship(

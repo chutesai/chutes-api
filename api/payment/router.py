@@ -32,7 +32,9 @@ async def get_daily_revenue_summary(db: AsyncSession = Depends(get_db_session)):
     """
     Get the summary of daily revenue including paygo, invoiced users, subscriptions and pending private instances.
     """
-    result = await db.execute(text("SELECT * FROM daily_revenue_summary ORDER BY date DESC"))
+    result = await db.execute(
+        text("SELECT * FROM daily_revenue_summary ORDER BY date DESC LIMIT 30")
+    )
     rows = result.fetchall()
     return [
         {

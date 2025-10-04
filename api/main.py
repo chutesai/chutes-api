@@ -31,6 +31,7 @@ from api.payment.router import router as payment_router
 from api.miner.router import router as miner_router
 from api.logo.router import router as logo_router
 from api.job.router import router as jobs_router
+from api.secret.router import router as secrets_router
 from api.guesser import router as guess_router
 from api.audit.router import router as audit_router
 from api.chute.util import chute_id_by_slug
@@ -136,6 +137,7 @@ default_router.include_router(logo_router, prefix="/logos", tags=["Logo"])
 default_router.include_router(guess_router, prefix="/guess", tags=["ConfigGuesser"])
 default_router.include_router(audit_router, prefix="/audit", tags=["Audit"])
 default_router.include_router(jobs_router, prefix="/jobs", tags=["Job"])
+default_router.include_router(secrets_router, prefix="/secrets", tags=["Secret"])
 
 
 # Do not use app for this, else middleware picks it up

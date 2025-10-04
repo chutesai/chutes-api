@@ -25,8 +25,6 @@ from api.chute.schemas import (
     ChuteArgs,
     ChuteShare,
     ChuteShareArgs,
-    ChuteSecret,
-    ChuteSecretArgs,
     NodeSelector,
     ChuteUpdateArgs,
     RollingUpdate,
@@ -57,7 +55,6 @@ from api.user.service import get_current_user, chutes_user_id
 from api.image.schemas import Image
 from api.image.util import get_image_by_id_or_name
 from api.permissions import Permissioning
-from api.payment.util import encrypt_secret
 
 # XXX from api.instance.util import discover_chute_targets
 from api.database import get_db_session, get_session
@@ -266,42 +263,6 @@ async def unshare_chute(
     return {
         "status": f"Successfully unshared {chute.name=} with {user.username=} (if share exists)"
     }
-
-
-@router.post("/secrets")
-async def create_chute_secret(
-    args: ChuteSecretArgs,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
-):
-    """
-    Create a secret (e.g. private HF token).
-    """
-    chute = (
-        (
-            await db.execute(
-                select(Chute).where(
-                    or_(
-                        Chute.name.ilike(args.chute_id_or_name),
-                        Chute.chute_id == args.chute_id_or_name,
-                    ),
-                    Chute.user_id == current_user.user_id,
-                )
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
-    )
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Did not find target chute {str(args.chute_id_or_name)}, or it does not belong to you",
-        )
-    encrypted_key = await encrypt_secret(args.key)
-    encrypted_value = await encrypt_secret(args.value)
-    await db.add(ChuteSecret(chute_id=chute.chute_id, key=encrypted_key, value=encrypted_value))
-    await db.commit()
-    return {"status": f"Successfully created secret with key={args.key} for {chute.name=}"}
 
 
 @router.get("/affine_available")
@@ -1015,13 +976,6 @@ async def _deploy_chute(
             ),
         )
 
-    # Prevent enabling logging on a chute that had it disabled previously.
-    if chute and not chute.logging_enabled and chute_args.logging_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="You cannot update a chute's logging_enabled flag to true after it has been false.",
-        )
-
     old_version = None
     if chute:
         # Create a rolling update object so we can gracefully restart/recreate.
@@ -1069,7 +1023,6 @@ async def _deploy_chute(
         chute.concurrency = chute_args.concurrency
         chute.updated_at = func.now()
         chute.revision = chute_args.revision
-        chute.logging_enabled = chute_args.logging_enabled
         chute.max_instances = (
             None
             if chute.public or chute.user_id == await chutes_user_id()
@@ -1117,7 +1070,6 @@ async def _deploy_chute(
                 chutes_version=image.chutes_version,
                 concurrency=chute_args.concurrency,
                 revision=chute_args.revision,
-                logging_enabled=chute_args.logging_enabled,
                 scaling_threshold=None
                 if is_public or current_user.user_id == await chutes_user_id()
                 else (chute_args.scaling_threshold or 0.75),
@@ -1324,7 +1276,6 @@ async def deploy_chute(
             "code check and prelim model config/node selector config passed."
         )
         is_affine_model = True
-        chute_args.logging_enabled = True
 
     # No-DoS-Plz.
     await limit_deployments(db, current_user)

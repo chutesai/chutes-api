@@ -31,7 +31,8 @@ from api.constants import (
 )
 from api.payment.util import decrypt_secret
 from api.node.util import get_node_by_id
-from api.chute.schemas import Chute, NodeSelector, ChuteSecret
+from api.chute.schemas import Chute, NodeSelector
+from api.secret.schemas import Secret
 from api.instance.schemas import (
     Instance,
     instance_nodes,
@@ -1088,11 +1089,7 @@ async def verify_launch_config_instance(
 
     # Secrets, e.g. private HF tokens etc.
     secrets = (
-        (
-            await db.execute(
-                select(ChuteSecret).where(ChuteSecret.chute_id == launch_config.chute_id)
-            )
-        )
+        (await db.execute(select(Secret).where(Secret.purpose == launch_config.chute_id)))
         .unique()
         .scalars()
         .all()
@@ -1100,9 +1097,8 @@ async def verify_launch_config_instance(
     if secrets:
         return_value["secrets"] = {}
         for secret in secrets:
-            key = await decrypt_secret(secret.key)
             value = await decrypt_secret(secret.value)
-            return_value["secrets"][key] = value
+            return_value["secrets"][secret.key] = value
 
     return_value["activation_url"] = (
         f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
@@ -1129,9 +1125,7 @@ async def stream_logs(
     current_user: User = Depends(get_current_user()),
 ):
     """
-    Fetch the raw kubernetes pod logs, but only if logging_enabled is
-    true on the chute itself, meaning the developer of the chute has
-    explicitly set the option.
+    Fetch the raw kubernetes pod logs, but only if the chute is private.
 
     These are application-level logs, which for example would not include
     any prompts/responses/etc. by default for any sglang/vllm container.
@@ -1155,17 +1149,14 @@ async def stream_logs(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Instance not found.",
         )
-    if instance.chute.user_id != current_user.user_id or not instance.chute.logging_enabled:
+    if instance.chute.user_id != current_user.user_id or instance.chute.public:
         if (
             not current_user.has_role(Permissioning.affine_admin)
             or "affine" not in instance.chute.name.lower()
         ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "You may only view logs for your own chutes, IFF logging_enabled "
-                    "is configured on the chute (or be affine admin for affine models)"
-                ),
+                detail="You may only view logs for your own (private) chutes.",
             )
     if not 0 <= backfill <= 10000:
         raise HTTPException(

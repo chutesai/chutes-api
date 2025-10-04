@@ -54,7 +54,6 @@ class ChuteResponse(BaseModel):
     revision: Optional[str] = None
     concurrency: Optional[int] = None
     boost: Optional[float] = None
-    logging_enabled: Optional[bool] = False
     max_instances: Optional[int] = None
     scaling_threshold: Optional[float] = None
     shutdown_after_seconds: Optional[int] = None
