@@ -319,12 +319,13 @@ async def _get_one(name_or_id: str, nonce: int = None):
         return chute
 
 
-async def get_one(name_or_id: str):
+async def get_one(name_or_id: str, nonce: int = None):
     """
     Wrapper around the actual cached get_one with 30 second nonce to force refresh.
     """
-    nonce = int(time.time())
-    nonce -= nonce % 30
+    if not nonce:
+        nonce = int(time.time())
+        nonce -= nonce % 30
     return await _get_one(name_or_id, nonce=nonce)
 
 

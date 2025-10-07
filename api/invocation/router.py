@@ -36,7 +36,7 @@ from api.util import (
     has_legacy_private_billing,
 )
 from api.user.schemas import User, InvocationQuota
-from api.user.service import get_current_user, chutes_user_id
+from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
@@ -312,7 +312,7 @@ async def _invoke(
         chute.public
         or chute.user_id == current_user.user_id
         or await is_shared(chute.chute_id, current_user.user_id)
-        or ("/affine" in chute.name.lower() and current_user.has_role(Permissioning.affine_admin))
+        or subnet_role_accessible(chute, current_user)
     ):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
@@ -960,10 +960,7 @@ async def hostname_invocation(
                     chute.user_id != current_user.user_id
                     and not await is_shared(chute.chute_id, current_user.user_id)
                 )
-                and not (
-                    "/affine" in chute.name.lower()
-                    and current_user.has_role(Permissioning.affine_admin)
-                )
+                and subnet_role_accessible(chute, current_user)
             ):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

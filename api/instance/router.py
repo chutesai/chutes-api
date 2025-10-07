@@ -23,7 +23,6 @@ from sqlalchemy.dialects.postgresql import insert
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
-from api.permissions import Permissioning
 from api.constants import (
     HOTKEY_HEADER,
     AUTHORIZATION_HEADER,
@@ -47,7 +46,7 @@ from api.instance.util import (
     load_launch_config_from_jwt,
 )
 from api.user.schemas import User
-from api.user.service import get_current_user, chutes_user_id
+from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
 from api.metasync import get_miner_by_hotkey
 from api.util import (
     semcomp,
@@ -1147,10 +1146,7 @@ async def stream_logs(
             detail="Instance not found.",
         )
     if instance.chute.user_id != current_user.user_id or instance.chute.public:
-        if (
-            not current_user.has_role(Permissioning.affine_admin)
-            or "affine" not in instance.chute.name.lower()
-        ):
+        if not subnet_role_accessible(instance.chute, current_user, admin=True):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You may only view logs for your own (private) chutes.",

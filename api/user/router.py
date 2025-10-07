@@ -63,6 +63,17 @@ class BalanceRequest(BaseModel):
     reason: str
 
 
+class SubnetRoleRequest(BaseModel):
+    user: str
+    netuid: int
+    admin: bool
+
+
+class SubnetRoleRevokeRequest(BaseModel):
+    user: str
+    netuid: int
+
+
 @router.get("/growth")
 async def get_user_growth(
     db: AsyncSession = Depends(get_db_session),
@@ -208,6 +219,99 @@ async def admin_balance_change(
     await db.commit()
     await db.refresh(user)
     return {"new_balance": user.balance, "event_id": event_id}
+
+
+@router.post("/grant_subnet_role")
+async def grant_subnet_role(
+    args: SubnetRoleRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    # Validate permissions to make the request.
+    if not current_user.has_role(Permissioning.subnet_admin_assign) or args.netuid not in (
+        current_user.netuids or []
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing required subnet admin role assign permissions.",
+        )
+
+    # Load the target user.
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_(User.user_id == args.user, User.username == args.user).limit(1)
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target user not found.",
+        )
+
+    # Enable the role (and netuid on the user if necessary).
+    role = Permissioning.subnet_invoke if not args.admin else Permissioning.subnet_admin
+    Permissioning.enable(user, role)
+    if not user.netuids:
+        user.netuids = []
+    if args.netuid not in user.netuids:
+        user.netuids.append(args.netuid)
+    await db.commit()
+    return {
+        "status": f"Successfully enabled {role.description=} {role.bitmask=} for {user.user_id=} {user.username=} on {args.netuid=}"
+    }
+
+
+@router.post("/revoke_subnet_role")
+async def revoke_subnet_role(
+    args: SubnetRoleRevokeRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    # Validate permissions to make the request.
+    if not current_user.has_role(Permissioning.subnet_admin_assign) or args.netuid not in (
+        current_user.netuids or []
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Missing required subnet admin role assign permissions.",
+        )
+
+    # Load the target user.
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_(User.user_id == args.user, User.username == args.user).limit(1)
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Target user not found.",
+        )
+
+    # Remove the netuid from the user.
+    if user.netuids and args.netuid in user.netuids:
+        user.netuids.remove(args.netuid)
+
+    # If the user no longer has a netuid tracked, remove any subnet roles.
+    if not user.netuids:
+        Permissioning.disable(user, Permissioning.subnet_admin)
+        Permissioning.disable(user, Permissioning.subnet_invoke)
+    await db.commit()
+    return {
+        "status": f"Successfully revoked {args.netuid=} subnet roles from {user.user_id=} {user.username=}"
+    }
 
 
 @router.post("/{user_id}/quotas")

@@ -51,13 +51,21 @@ class Permissioning:
         bitmask=1 << 9,
         description="Enable stake weighted quota (signed message with the coldkey)",
     )
-    affine_admin = Role(
+    subnet_admin = Role(
         bitmask=1 << 10,
-        description="Affine admin",
+        description="Subnet admin",
     )
     public_model_deployment = Role(
         bitmask=1 << 11,
-        description="Allow deploying models publicly.",
+        description="Allow deploying models publicly",
+    )
+    subnet_invoke = Role(
+        bitmask=1 << 12,
+        description="Allow invocation of private chutes of a subnet",
+    )
+    subnet_admin_assign = Role(
+        bitmask=1 << 13,
+        description="Allow granting subnet admin/request roles to other users, i.e. subnet role self-service",
     )
 
     @classmethod

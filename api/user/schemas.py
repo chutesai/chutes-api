@@ -13,11 +13,13 @@ from sqlalchemy import (
     DateTime,
     Double,
     Boolean,
+    Integer,
     BigInteger,
     ForeignKey,
     select,
     case,
 )
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import relationship, validates
 from api.database import Base
 import hashlib
@@ -99,6 +101,9 @@ class User(Base):
 
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Netuid list, for admin roles.
+    netuids = Column(ARRAY(Integer), nullable=True)
 
     # Logo/avatar.
     logo_id = Column(String, ForeignKey("logos.logo_id", ondelete="SET NULL"), nullable=True)

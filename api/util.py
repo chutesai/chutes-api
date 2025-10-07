@@ -169,14 +169,14 @@ async def is_valid_host(host: str) -> bool:
     return False
 
 
-async def is_affine_registered(session, user):
+async def is_registered_to_subnet(session, user, netuid):
     """
-    Check if a user is registered on affine (thereby allowing limited dev activity).
+    Check if a user is registered to a given subnet.
     """
     result = await session.execute(
         select(
             exists(
-                select(1).where(MetagraphNode.netuid == 120, MetagraphNode.hotkey == user.hotkey)
+                select(1).where(MetagraphNode.netuid == netuid, MetagraphNode.hotkey == user.hotkey)
             )
         )
     )

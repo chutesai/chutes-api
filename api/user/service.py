@@ -17,6 +17,7 @@ from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
 from api.constants import NONCE_HEADER
 from api.util import nonce_is_valid, get_signing_message
+from api.permissioning import Permissioning
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
@@ -192,3 +193,19 @@ async def chutes_user():
             .scalar_one_or_none()
         )
     return router._chutes_user
+
+
+def subnet_role_accessible(chute, user, admin: bool = False):
+    netuid = None
+    if "/affine" in chute.name.lower():
+        netuid = 120
+    elif "/turbovision" in chute.name.lower():
+        netuid = 44
+    elif "/babelbit" in chute.name.lower():
+        netuid = 999
+    if not netuid:
+        return False
+    perms = [Permissioning.subnet_admin]
+    if not admin:
+        perms.append(Permissioning.subnet_invoke)
+    return user.netuids and netuid in user.netuids and any(user.has_role(perm) for perm in perms)
