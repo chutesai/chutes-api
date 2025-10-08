@@ -776,7 +776,7 @@ def image_supports_cllmv(image) -> bool:
     date_part = tag[8:]
     try:
         date_num = int(date_part)
-        return date_num >= 2025100601
+        return date_num >= 2025100800
     except (ValueError, Exception):
         return False
 

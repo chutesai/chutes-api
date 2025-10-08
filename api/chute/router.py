@@ -808,7 +808,11 @@ async def delete_chute(
     # Make sure the chute exists and the user has permissions to delete it.
     # - user owns it
     # - part of a subnet integration and user is a subnet admin
-    chute = await get_one(chute_id)
+    chute = (
+        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
     allowed = False
     if chute:
         if chute.user_id == current_user.user_id:
@@ -986,7 +990,7 @@ async def _deploy_chute(
         if not image_supports_cllmv(image) or image.user_id != await chutes_user_id():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Must use image="chutes/sglang:nightly-2025100601" (or later dated versions) for affine deployments.',
+                detail='Must use image="chutes/sglang:nightly-2025100800" (or later dated versions) for affine deployments.',
             )
 
     old_version = None
@@ -1195,7 +1199,13 @@ async def _deploy_chute(
             ).decode(),
         )
     return (
-        (await db.execute(select(Chute).where(Chute.chute_id == chute.chute_id)))
+        (
+            await db.execute(
+                select(Chute)
+                .where(Chute.chute_id == chute.chute_id)
+                .options(selectinload(Chute.instances))
+            )
+        )
         .unique()
         .scalar_one_or_none()
     )
@@ -1616,6 +1626,17 @@ async def update_common_attributes(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
+    chute = (
+        (
+            await db.execute(
+                select(Chute)
+                .where(Chute.chute_id == chute.chute_id)
+                .options(selectinload(Chute.instances))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
     if args.tagline and args.tagline.strip():
         chute.tagline = args.tagline
     if args.readme and args.readme.strip():
