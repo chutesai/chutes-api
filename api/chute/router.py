@@ -1194,7 +1194,11 @@ async def _deploy_chute(
                 }
             ).decode(),
         )
-    return await get_one(chute.chute_id, nonce=int(time.time()))
+    return (
+        (await db.execute(select(Chute).where(Chute.chute_id == chute.chute_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
 
 
 @router.post("/", response_model=ChuteResponse)
