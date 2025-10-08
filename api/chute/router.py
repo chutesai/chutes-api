@@ -771,7 +771,8 @@ async def get_chute(
     authorized = False
     if chute:
         if (
-            (current_user and chute.user_id == current_user.user_id)
+            chute.public
+            or (current_user and chute.user_id == current_user.user_id)
             or (current_user and await is_shared(chute.chute_id, current_user.user_id))
             or (current_user and subnet_role_accessible(chute, current_user, admin=True))
             or "affine" in chute.name.lower()
