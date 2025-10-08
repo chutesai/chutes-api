@@ -17,7 +17,7 @@ from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
 from api.constants import NONCE_HEADER
 from api.util import nonce_is_valid, get_signing_message
-from api.permissioning import Permissioning
+from api.permissions import Permissioning
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
