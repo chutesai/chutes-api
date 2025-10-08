@@ -1206,7 +1206,7 @@ async def deploy_chute(
                     detail=(
                         f"You must be a registered miner on {subnet=} netuid={info['netuid']} "
                         f"to deploy models with {info['model_substring']}"
-                    )
+                    ),
                 )
             is_subnet_model = True
             break
