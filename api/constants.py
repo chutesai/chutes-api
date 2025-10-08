@@ -55,3 +55,19 @@ VLM_MAX_SIZE = 100 * 1024 * 1024
 # Private instance multiplier, which we treat as the average concurrency
 # for any given chute at 100% utilization.
 PRIVATE_INSTANCE_MULTIPLIER = 16
+
+# Subnet integrations.
+INTEGRATED_SUBNETS = {
+    "affine": {
+        "netuid": 120,
+        "model_substring": "affine",
+    },
+    "babelbit": {
+        "netuid": 59,
+        "model_substring": "babelbit",
+    },
+    "score": {
+        "netuid": 44,
+        "model_substring": "turbovision",
+    },
+}

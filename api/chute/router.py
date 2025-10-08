@@ -62,6 +62,7 @@ from api.fmv.fetcher import get_fetcher
 from api.config import settings
 from api.constants import (
     DIFFUSION_PRICE_MULT_PER_STEP,
+    INTEGRATED_SUBNETS,
 )
 from api.util import (
     semcomp,
@@ -1190,39 +1191,25 @@ async def deploy_chute(
     """
     Standard deploy from the CDK.
     """
-    is_affine_model = False
-    affine_checked = False
-    if await is_registered_to_subnet(db, current_user, 120):
-        if not re.match(r"[^/]+/affine.*", chute_args.name, re.I):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Affine miners may only deploy chutes named */affine*",
-            )
-        affine_checked = True
-
-    # Score unique chute name prefix.
-    if (
-        "turbovision" in chute_args.name.lower()
-        and not current_user.has_role(Permissioning.unlimited_dev)
-        and not subnet_role_accessible(chute_args, current_user, admin=True)
-        and not is_registered_to_subnet(db, current_user, 44)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only score registered miners/users may deploy chutes with 'turbovision' in the name!",
-        )
-
-    # Babelbit unique chute name prefix.
-    if (
-        "babelbit" in chute_args.name.lower()
-        and not current_user.has_role(Permissioning.unlimited_dev)
-        and not subnet_role_accessible(chute_args, current_user, admin=True)
-        and not is_registered_to_subnet(db, current_user, 999)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only babelbit registered miners/users may deploy chutes with 'babelbit' in the name!",
-        )
+    # For custom subnet integrations, limit who can deploy chutes with
+    # their unique substrings (and require being either an admin or registered).
+    is_subnet_model = False
+    for subnet, info in INTEGRATED_SUBNETS.items():
+        if info["model_substring"] in chute_args.name.lower():
+            if (
+                not current_user.has_role(Permissioning.unlimited_dev)
+                and not subnet_role_accessible(chute_args, current_user, admin=True)
+                and not is_registered_to_subnet(db, current_user, info["netuid"])
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"You must be a registered miner on {subnet=} netuid={info['netuid']} "
+                        f"to deploy models with {info['model_substring']}"
+                    )
+                )
+            is_subnet_model = True
+            break
 
     # Affine special handling.
     if (
@@ -1231,15 +1218,6 @@ async def deploy_chute(
         and not subnet_role_accessible(chute_args, current_user, admin=True)
         and current_user.username.lower() not in ("affine", "affine2", "unconst", "nonaffine")
     ):
-        if not affine_checked and not await is_registered_to_subnet(db, current_user, 120):
-            logger.warning(
-                "Attempted affine deployment by unregistered hotkey: "
-                f"{current_user.user_id=} {current_user.username=}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Only users with hotkeys registered on affine may deploy chutes with 'affine' in the name",
-            )
         valid, message = check_affine_code(chute_args.code)
         if not valid:
             logger.warning(
@@ -1251,7 +1229,7 @@ async def deploy_chute(
                 detail=message,
             )
 
-        # Sanity check the model.
+        # Sanity check the model's node selector (and HF config generally).
         async with aiohttp.ClientSession() as hsession:
             try:
                 guessed_config = await guesser.analyze_model(chute_args.name, hsession)
@@ -1296,15 +1274,10 @@ async def deploy_chute(
             f"Affine deployment initiated: {chute_args.name=} from {current_user.hotkey=}, "
             "code check and prelim model config/node selector config passed."
         )
-        is_affine_model = True
 
     # No-DoS-Plz.
     await limit_deployments(db, current_user)
-    if current_user.user_id not in (
-        await chutes_user_id(),
-        "b167f56b-3e8d-5ffa-88bf-5cc6513bb6f4",
-        "5bf8a979-ea71-54bf-8644-26a3411a3b58",
-    ) and not current_user.has_role(Permissioning.unlimited_dev):
+    if not current_user.has_role(Permissioning.unlimited_dev):
         bad, response = await is_bad_code(chute_args.code)
         if bad:
             logger.warning(
@@ -1318,7 +1291,7 @@ async def deploy_chute(
         chute_args,
         db,
         current_user,
-        use_rolling_update=not is_affine_model,
+        use_rolling_update=not is_subnet_model,
         accept_fee=accept_fee,
     )
     return chute
