@@ -17,6 +17,7 @@ from sqlalchemy import (
     and_,
     or_,
 )
+import api.database.orms  # noqa
 from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
@@ -28,7 +29,6 @@ from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
 from api.instance.util import invalidate_instance_cache
 from api.capacity_log.schemas import CapacityLog
-import api.database.orms  # noqa
 from watchtower import purge, purge_and_notify  # noqa
 from api.constants import (
     UNDERUTILIZED_CAP,

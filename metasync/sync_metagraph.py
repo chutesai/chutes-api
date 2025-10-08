@@ -7,7 +7,6 @@ import hashlib
 import json
 import asyncio
 import redis
-from api.constants import INTEGRATED_SUBNETS
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from fiber.chain.interface import get_substrate
@@ -77,6 +76,8 @@ async def main():
         logger.info(f"Successfully synced metagraph for {settings.netuid=}")
 
         # Other subnets (affine, babelbit, score, etc.).
+        from api.constants import INTEGRATED_SUBNETS
+
         for subnet_info in INTEGRATED_SUBNETS.values():
             await asyncio.wait_for(sync_and_save_metagraph(netuid=subnet_info["netuid"]), 60)
     finally:
