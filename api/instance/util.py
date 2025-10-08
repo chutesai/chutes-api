@@ -7,6 +7,7 @@ import time
 import uuid
 import asyncio
 import random
+import pickle
 import traceback
 from fastapi import HTTPException, status
 from datetime import datetime, timedelta, timezone
@@ -19,7 +20,7 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
-from api.util import has_legacy_private_billing
+from api.util import has_legacy_private_billing, memcache_get, memcache_set, memcache_delete
 from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.future import select
@@ -31,17 +32,78 @@ InstanceAlias = aliased(Instance)
 
 
 @alru_cache(maxsize=1000, ttl=60)
-async def load_chute_targets(chute_id: str, nonce: float = 0):
+async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
     query = (
-        select(Instance)
+        select(Instance.instance_id)
         .where(Instance.active.is_(True))
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
-        .options(joinedload(Instance.nodes))
     )
     async with get_session() as session:
         result = await session.execute(query)
-        return result.scalars().unique().all()
+        return [row[0] for row in result.all()]
+
+
+@alru_cache(maxsize=5000, ttl=300)
+async def load_chute_target(instance_id: str) -> Instance:
+    # Try memcache first.
+    cache_key = f"instance:{instance_id}"
+    cached = await memcache_get(cache_key)
+    if cached:
+        try:
+            return pickle.loads(cached)
+        except Exception:
+            await memcache_delete(cache_key)
+
+    # Load from DB.
+    query = (
+        select(Instance)
+        .where(Instance.instance_id == instance_id)
+        .options(
+            joinedload(Instance.nodes),
+            joinedload(Instance.chute),
+            joinedload(Instance.job),
+            joinedload(Instance.config),
+        )
+    )
+    async with get_session() as session:
+        instance = (await session.execute(query)).unique().scalar_one_or_none()
+        if instance:
+            # Warm up relationships for serialization
+            _ = instance.nodes
+            _ = instance.chute
+            _ = instance.job
+            _ = instance.config
+
+            # Warm up nested relationships on nodes
+            if instance.chute:
+                _ = instance.chute.image
+                _ = instance.chute.logo
+                _ = instance.chute.rolling_update
+                _ = instance.chute.user
+            try:
+                serialized = pickle.dumps(instance)
+                await memcache_set(cache_key, serialized, exptime=300)
+            except Exception:
+                ...
+        return instance
+
+
+@alru_cache(maxsize=1000, ttl=60)
+async def load_chute_targets(chute_id: str, nonce: int = 0) -> list[Instance]:
+    instance_ids = await load_chute_target_ids(chute_id, nonce=nonce)
+    instances = []
+    for instance_id in instance_ids:
+        if (instance := await load_chute_target(instance_id)) is not None:
+            instances.append(instance)
+    return instances
+
+
+async def invalidate_instance_cache(chute_id, instance_id: str = None):
+    load_chute_target_ids.cache_invalidate(chute_id, nonce=0)
+    load_chute_targets.cache_invalidate(chute_id, nonce=0)
+    load_chute_target.cache_invalidate(instance_id)
+    await memcache_delete(f"instance:{instance_id}".encode())
 
 
 MANAGERS = {}
@@ -338,7 +400,7 @@ async def get_chute_target_manager(
     Select target instances by least connections (with random on equal counts).
     """
     chute_id = chute.chute_id
-    nonce = int(time.time()) if dynonce else int(time.time() % 60)
+    nonce = int(time.time()) if dynonce else 0
     instances = await load_chute_targets(chute_id, nonce=nonce)
     started_at = time.time()
     while not instances:

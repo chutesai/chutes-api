@@ -44,6 +44,7 @@ from api.instance.util import (
     create_launch_jwt,
     create_job_jwt,
     load_launch_config_from_jwt,
+    invalidate_instance_cache,
 )
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
@@ -818,6 +819,7 @@ async def activate_launch_config_instance(
             # bounty, however, since each private instance automatically counts as a bounty (see metasync/shared.py)
             await delete_bounty(chute.chute_id)
         await db.commit()
+        await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
 

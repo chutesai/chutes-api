@@ -960,7 +960,7 @@ async def hostname_invocation(
                     chute.user_id != current_user.user_id
                     and not await is_shared(chute.chute_id, current_user.user_id)
                 )
-                and subnet_role_accessible(chute, current_user)
+                and not subnet_role_accessible(chute, current_user)
             ):
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

@@ -10,6 +10,7 @@ from api.database import get_session
 from sqlalchemy import text, select, func
 import api.database.orms  # noqa
 from api.instance.schemas import Instance
+from api.instance.util import invalidate_instance_cache
 from api.job.schemas import Job
 from api.user.schemas import User, UserCurrentBalance
 from api.permissions import Permissioning
@@ -73,6 +74,9 @@ async def terminate_jobs_for_zero_balance_users():
                 await notify_deleted(
                     job.instance, message="Job terminated due to insufficient user balance"
                 )
+                await invalidate_instance_cache(
+                    job.instance.chute_id, instance_id=job.instance.instance_id
+                )
             await session.commit()
 
         logger.success(f"Completed terminating {len(jobs)} jobs for zero-balance users")
@@ -106,6 +110,7 @@ async def shutdown_stale_instances():
             await notify_deleted(
                 instance, message="Instance has exceeded user defined shutdown_after_seconds"
             )
+            await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
             await session.commit()
 
 
@@ -156,6 +161,7 @@ async def terminate_zero_balance_user_instances():
             await notify_deleted(
                 instance, message="Private instance terminated due to insufficient user balance"
             )
+            await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
             await session.commit()
 
         logger.success(

@@ -36,6 +36,7 @@ from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 from api.instance.schemas import Instance
+from api.instance.util import invalidate_instance_cache
 from api.chute.codecheck import is_bad_code
 
 
@@ -253,6 +254,7 @@ async def purge_and_notify(target, reason="miner failed watchtower probes"):
         target,
         message=f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
     )
+    await invalidate_instance_cache(target.chute_id, instance_id=target.instance_id)
 
 
 async def do_slurp(instance, payload, encrypted_slurp):

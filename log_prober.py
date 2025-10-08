@@ -8,6 +8,7 @@ from api.util import notify_deleted
 from api.database import get_session
 import api.miner_client as miner_client
 from api.instance.schemas import Instance
+from api.instance.util import invalidate_instance_cache
 
 
 async def check_instance_logging_server(instance: Instance) -> bool:
@@ -79,6 +80,7 @@ async def handle_check_result(instance_id: str, success: bool):
                 await notify_deleted(
                     instance, message="Failed 3 or more consecutive logging server probes."
                 )
+                await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
                 await session.commit()
 
 

@@ -26,6 +26,7 @@ from api.user.service import chutes_user_id
 from api.util import notify_deleted, has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
+from api.instance.util import invalidate_instance_cache
 from api.capacity_log.schemas import CapacityLog
 import api.database.orms  # noqa
 from watchtower import purge, purge_and_notify  # noqa
@@ -660,6 +661,9 @@ async def perform_autoscale(dry_run: bool = False):
                     reason = "instance node count does not match node selector"
                     await purge(instance, reason=reason)
                     await notify_deleted(instance, message=reason)
+                    await invalidate_instance_cache(
+                        instance.chute_id, instance_id=instance.instance_id
+                    )
                     num_to_remove -= 1
                     instances_removed += 1
                     gpus_removed += len(instance.nodes)
