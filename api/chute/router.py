@@ -754,6 +754,20 @@ async def get_chute(
     Load a chute by ID or name.
     """
     chute = await get_one(chute_id_or_name)
+    if chute:
+        # Complete reload from DB.
+        chute = (
+            (
+                await db.execute(
+                    select(Chute)
+                    .where(Chute.chute_id == chute.chute_id)
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+    # Auth check.
     authorized = False
     if chute:
         if (
