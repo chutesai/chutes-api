@@ -11,6 +11,18 @@ class AttestationError(HTTPException):
     def __init__(self, detail: str, status_code: int = status.HTTP_403_FORBIDDEN):
         super().__init__(status_code=status_code, detail=detail)
 
+class NoClientCertError(AttestationError):
+    """Raised when attestation is performed without mTLS."""
+
+    def __init__(self, detail: str = "No client certificate found."):
+        super().__init__(detail=detail)
+
+class InvalidClientCertError(AttestationError):
+    """Raised when attestation is performed without mTLS."""
+
+    def __init__(self, detail: str = "Invalid client certificate provided."):
+        super().__init__(detail=detail)
+
 
 class InvalidQuoteError(AttestationError):
     """Raised when TDX quote is invalid or malformed."""

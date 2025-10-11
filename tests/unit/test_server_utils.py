@@ -110,7 +110,7 @@ def test_tdx_quote_abstract_quote_type():
             rtmr1="c" * 96,
             rtmr2="d" * 96,
             rtmr3="e" * 96,
-            user_data=None,
+            report_data=None,
             raw_quote_size=4096,
             parsed_at=datetime.now(timezone.utc).isoformat(),
             raw_bytes=b"test",
@@ -653,7 +653,7 @@ def test_verification_result_from_report():
                 "rt_mr1": "test_rtmr1",
                 "rt_mr2": "test_rtmr2",
                 "rt_mr3": "test_rtmr3",
-                "report_data": "test_user_data"
+                "report_data": "test_report_data"
             }
         }
     }
@@ -666,7 +666,7 @@ def test_verification_result_from_report():
     assert result.rtmr1 == "test_rtmr1"
     assert result.rtmr2 == "test_rtmr2"
     assert result.rtmr3 == "test_rtmr3"
-    assert result.user_data == "test_user_data"
+    assert result.report_data == "test_report_data"
     assert result.is_valid is True
     assert isinstance(result.parsed_at, datetime)
 
@@ -686,7 +686,7 @@ def test_verification_result_from_report_invalid():
                 "rt_mr1": "test_rtmr1",
                 "rt_mr2": "test_rtmr2",
                 "rt_mr3": "test_rtmr3",
-                "report_data": "test_user_data"
+                "report_data": "test_report_data"
             }
         }
     }

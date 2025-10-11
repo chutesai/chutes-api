@@ -23,6 +23,7 @@ from api.server.schemas import (
 )
 from api.server.service import (
     create_nonce,
+    extract_client_cert_hash,
     process_boot_attestation,
     register_server,
     check_server_ownership,
@@ -73,6 +74,7 @@ async def verify_boot_attestation(
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
     nonce=Depends(validate_request_nonce()),
+    expected_cert_hash=Depends(extract_client_cert_hash())
 ):
     """
     Verify boot attestation and return LUKS passphrase.
@@ -82,14 +84,13 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = extract_ip(request)
-        result = await process_boot_attestation(db, server_ip, args, nonce)
+        result = await process_boot_attestation(db, server_ip, args, nonce, expected_cert_hash)
 
         return BootAttestationResponse(
             luks_passphrase=result["luks_passphrase"],
             attestation_id=result["attestation_id"],
             verified_at=result["verified_at"],
         )
-
     except NonceError as e:
         logger.warning(f"Boot attestation nonce error: {str(e)}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -113,6 +114,7 @@ async def create_server(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
     nonce=Depends(validate_request_nonce()),
+    expected_cert_hash=Depends(extract_client_cert_hash())
 ):
     """
     Register a new server.
@@ -122,7 +124,7 @@ async def create_server(
     """
     try:
         actual_ip = extract_ip(request)
-        server = await register_server(db, actual_ip, args, hotkey, nonce)
+        server = await register_server(db, actual_ip, args, hotkey, nonce, expected_cert_hash)
 
         return {"server_id": server.server_id, "message": "Server registered successfully"}
 
@@ -265,13 +267,14 @@ async def verify_runtime_attestation(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
     nonce=Depends(validate_request_nonce()),
+    expected_cert_hash=Depends(extract_client_cert_hash())
 ):
     """
     Verify runtime attestation with full measurement validation.
     """
     try:
         actual_ip = extract_ip(request)
-        result = await process_runtime_attestation(db, server_id, actual_ip, args, hotkey)
+        result = await process_runtime_attestation(db, server_id, actual_ip, args, hotkey, nonce, expected_cert_hash)
 
         return RuntimeAttestationResponse(
             attestation_id=result["attestation_id"],

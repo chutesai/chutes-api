@@ -26,7 +26,9 @@ class TdxQuote(ABC):
     rtmr1: str
     rtmr2: str
     rtmr3: str
-    user_data: Optional[str]
+    report_data: Optional[str]
+    user_data: str
+    platform_id: str
     raw_quote_size: int
     parsed_at: str
     raw_bytes: bytes
@@ -73,22 +75,26 @@ class TdxQuote(ABC):
                 raise InvalidQuoteError(f"Quote too short: {len(quote_bytes)} bytes")
 
             # Parse header (48 bytes, little-endian)
-            header_format = "<HHI16s20s"  # uint16 version, uint16 att_key_type, uint32 tee_type, 16s QE Vendor ID, 20s User Data
+            header_format = "<HHI16s20s"  # uint16 version, uint16 att_key_type, uint32 tee_type, 16s QE Vendor ID, 20s user_data
             header = struct.unpack_from(header_format, quote_bytes, 0)
             version, att_key_type, tee_type, qe_vendor_id, header_user_data = header
 
             # Validate header
-            if version != 4:
-                raise InvalidQuoteError(f"Invalid quote version: {version} (expected 4)")
+            if version not in (4, 5):
+                raise InvalidQuoteError(f"Invalid quote version: {version} (expected 4 or 5)")
             if tee_type != 0x81:
                 raise InvalidQuoteError(f"Invalid TEE type: {tee_type:08x} (expected 0x81 for TDX)")
             if att_key_type not in (2, 3):  # ECDSA-256 or ECDSA-384
                 raise InvalidQuoteError(f"Invalid attestation key type: {att_key_type}")
 
-            # TD report starts at offset 48
-            td_report = quote_bytes[48:]
+            # Extract platform identifier (first 16 bytes of user_data)
+            platform_id = header_user_data[:16].hex().upper()
+            user_data = header_user_data.hex().upper()
 
-            # Extract fields using corrected offsets from Intel API verification
+            # TD report starts at offset 48
+            td_report = quote_bytes[48:632]  # Explicitly limit to 584 bytes for TD report
+
+            # Extract fields using offsets from Intel TDX specification
             mrtd = td_report[136:184].hex().upper()
             rtmr0 = td_report[328:376].hex().upper()
             rtmr1 = td_report[376:424].hex().upper()
@@ -106,17 +112,18 @@ class TdxQuote(ABC):
                 rtmr1=rtmr1,
                 rtmr2=rtmr2,
                 rtmr3=rtmr3,
-                user_data=report_data,
+                report_data=report_data,  # TD report's report_data (nonce)
+                user_data=user_data,      # Header's user_data
+                platform_id=platform_id,  # First 16 bytes of user_data
                 raw_quote_size=len(quote_bytes),
                 raw_bytes=quote_bytes,
                 parsed_at=datetime.now(timezone.utc).isoformat(),
             )
 
-            logger.success(f"Successfully parsed TDX quote: MRTD={quote.mrtd[:16]}...")
+            logger.success(f"Successfully parsed TDX quote: MRTD={quote.mrtd[:16]}..., Platform ID={quote.platform_id[:16]}...")
             return quote
 
-        except Exception as e:
-            logger.error(f"Failed to parse quote: {e}")
+        except struct.error as e:
             raise InvalidQuoteError(f"Failed to parse quote: {str(e)}")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -125,7 +132,9 @@ class TdxQuote(ABC):
             "quote_version": str(self.version),
             "mrtd": self.mrtd,
             "rtmrs": self.rtmrs,
+            "report_data": self.report_data,
             "user_data": self.user_data,
+            "platform_id": self.platform_id,
             "raw_quote_size": self.raw_quote_size,
             "parsed_at": self.parsed_at,
             "header": {

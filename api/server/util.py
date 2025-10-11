@@ -4,12 +4,16 @@ TDX quote parsing, crypto operations, and server helper functions.
 
 import secrets
 from typing import Dict, Any, Optional
+from fastapi import Request
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
 from api.config import settings
-from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.backends import default_backend
+from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError, NoClientCertError
 from api.server.quote import TdxQuote, TdxVerificationResult
-
+import hashlib
 
 def generate_nonce() -> str:
     """Generate a cryptographically secure nonce."""
@@ -20,17 +24,69 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     """Get expiry time for a nonce in seconds."""
     return minutes * 60
 
+def _get_public_key_hash(cert_pem: bytes) -> str:
+    """
+    Compute SHA-256 hash of certificate's public key in DER format.
+    This matches the bash snippet's logic:
+    openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | sha256sum
+    """
+    # Parse the certificate
+    cert = x509.load_pem_x509_certificate(cert_pem, default_backend())
+    
+    # Extract the public key
+    public_key = cert.public_key()
+    
+    # Serialize public key to DER format (matching openssl pkey -outform der)
+    public_key_der = public_key.public_key_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    
+    # Compute SHA-256 hash
+    hash_digest = hashlib.sha256(public_key_der).hexdigest()
+    
+    return hash_digest
+
+def _get_client_certificate(request: Request) -> bytes:
+    """
+    Extract client certificate from Uvicorn request.
+    Simplified for FastAPI-to-FastAPI communication.
+    """
+    transport = request.scope.get("transport")
+    if not transport:
+        raise NoClientCertError(detail="No transport in request scope")
+    
+    ssl_object = transport.get_extra_info("ssl_object")
+    if not ssl_object:
+        raise NoClientCertError(detail="No SSL connection")
+    
+    peer_cert_der = ssl_object.getpeercert(binary_form=True)
+    if not peer_cert_der:
+        raise NoClientCertError(detail="No client certificate provided")
+    
+    return peer_cert_der
+
 
 def extract_nonce(quote: TdxQuote):
     # Extract nonce from report_data (first printable ASCII portion)
     nonce = ""
-    _bytes = bytes.fromhex(quote.user_data)
+    _bytes = bytes.fromhex(quote.report_data[:64])
     for i, b in enumerate(_bytes):
         if b == 0 or not (32 <= b <= 126):  # Stop at null or non-printable
             break
         nonce += chr(b)
 
     return nonce
+
+def extract_cert_hash(quote: TdxQuote):
+    return quote.report_data[64:128].lower()
+
+def extract_report_data(quote: TdxQuote):
+    # Extract nonce from report_data (first printable ASCII portion)
+    nonce = extract_nonce(quote)
+    cert_hash = extract_cert_hash(quote)
+
+    return nonce, cert_hash
 
 
 def _bytes_to_hex(data: Any) -> str:

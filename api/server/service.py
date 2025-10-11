@@ -10,6 +10,7 @@ import tempfile
 from typing import Dict, Any
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
+from numpy import str_
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -27,15 +28,22 @@ from api.server.schemas import (
 )
 from api.server.exceptions import (
     GpuEvidenceError,
+    InvalidClientCertError,
     InvalidGpuEvidenceError,
     InvalidQuoteError,
     MeasurementMismatchError,
+    NoClientCertError,
     NonceError,
     ServerNotFoundError,
     ServerRegistrationError,
 )
 from api.server.util import (
+    _get_client_certificate,
+    _get_public_key_hash,
+    extract_cert_hash,
     extract_nonce,
+    extract_report_data,
+    get_client_cert_hash,
     verify_measurements,
     get_luks_passphrase,
     generate_nonce,
@@ -132,15 +140,34 @@ def validate_request_nonce():
 
     return _validate_request_nonce
 
+def extract_client_cert_hash():
+    async def _extract_request_client_cert(
+        request: Request
+    ):
+        try:
+            cert_der = _get_client_certificate(request)
+            cert_hash = _get_public_key_hash(cert_der)
 
-async def verify_quote(quote: TdxQuote, expected_nonce: str) -> TdxVerificationResult:
+            return cert_hash
+        except NoClientCertError as e:
+            logger.error(f"Boot attestation failed, not client cert provided:\n{e}")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, dteails=str(e))
+
+    return _extract_request_client_cert
+
+
+async def verify_quote(quote: TdxQuote, expected_nonce: str, expected_cert_hash: str) -> TdxVerificationResult:
     # Validate nonce
-    nonce = extract_nonce(quote)
+    nonce, cert_hash = extract_report_data(quote)
+
     if nonce != expected_nonce:
         raise NonceError("Quote nonce does not match expected nonce.")
+    
+    if cert_hash != expected_cert_hash:
+        raise InvalidClientCertError()
 
+    # Verify the quote using DCAP
     result = await verify_quote_signature(quote)
-
     # Verify the quote against the result to ensure it was parsed properly
     verify_result(quote, result)
     # Verify the quote against configured MRTD/RMTRs
@@ -175,7 +202,7 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
 
 
 async def process_boot_attestation(
-    db: AsyncSession, server_ip: str, args: BootAttestationArgs, nonce: str
+    db: AsyncSession, server_ip: str, args: BootAttestationArgs, nonce: str, expected_cert_hash: str
 ) -> Dict[str, str]:
     """
     Process a boot attestation request.
@@ -197,7 +224,7 @@ async def process_boot_attestation(
     # Parse and verify quote
     try:  # Verify quote signature
         quote = BootTdxQuote.from_base64(args.quote)
-        result = await verify_quote(quote, nonce)
+        result = await verify_quote(quote, nonce, expected_cert_hash)
 
         # Create boot attestation record
         boot_attestation = BootAttestation(
@@ -240,7 +267,7 @@ async def process_boot_attestation(
 
 
 async def register_server(
-    db: AsyncSession, actual_ip: str, args: ServerArgs, miner_hotkey: str, expected_nonce: str
+    db: AsyncSession, actual_ip: str, args: ServerArgs, miner_hotkey: str, expected_nonce: str, expected_cert_hash: str
 ) -> Server:
     """
     Register a new server.
@@ -258,7 +285,7 @@ async def register_server(
     """
     try:
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        await verify_quote(quote, expected_nonce)
+        await verify_quote(quote, expected_nonce, expected_cert_hash)
 
         gpu_evidence = json.loads(base64.b64decode(args.evidence))
         await verify_gpu_evidence(gpu_evidence, expected_nonce)
@@ -318,6 +345,7 @@ async def process_runtime_attestation(
     args: RuntimeAttestationArgs,
     miner_hotkey: str,
     expected_nonce: str,
+    expected_cert_hash: str
 ) -> Dict[str, str]:
     """
     Process a runtime attestation request.
@@ -349,7 +377,7 @@ async def process_runtime_attestation(
     try:
         # Verify quote signature
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        result = await verify_quote(quote, expected_nonce)
+        result = await verify_quote(quote, expected_nonce, expected_cert_hash)
 
         # Create runtime attestation record
         attestation = ServerAttestation(
