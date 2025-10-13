@@ -4,6 +4,7 @@ TDX quote parsing, crypto operations, and server helper functions.
 
 import secrets
 from typing import Dict, Any, Optional
+from urllib.parse import unquote
 from fastapi import Request
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
@@ -37,7 +38,7 @@ def _get_public_key_hash(cert_pem: bytes) -> str:
     public_key = cert.public_key()
     
     # Serialize public key to DER format (matching openssl pkey -outform der)
-    public_key_der = public_key.public_key_bytes(
+    public_key_der = public_key.public_bytes(
         encoding=serialization.Encoding.DER,
         format=serialization.PublicFormat.SubjectPublicKeyInfo
     )
@@ -52,19 +53,14 @@ def _get_client_certificate(request: Request) -> bytes:
     Extract client certificate from Uvicorn request.
     Simplified for FastAPI-to-FastAPI communication.
     """
-    transport = request.scope.get("transport")
-    if not transport:
-        raise NoClientCertError(detail="No transport in request scope")
-    
-    ssl_object = transport.get_extra_info("ssl_object")
-    if not ssl_object:
-        raise NoClientCertError(detail="No SSL connection")
-    
-    peer_cert_der = ssl_object.getpeercert(binary_form=True)
-    if not peer_cert_der:
+    cert_header = request.headers.get("X-Client-Cert")
+    if not cert_header:
         raise NoClientCertError(detail="No client certificate provided")
     
-    return peer_cert_der
+    # Decode the URL-encoded PEM cert from nginx
+    cert_pem = unquote(cert_header).encode()
+    
+    return cert_pem
 
 
 def extract_nonce(quote: TdxQuote):

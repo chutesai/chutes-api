@@ -40,10 +40,7 @@ from api.server.exceptions import (
 from api.server.util import (
     _get_client_certificate,
     _get_public_key_hash,
-    extract_cert_hash,
-    extract_nonce,
     extract_report_data,
-    get_client_cert_hash,
     verify_measurements,
     get_luks_passphrase,
     generate_nonce,
@@ -145,13 +142,13 @@ def extract_client_cert_hash():
         request: Request
     ):
         try:
-            cert_der = _get_client_certificate(request)
-            cert_hash = _get_public_key_hash(cert_der)
+            cert = _get_client_certificate(request)
+            cert_hash = _get_public_key_hash(cert)
 
             return cert_hash
         except NoClientCertError as e:
-            logger.error(f"Boot attestation failed, not client cert provided:\n{e}")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, dteails=str(e))
+            logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
     return _extract_request_client_cert
 
