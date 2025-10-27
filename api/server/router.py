@@ -6,9 +6,11 @@ from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from taskiq_redis.exceptions import ResultIsMissingError
 
 from api.database import get_db_session
 from api.config import settings
+from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.constants import HOTKEY_HEADER
@@ -32,6 +34,7 @@ from api.server.service import (
     list_servers,
     delete_server,
     validate_request_nonce,
+    broker
 )
 from api.server.exceptions import (
     AttestationError,
@@ -39,11 +42,11 @@ from api.server.exceptions import (
     ServerNotFoundError,
     ServerRegistrationError,
 )
-from api.util import extract_ip
+from api.miner.util import is_miner_blacklisted
+from api.util import extract_ip, is_valid_host
 
 
 router = APIRouter()
-
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
 
@@ -108,13 +111,10 @@ async def verify_boot_attestation(
 # ToDo: Not sure we will want to keep this, ideally want to integrate with miner add-node command
 @router.post("/", response_model=Dict[str, str], status_code=status.HTTP_201_CREATED)
 async def create_server(
-    request: Request,
     args: ServerArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
-    nonce=Depends(validate_request_nonce()),
-    expected_cert_hash=Depends(extract_client_cert_hash())
 ):
     """
     Register a new server.
@@ -123,10 +123,30 @@ async def create_server(
     Links the server to any existing boot attestation history via server ip.
     """
     try:
-        actual_ip = extract_ip(request)
-        server = await register_server(db, actual_ip, args, hotkey, nonce, expected_cert_hash)
+        blacklisted, reason = is_miner_blacklisted(db, hotkey)
+        if blacklisted:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your hotkey has been blacklisted: {reason}",
+            )
+    
+        gpu_uuids = [gpu.uuid for gpu in args.gpus]
+        existing_nodes = check_node_inventory(db, gpu_uuids)
+        if existing_nodes:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Nodes already exist in inventory, please contact chutes team to resolve: {existing_nodes}",
+            )
+        
+        if not is_valid_host(args.host):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification host provided.",
+            )
 
-        return {"server_id": server.server_id, "message": "Server registered successfully"}
+        task_id = await register_server(db, args, hotkey)
+
+        return {"task_id": task_id, "message": "Server registered successfully. Check task for verification status."}
 
     except ServerRegistrationError as e:
         logger.warning(f"Server registration failed: {str(e)}")
@@ -137,6 +157,38 @@ async def create_server(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server registration failed"
         )
 
+@router.get("/verification_status")
+async def check_verification_status(
+    task_id: str,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        get_current_user(raise_not_found=False, registered_to=settings.netuid, purpose="tee")
+    ),
+):
+    """
+    Check taskiq task status, to see if the validator has finished GPU verification.
+    """
+    task_parts = task_id.split("::")
+    if len(task_parts) != 2 or task_parts[0] != hotkey:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="go away",
+        )
+    task_id = task_parts[1]
+    if task_id == "skip":
+        return {"status": "verified"}
+    if not await broker.result_backend.is_result_ready(task_id):
+        return {"status": "pending"}
+    try:
+        result = await broker.result_backend.get_result(task_id)
+    except ResultIsMissingError:
+        return {"status": "pending"}
+    if result.is_err:
+        return {"status": "error", "error": result.error}
+    success, error_message = result.return_value
+    if not success:
+        return {"status": "failed", "detail": error_message}
+    return {"status": "verified"}
 
 # ToDo: Maybe don't need to expose this
 @router.get("/", response_model=List[Dict[str, Any]])

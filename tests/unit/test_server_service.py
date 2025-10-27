@@ -17,6 +17,7 @@ from api.server.service import (
     process_boot_attestation,
     process_runtime_attestation,
     register_server,
+    verify_server,
     check_server_ownership,
     get_server_attestation_status,
     list_servers,
@@ -530,7 +531,7 @@ async def test_register_server_success(mock_db_session, server_args):
 
     mock_db_session.refresh.side_effect = mock_refresh
 
-    await register_server(
+    await verify_server(
         mock_db_session, TEST_SERVER_IP, server_args, miner_hotkey, TEST_GPU_NONCE
     )
 
@@ -548,7 +549,7 @@ async def test_register_server_integrity_error(mock_db_session, server_args):
     mock_db_session.commit.side_effect = IntegrityError("Duplicate key", None, None)
 
     with pytest.raises(ServerRegistrationError, match="constraint violation"):
-        await register_server(
+        await verify_server(
             mock_db_session, TEST_SERVER_IP, server_args, miner_hotkey, TEST_NONCE
         )
 
@@ -739,7 +740,7 @@ async def test_register_server_general_exception(mock_db_session, server_args):
     mock_db_session.commit.side_effect = Exception("Database error")
 
     with pytest.raises(ServerRegistrationError, match="Server registration failed"):
-        await register_server(
+        await verify_server(
             mock_db_session, TEST_SERVER_IP, server_args, miner_hotkey, TEST_NONCE
         )
 
@@ -899,7 +900,7 @@ async def test_server_lifecycle_flow(
 
     mock_db_session.refresh.side_effect = mock_refresh
 
-    await register_server(mock_db_session, TEST_SERVER_IP, server_args, miner_hotkey, TEST_NONCE)
+    await verify_server(mock_db_session, TEST_SERVER_IP, server_args, miner_hotkey, TEST_NONCE)
     mock_db_session.add.assert_called()
     mock_db_session.commit.assert_called()
 

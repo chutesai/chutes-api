@@ -18,6 +18,7 @@ from sqlalchemy import (
 )
 from typing import Dict, Any
 from api.database import Base, generate_uuid
+from api.node.schemas import NodeArgs
 
 
 class NonceResponse(BaseModel):
@@ -68,9 +69,10 @@ class GpuAttestationResponse(BaseModel):
 class ServerArgs(BaseModel):
     """Request model for server registration."""
 
+    id: str = Field(..., description="Server ID, should come from the k8s node uid.")
     name: str = Field(..., description="Server name/identifier")
-    quote: str = Field(..., description="Base64 encoded TDX quote")
-    evidence: str = Field(..., description="Base64 encoded GPU evidence")
+    host: str = Field(..., descriptiopn="Public IP address or DNS Name of the server")
+    gpus: list[NodeArgs] = Field(..., description="GPU info for this server")
 
 
 class BootAttestation(Base):
@@ -101,7 +103,7 @@ class Server(Base):
 
     __tablename__ = "servers"
 
-    server_id = Column(String, primary_key=True, default=generate_uuid)
+    server_id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     ip = Column(String, nullable=False, unique=True)  # Links to boot attestations
     miner_hotkey = Column(

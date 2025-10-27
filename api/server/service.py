@@ -3,20 +3,23 @@ Core server management and TDX attestation logic.
 """
 
 import asyncio
-import base64
 from datetime import datetime, timezone, timedelta
 import json
 import tempfile
 from typing import Dict, Any
+from aiohttp import ClientResponse
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
 from numpy import str_
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 
 from api.config import settings
 from api.constants import NONCE_HEADER
+from api.node.util import _track_nodes
+from api.server.client import TeeServerClient
 from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote, TdxVerificationResult
 from api.server.schemas import (
     Server,
@@ -27,6 +30,7 @@ from api.server.schemas import (
     ServerArgs,
 )
 from api.server.exceptions import (
+    GetEvidenceError,
     GpuEvidenceError,
     InvalidClientCertError,
     InvalidGpuEvidenceError,
@@ -40,6 +44,7 @@ from api.server.exceptions import (
 from api.server.util import (
     _get_client_certificate,
     _get_public_key_hash,
+    _get_server_certificate,
     extract_report_data,
     verify_measurements,
     get_luks_passphrase,
@@ -50,6 +55,9 @@ from api.server.util import (
 )
 from api.util import extract_ip
 
+broker = ListQueueBroker(url=settings.redis_url, queue_name="tee").with_result_backend(
+    RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
+)
 
 async def create_nonce(server_ip: str) -> Dict[str, str]:
     """
@@ -151,6 +159,16 @@ def extract_client_cert_hash():
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
     return _extract_request_client_cert
+
+def extract_server_cert_hash(response: ClientResponse):
+    try:
+        cert = _get_server_certificate(response)
+        cert_hash = _get_public_key_hash(cert)
+
+        return cert_hash
+    except NoClientCertError as e:
+        logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
 async def verify_quote(quote: TdxQuote, expected_nonce: str, expected_cert_hash: str) -> TdxVerificationResult:
@@ -262,9 +280,39 @@ async def process_boot_attestation(
         logger.error(f"Boot attestation failed: {str(e)}")
         raise
 
+async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
 
-async def register_server(
-    db: AsyncSession, actual_ip: str, args: ServerArgs, miner_hotkey: str, expected_nonce: str, expected_cert_hash: str
+    try:
+        server = await _track_server(db, args, miner_hotkey)
+        await _track_nodes(db, miner_hotkey, server.name, args.gpus)
+
+        # Start verification process
+        task = await verify_server.kiq(server, miner_hotkey)
+        task_id = f"{miner_hotkey}::{task.task_id}"
+
+        return task_id
+    except IntegrityError as e:
+        await db.rollback()
+        logger.error(f"Server registration failed: {str(e)}")
+        raise ServerRegistrationError("Server registration failed - constraint violation")
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Unexpected error during server registration: {str(e)}")
+        raise ServerRegistrationError(f"Server registration failed: {str(e)}")
+
+async def _track_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
+    # Add server and nodes to DB
+    server = Server(id=args.id, name=args.name, ip=args.host, miner_hotkey=miner_hotkey)
+
+    db.add(server)
+    await db.commit()
+    await db.refresh(server)
+
+    return server
+
+@broker.task
+async def verify_server(
+    server: Server, miner_hotkey: str
 ) -> Server:
     """
     Register a new server.
@@ -281,32 +329,33 @@ async def register_server(
         ServerRegistrationError: If registration fails
     """
     try:
-        quote = RuntimeTdxQuote.from_base64(args.quote)
-        await verify_quote(quote, expected_nonce, expected_cert_hash)
 
-        gpu_evidence = json.loads(base64.b64decode(args.evidence))
-        await verify_gpu_evidence(gpu_evidence, expected_nonce)
+        client = TeeServerClient(server)
 
-        server = Server(name=args.name, ip=actual_ip, miner_hotkey=miner_hotkey)
+        nonce = generate_nonce(server.ip)
+        quote, gpu_evidence, expected_cert_hash = client.get_evidence(nonce)
 
-        db.add(server)
-        await db.commit()
-        await db.refresh(server)
+        await verify_quote(quote, nonce, expected_cert_hash)
 
-        logger.success(f"Registered server: {server.server_id} for miner: {miner_hotkey}")
-        return server
+        await verify_gpu_evidence(gpu_evidence, nonce)
+
+        logger.success(f"Verified server {server.name}[{server.server_id}] for miner: {miner_hotkey}")
+
+        return True, None
+    except GetEvidenceError:
+        return False, f"Failed to get attestation evidence."
     except (InvalidQuoteError, MeasurementMismatchError) as e:
-        await db.rollback()
-        logger.error(f"Server registration failed:\n{e}")
-        raise ServerRegistrationError("Server registartion failed: invalid quote")
-    except IntegrityError as e:
-        await db.rollback()
-        logger.error(f"Server registration failed: {str(e)}")
-        raise ServerRegistrationError("Server registration failed - constraint violation")
+        logger.error(f"Server verification failed for {server.name}[{server.ip}]:\n{e}")
+        return False, "Server verification failed: invalid quote"
+    except InvalidGpuEvidenceError as e:
+        logger.error(f"Failed to verify GPU evidence for {server.name}[{server.ip}].  Invalid GPU evidence.")
+        return False, "Server verification failed: invalid GPU evidence"
+    except GpuEvidenceError as e:
+        logger.error(f"Failed to verify GPU evidence for {server.name}[{server.ip}]")
+        return False, "Server verification failed: Failed to verify GPU evidence"
     except Exception as e:
-        await db.rollback()
-        logger.error(f"Unexpected error during server registration: {str(e)}")
-        raise ServerRegistrationError(f"Server registration failed: {str(e)}")
+        logger.error(f"Unexpected error during server verification for {server.name}[{server.ip}]: {str(e)}")
+        return False, "Unexpected error during server verification"
 
 
 async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey: str) -> Server:

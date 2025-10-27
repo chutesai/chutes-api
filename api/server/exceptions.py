@@ -65,6 +65,10 @@ class NonceError(AttestationError):
     def __init__(self, detail: str = "Invalid or expired nonce"):
         super().__init__(detail=detail, status_code=status.HTTP_400_BAD_REQUEST)
 
+class GetEvidenceError(Exception):
+
+    def __init__(self, detail: str = "Failed to get evidence for attestation."):
+        super().__init__(detail=detail)
 
 class ServerNotFoundError(HTTPException):
     """Raised when server is not found."""
