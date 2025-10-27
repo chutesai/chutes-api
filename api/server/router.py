@@ -25,7 +25,6 @@ from api.server.schemas import (
 )
 from api.server.service import (
     create_nonce,
-    extract_client_cert_hash,
     process_boot_attestation,
     register_server,
     check_server_ownership,
@@ -36,6 +35,7 @@ from api.server.service import (
     validate_request_nonce,
     broker
 )
+from api.server.util import extract_client_cert_hash
 from api.server.exceptions import (
     AttestationError,
     NonceError,
