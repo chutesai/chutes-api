@@ -173,7 +173,6 @@ async def is_valid_host(host: str) -> bool:
             return all(not is_invalid_ip(ip) for ip in resolved_ips)
         except ValueError:
             return False
-    return False
 
 
 async def is_registered_to_subnet(session, user, netuid):
