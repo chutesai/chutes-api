@@ -17,6 +17,12 @@ class NoClientCertError(AttestationError):
     def __init__(self, detail: str = "No client certificate found."):
         super().__init__(detail=detail)
 
+class NoServerCertError(Exception):
+    """Raised when attestation is performed without TLS."""
+
+    def __init__(self, detail: str = "No server certificate found."):
+        super().__init__(detail=detail)
+
 class InvalidClientCertError(AttestationError):
     """Raised when attestation is performed without mTLS."""
 

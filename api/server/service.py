@@ -7,10 +7,8 @@ from datetime import datetime, timezone, timedelta
 import json
 import tempfile
 from typing import Dict, Any
-from aiohttp import ClientResponse
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
-from numpy import str_
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -36,15 +34,11 @@ from api.server.exceptions import (
     InvalidGpuEvidenceError,
     InvalidQuoteError,
     MeasurementMismatchError,
-    NoClientCertError,
     NonceError,
     ServerNotFoundError,
     ServerRegistrationError,
 )
 from api.server.util import (
-    _get_client_certificate,
-    _get_public_key_hash,
-    _get_server_certificate,
     extract_report_data,
     verify_measurements,
     get_luks_passphrase,
@@ -144,31 +138,6 @@ def validate_request_nonce():
             )
 
     return _validate_request_nonce
-
-def extract_client_cert_hash():
-    async def _extract_request_client_cert(
-        request: Request
-    ):
-        try:
-            cert = _get_client_certificate(request)
-            cert_hash = _get_public_key_hash(cert)
-
-            return cert_hash
-        except NoClientCertError as e:
-            logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-
-    return _extract_request_client_cert
-
-def extract_server_cert_hash(response: ClientResponse):
-    try:
-        cert = _get_server_certificate(response)
-        cert_hash = _get_public_key_hash(cert)
-
-        return cert_hash
-    except NoClientCertError as e:
-        logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
 
 
 async def verify_quote(quote: TdxQuote, expected_nonce: str, expected_cert_hash: str) -> TdxVerificationResult:

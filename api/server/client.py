@@ -1,15 +1,14 @@
 
 
-from typing import Dict
+from typing import Dict, Tuple
 from urllib.parse import urljoin
 
 import aiohttp
 from loguru import logger
-from sqlalchemy import Tuple
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
 from api.server.schemas import Server
-from api.server.service import extract_server_cert_hash
+from api.server.util import extract_server_cert_hash
 
 
 

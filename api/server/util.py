@@ -6,7 +6,7 @@ import secrets
 from typing import Dict, Any, Optional
 from urllib.parse import unquote
 from aiohttp import ClientResponse
-from fastapi import Request
+from fastapi import Request, status
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
 from api.config import settings
@@ -14,7 +14,7 @@ from cryptography import x509
 from cryptography.x509 import Certificate
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
-from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError, NoClientCertError
+from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError, NoClientCertError, NoServerCertError
 from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
 
@@ -26,6 +26,31 @@ def generate_nonce() -> str:
 def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     """Get expiry time for a nonce in seconds."""
     return minutes * 60
+
+def extract_client_cert_hash():
+    async def _extract_request_client_cert(
+        request: Request
+    ):
+        try:
+            cert = _get_client_certificate(request)
+            cert_hash = _get_public_key_hash(cert)
+
+            return cert_hash
+        except Exception as e:
+            logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
+            raise NoClientCertError(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+    return _extract_request_client_cert
+
+def extract_server_cert_hash(response: ClientResponse):
+    try:
+        cert = _get_server_certificate(response)
+        cert_hash = _get_public_key_hash(cert)
+
+        return cert_hash
+    except Exception as e:
+        logger.error(f"Exception trying to extract cert hash from server cert:\n{e}")
+        raise NoServerCertError(detail=str(e))
 
 def _get_public_key_hash(cert: Certificate) -> str:
     """
