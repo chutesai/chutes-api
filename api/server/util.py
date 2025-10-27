@@ -5,12 +5,14 @@ TDX quote parsing, crypto operations, and server helper functions.
 import secrets
 from typing import Dict, Any, Optional
 from urllib.parse import unquote
+from aiohttp import ClientResponse
 from fastapi import Request
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
 from api.config import settings
 from cryptography import x509
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.x509 import Certificate
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError, NoClientCertError
 from api.server.quote import TdxQuote, TdxVerificationResult
@@ -25,15 +27,12 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     """Get expiry time for a nonce in seconds."""
     return minutes * 60
 
-def _get_public_key_hash(cert_pem: bytes) -> str:
+def _get_public_key_hash(cert: Certificate) -> str:
     """
     Compute SHA-256 hash of certificate's public key in DER format.
     This matches the bash snippet's logic:
     openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | sha256sum
     """
-    # Parse the certificate
-    cert = x509.load_pem_x509_certificate(cert_pem, default_backend())
-    
     # Extract the public key
     public_key = cert.public_key()
     
@@ -59,8 +58,35 @@ def _get_client_certificate(request: Request) -> bytes:
     
     # Decode the URL-encoded PEM cert from nginx
     cert_pem = unquote(cert_header).encode()
+
+    # Parse the certificate
+    cert = x509.load_pem_x509_certificate(cert_pem, default_backend())
     
-    return cert_pem
+    return cert
+
+def _get_server_certificate(response: ClientResponse) -> bytes:
+    """
+    Extract client certificate from Uvicorn request.
+    Simplified for FastAPI-to-FastAPI communication.
+    """
+    # Get the server certificate from the connection
+    # The transport contains the SSL object with peer certificate info
+    transport = response.connection.transport
+    ssl_object = transport.get_extra_info('ssl_object')
+    
+    if ssl_object is None:
+        raise ValueError("No SSL connection established")
+    
+    # Get the peer certificate in DER format
+    cert_der = ssl_object.getpeercert(binary_form=True)
+    
+    if cert_der is None:
+        raise ValueError("No peer certificate available")
+    
+    # Load the DER certificate
+    cert = x509.load_der_x509_certificate(cert_der, default_backend())
+
+    return cert
 
 
 def extract_nonce(quote: TdxQuote):
