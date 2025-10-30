@@ -8,7 +8,7 @@ async def is_miner_blacklisted(db, hotkey):
     mgnode = await get_miner_by_hotkey(hotkey, db)
     if not mgnode:
         reason = f"Your hotkey is not registered on {settings.netuid}"
-    if mgnode.blacklist_reason:
+    elif mgnode.blacklist_reason:
         logger.warning(f"MINERBLACKLIST: {hotkey=} reason={mgnode.blacklist_reason}")
         reason = f"Your hotkey has been blacklisted: {mgnode.blacklist_reason}"
     return reason

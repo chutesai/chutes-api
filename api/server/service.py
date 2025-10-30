@@ -9,13 +9,15 @@ import tempfile
 from typing import Dict, Any
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
-from sqlalchemy import select, func
+from sqlalchemy import Tuple, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 
 from api.config import settings
 from api.constants import NONCE_HEADER
+from api.database import get_session
+from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
 from api.server.client import TeeServerClient
 from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote, TdxVerificationResult
@@ -253,10 +255,17 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
 
     try:
         server = await _track_server(db, args, miner_hotkey)
-        await _track_nodes(db, miner_hotkey, server.name, args.gpus)
+
+        # Set the attributes we can't get from pynvml
+        for gpu in args.gpus:
+            gpu_info = SUPPORTED_GPUS[gpu.gpu_identifier]
+            for key in ["processors", "max_threads_per_processor"]:
+                setattr(gpu, key, gpu_info.get(key))
+
+        await _track_nodes(db, miner_hotkey, server.name, args.gpus, "0")
 
         # Start verification process
-        task = await verify_server.kiq(server, miner_hotkey)
+        task = await verify_server.kiq(server.server_id, miner_hotkey)
         task_id = f"{miner_hotkey}::{task.task_id}"
 
         return task_id
@@ -271,7 +280,7 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
 
 async def _track_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
     # Add server and nodes to DB
-    server = Server(id=args.id, name=args.name, ip=args.host, miner_hotkey=miner_hotkey)
+    server = Server(server_id=args.id, name=args.name, ip=args.host, miner_hotkey=miner_hotkey)
 
     db.add(server)
     await db.commit()
@@ -281,8 +290,8 @@ async def _track_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
 
 @broker.task
 async def verify_server(
-    server: Server, miner_hotkey: str
-) -> Server:
+    server_id: str, miner_hotkey: str
+) -> Tuple[bool, str]:
     """
     Register a new server.
 
@@ -298,17 +307,21 @@ async def verify_server(
         ServerRegistrationError: If registration fails
     """
     try:
+        async with get_session() as db:
+            server = await check_server_ownership(db, server_id, miner_hotkey)
+            if not server:
+                return False, f"Failed to verify server ownership."
+            
+            client = TeeServerClient(server)
 
-        client = TeeServerClient(server)
+            nonce = generate_nonce(server.ip)
+            quote, gpu_evidence, expected_cert_hash = client.get_evidence(nonce)
 
-        nonce = generate_nonce(server.ip)
-        quote, gpu_evidence, expected_cert_hash = client.get_evidence(nonce)
+            await verify_quote(quote, nonce, expected_cert_hash)
 
-        await verify_quote(quote, nonce, expected_cert_hash)
+            await verify_gpu_evidence(gpu_evidence, nonce)
 
-        await verify_gpu_evidence(gpu_evidence, nonce)
-
-        logger.success(f"Verified server {server.name}[{server.server_id}] for miner: {miner_hotkey}")
+            logger.success(f"Verified server {server.name}[{server.server_id}] for miner: {miner_hotkey}")
 
         return True, None
     except GetEvidenceError:
@@ -525,7 +538,7 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     server = await check_server_ownership(db, server_id, miner_hotkey)
 
     # NOTE: Do we want to do a soft delete to keep attestation history?
-    db.delete(server)
+    await db.delete(server)
 
     await db.commit()
 

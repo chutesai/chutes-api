@@ -30,10 +30,10 @@ class NodeArgs(BaseModel):
     memory: int
     major: Optional[int] = None
     minor: Optional[int] = None
-    processors: int
+    processors: Optional[int] = None
     sxm: Optional[bool] = None
     clock_rate: float
-    max_threads_per_processor: int
+    max_threads_per_processor: Optional[int] = None
     concurrent_kernels: Optional[bool] = None
     ecc: Optional[bool] = None
     device_index: int = Field(gte=0, lt=10)

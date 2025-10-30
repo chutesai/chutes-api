@@ -123,22 +123,23 @@ async def create_server(
     Links the server to any existing boot attestation history via server ip.
     """
     try:
-        blacklisted, reason = is_miner_blacklisted(db, hotkey)
-        if blacklisted:
+        reason = await is_miner_blacklisted(db, hotkey)
+        if reason:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Your hotkey has been blacklisted: {reason}",
+                detail=reason,
             )
     
         gpu_uuids = [gpu.uuid for gpu in args.gpus]
-        existing_nodes = check_node_inventory(db, gpu_uuids)
+        existing_nodes = await check_node_inventory(db, gpu_uuids)
         if existing_nodes:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"Nodes already exist in inventory, please contact chutes team to resolve: {existing_nodes}",
             )
         
-        if not is_valid_host(args.host):
+        valid_host = await is_valid_host(args.host)
+        if not valid_host:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid verification host provided.",
@@ -195,7 +196,7 @@ async def check_verification_status(
 async def list_user_servers(
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)),
 ):
     """
     List all servers for the authenticated miner.
@@ -226,7 +227,7 @@ async def get_server_details(
     server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)),
 ):
     """
     Get details for a specific server.
@@ -256,7 +257,7 @@ async def remove_server(
     server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)),
 ):
     """
     Remove a server.
@@ -284,7 +285,7 @@ async def get_runtime_nonce(
     server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)),
 ):
     """
     Generate a nonce for runtime attestation.
@@ -317,7 +318,7 @@ async def verify_runtime_attestation(
     args: RuntimeAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)),
     nonce=Depends(validate_request_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash())
 ):
@@ -355,7 +356,7 @@ async def get_attestation_status(
     server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _: User = Depends(get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)),
 ):
     """
     Get current attestation status for a server.

@@ -21,7 +21,7 @@ async def get_node_by_id(node_id, db, hotkey):
 
 async def _track_nodes(
     db: AsyncSession, hotkey: str, server_id: str, nodes_args: list[NodeArgs], 
-    seed: Optional[str] = None, verified_at = None
+    seed: str, verified_at = None
 ):
     nodes = []
     for node_args in nodes_args:
