@@ -30,6 +30,7 @@ from api.server.schemas import (
     ServerArgs,
 )
 from api.server.exceptions import (
+    AttestationError,
     GetEvidenceError,
     GpuEvidenceError,
     InvalidClientCertError,
@@ -146,7 +147,9 @@ async def verify_quote(quote: TdxQuote, expected_nonce: str, expected_cert_hash:
     # Validate nonce
     nonce, cert_hash = extract_report_data(quote)
 
+
     if nonce != expected_nonce:
+        logger.info(f"Nonce error:  {nonce} =/= {expected_nonce}")
         raise NonceError("Quote nonce does not match expected nonce.")
     
     if cert_hash != expected_cert_hash:
@@ -262,13 +265,16 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
             for key in ["processors", "max_threads_per_processor"]:
                 setattr(gpu, key, gpu_info.get(key))
 
-        await _track_nodes(db, miner_hotkey, server.name, args.gpus, "0")
+        await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0")
 
         # Start verification process
-        task = await verify_server.kiq(server.server_id, miner_hotkey)
-        task_id = f"{miner_hotkey}::{task.task_id}"
+        await verify_server(server, miner_hotkey)
+        # task_id = f"{miner_hotkey}::{task.task_id}"
 
-        return task_id
+        # return task_id
+    except AttestationError as e:
+        logger.error(f"Attestation failed for server {args.host}")
+        raise ServerRegistrationError("Server registration failed - attestation failed.")
     except IntegrityError as e:
         await db.rollback()
         logger.error(f"Server registration failed: {str(e)}")
@@ -280,7 +286,7 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
 
 async def _track_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
     # Add server and nodes to DB
-    server = Server(server_id=args.id, name=args.name, ip=args.host, miner_hotkey=miner_hotkey)
+    server = Server(server_id=args.id, ip=args.host, miner_hotkey=miner_hotkey)
 
     db.add(server)
     await db.commit()
@@ -288,10 +294,10 @@ async def _track_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
 
     return server
 
-@broker.task
+# @broker.task
 async def verify_server(
-    server_id: str, miner_hotkey: str
-) -> Tuple[bool, str]:
+    server: Server, miner_hotkey: str
+) -> None:
     """
     Register a new server.
 
@@ -307,36 +313,45 @@ async def verify_server(
         ServerRegistrationError: If registration fails
     """
     try:
-        async with get_session() as db:
-            server = await check_server_ownership(db, server_id, miner_hotkey)
-            if not server:
-                return False, f"Failed to verify server ownership."
+        # logger.info(f"Start sever verification for {server_id}")
+        # server = None
+        # async with get_session() as db:
+        #     server = await check_server_ownership(db, server_id, miner_hotkey)
+        
+        # if not server:
+        #     return False, f"Failed to verify server ownership."
             
-            client = TeeServerClient(server)
+        client = TeeServerClient(server)
 
-            nonce = generate_nonce(server.ip)
-            quote, gpu_evidence, expected_cert_hash = client.get_evidence(nonce)
+        nonce = generate_nonce()
+        logger.info(f"Verifying server {server.ip} with nonce {nonce}")
+        quote, gpu_evidence, expected_cert_hash = await client.get_evidence(nonce)
 
-            await verify_quote(quote, nonce, expected_cert_hash)
+        await verify_quote(quote, nonce, expected_cert_hash)
 
-            await verify_gpu_evidence(gpu_evidence, nonce)
+        await verify_gpu_evidence(gpu_evidence, nonce)
 
-            logger.success(f"Verified server {server.name}[{server.server_id}] for miner: {miner_hotkey}")
+        logger.success(f"Verified server {server.server_id} for miner: {miner_hotkey}")
 
-        return True, None
-    except GetEvidenceError:
+        # return True, None
+    except GetEvidenceError as e:
+        raise e
         return False, f"Failed to get attestation evidence."
     except (InvalidQuoteError, MeasurementMismatchError) as e:
-        logger.error(f"Server verification failed for {server.name}[{server.ip}]:\n{e}")
+        logger.error(f"Server verification failed for {server.ip}:\n{e}")
+        raise e
         return False, "Server verification failed: invalid quote"
     except InvalidGpuEvidenceError as e:
-        logger.error(f"Failed to verify GPU evidence for {server.name}[{server.ip}].  Invalid GPU evidence.")
+        logger.error(f"Failed to verify GPU evidence for {server.ip}.  Invalid GPU evidence.")
+        raise e
         return False, "Server verification failed: invalid GPU evidence"
     except GpuEvidenceError as e:
-        logger.error(f"Failed to verify GPU evidence for {server.name}[{server.ip}]")
+        logger.error(f"Failed to verify GPU evidence for {server.ip}")
+        raise e
         return False, "Server verification failed: Failed to verify GPU evidence"
     except Exception as e:
-        logger.error(f"Unexpected error during server verification for {server.name}[{server.ip}]: {str(e)}")
+        logger.error(f"Unexpected error during server verification for {server.ip}: {str(e)}")
+        raise e
         return False, "Unexpected error during server verification"
 
 
@@ -478,7 +493,6 @@ async def get_server_attestation_status(
 
     status = {
         "server_id": server_id,
-        "server_name": server.name,
         "last_attestation": None,
         "attestation_status": "never_attested",
     }
@@ -542,5 +556,5 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
 
     await db.commit()
 
-    logger.info(f"Deleted server: {server_id} [{server.name}({server.ip})]")
+    logger.info(f"Deleted server: {server_id} [{server.ip}]")
     return True

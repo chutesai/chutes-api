@@ -74,9 +74,7 @@ class Node(Base):
     verification_error = Column(String)
     verified_at = Column(DateTime(timezone=True))
 
-    # Add server relationship
-    # ToDo: Maybe want to set on delete to restrict instead?
-    server_id = Column(String, ForeignKey("servers.server_id", ondelete="SET NULL"), nullable=True)
+    server_id = Column(String, ForeignKey("servers.server_id", ondelete="CASCADE"), nullable=True)
 
     _gpu_specs = None
     _gpu_key = None

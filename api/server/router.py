@@ -145,12 +145,12 @@ async def create_server(
                 detail="Invalid verification host provided.",
             )
 
-        task_id = await register_server(db, args, hotkey)
+        await register_server(db, args, hotkey)
 
-        return {"task_id": task_id, "message": "Server registered successfully. Check task for verification status."}
+        return {"message": "Server registered successfully."}
 
     except ServerRegistrationError as e:
-        logger.warning(f"Server registration failed: {str(e)}")
+        logger.error(f"Server registration failed: {str(e)}")
         raise e
     except Exception as e:
         logger.error(f"Unexpected error in server registration: {str(e)}")
@@ -207,7 +207,6 @@ async def list_user_servers(
         return [
             {
                 "server_id": server.server_id,
-                "name": server.name,
                 "ip": server.ip,
                 "created_at": server.created_at.isoformat(),
                 "updated_at": server.updated_at.isoformat() if server.updated_at else None,
@@ -237,7 +236,6 @@ async def get_server_details(
 
         return {
             "server_id": server.server_id,
-            "name": server.name,
             "ip": server.ip,
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,

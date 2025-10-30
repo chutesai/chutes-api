@@ -52,6 +52,30 @@ def extract_server_cert_hash(response: ClientResponse):
         logger.error(f"Exception trying to extract cert hash from server cert:\n{e}")
         raise NoServerCertError(detail=str(e))
 
+def _get_server_certificate(response: ClientResponse) -> bytes:
+    """
+    Extract client certificate from Uvicorn request.
+    Simplified for FastAPI-to-FastAPI communication.
+    """
+    # Get the server certificate from the connection
+    # The transport contains the SSL object with peer certificate info
+    transport = response.connection.transport
+    ssl_object = transport.get_extra_info('ssl_object')
+    
+    if ssl_object is None:
+        raise ValueError("No SSL connection established")
+    
+    # Get the peer certificate in DER format
+    cert_der = ssl_object.getpeercert(binary_form=True)
+    
+    if cert_der is None:
+        raise ValueError("No peer certificate available")
+    
+    # Load the DER certificate
+    cert = x509.load_der_x509_certificate(cert_der, default_backend())
+
+    return cert
+
 def _get_public_key_hash(cert: Certificate) -> str:
     """
     Compute SHA-256 hash of certificate's public key in DER format.
@@ -89,41 +113,18 @@ def _get_client_certificate(request: Request) -> bytes:
     
     return cert
 
-def _get_server_certificate(response: ClientResponse) -> bytes:
-    """
-    Extract client certificate from Uvicorn request.
-    Simplified for FastAPI-to-FastAPI communication.
-    """
-    # Get the server certificate from the connection
-    # The transport contains the SSL object with peer certificate info
-    transport = response.connection.transport
-    ssl_object = transport.get_extra_info('ssl_object')
-    
-    if ssl_object is None:
-        raise ValueError("No SSL connection established")
-    
-    # Get the peer certificate in DER format
-    cert_der = ssl_object.getpeercert(binary_form=True)
-    
-    if cert_der is None:
-        raise ValueError("No peer certificate available")
-    
-    # Load the DER certificate
-    cert = x509.load_der_x509_certificate(cert_der, default_backend())
-
-    return cert
-
 
 def extract_nonce(quote: TdxQuote):
     # Extract nonce from report_data (first printable ASCII portion)
-    nonce = ""
-    _bytes = bytes.fromhex(quote.report_data[:64])
-    for i, b in enumerate(_bytes):
-        if b == 0 or not (32 <= b <= 126):  # Stop at null or non-printable
-            break
-        nonce += chr(b)
+    # nonce = ""
+    # _bytes = bytes.fromhex(quote.report_data[:64])
+    # for i, b in enumerate(_bytes):
+    #     if b == 0 or not (32 <= b <= 126):  # Stop at null or non-printable
+    #         break
+    #     nonce += chr(b)
 
-    return nonce
+    # return nonce
+    return quote.report_data[:64].lower()
 
 def extract_cert_hash(quote: TdxQuote):
     return quote.report_data[64:128].lower()

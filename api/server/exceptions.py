@@ -74,7 +74,7 @@ class NonceError(AttestationError):
 class GetEvidenceError(Exception):
 
     def __init__(self, detail: str = "Failed to get evidence for attestation."):
-        super().__init__(detail=detail)
+        super().__init__(detail)
 
 class ServerNotFoundError(HTTPException):
     """Raised when server is not found."""

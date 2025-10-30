@@ -70,7 +70,6 @@ class ServerArgs(BaseModel):
     """Request model for server registration."""
 
     id: str = Field(..., description="Server ID, should come from the k8s node uid.")
-    name: str = Field(..., description="Server name/identifier")
     host: str = Field(..., descriptiopn="Public IP address or DNS Name of the server")
     gpus: list[NodeArgs] = Field(..., description="GPU info for this server")
 
@@ -104,23 +103,23 @@ class Server(Base):
     __tablename__ = "servers"
 
     server_id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
     ip = Column(String, nullable=False, unique=True)  # Links to boot attestations
     miner_hotkey = Column(
-        String, ForeignKey("metagraph_nodes.hotkey", ondelete="CASCADE"), nullable=False
+        String, ForeignKey("metagraph_nodes.hotkey"), nullable=False
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships
-    nodes = relationship("Node", back_populates="server")
+    nodes = relationship(
+        "Node", back_populates="server", cascade="all, delete-orphan"
+    )
     runtime_attestations = relationship(
         "ServerAttestation", back_populates="server", cascade="all, delete-orphan"
     )
     miner = relationship("MetagraphNode", back_populates="servers")
 
     __table_args__ = (
-        UniqueConstraint("name", "miner_hotkey", name="uq_server_name_miner"),
         Index("idx_server_miner", "miner_hotkey"),
     )
 
