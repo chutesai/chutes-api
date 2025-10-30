@@ -6,10 +6,10 @@ import asyncio
 from datetime import datetime, timezone, timedelta
 import json
 import tempfile
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
-from sqlalchemy import Tuple, select, func
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
