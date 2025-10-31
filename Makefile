@@ -16,3 +16,4 @@ POETRY ?= "poetry"
 
 include makefiles/development.mk
 include makefiles/help.mk
+include makefiles/lint.mk

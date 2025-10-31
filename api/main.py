@@ -33,6 +33,7 @@ from api.job.router import router as jobs_router
 from api.secret.router import router as secrets_router
 from api.guesser import router as guess_router
 from api.audit.router import router as audit_router
+from api.server.router import router as servers_router
 from api.misc.router import router as misc_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
@@ -139,6 +140,7 @@ default_router.include_router(audit_router, prefix="/audit", tags=["Audit"])
 default_router.include_router(jobs_router, prefix="/jobs", tags=["Job"])
 default_router.include_router(secrets_router, prefix="/secrets", tags=["Secret"])
 default_router.include_router(misc_router, prefix="/misc", tags=["Miscellaneous"])
+default_router.include_router(servers_router, prefix="/servers", tags=["Servers"])
 
 
 # Do not use app for this, else middleware picks it up

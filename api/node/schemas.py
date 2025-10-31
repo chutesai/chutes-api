@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional
 from sqlalchemy import (
     Column,
+    ForeignKey,
     String,
     Integer,
     Numeric,
@@ -29,10 +30,10 @@ class NodeArgs(BaseModel):
     memory: int
     major: Optional[int] = None
     minor: Optional[int] = None
-    processors: int
+    processors: Optional[int] = None
     sxm: Optional[bool] = None
     clock_rate: float
-    max_threads_per_processor: int
+    max_threads_per_processor: Optional[int] = None
     concurrent_kernels: Optional[bool] = None
     ecc: Optional[bool] = None
     device_index: int = Field(gte=0, lt=10)
@@ -73,6 +74,8 @@ class Node(Base):
     verification_error = Column(String)
     verified_at = Column(DateTime(timezone=True))
 
+    server_id = Column(String, ForeignKey("servers.server_id", ondelete="CASCADE"), nullable=True)
+
     _gpu_specs = None
     _gpu_key = None
 
@@ -83,6 +86,8 @@ class Node(Base):
         lazy="joined",
         uselist=False,
     )
+    
+    server = relationship("Server", back_populates="nodes")
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
