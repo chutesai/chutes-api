@@ -4,6 +4,7 @@ TDX quote parsing, crypto operations, and server helper functions.
 
 import secrets
 from typing import Dict, Any, Optional
+from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from fastapi import Request, status
@@ -17,6 +18,8 @@ from cryptography.hazmat.backends import default_backend
 from api.server.exceptions import InvalidSignatureError, InvalidTdxConfiguration, MeasurementMismatchError, NoClientCertError, NoServerCertError
 from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
+
+from api.server.schemas import Server
 
 def generate_nonce() -> str:
     """Generate a cryptographically secure nonce."""
@@ -115,15 +118,6 @@ def _get_client_certificate(request: Request) -> bytes:
 
 
 def extract_nonce(quote: TdxQuote):
-    # Extract nonce from report_data (first printable ASCII portion)
-    # nonce = ""
-    # _bytes = bytes.fromhex(quote.report_data[:64])
-    # for i, b in enumerate(_bytes):
-    #     if b == 0 or not (32 <= b <= 126):  # Stop at null or non-printable
-    #         break
-    #     nonce += chr(b)
-
-    # return nonce
     return quote.report_data[:64].lower()
 
 def extract_cert_hash(quote: TdxQuote):
@@ -135,42 +129,6 @@ def extract_report_data(quote: TdxQuote):
     cert_hash = extract_cert_hash(quote)
 
     return nonce, cert_hash
-
-
-def _bytes_to_hex(data: Any) -> str:
-    """Convert bytes to uppercase hex string, handling various input types."""
-    if isinstance(data, bytes):
-        return data.hex().upper()
-    elif isinstance(data, str):
-        return data.upper()
-    else:
-        return str(data).upper()
-
-
-def _extract_user_data_from_bytes(reportdata_bytes: bytes) -> Optional[str]:
-    """Extract user data from report data bytes."""
-    if not reportdata_bytes or not any(reportdata_bytes):
-        return None
-
-    try:
-        # Remove trailing null bytes from the 64-byte field
-        user_data_trimmed = reportdata_bytes.rstrip(b"\x00")
-
-        # Decode as UTF-8 to get the original nonce
-        user_data = user_data_trimmed.decode("utf-8")
-        logger.debug(f"Extracted nonce from reportdata: {user_data}")
-        return user_data
-
-    except UnicodeDecodeError as e:
-        logger.warning(f"Reportdata is not valid UTF-8, using hex representation: {e}")
-        # Fallback: use the hex representation
-        user_data = user_data_trimmed.hex()
-        return user_data
-    except Exception as e:
-        logger.error(f"Failed to process reportdata: {e}")
-        # Final fallback: use the raw hex representation
-        return reportdata_bytes.rstrip(b"\x00").hex()
-
 
 async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
     """
@@ -284,3 +242,14 @@ def get_luks_passphrase() -> str:
         raise InvalidTdxConfiguration("Missing LUKS phassphrase configuration")
 
     return passphrase
+
+async def _track_server(db: AsyncSession, id: str, host: str, miner_hotkey: str, is_tee: bool=False):
+    # Add server and nodes to DB
+    server = Server(server_id=id, ip=host, miner_hotkey=miner_hotkey, is_tee=is_tee)
+
+    db.add(server)
+    await db.commit()
+    await db.refresh(server)
+
+    return server
+

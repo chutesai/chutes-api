@@ -42,6 +42,7 @@ from api.server.exceptions import (
     ServerRegistrationError,
 )
 from api.server.util import (
+    _track_server,
     extract_report_data,
     verify_measurements,
     get_luks_passphrase,
@@ -257,7 +258,7 @@ async def process_boot_attestation(
 async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
 
     try:
-        server = await _track_server(db, args, miner_hotkey)
+        server = await _track_server(db, args.id, args.host, miner_hotkey, is_tee=True)
 
         # Set the attributes we can't get from pynvml
         for gpu in args.gpus:
@@ -283,18 +284,8 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         await db.rollback()
         logger.error(f"Unexpected error during server registration: {str(e)}")
         raise ServerRegistrationError(f"Server registration failed: {str(e)}")
+    
 
-async def _track_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
-    # Add server and nodes to DB
-    server = Server(server_id=args.id, ip=args.host, miner_hotkey=miner_hotkey)
-
-    db.add(server)
-    await db.commit()
-    await db.refresh(server)
-
-    return server
-
-# @broker.task
 async def verify_server(
     server: Server, miner_hotkey: str
 ) -> None:
