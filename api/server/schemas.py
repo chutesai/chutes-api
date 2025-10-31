@@ -13,8 +13,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     Text,
-    Index,
-    UniqueConstraint,
+    Index
 )
 from typing import Dict, Any
 from api.database import Base, generate_uuid
@@ -109,6 +108,8 @@ class Server(Base):
     )
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+    is_tee = Column(Boolean, default=False)
 
     # Relationships
     nodes = relationship(
