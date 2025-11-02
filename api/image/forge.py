@@ -806,6 +806,7 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
 USER root
 RUN rm -f /etc/chutesfs.index
 USER chutes
+ENV LD_PRELOAD=""
 RUN pip install chutes=={chutes_version}
 RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-netnanny.so"))') /usr/local/lib/chutes-netnanny.so
 ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so
