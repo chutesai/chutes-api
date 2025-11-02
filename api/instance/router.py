@@ -874,6 +874,28 @@ async def activate_launch_config_instance(
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
+        # Verify egress.
+        net_success = True
+        if semcomp(chute.chutes_version, "0.3.49") >= 0:
+            from conn_prober import check_instance_connectivity
+
+            _, net_success = await check_instance_connectivity(instance, delete_on_failure=False)
+        if not net_success:
+            reason = "Instance has failed network connectivity probes, based on allow_external_egress flag"
+            logger.warning(reason)
+            await db.delete(instance)
+            await asyncio.create_task(notify_deleted(instance))
+            await db.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                ),
+                {"instance_id": instance.instance_id, "reason": reason},
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=reason,
+            )
+
         instance.active = True
         instance.activated_at = func.now()
         if launch_config.job_id or (

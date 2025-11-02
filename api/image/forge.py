@@ -200,6 +200,8 @@ RUN ls -la /tmp/chutesfs.*
             "chroot",
             "--build-arg",
             f"CFSV_OP={os.getenv('CFSV_OP', str(uuid.uuid4()))}",
+            "--build-arg",
+            f"PS_OP={os.getenv('PS_OP', str(uuid.uuid4()))}",
             "--storage-driver",
             storage_driver,
             "--layers",
@@ -608,7 +610,6 @@ async def extract_cfsv_data_from_verification_image(verification_tag: str, build
 
         # Use shutil to copy the file
         shutil.copy2(source_path, data_file_path)
-        shutil.copy2(os.path.join(mount_path, "tmp", "chutesfs.index"), "/tmp/NEW.index")
         logger.info(f"Successfully copied data file from {source_path} to {data_file_path}")
 
         return data_file_path, inspecto_hash
@@ -857,9 +858,11 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so
 
             fsv_dockerfile_content = f"""FROM {updated_tag}
 ARG CFSV_OP
+ARG PS_OP
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
+RUN PS_OP="${{PS_OP}}" python -m chutes.inspecto > /tmp/inspecto.hash
 RUN ls -la /tmp/chutesfs.*
 """
             fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
@@ -873,6 +876,8 @@ RUN ls -la /tmp/chutesfs.*
                 "chroot",
                 "--build-arg",
                 f"CFSV_OP={os.getenv('CFSV_OP', str(uuid.uuid4()))}",
+                "--build-arg",
+                f"PS_OP={os.getenv('PS_OP', str(uuid.uuid4()))}",
                 "--storage-driver",
                 storage_driver,
                 "--layers",

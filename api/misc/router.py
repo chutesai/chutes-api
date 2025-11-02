@@ -27,6 +27,9 @@ async def proxy(
     request: Request,
     stream: bool = Query(False, description="Stream the response for large files/videos"),
 ):
+    if url == "ping":
+        return {"pong": True}
+
     if not url.startswith(("http://", "https://")) or not is_url_allowed(url):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
