@@ -120,9 +120,9 @@ class LeastConnManager:
     ):
         self.concurrency = concurrency or 1
         self.chute_id = chute_id
-        self.redis_client = settings.cm_redis_client[
-            uuid.UUID(self.chute_id).int % len(settings.cm_redis_client)
-        ]
+        _u_idx = uuid.UUID(self.chute_id).int % len(settings.cm_redis_client)
+        self.redis_client = settings.cm_redis_client[_u_idx]
+        self.redis_client_index = _u_idx
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.cleanup_interval = cleanup_interval
@@ -348,13 +348,13 @@ class LeastConnManager:
                 )
             except asyncio.TimeoutError:
                 logger.warning(
-                    f"Timeout adding connection to {instance.instance_id}, proceeding anyway"
+                    f"Timeout adding connection to {self.redis_client_index=} {instance.instance_id}, proceeding anyway"
                 )
             except Exception as e:
                 logger.error(f"Error tracking connection: {e}")
             yield instance, None
         except asyncio.TimeoutError:
-            logger.error("Timeout getting targets")
+            logger.error("Timeout getting targets on {self.redis_client_index=}")
             # Fallback to random instance
             available = [inst for iid, inst in self.instances.items() if iid not in avoid]
             if available:
@@ -384,7 +384,9 @@ class LeastConnManager:
                         )
                     )
                 except asyncio.TimeoutError:
-                    logger.warning(f"Timeout cleaning up connection {conn_id}")
+                    logger.warning(
+                        f"Timeout cleaning up connection {conn_id} on {self.redis_client_index=}"
+                    )
                 except Exception as e:
                     logger.error(f"Error cleaning up connection {conn_id}: {e}")
 

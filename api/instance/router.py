@@ -562,58 +562,57 @@ async def claim_launch_config(
                 detail=launch_config.verification_error,
             )
 
-        # XXX Currently disabled because verification hash can occasionally lead to segfault.
-        # enforce_inspecto = "PS_OP" in os.environ
-        # inspecto_valid = True
-        # fail_reason = None
-        # if enforce_inspecto:
-        #     inspecto_hash = (
-        #         (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
-        #         .unique()
-        #         .scalar_one_or_none()
-        #     )
-        #     if not inspecto_hash:
-        #         logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
-        #         inspecto_valid = True
-        #     else:
-        #         if not args.inspecto:
-        #             inspecto_valid = False
-        #             fail_reason = "missing args.inspecto hash!"
-        #         else:
-        #             raw = INSPECTO.verify_hash(
-        #                 inspecto_hash.encode("utf-8"),
-        #                 launch_config.config_id.encode("utf-8"),
-        #                 args.inspecto.encode("utf-8"),
-        #             )
-        #             logger.info(
-        #                 "INSPECTO: verify_hash(%r, %r, %r) -> %r",
-        #                 inspecto_hash,
-        #                 launch_config.config_id,
-        #                 args.inspecto,
-        #                 raw,
-        #             )
-        #             if not raw:
-        #                 inspecto_valid = False
-        #                 fail_reason = "inspecto returned NULL"
-        #             else:
-        #                 try:
-        #                     payload = json.loads(raw.decode("utf-8"))
-        #                 except Exception as e:
-        #                     inspecto_valid = False
-        #                     fail_reason = f"inspecto returned non-JSON: {e}"
-        #                 else:
-        #                     if not payload.get("verified"):
-        #                         inspecto_valid = False
-        #                         fail_reason = f"inspecto verification failed: {payload}"
-        # if not inspecto_valid:
-        #     logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
-        #     launch_config.failed_at = func.now()
-        #     launch_config.verification_error = "Failed inspecto environment/lib verification."
-        #     await db.commit()
-        #     raise HTTPException(
-        #         status_code=status.HTTP_403_FORBIDDEN,
-        #         detail=launch_config.verification_error,
-        #     )
+        enforce_inspecto = "PS_OP" in os.environ
+        inspecto_valid = True
+        fail_reason = None
+        if enforce_inspecto:
+            inspecto_hash = (
+                (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not inspecto_hash:
+                logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
+                inspecto_valid = True
+            else:
+                if not args.inspecto:
+                    inspecto_valid = False
+                    fail_reason = "missing args.inspecto hash!"
+                else:
+                    raw = INSPECTO.verify_hash(
+                        inspecto_hash.encode("utf-8"),
+                        launch_config.config_id.encode("utf-8"),
+                        args.inspecto.encode("utf-8"),
+                    )
+                    logger.info(
+                        "INSPECTO: verify_hash(%r, %r, %r) -> %r",
+                        inspecto_hash,
+                        launch_config.config_id,
+                        args.inspecto,
+                        raw,
+                    )
+                    if not raw:
+                        inspecto_valid = False
+                        fail_reason = "inspecto returned NULL"
+                    else:
+                        try:
+                            payload = json.loads(raw.decode("utf-8"))
+                        except Exception as e:
+                            inspecto_valid = False
+                            fail_reason = f"inspecto returned non-JSON: {e}"
+                        else:
+                            if not payload.get("verified"):
+                                inspecto_valid = False
+                                fail_reason = f"inspecto verification failed: {payload}"
+        if not inspecto_valid:
+            logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Failed inspecto environment/lib verification."
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
 
     # Valid filesystem/integrity?
     if semcomp(chute.chutes_version, "0.3.1") >= 0:
