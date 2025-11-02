@@ -750,9 +750,22 @@ def is_kubernetes_env(
     # Ignore if we don't have envdump configured.
     if not settings.kubecheck_salt:
         return True
+
     # Requires chutes SDK 0.2.53+
     if semcomp(instance.chutes_version or "0.0.0", "0.2.53") < 0:
         return True
+
+    # Lib overrides.
+    if standard_template:
+        exclude = {"UV_SYSTEM_PYTHON", "PYTHONUNBUFFERED", "PYTHONIOENCODING", "PYTHONWARNINGS"}
+        bad = [key for key in dump["env"] if "python" in key.lower() and key.upper() not in exclude]
+        if bad:
+            logger.warning(f"{log_prefix} Invalid environment found: PYTHON env override(s): {bad}")
+            return False
+    if semcomp(instance.chutes_version or "0.0.0", "0.3.49") >= 0:
+        if not re.match(r"^[^:]+/chutes-logintercept.so:/usr/local/lib/chutes-netnanny.so", dump["env"].get("LD_PRELOAD")):
+            logger.warning(f"{log_prefix} Invalid environment found: LD_PRELOAD tampering")
+            return False
 
     # Simple flags.
     flat = uuid_dict(dump, salt=settings.kubecheck_salt)
@@ -869,26 +882,30 @@ async def check_sglang(instance_id: str, chute: Chute, dump: dict, log_prefix: s
     for process in processes:
         clean_exe = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["exe"].strip())
         if (
-            (process["exe"] == "/opt/python/bin/python3.12" or clean_exe == "python")
+            clean_exe in ["python", "python3.10", "python3.11", "python3.12"]
             and process["username"] == "chutes"
-            and (
-                process["cmdline"].startswith(
-                    f"python -m sglang.launch_server --host 127.0.0.1 --port 10101 --model-path {model_name}"
-                )
-                or process["cmdline"].startswith(
-                    "sglang::http_server/tokenizer_manager"
-                )  # XXX SGLang now uses setproctitle
+            and process["cmdline"].startswith(
+                f"python -m sglang.launch_server --host 127.0.0.1 --port 10101 --model-path {model_name}"
             )
         ):
-            logger.success(f"{log_prefix} found SGLang chute: {process=}")
-            found_sglang = True
-            sglang_process = process
-            if revision:
-                if revision in process["cmdline"]:
-                    logger.success(f"{log_prefix} also found revision identifier")
+            if semcomp(chute.chutes_version or "0.0.0", "0.3.48") >= 0:
+                if "--enable-cache-report" not in process["cmdline"]:
+                    logger.warning(f"Cache report not enabled: {process['cmdline']}")
+                elif "--enable-return-hidden-states" not in process["cmdline"]:
+                    logger.warning(f"Hidden states return not enabled: {process['cmdline']}")
                 else:
-                    logger.warning(f"{log_prefix} did not find chute revision: {revision}")
-            break
+                    found_sglang = True
+            else:
+                found_sglang = True
+            if revision and revision not in process["cmdline"]:
+                found_sglang = False
+                logger.warning(
+                    f"Did not find model revision in SGLang command: {process['cmdline']}"
+                )
+            if found_sglang:
+                logger.success(f"{log_prefix} found valid SGLang chute: {process=}")
+                sglang_process = process
+                break
 
     if not found_sglang:
         logger.error(f"{log_prefix} did not find SGLang process, bad...")

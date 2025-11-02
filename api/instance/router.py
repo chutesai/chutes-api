@@ -5,12 +5,14 @@ Routes for instances.
 import os
 import uuid
 import base64
+import ctypes
 import traceback
 import random
 import socket
 import secrets
 import asyncio
 import api.miner_client as miner_client
+import orjson as json
 from loguru import logger
 from typing import Optional
 from datetime import timedelta
@@ -58,6 +60,7 @@ from api.util import (
     notify_deleted,
     notify_verified,
     notify_activated,
+    load_shared_object,
     has_legacy_private_billing,
 )
 from api.bounty.util import check_bounty_exists, delete_bounty
@@ -67,6 +70,14 @@ from watchtower import is_kubernetes_env, verify_expected_command
 from log_prober import check_instance_logging_server
 
 router = APIRouter()
+
+INSPECTO = load_shared_object("chutes", "chutes-inspecto.so")
+INSPECTO.verify_hash.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
+INSPECTO.verify_hash.restype = ctypes.c_char_p
+
+NETNANNY = load_shared_object("chutes", "chutes-netnanny.so")
+NETNANNY.verify_challenge.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+NETNANNY.verify_challenge.restype = ctypes.c_int
 
 
 async def _load_chute(db, chute_id: str):
@@ -194,10 +205,7 @@ async def _check_scalable_private(db, chute, miner):
     public_result = (
         (await db.execute(public_chute_query, {"miner_hotkey": miner.hotkey})).mappings().first()
     )
-    if (
-        public_result["public_instance_count"] < 4
-        or public_result["public_instance_gpu_count"] < 32
-    ):
+    if public_result["public_instance_count"] < 1 or public_result["public_instance_gpu_count"] < 8:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Miner {miner.hotkey} insufficient public chutes/GPUs to deploy private chutes.",
@@ -509,9 +517,62 @@ async def claim_launch_config(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
-
     else:
         logger.warning("Unable to perform extended validation, skipping...")
+
+    if semcomp(chute.chutes_version, "0.3.49") >= 0:
+        # NetNanny (match egress config and hash).
+        nn_valid = True
+        if chute.allow_external_egress != args.egress or not args.netnanny_hash:
+            nn_valid = False
+        elif not NETNANNY.verify_challenge(args.netnanny_hash, launch_config.config_id):
+            nn_valid = False
+        if not nn_valid:
+            logger.error(f"{log_prefix} has tampered with netnanny!")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Failed netnanny validation."
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+
+        # Inspecto
+        inspecto_valid = True
+        if not args.inspecto:
+            inspecto_valid = False
+        elif "PS_OP" in environ:
+            inspecto_hash = (
+                (
+                    await session.execute(
+                        select(Image.inspecto).where(Image.image_id == chute.image_id)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            if inspecto_hash:
+                result = INSPECTO.verify_hash(inspecto_hash, launch_config.config_id, args.inspecto)
+                logger.info(
+                    f"INSPECTO: verify_hash('{inspecto_hash}', '{launch_config.config_id}', '{args.inspecto}') = {result}"
+                )
+                if result:
+                    result = json.loads(result.decode("utf-8"))
+                    if not result.get("verified"):
+                        logger.error(f"{log_prefix} failed inspecto verification: {result=}")
+                    else:
+                        inspecto_valid = False
+            else:
+                logger.warning(f"INSPECTO: {chute.image_id=} does not contain inspecto hash!")
+        if not inspecto_valid:
+            logger.error(f"{log_prefix} has invalid inspecto hash, likely env tampering!")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Failed inspecto environment/lib verification."
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
 
     # Valid filesystem/integrity?
     if semcomp(chute.chutes_version, "0.3.1") >= 0:

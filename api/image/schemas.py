@@ -32,7 +32,7 @@ class Image(Base):
     patch_version = Column(String, nullable=True, default="initial")
     build_started_at = Column(DateTime(timezone=True))
     build_completed_at = Column(DateTime(timezone=True))
-    protecto = Column(String, nullable=True)
+    inspecto = Column(String, nullable=True)
 
     chutes = relationship("Chute", back_populates="image")
     logo = relationship("Logo", back_populates="images", lazy="joined")

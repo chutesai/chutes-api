@@ -57,7 +57,9 @@ class LaunchConfigArgs(BaseModel):
     env: str
     code: str
     fsv: Optional[str] = None
-    protecto: Optional[str] = None
+    inspecto: Optional[str] = None
+    egress: Optional[bool] = None
+    netnanny_hash: Optional[str] = None
 
 
 class Instance(Base):

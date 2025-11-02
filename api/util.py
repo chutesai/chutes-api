@@ -2,11 +2,13 @@
 Utility/helper functions.
 """
 
+import os
 import re
 import time
 import uuid
 import aiodns
 import base64
+import ctypes
 import random
 import semver
 import string
@@ -17,6 +19,7 @@ import hashlib
 import datetime
 import traceback
 import ipaddress
+import importlib.util
 from io import BytesIO
 from PIL import Image
 import orjson as json
@@ -838,3 +841,12 @@ async def has_minimum_balance_for_registration(
                 await substrate.close()
             except Exception:
                 ...
+
+
+def load_shared_object(pkg_name: str, filename: str):
+    spec = importlib.util.find_spec(pkg_name)
+    if not spec or not spec.submodule_search_locations:
+        raise ImportError(f"Package {pkg_name} not found")
+    pkg_dir = spec.submodule_search_locations[0]
+    path = os.path.join(pkg_dir, filename)
+    return ctypes.CDLL(path)

@@ -182,9 +182,11 @@ async def build_and_push_image(image, build_dir):
         logger.info(f"Stage 2: Building filesystem verification image as {verification_tag}")
         fsv_dockerfile_content = f"""FROM {original_tag}
 ARG CFSV_OP
+ARG PS_OP
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
+RUN PS_OP="${{PS_OP}}" python -m chutes.inspecto > /tmp/inspecto.hash
 RUN ls -la /tmp/chutesfs.*
 """
         fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
@@ -226,9 +228,10 @@ RUN ls -la /tmp/chutesfs.*
             raise BuildFailure("Build of filesystem verification image failed!")
 
         # Extract the data file from the verification image
-        data_file_path = await extract_cfsv_data_from_verification_image(
+        data_file_path, inspecto_hash = await extract_cfsv_data_from_verification_image(
             verification_tag, build_dir
         )
+        image.inspecto = inspecto_hash
         await upload_filesystem_verification_data(image, data_file_path)
 
         # Stage 3: Build final image that combines original + index file
@@ -598,12 +601,17 @@ async def extract_cfsv_data_from_verification_image(verification_tag: str, build
                 logger.warning(f"Files in /tmp: {files}")
             raise Exception(f"Data file not found at {source_path}")
 
+        # Load inspecto hash.
+        with open(os.path.join(mount_path, "tmp", "inspecto.hash")) as infile:
+            inspecto_hash = infile.read().strip()
+            assert inspecto_hash
+
         # Use shutil to copy the file
         shutil.copy2(source_path, data_file_path)
         shutil.copy2(os.path.join(mount_path, "tmp", "chutesfs.index"), "/tmp/NEW.index")
         logger.info(f"Successfully copied data file from {source_path} to {data_file_path}")
 
-        return data_file_path
+        return data_file_path, inspecto_hash
     finally:
         # Unmount if we mounted
         if mount_path and container_id:
@@ -900,7 +908,7 @@ RUN ls -la /tmp/chutesfs.*
                 raise BuildFailure("Failed to build filesystem verification image!")
 
             # Extract and upload data file
-            data_file_path = await extract_cfsv_data_from_verification_image(
+            data_file_path, inspecto_hash = await extract_cfsv_data_from_verification_image(
                 verification_tag, build_dir
             )
             s3_key = f"image_hash_blobs/{image_id}/{patch_version}.data"
@@ -1016,6 +1024,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                 image.patch_version = patch_version
                 image.chutes_version = chutes_version
                 image.short_tag = target_tag
+                image.inspecto_hash = inspecto_hash
                 await session.commit()
                 await session.refresh(image)
                 logger.success(

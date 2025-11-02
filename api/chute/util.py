@@ -39,6 +39,7 @@ from api.exceptions import (
     BadRequest,
     KeyExchangeRequired,
     EmptyLLMResponse,
+    InvalidResponse,
     InvalidCLLMV,
 )
 from api.util import (
@@ -542,8 +543,7 @@ async def _invoke_one(
 
                     # CLLMV check.
                     if (
-                        chunk_idx <= 10
-                        and isinstance(data, dict)
+                        isinstance(data, dict)
                         and image_supports_cllmv(chute.image)
                         and target.version == chute.version
                         and chute.chute_id
@@ -567,19 +567,20 @@ async def _invoke_one(
                         ):
                             choice = data["choices"][0]
                             if isinstance(choice, dict):
-                                if "text" in choice:
-                                    text = choice["text"]
-                                elif (
-                                    "delta" in choice
-                                    and choice["delta"]
-                                    and isinstance(choice["delta"], dict)
-                                ):
-                                    text = choice["delta"].get("content") or choice["delta"].get(
-                                        "reasoning_content"
-                                    )
-                                    tool_calls = choice["delta"].get("tool_calls")
-                                    if isinstance(tool_calls, list) and tool_calls:
-                                        has_tool_call = True
+                                if plain_path.startswith("chat"):
+                                    if (
+                                        "delta" in choice
+                                        and choice["delta"]
+                                        and isinstance(choice["delta"], dict)
+                                    ):
+                                        text = choice["delta"].get("content") or choice[
+                                            "delta"
+                                        ].get("reasoning_content")
+                                        tool_calls = choice["delta"].get("tool_calls")
+                                        if isinstance(tool_calls, list) and tool_calls:
+                                            has_tool_call = True
+                                else:
+                                    text = choice.get("text")
 
                         # Verify the hash.
                         if (text or not has_tool_call) and (
@@ -768,7 +769,7 @@ async def _invoke_one(
                         text = None
                         if json_data.get("choices"):
                             choice = json_data["choices"][0]
-                            if "text" in choice:
+                            if "text" in choice and not plain_path.startswith("chat"):
                                 text = choice["text"]
                             elif isinstance(choice.get("message"), dict):
                                 text = choice["message"].get(
@@ -830,6 +831,13 @@ async def _invoke_one(
                                 )
                             else:
                                 prompt_tokens = claimed_prompt_tokens
+                    else:
+                        logger.warning(
+                            f"Response from {target.instance_id=} {target.miner_hotkey=} of {chute.chute_id=} {chute.name=} did not include usage data!"
+                        )
+                        raise InvalidResponse(
+                            f"BAD_RESPONSE {target.instance_id=} {chute.name=} returned invalid response (missing usage data)"
+                        )
 
                     # Track metrics using either sane claimed usage metrics or estimates.
                     metrics["tokens"] = completion_tokens

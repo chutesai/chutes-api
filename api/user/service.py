@@ -50,6 +50,7 @@ def get_current_user(
         # If not using hotkey auth, then just use the API key
         if not use_hotkey_auth:
             # API key validation.
+            user = None
             if authorization:
                 token = authorization.split(" ")[-1]
 
@@ -59,15 +60,16 @@ def get_current_user(
                     and authorization.lower().lstrip().startswith("bearer ")
                     and not token.strip().startswith("cpk_")
                 ):
-                    return await get_user_from_token(token, request)
+                    user = await get_user_from_token(token, request)
 
                 # API key auth.
-                if token:
+                if not user and token:
                     api_key = await get_and_check_api_key(token, request)
-                    request.state.api_key = api_key
-                    return api_key.user
-
-            # NOTE: Need a nicer error message if the user is trying to register (and has no api key)
+                    if api_key:
+                        request.state.api_key = api_key
+                        user = api_key.user
+            if user:
+                return user
             if raise_not_found:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
