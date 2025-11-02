@@ -1024,7 +1024,7 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
                 image.patch_version = patch_version
                 image.chutes_version = chutes_version
                 image.short_tag = target_tag
-                image.inspecto_hash = inspecto_hash
+                image.inspecto = inspecto_hash
                 await session.commit()
                 await session.refresh(image)
                 logger.success(

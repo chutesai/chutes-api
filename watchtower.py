@@ -763,7 +763,10 @@ def is_kubernetes_env(
             logger.warning(f"{log_prefix} Invalid environment found: PYTHON env override(s): {bad}")
             return False
     if semcomp(instance.chutes_version or "0.0.0", "0.3.49") >= 0:
-        if not re.match(r"^[^:]+/chutes-logintercept.so:/usr/local/lib/chutes-netnanny.so", dump["env"].get("LD_PRELOAD")):
+        if not re.match(
+            r"^[^:]+/chutes-logintercept.so:/usr/local/lib/chutes-netnanny.so",
+            dump["env"].get("LD_PRELOAD"),
+        ):
             logger.warning(f"{log_prefix} Invalid environment found: LD_PRELOAD tampering")
             return False
 

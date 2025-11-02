@@ -40,6 +40,7 @@ from api.instance.schemas import (
     LaunchConfig,
     LaunchConfigArgs,
 )
+from api.image.schemas import Image
 from api.job.schemas import Job
 from api.instance.util import (
     get_instance_by_chute_and_id,
@@ -538,34 +539,50 @@ async def claim_launch_config(
             )
 
         # Inspecto
+        enforce_inspecto = "PS_OP" in os.environ
         inspecto_valid = True
-        if not args.inspecto:
-            inspecto_valid = False
-        elif "PS_OP" in environ:
+        fail_reason = None
+        if enforce_inspecto:
             inspecto_hash = (
-                (
-                    await session.execute(
-                        select(Image.inspecto).where(Image.image_id == chute.image_id)
-                    )
-                )
+                (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
                 .unique()
                 .scalar_one_or_none()
             )
-            if inspecto_hash:
-                result = INSPECTO.verify_hash(inspecto_hash, launch_config.config_id, args.inspecto)
-                logger.info(
-                    f"INSPECTO: verify_hash('{inspecto_hash}', '{launch_config.config_id}', '{args.inspecto}') = {result}"
-                )
-                if result:
-                    result = json.loads(result.decode("utf-8"))
-                    if not result.get("verified"):
-                        logger.error(f"{log_prefix} failed inspecto verification: {result=}")
-                    else:
-                        inspecto_valid = False
+            if not inspecto_hash:
+                logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
+                inspecto_valid = True
             else:
-                logger.warning(f"INSPECTO: {chute.image_id=} does not contain inspecto hash!")
+                if not args.inspecto:
+                    inspecto_valid = False
+                    fail_reason = "missing args.inspecto hash!"
+                else:
+                    raw = INSPECTO.verify_hash(
+                        inspecto_hash.encode("utf-8"),
+                        launch_config.config_id.encode("utf-8"),
+                        args.inspecto.encode("utf-8"),
+                    )
+                    logger.info(
+                        "INSPECTO: verify_hash(%r, %r, %r) -> %r",
+                        inspecto_hash,
+                        launch_config.config_id,
+                        args.inspecto,
+                        raw,
+                    )
+                    if not raw:
+                        inspecto_valid = False
+                        fail_reason = "inspecto returned NULL"
+                    else:
+                        try:
+                            payload = json.loads(raw.decode("utf-8"))
+                        except Exception as e:
+                            inspecto_valid = False
+                            fail_reason = f"inspecto returned non-JSON: {e}"
+                        else:
+                            if not payload.get("verified"):
+                                inspecto_valid = False
+                                fail_reason = f"inspecto verification failed: {payload}"
         if not inspecto_valid:
-            logger.error(f"{log_prefix} has invalid inspecto hash, likely env tampering!")
+            logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Failed inspecto environment/lib verification."
             await db.commit()
