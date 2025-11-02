@@ -60,6 +60,9 @@ class LaunchConfigArgs(BaseModel):
     inspecto: Optional[str] = None
     egress: Optional[bool] = None
     netnanny_hash: Optional[str] = None
+    run_code: Optional[str] = None
+    run_path: Optional[str] = None
+    py_dirs: Optional[list[str]] = None
 
 
 class Instance(Base):
@@ -95,6 +98,7 @@ class Instance(Base):
     cacert = Column(String, nullable=True)
     port_mappings = Column(JSONB, nullable=True)
     inspecto = Column(String, nullable=True)
+    env_creation = Column(JSONB, nullable=True)
 
     # Hourly rate charged to customer, which may differ from the hourly rate of the actual
     # GPUs used for this instance due to node selector. For example, if a chute supports

@@ -61,6 +61,7 @@ def model_to_dict(obj):
     data.pop("inspecto", None)
     data.pop("port_mappings", None)
     data.pop("port", None)
+    data.pop("env_creation", None)
     return data
 
 

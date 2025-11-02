@@ -521,6 +521,20 @@ async def claim_launch_config(
         logger.warning("Unable to perform extended validation, skipping...")
 
     if semcomp(chute.chutes_version, "0.3.49") >= 0:
+        if not args.run_path or (
+            chute.standard_template == "vllm"
+            and os.path.dirname(args.run_path)
+            != "/usr/local/lib/python3.12/dist-packages/chutes/entrypoint"
+        ):
+            logger.error(f"{log_prefix} has tampered with paths!")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Env tampering detected!"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+
         # NetNanny (match egress config and hash).
         nn_valid = True
         if chute.allow_external_egress != args.egress or not args.netnanny_hash:
@@ -683,6 +697,7 @@ async def claim_launch_config(
         billed_to=None,
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
         inspecto=args.inspecto,
+        env_creation=args.model_dump(),
     )
     if launch_config.job_id or (
         not chute.public
