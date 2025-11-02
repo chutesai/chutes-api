@@ -94,6 +94,7 @@ class Instance(Base):
     )
     cacert = Column(String, nullable=True)
     port_mappings = Column(JSONB, nullable=True)
+    inspecto = Column(String, nullable=True)
 
     # Hourly rate charged to customer, which may differ from the hourly rate of the actual
     # GPUs used for this instance due to node selector. For example, if a chute supports

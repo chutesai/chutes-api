@@ -11,8 +11,8 @@ import random
 import socket
 import secrets
 import asyncio
+import orjson as json  # noqa
 import api.miner_client as miner_client
-import orjson as json
 from loguru import logger
 from typing import Optional
 from datetime import timedelta
@@ -34,13 +34,13 @@ from api.payment.util import decrypt_secret
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute, NodeSelector
 from api.secret.schemas import Secret
+from api.image.schemas import Image  # noqa
 from api.instance.schemas import (
     Instance,
     instance_nodes,
     LaunchConfig,
     LaunchConfigArgs,
 )
-from api.image.schemas import Image
 from api.job.schemas import Job
 from api.instance.util import (
     get_instance_by_chute_and_id,
@@ -68,7 +68,6 @@ from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
-from log_prober import check_instance_logging_server
 
 router = APIRouter()
 
@@ -539,50 +538,8 @@ async def claim_launch_config(
             )
 
         # Inspecto
-        enforce_inspecto = "PS_OP" in os.environ
-        inspecto_valid = True
-        fail_reason = None
-        if enforce_inspecto:
-            inspecto_hash = (
-                (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
-                .unique()
-                .scalar_one_or_none()
-            )
-            if not inspecto_hash:
-                logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
-                inspecto_valid = True
-            else:
-                if not args.inspecto:
-                    inspecto_valid = False
-                    fail_reason = "missing args.inspecto hash!"
-                else:
-                    raw = INSPECTO.verify_hash(
-                        inspecto_hash.encode("utf-8"),
-                        launch_config.config_id.encode("utf-8"),
-                        args.inspecto.encode("utf-8"),
-                    )
-                    logger.info(
-                        "INSPECTO: verify_hash(%r, %r, %r) -> %r",
-                        inspecto_hash,
-                        launch_config.config_id,
-                        args.inspecto,
-                        raw,
-                    )
-                    if not raw:
-                        inspecto_valid = False
-                        fail_reason = "inspecto returned NULL"
-                    else:
-                        try:
-                            payload = json.loads(raw.decode("utf-8"))
-                        except Exception as e:
-                            inspecto_valid = False
-                            fail_reason = f"inspecto returned non-JSON: {e}"
-                        else:
-                            if not payload.get("verified"):
-                                inspecto_valid = False
-                                fail_reason = f"inspecto verification failed: {payload}"
-        if not inspecto_valid:
-            logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
+        if not args.inspecto:
+            logger.error(f"{log_prefix} no inspecto hash provided")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Failed inspecto environment/lib verification."
             await db.commit()
@@ -590,6 +547,59 @@ async def claim_launch_config(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
+
+        # XXX Currently disabled because verification hash can occasionally lead to segfault.
+        # enforce_inspecto = "PS_OP" in os.environ
+        # inspecto_valid = True
+        # fail_reason = None
+        # if enforce_inspecto:
+        #     inspecto_hash = (
+        #         (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
+        #         .unique()
+        #         .scalar_one_or_none()
+        #     )
+        #     if not inspecto_hash:
+        #         logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
+        #         inspecto_valid = True
+        #     else:
+        #         if not args.inspecto:
+        #             inspecto_valid = False
+        #             fail_reason = "missing args.inspecto hash!"
+        #         else:
+        #             raw = INSPECTO.verify_hash(
+        #                 inspecto_hash.encode("utf-8"),
+        #                 launch_config.config_id.encode("utf-8"),
+        #                 args.inspecto.encode("utf-8"),
+        #             )
+        #             logger.info(
+        #                 "INSPECTO: verify_hash(%r, %r, %r) -> %r",
+        #                 inspecto_hash,
+        #                 launch_config.config_id,
+        #                 args.inspecto,
+        #                 raw,
+        #             )
+        #             if not raw:
+        #                 inspecto_valid = False
+        #                 fail_reason = "inspecto returned NULL"
+        #             else:
+        #                 try:
+        #                     payload = json.loads(raw.decode("utf-8"))
+        #                 except Exception as e:
+        #                     inspecto_valid = False
+        #                     fail_reason = f"inspecto returned non-JSON: {e}"
+        #                 else:
+        #                     if not payload.get("verified"):
+        #                         inspecto_valid = False
+        #                         fail_reason = f"inspecto verification failed: {payload}"
+        # if not inspecto_valid:
+        #     logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
+        #     launch_config.failed_at = func.now()
+        #     launch_config.verification_error = "Failed inspecto environment/lib verification."
+        #     await db.commit()
+        #     raise HTTPException(
+        #         status_code=status.HTTP_403_FORBIDDEN,
+        #         detail=launch_config.verification_error,
+        #     )
 
     # Valid filesystem/integrity?
     if semcomp(chute.chutes_version, "0.3.1") >= 0:
@@ -672,6 +682,7 @@ async def claim_launch_config(
         compute_multiplier=node_selector.compute_multiplier,
         billed_to=None,
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
+        inspecto=args.inspecto,
     )
     if launch_config.job_id or (
         not chute.public
@@ -680,19 +691,6 @@ async def claim_launch_config(
     ):
         instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
         instance.billed_to = chute.user_id
-
-    # Verify the logging server is running.
-    if not await check_instance_logging_server(instance):
-        logger.error(
-            f"Instance failed logging server probe: {instance.instance_id=} {instance.miner_hotkey=}"
-        )
-        # raise HTTPException(
-        #     status_code=status.HTTP_403_FORBIDDEN,
-        #     detail=(
-        #         "Failed logging server scan! Be sure to expose ALL services for all chutes, "
-        #         "particularly port 8000 (standard chute port) and 8001 (logging port)"
-        #     ),
-        # )
 
     db.add(instance)
 
