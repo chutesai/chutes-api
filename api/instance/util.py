@@ -354,7 +354,7 @@ class LeastConnManager:
                 logger.error(f"Error tracking connection: {e}")
             yield instance, None
         except asyncio.TimeoutError:
-            logger.error("Timeout getting targets on {self.redis_client_index=}")
+            logger.error(f"Timeout getting targets on {self.redis_client_index=}")
             # Fallback to random instance
             available = [inst for iid, inst in self.instances.items() if iid not in avoid]
             if available:

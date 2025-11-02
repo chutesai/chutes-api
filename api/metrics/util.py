@@ -20,10 +20,8 @@ async def update_gauges():
             (await session.execute(select(Chute).options(noload("*")))).unique().scalars().all()
         )
     for chute in chutes:
-        logger.info(f"Updating gauges for {chute.chute_id=} {chute.name=}")
         tm = await get_chute_target_manager(chute, no_bounty=True)
         if not tm:
-            logger.warning(f"No instances for {chute.chute_id=} {chute.name=}")
             track_capacity(chute.chute_id, mean_conn=0, chute_concurrency=chute.concurrency or 1)
             continue
         try:
@@ -33,9 +31,6 @@ async def update_gauges():
                     chute.chute_id,
                     mean_conn=tm.mean_count,
                     chute_concurrency=chute.concurrency or 1,
-                )
-                logger.success(
-                    f"Updated utilization gauges with {tm.mean_count=} and {chute.concurrency=}"
                 )
             else:
                 logger.warning("Mean count is none?")
