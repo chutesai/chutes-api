@@ -672,6 +672,7 @@ async def forge(image_id: str):
     # Download the build context
     short_tag = None
     error_message = None
+    inspecto_hash = None
     with tempfile.TemporaryDirectory() as build_dir:
         context_path = os.path.join(build_dir, "chute.zip")
         dockerfile_path = os.path.join(build_dir, "Dockerfile")
@@ -690,6 +691,7 @@ async def forge(image_id: str):
             os.chdir(build_dir)
             safe_extract(context_path)
             short_tag = await build_and_push_image(image, build_dir)
+            inspecto_hash = image.inspecto
         except Exception as exc:
             logger.error(f"Error building {image_id=}: {exc}\n{traceback.format_exc()}")
             error_message = str(exc)
@@ -713,6 +715,7 @@ async def forge(image_id: str):
         if short_tag:
             image.status = "built and pushed"
             image.short_tag = short_tag
+            image.inspecto = inspecto_hash
             image.build_completed_at = func.now()
         else:
             image.status = f"error: {error_message}"
