@@ -1,7 +1,9 @@
+import uuid
 import orjson as json
 import asyncio
 import random
 import traceback
+import ctypes
 from typing import Any, Dict, List, Tuple
 from loguru import logger
 from sqlalchemy import select, text
@@ -11,13 +13,17 @@ from api.config import settings
 from api.database import get_session
 from api.instance.schemas import Instance
 from api.instance.util import invalidate_instance_cache
-from api.util import aes_encrypt, notify_deleted, semcomp
+from api.util import aes_encrypt, notify_deleted, semcomp, load_shared_object
 from api.chute.util import get_one
 
 ENETUNREACH_TOKEN = "ENETUNREACH"
 REDIS_PREFIX = "conntestfail:"
 PROXY_URL = "https://proxy.chutes.ai/misc/proxy?url=ping"
 LBPING_URL = "https://api.chutes.ai/_lbping"
+
+NETNANNY = load_shared_object("chutes", "chutes-netnanny.so")
+NETNANNY.verify.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint8]
+NETNANNY.verify.restype = ctypes.c_int
 
 
 async def _post_connectivity(instance: Instance, endpoint: str) -> Dict[str, Any]:
@@ -30,6 +36,21 @@ async def _post_connectivity(instance: Instance, endpoint: str) -> Dict[str, Any
         url,
         payload,
         timeout=15.0,
+    ) as resp:
+        resp.raise_for_status()
+        return await resp.json()
+
+
+async def _post_netnanny_challenge(instance: Instance, challenge: str) -> Dict[str, Any]:
+    enc_path = aes_encrypt("/_netnanny_challenge", instance.symmetric_key, hex_encode=True)
+    url = f"http://{instance.host}:{instance.port}/{enc_path}"
+    payload = {"challenge": challenge}
+    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    async with miner_client.post(
+        instance.miner_hotkey,
+        url,
+        payload,
+        timeout=10.0,
     ) as resp:
         resp.raise_for_status()
         return await resp.json()
@@ -84,6 +105,29 @@ async def _record_failure_or_delete(session, instance: Instance, hard_reason: st
         )
 
 
+async def _verify_netnanny(instance: Instance, allow_external_egress: bool) -> None:
+    """
+    Raises RuntimeError with a descriptive reason if verification fails.
+    """
+    challenge = str(uuid.uuid4())
+    res = await _post_netnanny_challenge(instance, challenge)
+    miner_hash = res.get("hash")
+    miner_egress = res.get("allow_external_egress")
+    if miner_hash is None or miner_egress is None:
+        raise RuntimeError(
+            "Netnanny challenge missing required fields (hash/allow_external_egress)."
+        )
+    if bool(miner_egress) != bool(allow_external_egress):
+        raise RuntimeError(
+            f"Netnanny reported allow_external_egress={miner_egress} "
+            f"but chute requires {allow_external_egress}."
+        )
+    if not NETNANNY.verify(
+        challenge.encode(), miner_hash.encode(), ctypes.c_uint8(allow_external_egress)
+    ):
+        raise RuntimeError("Netnanny verify() returned failure.")
+
+
 async def check_instance_connectivity(
     instance: Instance, delete_on_failure: bool = True
 ) -> Tuple[str, bool]:
@@ -91,11 +135,26 @@ async def check_instance_connectivity(
         f"Connectivity check: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
     )
     chute = await get_one(instance.chute_id)
-    if not chute or semcomp(chute.chutes_version or "0.0.0", "0.3.49") < 0:
+    if not chute or semcomp(chute.chutes_version or "0.0.0", "0.3.50") < 0:
         logger.warning(f"Unable to perform connectivity tests for {instance.chute_id=}")
         return instance.instance_id, True
 
     allow_egress = chute.allow_external_egress
+    try:
+        await _verify_netnanny(instance, allow_egress)
+        logger.success(f"🔒 netnanny challenge verified for {instance.instance_id=}")
+    except Exception as exc:
+        logger.error(f"❌ netnanny verification failed for {instance.instance_id=}: {exc}")
+        if delete_on_failure:
+            async with get_session() as session:
+                # Treat as hard violation: miner is misreporting or hash invalid.
+                await _hard_delete_instance(
+                    session,
+                    instance,
+                    f"Netnanny verification failed: {exc}",
+                )
+        return instance.instance_id, False
+
     random_test = _pick_random_connect_test()
     if allow_egress:
         required_successes = [LBPING_URL, random_test]

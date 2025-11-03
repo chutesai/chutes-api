@@ -186,7 +186,8 @@ ARG PS_OP
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
-RUN PS_OP="${{PS_OP}}" python -m chutes.inspecto > /tmp/inspecto.hash
+RUN rm -rf does_not_exist.py does_not_exist
+RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 RUN ls -la /tmp/chutesfs.*
 """
         fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
@@ -605,7 +606,7 @@ async def extract_cfsv_data_from_verification_image(verification_tag: str, build
 
         # Load inspecto hash.
         with open(os.path.join(mount_path, "tmp", "inspecto.hash")) as infile:
-            inspecto_hash = infile.read().strip()
+            inspecto_hash = infile.readlines()[-1].strip()
             assert inspecto_hash
 
         # Use shutil to copy the file
@@ -866,7 +867,8 @@ ARG PS_OP
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
-RUN PS_OP="${{PS_OP}}" python -m chutes.inspecto > /tmp/inspecto.hash
+RUN rm -rf does_not_exist.py does_not_exist
+RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 RUN ls -la /tmp/chutesfs.*
 """
             fsv_dockerfile_path = os.path.join(build_dir, "Dockerfile.fsv")
