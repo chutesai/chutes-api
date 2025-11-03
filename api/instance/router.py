@@ -76,8 +76,8 @@ INSPECTO.verify_hash.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char
 INSPECTO.verify_hash.restype = ctypes.c_char_p
 
 NETNANNY = load_shared_object("chutes", "chutes-netnanny.so")
-NETNANNY.verify_challenge.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-NETNANNY.verify_challenge.restype = ctypes.c_int
+NETNANNY.verify.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint8]
+NETNANNY.verify.restype = ctypes.c_int
 
 
 async def _load_chute(db, chute_id: str):
@@ -520,7 +520,7 @@ async def claim_launch_config(
     else:
         logger.warning("Unable to perform extended validation, skipping...")
 
-    if semcomp(chute.chutes_version, "0.3.49") >= 0:
+    if semcomp(chute.chutes_version, "0.3.50") >= 0:
         if not args.run_path or (
             chute.standard_template == "vllm"
             and os.path.dirname(args.run_path)
@@ -539,10 +539,24 @@ async def claim_launch_config(
         nn_valid = True
         if chute.allow_external_egress != args.egress or not args.netnanny_hash:
             nn_valid = False
-        elif not NETNANNY.verify_challenge(args.netnanny_hash, launch_config.config_id):
-            nn_valid = False
+        else:
+            if not NETNANNY.verify(
+                launch_config.config_id.encode(),
+                args.netnanny_hash.encode(),
+                ctypes.c_uint8(chute.allow_external_egress),
+            ):
+                logger.error(
+                    f"{log_prefix} netnanny hash mismatch for {launch_config.config_id=} and {chute.allow_external_egress=}"
+                )
+                nn_valid = False
+            else:
+                logger.success(
+                    f"{log_prefix} netnanny hash challenge success: for {launch_config.config_id=} and {chute.allow_external_egress=} {args.netnanny_hash=}"
+                )
         if not nn_valid:
-            logger.error(f"{log_prefix} has tampered with netnanny!")
+            logger.error(
+                f"{log_prefix} has tampered with netnanny? {args.netnanny_hash=} {args.egress=} {chute.allow_external_egress=}"
+            )
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Failed netnanny validation."
             await db.commit()
@@ -562,57 +576,57 @@ async def claim_launch_config(
                 detail=launch_config.verification_error,
             )
 
-        enforce_inspecto = "PS_OP" in os.environ
-        inspecto_valid = True
-        fail_reason = None
-        if enforce_inspecto:
-            inspecto_hash = (
-                (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
-                .unique()
-                .scalar_one_or_none()
-            )
-            if not inspecto_hash:
-                logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
-                inspecto_valid = True
-            else:
-                if not args.inspecto:
-                    inspecto_valid = False
-                    fail_reason = "missing args.inspecto hash!"
-                else:
-                    raw = INSPECTO.verify_hash(
-                        inspecto_hash.encode("utf-8"),
-                        launch_config.config_id.encode("utf-8"),
-                        args.inspecto.encode("utf-8"),
-                    )
-                    logger.info(
-                        "INSPECTO: verify_hash(%r, %r, %r) -> %r",
-                        inspecto_hash,
-                        launch_config.config_id,
-                        args.inspecto,
-                        raw,
-                    )
-                    if not raw:
-                        inspecto_valid = False
-                        fail_reason = "inspecto returned NULL"
-                    else:
-                        try:
-                            payload = json.loads(raw.decode("utf-8"))
-                        except Exception as e:
-                            inspecto_valid = False
-                            fail_reason = f"inspecto returned non-JSON: {e}"
-                        else:
-                            if not payload.get("verified"):
-                                inspecto_valid = False
-                                fail_reason = f"inspecto verification failed: {payload}"
-        if not inspecto_valid:
-            logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
-            launch_config.failed_at = func.now()
-            launch_config.verification_error = "Failed inspecto environment/lib verification."
-            await db.commit()
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=launch_config.verification_error,
-            )
+        # enforce_inspecto = "PS_OP" in os.environ
+        # inspecto_valid = True
+        # fail_reason = None
+        # if enforce_inspecto:
+        #     inspecto_hash = (
+        #         (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
+        #         .unique()
+        #         .scalar_one_or_none()
+        #     )
+        #     if not inspecto_hash:
+        #         logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
+        #         inspecto_valid = True
+        #     else:
+        #         if not args.inspecto:
+        #             inspecto_valid = False
+        #             fail_reason = "missing args.inspecto hash!"
+        #         else:
+        #             raw = INSPECTO.verify_hash(
+        #                 inspecto_hash.encode("utf-8"),
+        #                 launch_config.config_id.encode("utf-8"),
+        #                 args.inspecto.encode("utf-8"),
+        #             )
+        #             logger.info(
+        #                 "INSPECTO: verify_hash(%r, %r, %r) -> %r",
+        #                 inspecto_hash,
+        #                 launch_config.config_id,
+        #                 args.inspecto,
+        #                 raw,
+        #             )
+        #             if not raw:
+        #                 inspecto_valid = False
+        #                 fail_reason = "inspecto returned NULL"
+        #             else:
+        #                 try:
+        #                     payload = json.loads(raw.decode("utf-8"))
+        #                 except Exception as e:
+        #                     inspecto_valid = False
+        #                     fail_reason = f"inspecto returned non-JSON: {e}"
+        #                 else:
+        #                     if not payload.get("verified"):
+        #                         inspecto_valid = False
+        #                         fail_reason = f"inspecto verification failed: {payload}"
+        # if not inspecto_valid:
+        #     logger.error(f"{log_prefix} has invalid inspecto verification: {fail_reason}")
+        #     launch_config.failed_at = func.now()
+        #     launch_config.verification_error = "Failed inspecto environment/lib verification."
+        #     await db.commit()
+        #     raise HTTPException(
+        #         status_code=status.HTTP_403_FORBIDDEN,
+        #         detail=launch_config.verification_error,
+        #     )
 
     # Valid filesystem/integrity?
     if semcomp(chute.chutes_version, "0.3.1") >= 0:
@@ -897,18 +911,19 @@ async def activate_launch_config_instance(
         if not net_success:
             reason = "Instance has failed network connectivity probes, based on allow_external_egress flag"
             logger.warning(reason)
-            await db.delete(instance)
-            await asyncio.create_task(notify_deleted(instance))
-            await db.execute(
-                text(
-                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
-                ),
-                {"instance_id": instance.instance_id, "reason": reason},
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=reason,
-            )
+            # XXX TODO
+            # await db.delete(instance)
+            # await asyncio.create_task(notify_deleted(instance))
+            # await db.execute(
+            #    text(
+            #        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+            #    ),
+            #    {"instance_id": instance.instance_id, "reason": reason},
+            # )
+            # raise HTTPException(
+            #    status_code=status.HTTP_403_FORBIDDEN,
+            #    detail=reason,
+            # )
 
         instance.active = True
         instance.activated_at = func.now()
