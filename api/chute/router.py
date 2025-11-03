@@ -869,6 +869,8 @@ async def _deploy_chute(
         allow_egress = False
     elif allow_egress is None:
         allow_egress = False
+    if "affine" in chute_args.name.lower() or "turbovision" in chute_args.name.lower():
+        allow_egress = False
 
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
