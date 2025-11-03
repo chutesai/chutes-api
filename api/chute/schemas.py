@@ -185,7 +185,7 @@ class ChuteArgs(BaseModel):
     max_instances: Optional[int] = Field(default=1, ge=1, le=100)
     scaling_threshold: Optional[float] = Field(default=0.75, ge=0.0, le=1.0)
     shutdown_after_seconds: Optional[int] = Field(default=300, ge=60, le=604800)
-    allow_external_egress: Optional[bool] = None
+    allow_external_egress: Optional[bool] = Field(default=False)
 
 
 class InvocationArgs(BaseModel):

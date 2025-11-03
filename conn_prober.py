@@ -1,3 +1,4 @@
+import orjson as json
 import asyncio
 import random
 import traceback
@@ -23,12 +24,12 @@ async def _post_connectivity(instance: Instance, endpoint: str) -> Dict[str, Any
     enc_path = aes_encrypt("/_connectivity", instance.symmetric_key, hex_encode=True)
     url = f"http://{instance.host}:{instance.port}/{enc_path}"
     payload = {"endpoint": endpoint}
+    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
     async with miner_client.post(
         instance.miner_hotkey,
         url,
         payload,
-        timeout=10.0,
-        purpose="chutes",
+        timeout=15.0,
     ) as resp:
         resp.raise_for_status()
         return await resp.json()

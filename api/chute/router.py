@@ -860,9 +860,9 @@ async def _deploy_chute(
         )
 
     # Default for external egress.
-    allow_egress = True
+    allow_egress = chute_args.allow_external_egress
     if (
-        chute_args.allow_external_egress is None
+        allow_egress is None
         and chute_args.standard_template in ("vllm", "embedding")
         and semcomp(image.chutes_version, "0.3.45") >= 0
     ):
