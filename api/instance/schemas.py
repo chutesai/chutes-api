@@ -64,6 +64,8 @@ class LaunchConfigArgs(BaseModel):
     run_path: Optional[str] = None
     py_dirs: Optional[list[str]] = None
 
+class AttestLaunchConfigArgs(LaunchConfigArgs):
+    gpu_evidence: list[dict]
 
 class Instance(Base):
     __tablename__ = "instances"
@@ -138,6 +140,7 @@ class LaunchConfig(Base):
     )
     host = Column(String, nullable=True)
     port = Column(Integer, nullable=True)
+    env_type = Column(String, nullable=False)
     miner_uid = Column(Integer, nullable=False)
     miner_hotkey = Column(String, nullable=False)
     miner_coldkey = Column(String, nullable=False)
