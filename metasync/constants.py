@@ -144,13 +144,21 @@ WITH billed_instances AS (
         ) as billing_end
     FROM instance_audit ia
     WHERE ia.billed_to IS NOT NULL
-      AND ia.activated_at IS NOT NULL
-      AND (ia.deletion_reason in (
-        'job has been terminated due to insufficient user balance',
-        'user-defined/private chute instance has not been used since shutdown_after_seconds',
-        'user has zero/negative balance (private chute)'
-      ) or ia.deletion_reason like '%has an old version%')
-      AND (ia.stop_billing_at IS NULL OR ia.stop_billing_at >= now() - interval '{interval}')
+        AND ia.activated_at IS NOT NULL
+        AND (
+            ia.stop_billing_at IS NULL
+            OR (
+                ia.stop_billing_at >= now() - interval '{interval}'
+                AND (
+                    ia.deletion_reason IN (
+                        'job has been terminated due to insufficient user balance',
+                        'user-defined/private chute instance has not been used since shutdown_after_seconds',
+                        'user has zero/negative balance (private chute)'
+                    )
+                    OR ia.deletion_reason LIKE '%has an old version%'
+                )
+            )
+        )
 ),
 
 -- Aggregate compute units by miner
