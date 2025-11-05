@@ -9,7 +9,7 @@ from api.gpu import SUPPORTED_GPUS
 from api.node.schemas import Node, NodeArgs
 
 
-async def get_node_by_id(node_id, db, hotkey):
+async def get_node_by_id(node_id, db, hotkey) -> Node:
     """
     Helper to load a node by ID.
     """

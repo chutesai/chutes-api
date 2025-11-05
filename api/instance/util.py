@@ -549,7 +549,7 @@ def generate_fs_key(launch_config) -> str:
     return f"{timestamp}:{encoded_signature}"
 
 
-def create_launch_jwt(launch_config, disk_gb: int = None) -> str:
+def create_launch_jwt(launch_config: LaunchConfig, disk_gb: int = None) -> str:
     """
     Create JWT for a given launch config (updated chutes lib with new graval etc).
     """
@@ -563,6 +563,7 @@ def create_launch_jwt(launch_config, disk_gb: int = None) -> str:
         "url": f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}",
         "env_key": launch_config.env_key,
         "iss": "chutes",
+        "env_type": launch_config.env_type
     }
     if launch_config.job_id:
         payload["job_id"] = launch_config.job_id
@@ -590,7 +591,7 @@ def create_job_jwt(job_id, filename: str = None) -> str:
 
 async def load_launch_config_from_jwt(
     db, config_id: str, token: str, allow_retrieved: bool = False
-) -> str:
+) -> LaunchConfig:
     detail = "Missing or invalid launch config JWT"
     try:
         payload = _decode_chutes_jwt(token, require_exp=True)
