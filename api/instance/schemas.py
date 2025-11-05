@@ -54,17 +54,19 @@ class LaunchConfigArgs(BaseModel):
     gpus: list[dict]
     host: str
     port_mappings: list[PortMap]
-    env: str
-    code: str
     fsv: Optional[str] = None
-    inspecto: Optional[str] = None
     egress: Optional[bool] = None
     netnanny_hash: Optional[str] = None
-    run_code: Optional[str] = None
     run_path: Optional[str] = None
     py_dirs: Optional[list[str]] = None
 
-class AttestLaunchConfigArgs(LaunchConfigArgs):
+class GravalLaunchConfigArgs(LaunchConfigArgs):
+    env: str
+    code: str
+    run_code: Optional[str] = None
+    inspecto: Optional[str] = None
+
+class TeeLaunchConfigArgs(LaunchConfigArgs):
     gpu_evidence: list[dict]
 
 class Instance(Base):
