@@ -266,11 +266,11 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
             for key in ["processors", "max_threads_per_processor"]:
                 setattr(gpu, key, gpu_info.get(key))
 
-        await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0")
-
         # Start verification process
         await verify_server(server, miner_hotkey)
-        # task_id = f"{miner_hotkey}::{task.task_id}"
+
+        # Track nodes once verified
+        await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
 
         # return task_id
     except AttestationError as e:
@@ -304,13 +304,6 @@ async def verify_server(
         ServerRegistrationError: If registration fails
     """
     try:
-        # logger.info(f"Start sever verification for {server_id}")
-        # server = None
-        # async with get_session() as db:
-        #     server = await check_server_ownership(db, server_id, miner_hotkey)
-        
-        # if not server:
-        #     return False, f"Failed to verify server ownership."
             
         client = TeeServerClient(server)
 
