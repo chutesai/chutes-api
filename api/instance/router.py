@@ -89,7 +89,7 @@ NETNANNY.verify.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint8]
 NETNANNY.verify.restype = ctypes.c_int
 
 
-async def _load_chute(db, chute_id: str):
+async def _load_chute(db, chute_id: str) -> Chute:
     chute = (
         (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
         .unique()
@@ -495,19 +495,17 @@ async def _validate_launch_config_filesystem(
             logger.warning("Extended filesystem verification disabled, skipping...")
 
 async def _validate_launch_config_instance(
-    config_id: str,
-    args: LaunchConfigArgs,
-    request: Request,
     db: AsyncSession,
-    authorization: str,
+    request: Request,
+    args: LaunchConfigArgs,
+    launch_config: LaunchConfig,
+    chute: Chute,
     log_prefix: str
 ) -> Tuple[LaunchConfig, list[Node], Instance]:
 
-    # Load the launch config, verifying the token.
-    token = authorization.strip().split(" ")[-1]
-    launch_config = await load_launch_config_from_jwt(db, config_id, token)
-    chute = await _load_chute(db, launch_config.chute_id)
     miner = await _check_blacklisted(db, launch_config.miner_hotkey)
+
+    config_id = launch_config.config_id
 
     # Generate a tentative instance ID.
     new_instance_id = generate_uuid()
@@ -759,7 +757,7 @@ async def _validate_graval_launch_config_instance(
     )
 
     return await _validate_launch_config_instance(
-        config_id, args, request, db, authorization, log_prefix
+        db, request, args, launch_config, chute, log_prefix
     )
 
 async def _validate_tee_launch_config_instance(
@@ -776,7 +774,7 @@ async def _validate_tee_launch_config_instance(
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
 
     return await _validate_launch_config_instance(
-        config_id, args, request, db, authorization, log_prefix
+        db, request, args, launch_config, chute, log_prefix
     )
 
 
@@ -895,16 +893,17 @@ async def validate_tee_launch_config_instance(
         config_id, args, request, db, authorization
     )
 
-    _validate_launch_config_not_expired(config_id, launch_config)
+    _validate_launch_config_not_expired(launch_config)
+
+    # Store the launch config
+    await db.commit()
+    await db.refresh(launch_config)
 
     async with get_session() as session:
         await session.execute(
             text("UPDATE launch_configs SET retrieved_at = NOW() WHERE config_id = :config_id"),
             {"config_id": config_id},
         )
-
-    # Store the instance
-    await db.commit()
 
     # Send event.
     await db.refresh(instance)
@@ -916,6 +915,19 @@ async def validate_tee_launch_config_instance(
 
     request_body = await request.json()
 
+    # Reload instance with chute relationship for filesystem validation
+    # Lazy load fails 
+    stmt = (
+        select(Instance)
+        .where(Instance.instance_id == instance.instance_id)
+        .options(
+            joinedload(Instance.chute).
+            joinedload(Chute.image),
+            joinedload(Instance.job),
+        )
+    )
+    instance = (await db.execute(stmt)).scalar_one()
+
     # Filesystem integrity checks for < 0.3.1
     await _validate_legacy_filesystem(db, instance, launch_config, request_body)
 
@@ -923,7 +935,7 @@ async def validate_tee_launch_config_instance(
     launch_config.verified_at = func.now()
     await _verify_job_ports(db, instance)
     await _mark_instance_verified(db, instance, launch_config)
-    return_value = _build_launch_config_verified_response(db, instance, launch_config)
+    return_value = await _build_launch_config_verified_response(db, instance, launch_config)
     return_value["symmetric_key"] = instance.symmetric_key
 
     await db.refresh(instance)
@@ -1143,8 +1155,9 @@ async def verify_port_map(instance, port_map):
         logger.error(f"Port verification failed for {port_map}: {e}")
         return False
 
-def _validate_launch_config_not_expired(config_id, launch_config):
+def _validate_launch_config_not_expired(launch_config):
     # Validate the launch config.
+    config_id = launch_config.config_id
     if launch_config.verified_at:
         logger.warning(f"Launch config {config_id} has already been verified!")
         raise HTTPException(
@@ -1289,7 +1302,7 @@ async def verify_launch_config_instance(
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token, allow_retrieved=True)
 
-    _validate_launch_config_not_expired(config_id, launch_config)
+    _validate_launch_config_not_expired(launch_config)
 
     # Check decryption time.
     now = (await db.scalar(select(func.now()))).replace(tzinfo=None)

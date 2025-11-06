@@ -60,11 +60,11 @@ class LaunchConfigArgs(BaseModel):
     netnanny_hash: Optional[str] = None
     run_path: Optional[str] = None
     py_dirs: Optional[list[str]] = None
+    inspecto: Optional[str] = None
 
 class GravalLaunchConfigArgs(LaunchConfigArgs):
     env: str
     run_code: Optional[str] = None
-    inspecto: Optional[str] = None
 
 class TeeLaunchConfigArgs(LaunchConfigArgs):
     gpu_evidence: list[dict]
