@@ -35,7 +35,7 @@ from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
 import api.miner_client as miner_client
-from api.instance.schemas import Instance
+from api.instance.schemas import Instance, LaunchConfig
 from api.instance.util import invalidate_instance_cache
 from api.chute.codecheck import is_bad_code
 
@@ -202,10 +202,12 @@ async def load_chute_instances(chute_id):
     async with get_session() as session:
         query = (
             select(Instance)
+            .join(Instance.config)
             .where(
                 Instance.chute_id == chute_id,
                 Instance.active.is_(True),
                 Instance.verified.is_(True),
+                LaunchConfig.env_type != 'tee' # Exclude TEE
             )
             .options(joinedload(Instance.nodes))
         )
