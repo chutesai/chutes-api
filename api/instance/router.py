@@ -347,9 +347,7 @@ async def _validate_host_port(db, host, port):
 
 
 @router.get("/current_id_list")
-async def get_current_instance_ids(
-    db: AsyncSession = Depends(get_db_session)
-):
+async def get_current_instance_ids(db: AsyncSession = Depends(get_db_session)):
     result = (await db.execute(select(Instance.instance_id))).unique().scalars().all()
     return result
 
