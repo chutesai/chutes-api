@@ -951,7 +951,7 @@ async def validate_tee_launch_config_instance(
     await _verify_job_ports(db, instance)
     await _mark_instance_verified(db, instance, launch_config)
     return_value = await _build_launch_config_verified_response(db, instance, launch_config)
-    return_value["symmetric_key"] = instance.symmetric_key.hex()
+    return_value["symmetric_key"] = instance.symmetric_key
 
     await db.refresh(instance)
     asyncio.create_task(notify_verified(instance))
