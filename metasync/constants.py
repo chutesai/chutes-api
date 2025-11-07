@@ -1,14 +1,14 @@
-SCORING_INTERVAL = '7 days'
+SCORING_INTERVAL = "7 days"
 
 # Bonuses applied to base score, where base score is simply compute units * instance lifetime where termination reason is valid.
 BONUS = {
-    "breadth": 0.10,  # Non-selectivity of the miner, i.e. deploying all chutes with equal weight.
-    "demand": 0.10,  # Miner generally meets the platform demands, i.e. chutes with high utilization are deployed more frequently.
-    "bounty": 0.07,  # Claimed bounties, i.e. when there was platform demand for a chute, they launched it.
-    "success_rate": 0.05,  # Success rate in serving requests.
+    "demand": 0.25,  # Miner generally meets the platform demands, i.e. chutes with high utilization are deployed more frequently.
+    "bounty": 0.2,  # Claimed bounties, i.e. when there was platform demand for a chute, they launched it.
+    "breadth": 0.15,  # Non-selectivity of the miner, i.e. deploying all chutes with equal weight.
+    "success_rate": 0.15,  # Success rate in serving requests.
 }
-DEMAND_COMPUTE_WEIGHT = 0.7
-DEMAND_COUNT_WEIGHT = 0.3
+DEMAND_COMPUTE_WEIGHT = 0.75
+DEMAND_COUNT_WEIGHT = 0.25
 
 # Query to fetch raw request counts and compute units per chute (to calculate 'demand' bonus).
 NORMALIZED_COMPUTE_QUERY = """

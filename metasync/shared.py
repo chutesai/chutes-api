@@ -56,11 +56,12 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
 
     # Load active miners from metagraph (and map coldkey pairings to de-dupe multi-hotkey miners).
     raw_values = {}
-    boosts = {}
     logger.info(f"Loading metagraph for netuid={settings.netuid}...")
     async with get_session() as session:
         metagraph_nodes = await session.execute(
-            text(f"SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = {settings.netuid} AND node_id >= 0")
+            text(
+                f"SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = {settings.netuid} AND node_id >= 0"
+            )
         )
         hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
         coldkey_counts = {
@@ -106,7 +107,7 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
             raw_values[hotkey]["invocation_count"] = successful_count
 
     # Get the unique chute ("breadth" bonus) data.
-    logger.info(f"Fetching unique chute GPU score to calculate breadth bonus...")
+    logger.info("Fetching unique chute GPU score to calculate breadth bonus...")
     async with get_session() as session:
         unique_result = await session.execute(inventory_query)
         for hotkey, unique_chute_gpus, total_active_gpus in unique_result:
@@ -131,7 +132,6 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
                 coldkey_hotkeys.sort(key=lambda hk: base_scores[hk], reverse=True)
                 hotkeys_to_remove.update(coldkey_hotkeys[1:])
 
-
     # Remove the lower-scoring hotkeys
     for hotkey in hotkeys_to_remove:
         base_scores.pop(hotkey, None)
@@ -153,9 +153,6 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
             for hotkey in normalized:
                 normalized[hotkey] /= exp_max
         return normalized
-
-    # Calculate all of the bonuses.
-    bonuses = {}
 
     # Breadth bonus (unique_chute_gpus, non-selectiveness in deploying chutes).
     breadth_scores = normalize_and_exp(raw_values, "unique_chute_gpus", 2.0)
@@ -185,11 +182,11 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
     final_scores = {}
     for hotkey in base_scores:
         score = base_scores[hotkey]
-        # Add each bonus
-        score += BONUS["breadth"] * breadth_scores.get(hotkey, 0)
-        score += BONUS["demand"] * demand_scores.get(hotkey, 0)
-        score += BONUS["bounty"] * bounty_scores.get(hotkey, 0)
-        score += BONUS["success_rate"] * success_scores.get(hotkey, 0)
+        # Add each bonus.
+        score += base_scores[hotkey] * BONUS["breadth"] * breadth_scores.get(hotkey, 0)
+        score += base_scores[hotkey] * BONUS["demand"] * demand_scores.get(hotkey, 0)
+        score += base_scores[hotkey] * BONUS["bounty"] * bounty_scores.get(hotkey, 0)
+        score += base_scores[hotkey] * BONUS["success_rate"] * success_scores.get(hotkey, 0)
         final_scores[hotkey] = score
 
     # Normalize to ensure sum equals 1.0
@@ -229,4 +226,5 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(get_scoring_data(interval = '7 days'))
+
+    asyncio.run(get_scoring_data(interval="7 days"))

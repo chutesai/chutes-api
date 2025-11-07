@@ -28,7 +28,7 @@ from api.config import settings
 from api.constants import (
     HOTKEY_HEADER,
     AUTHORIZATION_HEADER,
-    PRIVATE_INSTANCE_MULTIPLIER,
+    PRIVATE_INSTANCE_BONUS,
 )
 from api.payment.util import decrypt_secret
 from api.node.util import get_node_by_id
@@ -743,7 +743,7 @@ async def claim_launch_config(
         and not has_legacy_private_billing(chute)
         and chute.user_id != await chutes_user_id()
     ):
-        instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
+        instance.compute_multiplier *= PRIVATE_INSTANCE_BONUS
         instance.billed_to = chute.user_id
 
     db.add(instance)
