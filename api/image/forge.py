@@ -487,6 +487,16 @@ async def sign_image(
     try:
         image_digest = await get_image_digest(image_tag)
         image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
+        
+        external_registry = f"{settings.validator_ss58}.localregistry.chutes.ai"
+        internal_registry = "registry"
+
+        # Rebuild the full reference
+        image_digest_tag = image_digest_tag.replace(
+            f"{internal_registry}:5000",
+            f"{external_registry}:5000"
+        )
+        
         process = await asyncio.create_subprocess_exec(
             "cosign",
             "sign",
