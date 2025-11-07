@@ -21,6 +21,7 @@ class InstanceResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     last_verified_at: Optional[datetime] = None
+    bounty: Optional[bool] = False
 
     class Config:
         from_attributes = True

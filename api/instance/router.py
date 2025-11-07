@@ -64,7 +64,7 @@ from api.util import (
     load_shared_object,
     has_legacy_private_billing,
 )
-from api.bounty.util import check_bounty_exists, delete_bounty
+from api.bounty.util import check_bounty_exists, delete_bounty, claim_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -928,6 +928,13 @@ async def activate_launch_config_instance(
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
+        # If a bounty exists for this chute, claim it.
+        bounty = await claim_bounty(instance.chute_id)
+        if bounty is None:
+            bounty = 0
+        if bounty:
+            instance.bounty = True
+
         # Verify egress.
         # net_success = True
         # if semcomp(chute.chutes_version, "0.3.56") >= 0:
@@ -961,12 +968,9 @@ async def activate_launch_config_instance(
             instance.stop_billing_at = func.now() + timedelta(
                 seconds=chute.shutdown_after_seconds or 300
             )
-            # For private instances, we need to delete the bounty to prevent scaling back up
-            # if this instance is terminated before a request is made. The miner will still a
-            # bounty, however, since each private instance automatically counts as a bounty (see metasync/shared.py)
-            await delete_bounty(chute.chute_id)
         await db.commit()
         await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
+        await delete_bounty(chute.chute_id)
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
 

@@ -54,7 +54,6 @@ from api.util import (
     has_legacy_private_billing,
 )
 from api.util import memcache_get, memcache_set, memcache_delete
-from api.bounty.util import claim_bounty
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOverride
 from api.user.service import chutes_user_id
@@ -102,7 +101,6 @@ INSERT INTO {table_name} (
     completed_at,
     error_message,
     compute_multiplier,
-    bounty,
     metrics
 ) VALUES (
     :parent_invocation_id,
@@ -120,7 +118,6 @@ INSERT INTO {table_name} (
     CURRENT_TIMESTAMP,
     :error_message,
     :compute_multiplier,
-    :bounty,
     :metrics
 )
 """
@@ -155,7 +152,6 @@ async def store_invocation(
     duration: float,
     compute_multiplier: float,
     error_message: Optional[str] = None,
-    bounty: Optional[int] = 0,
     metrics: Optional[dict] = {},
     legacy: Optional[bool] = False,
 ):
@@ -179,7 +175,6 @@ async def store_invocation(
                 "duration": duration,
                 "error_message": error_message,
                 "compute_multiplier": compute_multiplier,
-                "bounty": bounty,
                 "metrics": json.dumps(metrics).decode(),
             },
         )
@@ -1007,11 +1002,6 @@ async def invoke(
                         ...
                     yield sse({"result": data})
 
-                # Check any bounty values.
-                bounty = await claim_bounty(chute_id)
-                if bounty is None:
-                    bounty = 0
-
                 # Store complete record in new invocations database, async.
                 # XXX this is a different started_at from global request started_at, for compute units
                 duration = time.time() - started_at
@@ -1031,7 +1021,6 @@ async def invoke(
                         duration,
                         multiplier,
                         error_message=None,
-                        bounty=bounty,
                         metrics=metrics,
                         legacy=False,
                     )
@@ -1053,7 +1042,6 @@ async def invoke(
                     duration,
                     multiplier,
                     error_message=None,
-                    bounty=bounty,
                     metrics=metrics,
                     legacy=True,
                 )
