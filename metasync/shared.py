@@ -2,16 +2,19 @@
 ORM definitions for metagraph nodes.
 """
 
+from api.config import settings
 from api.database import get_session
 from loguru import logger
 from sqlalchemy.sql import func
 from sqlalchemy import Column, String, DateTime, Integer, Float, text
-from metasync.constants import (
-    FEATURE_WEIGHTS,
+from metasync.constants2 import (
+    BONUS,
     SCORING_INTERVAL,
-    PRIVATE_INSTANCES_QUERY,
+    INSTANCES_QUERY,
     NORMALIZED_COMPUTE_QUERY,
-    UNIQUE_CHUTE_AVERAGE_QUERY,
+    INVENTORY_QUERY,
+    DEMAND_COMPUTE_WEIGHT,
+    DEMAND_COUNT_WEIGHT,
 )
 
 
@@ -46,143 +49,184 @@ def create_metagraph_node_class(base):
     return MetagraphNode
 
 
-async def get_scoring_data():
-    compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=SCORING_INTERVAL))
-    unique_query = text(UNIQUE_CHUTE_AVERAGE_QUERY.format(interval=SCORING_INTERVAL))
-    private_query = text(PRIVATE_INSTANCES_QUERY.format(interval=SCORING_INTERVAL))
+async def get_scoring_data(interval: str = SCORING_INTERVAL):
+    compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=interval))
+    inventory_query = text(INVENTORY_QUERY.format(interval=interval))
+    instances_query = text(INSTANCES_QUERY.format(interval=interval))
 
-    raw_compute_values = {}
-    highest_unique = 0
+    # Load active miners from metagraph (and map coldkey pairings to de-dupe multi-hotkey miners).
+    raw_values = {}
+    boosts = {}
+    logger.info(f"Loading metagraph for netuid={settings.netuid}...")
     async with get_session() as session:
         metagraph_nodes = await session.execute(
-            text("SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = 64 AND node_id >= 0")
+            text(f"SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = {settings.netuid} AND node_id >= 0")
         )
         hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
         coldkey_counts = {
             coldkey: sum([1 for _, ck in hot_cold_map.items() if ck == coldkey])
             for coldkey in hot_cold_map.values()
         }
-        compute_result = await session.execute(compute_query)
-        unique_result = await session.execute(unique_query)
-        private_result = await session.execute(private_query)
-        for hotkey, invocation_count, bounty_count, compute_units in compute_result:
-            if not hotkey:
+
+    # Base score - instances active during the scoring period.
+    logger.info("Fetching base score values based on active instances during scoring interval...")
+    async with get_session() as session:
+        instances_result = await session.execute(instances_query)
+        for (
+            hotkey,
+            total_instances,
+            bounties,
+            instance_seconds,
+            instance_compute_units,
+        ) in instances_result:
+            if not hotkey or hotkey not in hot_cold_map:
                 continue
-            raw_compute_values[hotkey] = {
-                "invocation_count": invocation_count,
-                "bounty_count": bounty_count,
-                "compute_units": compute_units,
-                "unique_chute_count": 0,
+            raw_values[hotkey] = {
+                "total_instances": total_instances,
+                "bounties": bounties,
+                "instance_seconds": instance_seconds,
+                "instance_compute_units": instance_compute_units,
+                "success_rate": 0.0,
+                "invocation_compute_units": 0.0,
+                "invocation_count": 0.0,
+                "unique_chute_gpus": 0.0,
             }
-        for miner_hotkey, average_active_chutes in unique_result:
-            if not miner_hotkey:
-                continue
-            if miner_hotkey not in raw_compute_values:
-                continue
-            raw_compute_values[miner_hotkey]["unique_chute_count"] = average_active_chutes
-            if average_active_chutes > highest_unique:
-                highest_unique = average_active_chutes
 
-        # Add in private instance compute units (jobs, private chutes).
-        for miner_hotkey, total_instances, seconds, compute_units in private_result:
-            if miner_hotkey not in raw_compute_values:
+    # Get the invocation metrics to calculate boosts for "demand" and "success_ratio"
+    logger.info("Fetching invocation metrics to calculate demand and success ratio boosts...")
+    async with get_session() as session:
+        compute_result = await session.execute(compute_query)
+        for hotkey, successful_count, error_count, compute_units in compute_result:
+            if hotkey not in raw_values:
                 continue
-            logger.info(
-                f"{miner_hotkey=} had {total_instances} private instances, {seconds=} {compute_units=}"
+            raw_values[hotkey]["success_rate"] = successful_count / (
+                (successful_count + error_count) or 1.0
             )
-            raw_compute_values[miner_hotkey]["bounty_count"] += total_instances
-            raw_compute_values[miner_hotkey]["compute_units"] += float(compute_units)
+            raw_values[hotkey]["invocation_compute_units"] = compute_units
+            raw_values[hotkey]["invocation_count"] = successful_count
 
-            # XXX Subject to change, but for now give one invocation per second for private instances.
-            raw_compute_values[miner_hotkey]["invocation_count"] += int(seconds)
-            raw_compute_values[miner_hotkey].update(
-                {
-                    "private_instance_count": total_instances,
-                    "private_instance_seconds": float(seconds),
-                    "private_instance_compute_units": float(compute_units),
-                }
-            )
+    # Get the unique chute ("breadth" bonus) data.
+    logger.info(f"Fetching unique chute GPU score to calculate breadth bonus...")
+    async with get_session() as session:
+        unique_result = await session.execute(inventory_query)
+        for hotkey, unique_chute_gpus, total_active_gpus in unique_result:
+            if hotkey not in raw_values:
+                continue
+            raw_values[hotkey]["unique_chute_gpus"] = unique_chute_gpus
 
-    # Log the raw values.
-    for hotkey, values in raw_compute_values.items():
-        logger.info(f"{hotkey}: {values}")
+    # First, we'll calculate the scores as [0,1] range based on compute units.
+    logger.info("Normalizing scores and adding boosts...")
+    base_scores = {}
+    for hotkey, data in raw_values.items():
+        base_scores[hotkey] = data["instance_compute_units"]
 
-    totals = {
-        key: sum(row[key] for row in raw_compute_values.values()) or 1.0 for key in FEATURE_WEIGHTS
-    }
+    # Purge multi-hotkey miners - keep only the highest scoring hotkey per coldkey
+    hotkeys_to_remove = set()
+    for coldkey in set(hot_cold_map.values()):
+        if coldkey_counts[coldkey] > 1:
+            coldkey_hotkeys = [
+                hk for hk, ck in hot_cold_map.items() if ck == coldkey and hk in base_scores
+            ]
+            if len(coldkey_hotkeys) > 1:
+                coldkey_hotkeys.sort(key=lambda hk: base_scores[hk], reverse=True)
+                hotkeys_to_remove.update(coldkey_hotkeys[1:])
 
-    normalized_values = {}
-    unique_scores = [
-        row["unique_chute_count"]
-        for row in raw_compute_values.values()
-        if row["unique_chute_count"]
-    ]
-    unique_scores.sort()
-    n = len(unique_scores)
-    if n > 0:
-        if n % 2 == 0:
-            median_unique_score = (unique_scores[n // 2 - 1] + unique_scores[n // 2]) / 2
-        else:
-            median_unique_score = unique_scores[n // 2]
-    else:
-        median_unique_score = 0
-    for key in FEATURE_WEIGHTS:
-        for hotkey, row in raw_compute_values.items():
-            if hotkey not in normalized_values:
-                normalized_values[hotkey] = {}
-            if key == "unique_chute_count":
-                if row[key] >= median_unique_score:
-                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 1.3
-                else:
-                    normalized_values[hotkey][key] = (row[key] / highest_unique) ** 2.2
-            else:
-                normalized_values[hotkey][key] = row[key] / totals[key]
 
-    # Re-normalize unique to [0, 1]
-    unique_sum = sum([val["unique_chute_count"] for val in normalized_values.values()])
-    old_unique_sum = sum([val["unique_chute_count"] for val in raw_compute_values.values()])
-    for hotkey in normalized_values:
-        normalized_values[hotkey]["unique_chute_count"] /= unique_sum
-        old_value = raw_compute_values[hotkey]["unique_chute_count"] / old_unique_sum
+    # Remove the lower-scoring hotkeys
+    for hotkey in hotkeys_to_remove:
+        base_scores.pop(hotkey, None)
+        raw_values.pop(hotkey, None)
+        logger.warning(f"Purging hotkey from multi-uid miner: {hotkey=}")
+
+    # Helper function to normalize and apply exponential
+    def normalize_and_exp(values_dict, key, exp=1.4):
+        values = [data.get(key, 0) for data in values_dict.values()]
+        max_val = max(values) if values else 1.0
+        min_val = min(values) if values else 0.0
+        range_val = max_val - min_val if max_val != min_val else 1.0
+        normalized = {}
+        for hotkey, data in values_dict.items():
+            norm_val = (data.get(key, 0) - min_val) / range_val if range_val > 0 else 0
+            normalized[hotkey] = norm_val**exp
+        exp_max = max(normalized.values()) if normalized else 1.0
+        if exp_max > 0:
+            for hotkey in normalized:
+                normalized[hotkey] /= exp_max
+        return normalized
+
+    # Calculate all of the bonuses.
+    bonuses = {}
+
+    # Breadth bonus (unique_chute_gpus, non-selectiveness in deploying chutes).
+    breadth_scores = normalize_and_exp(raw_values, "unique_chute_gpus", 2.0)
+
+    # Demand bonus (miner deploys chutes that get a lot of real-world invocation usage).
+    invoc_compute_scores = normalize_and_exp(raw_values, "invocation_compute_units", 2.0)
+    invoc_count_scores = normalize_and_exp(raw_values, "invocation_count", 2.0)
+    demand_scores = {}
+    for hotkey in raw_values:
+        demand_scores[hotkey] = DEMAND_COMPUTE_WEIGHT * invoc_compute_scores.get(
+            hotkey, 0
+        ) + DEMAND_COUNT_WEIGHT * invoc_count_scores.get(hotkey, 0)
+
+    # Bounties (miner was first to activate an instance of a chute that had a bounty).
+    bounty_scores = normalize_and_exp(raw_values, "bounties", 2.0)
+
+    # Success rate (miner generally has a higher success rate in invocations).
+    success_scores = normalize_and_exp(raw_values, "success_rate", 2.0)
+
+    # Normalize the base scores to sum to 1.0
+    total_base = sum(base_scores.values()) if base_scores else 1.0
+    if total_base > 0:
+        for hotkey in base_scores:
+            base_scores[hotkey] /= total_base
+
+    # Apply bonuses.
+    final_scores = {}
+    for hotkey in base_scores:
+        score = base_scores[hotkey]
+        # Add each bonus
+        score += BONUS["breadth"] * breadth_scores.get(hotkey, 0)
+        score += BONUS["demand"] * demand_scores.get(hotkey, 0)
+        score += BONUS["bounty"] * bounty_scores.get(hotkey, 0)
+        score += BONUS["success_rate"] * success_scores.get(hotkey, 0)
+        final_scores[hotkey] = score
+
+    # Normalize to ensure sum equals 1.0
+    total_final = sum(final_scores.values()) if final_scores else 1.0
+    if total_final > 0:
+        for hotkey in final_scores:
+            final_scores[hotkey] /= total_final
+
+    # Logging.
+    sorted_hotkeys = sorted(final_scores.keys(), key=lambda k: final_scores[k], reverse=True)
+    logger.info(
+        f"{'#':<3} "
+        f"{'Hotkey':<48} "
+        f"{'Score':<10} "
+        f"{'Base':<10} "
+        f"{'Breadth':<10} "
+        f"{'Demand':<10} "
+        f"{'Bounty':<10} "
+        f"{'Success':<10}"
+    )
+    logger.info("-" * 120)
+
+    for rank, hotkey in enumerate(sorted_hotkeys, 1):  # Start from 1
         logger.info(
-            f"Normalized, exponential unique score {hotkey} = {normalized_values[hotkey]['unique_chute_count']}, vs default: {old_value}"
+            f"{rank:<3} "
+            f"{hotkey:<48} "
+            f"{final_scores[hotkey]:<10.6f} "
+            f"{base_scores.get(hotkey, 0):<10.6f} "
+            f"{BONUS['breadth'] * breadth_scores.get(hotkey, 0):<10.6f} "
+            f"{BONUS['demand'] * demand_scores.get(hotkey, 0):<10.6f} "
+            f"{BONUS['bounty'] * bounty_scores.get(hotkey, 0):<10.6f} "
+            f"{BONUS['success_rate'] * success_scores.get(hotkey, 0):<10.6f}"
         )
 
-    pre_final_scores = {
-        hotkey: sum(norm_value * FEATURE_WEIGHTS[key] for key, norm_value in metrics.items())
-        for hotkey, metrics in normalized_values.items()
-    }
+    return raw_values, final_scores
 
-    # Punish multi-uid miners.
-    sorted_hotkeys = sorted(
-        pre_final_scores.keys(), key=lambda h: pre_final_scores[h], reverse=True
-    )
-    penalized_scores = {}
-    coldkey_used = set()
-    for hotkey in sorted_hotkeys:
-        coldkey = hot_cold_map[hotkey]
-        if coldkey in coldkey_used:
-            penalized_scores[hotkey] = 0.0
-            logger.warning(
-                f"Zeroing multi-uid miner {hotkey=} {coldkey=} count={coldkey_counts[coldkey]}"
-            )
-        else:
-            penalized_scores[hotkey] = pre_final_scores[hotkey]
-        coldkey_used.add(coldkey)
 
-    # Normalize final scores by sum of penalized scores, just to make the incentive value match nicely.
-    total = sum([val for hk, val in penalized_scores.items()])
-    final_scores = {key: score / total for key, score in penalized_scores.items() if score > 0}
-
-    # Log the final score.
-    sorted_hotkeys = sorted(final_scores.keys(), key=lambda h: final_scores[h], reverse=True)
-    for hotkey in sorted_hotkeys:
-        coldkey_count = coldkey_counts[hot_cold_map[hotkey]]
-        logger.info(f"{hotkey} ({coldkey_count=}): {final_scores[hotkey]}")
-
-    return {
-        "raw_values": raw_compute_values,
-        "totals": totals,
-        "normalized": normalized_values,
-        "final_scores": final_scores,
-    }
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(get_scoring_data(interval = '7 days'))
