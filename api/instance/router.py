@@ -746,6 +746,10 @@ async def claim_launch_config(
         instance.compute_multiplier *= PRIVATE_INSTANCE_BONUS
         instance.billed_to = chute.user_id
 
+    # Add chute boost.
+    if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
+        instance.compute_multiplier *= chute.boost
+
     db.add(instance)
 
     # Mark the job as associated with this instance.

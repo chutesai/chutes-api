@@ -183,6 +183,7 @@ async def release_job(
 async def get_full_inventory(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     session: AsyncSession = Depends(get_db_session),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
     query = text(
         f"""
