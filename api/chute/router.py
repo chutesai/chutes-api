@@ -285,13 +285,16 @@ async def list_boosted_chutes():
     """
     async with get_session() as session:
         query = (
-            select(Chute.chute_id, Chute.boost)
+            select(Chute.chute_id, Chute.name, Chute.boost)
             .where(Chute.boost.isnot(None))
             .where(Chute.boost >= 1)
             .where(Chute.boost <= 20)
         )
         result = await session.execute(query)
-        chutes = [{"chute_id": str(cid), "boost": boost} for cid, boost in result.all()]
+        chutes = [
+            {"chute_id": str(cid), "name": name, "boost": boost}
+            for cid, name, boost in result.all()
+        ]
         return chutes
 
 
