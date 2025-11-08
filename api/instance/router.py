@@ -3,6 +3,7 @@ Routes for instances.
 """
 
 import os
+import csv
 import uuid
 import base64
 import ctypes
@@ -11,12 +12,13 @@ import random
 import socket
 import secrets
 import asyncio
+from io import StringIO
 import orjson as json  # noqa
 import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Header, Request, Response
 from sqlalchemy import select, text, func, update, and_
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -346,10 +348,31 @@ async def _validate_host_port(db, host, port):
         )
 
 
-@router.get("/current_id_list")
-async def get_current_instance_ids(db: AsyncSession = Depends(get_db_session)):
-    result = (await db.execute(select(Instance.instance_id))).unique().scalars().all()
-    return result
+@router.get("/reconciliation_csv")
+async def get_instance_reconciliation_csv(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get all instance audit instance_id, deleted_at records to help reconcile audit data.
+    """
+    query = """
+        SELECT
+            instance_id,
+            deleted_at
+        FROM instance_audit
+        WHERE deleted_at IS NOT NULL
+        AND activated_at IS NOT NULL
+    """
+    output = StringIO()
+    writer = csv.writer(output)
+    result = await db.execute(text(query))
+    writer.writerow([col for col in result.keys()])
+    writer.writerows(result)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="audit-reconciliation.csv"'},
+    )
 
 
 @router.get("/launch_config")
