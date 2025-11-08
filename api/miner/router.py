@@ -26,7 +26,7 @@ from api.database import get_session, get_db_session
 from api.config import settings
 from api.constants import HOTKEY_HEADER
 from api.metasync import get_miner_by_hotkey, MetagraphNode
-from api.util import memcache_get, memcache_set
+from api.util import memcache_get, memcache_set, semcomp
 from metasync.shared import get_scoring_data
 
 router = APIRouter()
@@ -52,6 +52,8 @@ def model_to_dict(obj):
                 "supported_gpus": ns.supported_gpus,
             }
         )
+        if semcomp(obj.chutes_version or "0.0.0", "0.3.61") >= 0:
+            data["code"] = "print('legacy placeholder')"
     if isinstance(obj, Image):
         data["username"] = obj.user.username
     if isinstance(data.get("seed"), Decimal):

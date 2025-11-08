@@ -47,7 +47,9 @@ from api.job.schemas import Job
 from api.instance.util import (
     get_instance_by_chute_and_id,
     create_launch_jwt,
+    create_launch_jwt_v2,
     create_job_jwt,
+    generate_fs_key,
     load_launch_config_from_jwt,
     invalidate_instance_cache,
 )
@@ -459,8 +461,17 @@ async def get_launch_config(
         )
 
     # Generate the JWT.
+    token = None
+    if semcomp(chute.chutes_version or "0.0.0", "0.3.61") >= 0:
+        token = create_launch_jwt_v2(
+            launch_config, egress=chute.allow_external_egress, disk_gb=disk_gb
+        )
+    else:
+        token = create_launch_jwt(launch_config, disk_gb=disk_gb)
+
+    # Generate the JWT.
     return {
-        "token": create_launch_jwt(launch_config, disk_gb=disk_gb),
+        "token": token,
         "config_id": launch_config.config_id,
     }
 
@@ -531,8 +542,9 @@ async def claim_launch_config(
         code = None
         try:
             dump = DUMPER.decrypt(launch_config.env_key, args.env)
-            code_data = DUMPER.decrypt(launch_config.env_key, args.code)
-            code = base64.b64decode(code_data["content"]).decode()
+            if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
+                code_data = DUMPER.decrypt(launch_config.env_key, args.code)
+                code = base64.b64decode(code_data["content"]).decode()
         except Exception as exc:
             logger.error(
                 f"Attempt to claim {config_id=} failed, invalid envdump payload received: {exc}"
@@ -547,12 +559,13 @@ async def claim_launch_config(
 
         # Check the environment.
         try:
-            await verify_expected_command(
-                dump,
-                chute,
-                miner_hotkey=launch_config.miner_hotkey,
-            )
-            assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
+            if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
+                await verify_expected_command(
+                    dump,
+                    chute,
+                    miner_hotkey=launch_config.miner_hotkey,
+                )
+                assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
         except AssertionError as exc:
             logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
             launch_config.failed_at = func.now()
@@ -1248,7 +1261,15 @@ async def verify_launch_config_instance(
         "chute_id": launch_config.chute_id,
         "instance_id": instance.instance_id,
         "verified_at": launch_config.verified_at.isoformat(),
+        "fs_key": generate_fs_key(launch_config),
     }
+    if semcomp(instance.chutes_version or "0.0.0", "0.3.61") >= 0:
+        return_value.update(
+            {
+                "fs_key": generate_fs_key(launch_config),
+                "code": instance.chute.code,
+            }
+        )
     if job:
         job_token = create_job_jwt(job.job_id)
         return_value.update(

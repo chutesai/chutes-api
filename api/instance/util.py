@@ -5,6 +5,7 @@ Helper functions for instances.
 import jwt
 import time
 import uuid
+import base64
 import asyncio
 import random
 import pickle
@@ -26,6 +27,8 @@ from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send
 from sqlalchemy.future import select
 from sqlalchemy import text, func
 from sqlalchemy.orm import aliased, joinedload
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.asymmetric import ec
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
@@ -468,6 +471,38 @@ async def get_instance_by_chute_and_id(db, instance_id, chute_id, hotkey):
     )
     result = await db.execute(query)
     return result.unique().scalar_one_or_none()
+
+
+def create_launch_jwt_v2(launch_config, disk_gb: int = None, egress: bool = False) -> str:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(hours=2)
+    payload = {
+        "exp": int(expires_at.timestamp()),
+        "sub": launch_config.config_id,
+        "chute_id": launch_config.chute_id,
+        "iat": int(now.timestamp()),
+        "url": f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}",
+        "env_key": launch_config.env_key,
+        "iss": "chutes",
+        "egress": egress,
+    }
+    if launch_config.job_id:
+        payload["job_id"] = launch_config.job_id
+    if disk_gb:
+        payload["disk_gb"] = disk_gb
+    encoded_jwt = jwt.encode(payload, settings.launch_config_private_key_bytes, algorithm="ES256")
+    return encoded_jwt
+
+
+def generate_fs_key(launch_config) -> str:
+    """
+    Generate a chutes secure FS code to unlock encrypted files.
+    """
+    timestamp = int(time.time())
+    message = f"{timestamp}:{launch_config.chute_id}:{launch_config.config_id}".encode()
+    signature = settings.launch_config_private_key.sign(message, ec.ECDSA(hashes.SHA256()))
+    encoded_signature = base64.urlsafe_b64encode(signature).rstrip("=").decode()
+    return f"{timestamp}:{encoded_signature}"
 
 
 def create_launch_jwt(launch_config, disk_gb: int = None) -> str:
