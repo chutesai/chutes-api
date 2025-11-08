@@ -143,7 +143,7 @@ async def create_nodes(
     """
     Add nodes/GPUs to inventory.
     """
-    reason = is_miner_blacklisted(db, hotkey)
+    reason = await is_miner_blacklisted(db, hotkey)
     if reason:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -161,7 +161,7 @@ async def create_nodes(
         )
 
     node_uuids = [node.uuid for node in args.nodes]
-    existing_nodes = check_node_inventory(db, node_uuids)
+    existing_nodes = await check_node_inventory(db, node_uuids)
     if existing_nodes:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -213,7 +213,7 @@ async def create_nodes(
     
     try:
         await _track_server(db, args.server_id, args.nodes[0].verification_host, hotkey, is_tee=False)
-        await _track_nodes(db, hotkey, args.server_id, nodes, seed, verified_at)
+        nodes = await _track_nodes(db, hotkey, args.server_id, args.nodes, seed, verified_at)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
