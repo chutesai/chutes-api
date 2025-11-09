@@ -7,7 +7,7 @@ from api.database import get_session
 from loguru import logger
 from sqlalchemy.sql import func
 from sqlalchemy import Column, String, DateTime, Integer, Float, text
-from metasync.constants2 import (
+from metasync.constants import (
     BONUS,
     BONUS_EXP,
     BOUNTY_DECAY,
