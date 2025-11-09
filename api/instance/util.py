@@ -501,7 +501,7 @@ def generate_fs_key(launch_config) -> str:
     timestamp = int(time.time())
     message = f"{timestamp}:{launch_config.chute_id}:{launch_config.config_id}".encode()
     signature = settings.launch_config_private_key.sign(message, ec.ECDSA(hashes.SHA256()))
-    encoded_signature = base64.urlsafe_b64encode(signature).rstrip("=").decode()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode().rstrip("=")
     return f"{timestamp}:{encoded_signature}"
 
 

@@ -8,7 +8,7 @@ from pathlib import Path
 import aioboto3
 import aiomcache
 import json
-from functools import cached_property, lru_dict
+from functools import cached_property, lru_cache
 import redis.asyncio as redis
 from boto3.session import Config
 from typing import Optional
@@ -19,6 +19,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 
 
+@lru_cache(maxsize=1)
 def load_squad_cert():
     if (path := os.getenv("SQUAD_CERT_PATH")) is not None:
         with open(path, "rb") as infile:
@@ -26,7 +27,7 @@ def load_squad_cert():
     return b""
 
 
-@lru_dict(maxsize=1)
+@lru_cache(maxsize=1)
 def load_launch_config_private_key():
     if (path := os.getenv("LAUNCH_CONFIG_PRIVATE_KEY_PATH")) is not None:
         with open(path, "rb") as infile:
@@ -196,8 +197,8 @@ class Settings(BaseSettings):
     launch_config_private_key_bytes: Optional[bytes] = load_launch_config_private_key()
 
     @cached_property
-    def launch_config_private_key(self) -> Optional[ec.ECPrivateKey]:
-        if self._launch_config_private_key:
+    def launch_config_private_key(self) -> Optional[ec.EllipticCurvePrivateKey]:
+        if hasattr(self, "_launch_config_private_key"):
             return self._launch_config_private_key
         if (key_bytes := load_launch_config_private_key()) is not None:
             self._launch_config_private_key = serialization.load_pem_private_key(key_bytes, None)
