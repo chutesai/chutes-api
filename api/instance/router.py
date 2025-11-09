@@ -559,12 +559,12 @@ async def claim_launch_config(
 
         # Check the environment.
         try:
+            await verify_expected_command(
+                dump,
+                chute,
+                miner_hotkey=launch_config.miner_hotkey,
+            )
             if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
-                await verify_expected_command(
-                    dump,
-                    chute,
-                    miner_hotkey=launch_config.miner_hotkey,
-                )
                 assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
         except AssertionError as exc:
             logger.error(f"Attempt to claim {config_id=} failed, invalid command: {exc}")
