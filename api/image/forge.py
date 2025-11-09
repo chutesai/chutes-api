@@ -31,7 +31,6 @@ from api.chute.schemas import Chute, RollingUpdate
 from sqlalchemy import func, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
-from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from api.database import orms  # noqa
 from api.graval_worker import handle_rolling_update
@@ -42,8 +41,7 @@ broker = ListQueueBroker(url=settings.redis_url, queue_name="forge").with_result
 CFSV_PATH = os.path.join(os.path.dirname(chutes.__file__), "cfsv")
 
 
-@broker.on_event(TaskiqEvents.WORKER_STARTUP)
-async def initialize(*_, **__):
+async def initialize():
     """
     Ensure ORM modules are all loaded, and login to docker hub to avoid rate-limiting.
     """
@@ -61,7 +59,7 @@ async def initialize(*_, **__):
         else:
             logger.warning(f"Failed authentication: {username=}")
 
-    for base_image in ("parachutes/python:3.12.9", "parachutes/python:3.12"):
+    for base_image in ("parachutes/python:3.12",):
         process = await asyncio.create_subprocess_exec(
             "buildah",
             "pull",
@@ -652,13 +650,11 @@ async def upload_filesystem_verification_data(image, data_file_path: str):
     logger.success(f"Uploaded filesystem verification data to {s3_key}")
 
 
-@broker.task
 async def forge(image_id: str):
     """
     Build an image and push it to the registry.
     """
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
-
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -669,6 +665,8 @@ async def forge(image_id: str):
         image.build_started_at = func.now()
         await session.commit()
         await session.refresh(image)
+
+    logger.info(f"Picked up forge task for {image_id=}: {image.name=} {image.tag=}")
 
     # Download the build context
     short_tag = None
@@ -739,7 +737,6 @@ async def forge(image_id: str):
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
 
 
-@broker.task
 async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = False):
     """
     Update the chutes library in an existing image without rebuilding from scratch.
@@ -1118,3 +1115,26 @@ COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
 
     # Cleanup
     os.system("bash /usr/local/bin/buildah_cleanup.sh")
+
+
+async def main():
+    await initialize()
+
+    while True:
+        async with get_session() as session:
+            image_id = (
+                (
+                    await session.execute(
+                        select(Image.image_id)
+                        .where(Image.status == "pending")
+                        .order_by(Image.created_at.asc())
+                        .limit(1)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not image_id:
+                await asyncio.sleep(10)
+                continue
+            await forge(image_id)
