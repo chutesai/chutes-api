@@ -9,12 +9,16 @@ from sqlalchemy.sql import func
 from sqlalchemy import Column, String, DateTime, Integer, Float, text
 from metasync.constants2 import (
     BONUS,
+    BONUS_EXP,
+    BOUNTY_DECAY,
+    BOUNTY_RHO,
     SCORING_INTERVAL,
     INSTANCES_QUERY,
     NORMALIZED_COMPUTE_QUERY,
     INVENTORY_QUERY,
     DEMAND_COMPUTE_WEIGHT,
     DEMAND_COUNT_WEIGHT,
+    BONUS_WEIGHT,
 )
 
 
@@ -52,7 +56,9 @@ def create_metagraph_node_class(base):
 async def get_scoring_data(interval: str = SCORING_INTERVAL):
     compute_query = text(NORMALIZED_COMPUTE_QUERY.format(interval=interval))
     inventory_query = text(INVENTORY_QUERY.format(interval=interval))
-    instances_query = text(INSTANCES_QUERY.format(interval=interval))
+    instances_query = text(
+        INSTANCES_QUERY.format(interval=interval, bounty_decay=BOUNTY_DECAY, bounty_rho=BOUNTY_RHO)
+    )
 
     # Load active miners from metagraph (and map coldkey pairings to de-dupe multi-hotkey miners).
     raw_values = {}
@@ -76,35 +82,31 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
         for (
             hotkey,
             total_instances,
-            bounties,
+            bounty_score,
             instance_seconds,
             instance_compute_units,
         ) in instances_result:
             if not hotkey or hotkey not in hot_cold_map:
                 continue
             raw_values[hotkey] = {
-                "total_instances": total_instances,
-                "bounties": bounties,
-                "instance_seconds": instance_seconds,
-                "instance_compute_units": instance_compute_units,
-                "success_rate": 0.0,
+                "total_instances": float(total_instances or 0.0),
+                "bounty_score": float(bounty_score or 0.0),
+                "instance_seconds": float(instance_seconds or 0.0),
+                "instance_compute_units": float(instance_compute_units or 0.0),
                 "invocation_compute_units": 0.0,
                 "invocation_count": 0.0,
                 "unique_chute_gpus": 0.0,
             }
 
-    # Get the invocation metrics to calculate boosts for "demand" and "success_ratio"
-    logger.info("Fetching invocation metrics to calculate demand and success ratio boosts...")
+    # Get the invocation metrics to calculate boosts for "demand"
+    logger.info("Fetching invocation metrics to calculate demand boost...")
     async with get_session() as session:
         compute_result = await session.execute(compute_query)
-        for hotkey, successful_count, error_count, compute_units in compute_result:
+        for hotkey, count, compute_units in compute_result:
             if hotkey not in raw_values:
                 continue
-            raw_values[hotkey]["success_rate"] = successful_count / (
-                (successful_count + error_count) or 1.0
-            )
-            raw_values[hotkey]["invocation_compute_units"] = compute_units
-            raw_values[hotkey]["invocation_count"] = successful_count
+            raw_values[hotkey]["invocation_compute_units"] = float(compute_units or 0.0)
+            raw_values[hotkey]["invocation_count"] = count
 
     # Get the unique chute ("breadth" bonus) data.
     logger.info("Fetching unique chute GPU score to calculate breadth bonus...")
@@ -113,89 +115,105 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
         for hotkey, unique_chute_gpus, total_active_gpus in unique_result:
             if hotkey not in raw_values:
                 continue
-            raw_values[hotkey]["unique_chute_gpus"] = unique_chute_gpus
+            raw_values[hotkey]["unique_chute_gpus"] = float(unique_chute_gpus or 0.0)
 
-    # First, we'll calculate the scores as [0,1] range based on compute units.
-    logger.info("Normalizing scores and adding boosts...")
-    base_scores = {}
-    for hotkey, data in raw_values.items():
-        base_scores[hotkey] = data["instance_compute_units"]
+    # Build base scores from instance compute units.
+    base_scores = {hk: data["instance_compute_units"] for hk, data in raw_values.items()}
 
     # Purge multi-hotkey miners - keep only the highest scoring hotkey per coldkey
     hotkeys_to_remove = set()
     for coldkey in set(hot_cold_map.values()):
-        if coldkey_counts[coldkey] > 1:
+        if coldkey_counts.get(coldkey, 0) > 1:
             coldkey_hotkeys = [
                 hk for hk, ck in hot_cold_map.items() if ck == coldkey and hk in base_scores
             ]
             if len(coldkey_hotkeys) > 1:
-                coldkey_hotkeys.sort(key=lambda hk: base_scores[hk], reverse=True)
+                coldkey_hotkeys.sort(key=lambda hk: base_scores.get(hk, 0.0), reverse=True)
                 hotkeys_to_remove.update(coldkey_hotkeys[1:])
 
-    # Remove the lower-scoring hotkeys
     for hotkey in hotkeys_to_remove:
         base_scores.pop(hotkey, None)
         raw_values.pop(hotkey, None)
         logger.warning(f"Purging hotkey from multi-uid miner: {hotkey=}")
 
-    # Helper function to normalize and apply exponential
-    def normalize_and_exp(values_dict, key, exp=1.4):
-        values = [data.get(key, 0) for data in values_dict.values()]
-        max_val = max(values) if values else 1.0
-        min_val = min(values) if values else 0.0
-        range_val = max_val - min_val if max_val != min_val else 1.0
-        normalized = {}
-        for hotkey, data in values_dict.items():
-            norm_val = (data.get(key, 0) - min_val) / range_val if range_val > 0 else 0
-            normalized[hotkey] = norm_val**exp
-        exp_max = max(normalized.values()) if normalized else 1.0
-        if exp_max > 0:
-            for hotkey in normalized:
-                normalized[hotkey] /= exp_max
-        return normalized
+    # Helpers
+    def minmax_then_exp_to_dist(values_map: dict[str, float], exp: float) -> dict[str, float]:
+        """
+        Min-max to [0,1], raise to 'exp', then sum-normalize to a distribution.
+        Returns a dict that sums to 1 across keys (unless empty).
+        """
+        if not values_map:
+            return {}
+        vals = list(values_map.values())
+        vmin, vmax = min(vals), max(vals)
+        rng = max(vmax - vmin, 1e-12)
 
-    # Breadth bonus (unique_chute_gpus, non-selectiveness in deploying chutes).
-    breadth_scores = normalize_and_exp(raw_values, "unique_chute_gpus", 2.0)
+        powered = {k: ((v - vmin) / rng) ** exp for k, v in values_map.items()}
+        S = sum(powered.values())
+        if S <= 0:
+            # uniform fallback
+            n = len(powered)
+            return {k: 1.0 / n for k in powered}
+        return {k: powered[k] / S for k in powered}
 
-    # Demand bonus (miner deploys chutes that get a lot of real-world invocation usage).
-    invoc_compute_scores = normalize_and_exp(raw_values, "invocation_compute_units", 2.0)
-    invoc_count_scores = normalize_and_exp(raw_values, "invocation_count", 2.0)
-    demand_scores = {}
-    for hotkey in raw_values:
-        demand_scores[hotkey] = DEMAND_COMPUTE_WEIGHT * invoc_compute_scores.get(
-            hotkey, 0
-        ) + DEMAND_COUNT_WEIGHT * invoc_count_scores.get(hotkey, 0)
+    def category_from_raw(raw_key: str) -> dict[str, float]:
+        return {hk: raw_values[hk].get(raw_key, 0.0) for hk in raw_values.keys()}
 
-    # Bounties (miner was first to activate an instance of a chute that had a bounty).
-    bounty_scores = normalize_and_exp(raw_values, "bounties", 2.0)
+    base_sum = sum(max(0.0, v) for v in base_scores.values())
+    base_dist = {}
+    if base_sum > 0:
+        base_dist = {hk: max(0.0, v) / base_sum for hk, v in base_scores.items()}
+    else:
+        n = max(len(base_scores), 1)
+        base_dist = {hk: 1.0 / n for hk in base_scores.keys()}
 
-    # Success rate (miner generally has a higher success rate in invocations).
-    success_scores = normalize_and_exp(raw_values, "success_rate", 2.0)
+    base_weight = 1.0 - BONUS_WEIGHT
+    base_contrib = {hk: base_weight * base_dist.get(hk, 0.0) for hk in raw_values.keys()}
 
-    # Normalize the base scores to sum to 1.0
-    total_base = sum(base_scores.values()) if base_scores else 1.0
-    if total_base > 0:
-        for hotkey in base_scores:
-            base_scores[hotkey] /= total_base
+    logger.info("Computing bonus distributions...")
 
-    # Apply bonuses.
-    final_scores = {}
-    for hotkey in base_scores:
-        score = base_scores[hotkey]
-        # Add each bonus.
-        score += base_scores[hotkey] * BONUS["breadth"] * breadth_scores.get(hotkey, 0)
-        score += base_scores[hotkey] * BONUS["demand"] * demand_scores.get(hotkey, 0)
-        score += base_scores[hotkey] * BONUS["bounty"] * bounty_scores.get(hotkey, 0)
-        score += base_scores[hotkey] * BONUS["success_rate"] * success_scores.get(hotkey, 0)
-        final_scores[hotkey] = score
+    # Category raw maps
+    breadth_raw = category_from_raw("unique_chute_gpus")
+    invoc_compute_raw = category_from_raw("invocation_compute_units")
+    invoc_count_raw = category_from_raw("invocation_count")
+    bounty_raw = category_from_raw("bounty_score")
 
-    # Normalize to ensure sum equals 1.0
-    total_final = sum(final_scores.values()) if final_scores else 1.0
-    if total_final > 0:
-        for hotkey in final_scores:
-            final_scores[hotkey] /= total_final
+    # Demand raw is a weighted mix of invoc compute & count (still per-miner raw before dist)
+    demand_raw = {}
+    for hk in raw_values.keys():
+        dcw = float(DEMAND_COMPUTE_WEIGHT)
+        dnw = float(DEMAND_COUNT_WEIGHT)
+        ws = max(dcw + dnw, 1e-12)
+        demand_raw[hk] = (
+            dcw * invoc_compute_raw.get(hk, 0.0) + dnw * invoc_count_raw.get(hk, 0.0)
+        ) / ws
 
-    # Logging.
+    # Turn each category into a distribution via min-max → exp → sum-normalize
+    breadth_dist = minmax_then_exp_to_dist(breadth_raw, BONUS_EXP)
+    demand_dist = minmax_then_exp_to_dist(demand_raw, BONUS_EXP)
+    bounty_dist = minmax_then_exp_to_dist(bounty_raw, BONUS_EXP)
+
+    # Normalize BONUS weights across the categories that we’re actually using.
+    w_breadth = float(BONUS.get("breadth", 0.0))
+    w_demand = float(BONUS.get("demand", 0.0))
+    w_bounty = float(BONUS.get("bounty", 0.0))
+    W = max(w_breadth + w_demand + w_bounty, 1e-12)
+    wb, wd, wbo = w_breadth / W, w_demand / W, w_bounty / W
+
+    # Blend category distributions into a single bonus distribution and scale by bonus weight.
+    blended_bonus_dist = {}
+    for hk in raw_values.keys():
+        blended_bonus_dist[hk] = (
+            wb * breadth_dist.get(hk, 0.0)
+            + wd * demand_dist.get(hk, 0.0)
+            + wbo * bounty_dist.get(hk, 0.0)
+        )
+    bonus_weight = BONUS_WEIGHT
+    bonus_contrib = {hk: bonus_weight * blended_bonus_dist.get(hk, 0.0) for hk in raw_values.keys()}
+
+    final_scores = {
+        hk: base_contrib.get(hk, 0.0) + bonus_contrib.get(hk, 0.0) for hk in raw_values.keys()
+    }
     sorted_hotkeys = sorted(final_scores.keys(), key=lambda k: final_scores[k], reverse=True)
     logger.info(
         f"{'#':<3} "
@@ -204,21 +222,28 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
         f"{'Base':<10} "
         f"{'Breadth':<10} "
         f"{'Demand':<10} "
-        f"{'Bounty':<10} "
-        f"{'Success':<10}"
+        f"{'Bounty':<10}"
     )
     logger.info("-" * 120)
-
-    for rank, hotkey in enumerate(sorted_hotkeys, 1):  # Start from 1
+    for rank, hotkey in enumerate(sorted_hotkeys, 1):
+        b_total = bonus_contrib.get(hotkey, 0.0)
+        eps = 1e-12
+        cat_share = (
+            wb * breadth_dist.get(hotkey, 0.0)
+            + wd * demand_dist.get(hotkey, 0.0)
+            + wbo * bounty_dist.get(hotkey, 0.0)
+        ) + eps
+        breadth_c = b_total * (wb * breadth_dist.get(hotkey, 0.0)) / cat_share
+        demand_c = b_total * (wd * demand_dist.get(hotkey, 0.0)) / cat_share
+        bounty_c = b_total * (wbo * bounty_dist.get(hotkey, 0.0)) / cat_share
         logger.info(
             f"{rank:<3} "
             f"{hotkey:<48} "
             f"{final_scores[hotkey]:<10.6f} "
-            f"{base_scores.get(hotkey, 0):<10.6f} "
-            f"{BONUS['breadth'] * breadth_scores.get(hotkey, 0):<10.6f} "
-            f"{BONUS['demand'] * demand_scores.get(hotkey, 0):<10.6f} "
-            f"{BONUS['bounty'] * bounty_scores.get(hotkey, 0):<10.6f} "
-            f"{BONUS['success_rate'] * success_scores.get(hotkey, 0):<10.6f}"
+            f"{base_contrib.get(hotkey, 0.0):<10.6f} "
+            f"{breadth_c:<10.6f} "
+            f"{demand_c:<10.6f} "
+            f"{bounty_c:<10.6f} "
         )
 
     return raw_values, final_scores

@@ -2,20 +2,24 @@ SCORING_INTERVAL = "7 days"
 
 # Bonuses applied to base score, where base score is simply compute units * instance lifetime where termination reason is valid.
 BONUS = {
-    "demand": 0.25,  # Miner generally meets the platform demands, i.e. chutes with high utilization are deployed more frequently.
-    "bounty": 0.2,  # Claimed bounties, i.e. when there was platform demand for a chute, they launched it.
-    "breadth": 0.15,  # Non-selectivity of the miner, i.e. deploying all chutes with equal weight.
-    "success_rate": 0.15,  # Success rate in serving requests.
+    "demand": 0.35,  # Miner generally meets the platform demands, i.e. chutes with high utilization are deployed more frequently.
+    "bounty": 0.35,  # Claimed bounties, i.e. when there was platform demand for a chute, they launched it.
+    "breadth": 0.3,  # Non-selectivity of the miner, i.e. deploying all chutes with equal weight.
 }
 DEMAND_COMPUTE_WEIGHT = 0.75
 DEMAND_COUNT_WEIGHT = 0.25
+BONUS_WEIGHT = 0.15
+BONUS_EXP = 2.0
+
+# Prevent bounty spamming.
+BOUNTY_DECAY = 0.8
+BOUNTY_RHO = 0.5
 
 # Query to fetch raw request counts and compute units per chute (to calculate 'demand' bonus).
 NORMALIZED_COMPUTE_QUERY = """
 SELECT
     i.miner_hotkey,
     COUNT(CASE WHEN i.error_message IS NULL THEN 1 END) AS successful_count,
-    COUNT(CASE WHEN i.error_message IS NOT NULL AND i.error_message NOT IN ('RATE_LIMIT', 'BAD_REQUEST') THEN 1 END) AS error_count,
     SUM(
         i.compute_multiplier *
         CASE
@@ -136,6 +140,7 @@ WITH billed_instances AS (
     SELECT
         ia.miner_hotkey,
         ia.instance_id,
+        ia.chute_id,
         ia.activated_at,
         ia.deleted_at,
         ia.stop_billing_at,
@@ -150,44 +155,83 @@ WITH billed_instances AS (
     FROM instance_audit ia
     WHERE ia.activated_at IS NOT NULL
       AND (
-          -- public instances, must be alive for >= 1 hour to be counted.
           (
             ia.billed_to IS NULL
             AND ia.deleted_at IS NOT NULL
             AND ia.deleted_at - ia.activated_at >= INTERVAL '1 hour'
           )
-          -- terminated for a valid reason, i.e. validator scaled it down because low usage
           OR ia.valid_termination IS TRUE
-          -- legacy termination reasons
           OR ia.deletion_reason in (
               'job has been terminated due to insufficient user balance',
               'user-defined/private chute instance has not been used since shutdown_after_seconds',
               'user has zero/negative balance (private chute)'
           )
           OR ia.deletion_reason LIKE '%has an old version%'
-          -- instances that are still active, tenatively assume with meet the other criteria
           OR ia.deleted_at IS NULL
       )
       AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
 ),
 
--- Aggregate compute units by miner
+-- Count total bounties per chute in the interval
+chute_bounty_totals AS (
+    SELECT
+        bi.chute_id,
+        COUNT(*)::bigint AS n_total
+    FROM billed_instances bi
+    WHERE bi.bounty IS TRUE
+      AND bi.billing_end > bi.billing_start
+    GROUP BY bi.chute_id
+),
+
+-- Count bounties per miner per chute in the interval
+miner_chute_bounty_counts AS (
+    SELECT
+        bi.miner_hotkey,
+        bi.chute_id,
+        COUNT(*)::bigint AS n_miner_chute
+    FROM billed_instances bi
+    WHERE bi.bounty IS TRUE
+      AND bi.billing_end > bi.billing_start
+    GROUP BY bi.miner_hotkey, bi.chute_id
+),
+
+-- Convert counts to an "effective" bounty score with:
+--   per-miner geometric diminishing + global chute dampening
+miner_bounty_effective AS (
+    SELECT
+        mcbc.miner_hotkey,
+        SUM(
+            (1.0 - POWER({bounty_decay}, mcbc.n_miner_chute::double precision))
+            / (1.0 - {bounty_decay})
+            *
+            POWER(GREATEST(cbt.n_total, 1)::double precision, {bounty_rho} - 1.0)
+        ) AS bounty_score
+    FROM miner_chute_bounty_counts mcbc
+    JOIN chute_bounty_totals cbt USING (chute_id)
+    GROUP BY mcbc.miner_hotkey
+),
+
+-- Aggregate compute units by miner (and pull in the effective bounty score)
 miner_compute_units AS (
     SELECT
-        miner_hotkey,
+        bi.miner_hotkey,
         COUNT(*) AS total_instances,
-        COUNT(CASE WHEN bounty IS TRUE THEN 1 END) AS bounties,
-        SUM(EXTRACT(EPOCH FROM (billing_end - billing_start))) AS compute_seconds,
-        SUM(EXTRACT(EPOCH FROM (billing_end - billing_start)) * compute_multiplier) AS compute_units
-    FROM billed_instances
-    WHERE billing_end > billing_start
-    GROUP BY miner_hotkey
+        COALESCE(mbe.bounty_score, 0.0) AS bounty_score,
+        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start))) AS compute_seconds,
+        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * bi.compute_multiplier) AS compute_units
+    FROM billed_instances bi
+    LEFT JOIN miner_bounty_effective mbe
+           ON mbe.miner_hotkey = bi.miner_hotkey
+    WHERE bi.billing_end > bi.billing_start
+    GROUP BY bi.miner_hotkey, mbe.bounty_score
 )
+
 SELECT
     miner_hotkey,
     total_instances,
-    bounties,
-    COALESCE(compute_seconds, 0) as compute_seconds,
-    COALESCE(compute_units, 0) as compute_units
-FROM miner_compute_units order by compute_units desc
+    bounty_score,
+    COALESCE(compute_seconds, 0) AS compute_seconds,
+    COALESCE(compute_units, 0)  AS compute_units
+FROM miner_compute_units
+ORDER BY compute_units DESC
 """
