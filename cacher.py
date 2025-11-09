@@ -53,23 +53,23 @@ async def warm_up_cache():
     logger.success("Warmed up LLM details")
 
 
-async def warm_up_chute_history():
+async def warm_up_inventory_history():
     """
     Update the miner unique chute count history endpoint.
     """
-    from api.metasync import get_unique_chute_history
+    from api.metasync import get_inventory_history
 
-    logger.info("Attempting to warm up unique chute history...")
+    logger.info("Attempting to warm up inventory history...")
     history = None
     started_at = time.time()
-    history = await get_unique_chute_history()
+    history = await get_inventory_history()
     for hotkey, values in history.items():
         cache_key = f"uqhist:{hotkey}".encode()
         await settings.memcache.set(cache_key, json.dumps(values).encode())
 
     delta = time.time() - started_at
     logger.success(
-        f"Successfully warmed up unique chute history for {len(history)} hotkeys in {int(delta)} seconds."
+        f"Successfully warmed up inventory history for {len(history)} hotkeys in {int(delta)} seconds."
     )
 
 
@@ -93,7 +93,7 @@ async def main():
     """
     await update_llm_means()
     await update_past_day_metrics()
-    await warm_up_chute_history()
+    await warm_up_inventory_history()
     await warm_up_cache()
     await generate_invocation_history_metrics()
 

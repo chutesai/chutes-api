@@ -99,6 +99,7 @@ class Instance(Base):
     port_mappings = Column(JSONB, nullable=True)
     inspecto = Column(String, nullable=True)
     env_creation = Column(JSONB, nullable=True)
+    bounty = Column(Boolean, default=False)
 
     # Hourly rate charged to customer, which may differ from the hourly rate of the actual
     # GPUs used for this instance due to node selector. For example, if a chute supports

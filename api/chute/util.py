@@ -13,6 +13,7 @@ import traceback
 import orjson as json
 import base64
 import gzip
+import math
 import pickle
 import random
 from async_lru import alru_cache
@@ -55,7 +56,6 @@ from api.util import (
     has_legacy_private_billing,
 )
 from api.util import memcache_get, memcache_set, memcache_delete
-from api.bounty.util import claim_bounty
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
 from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOverride
 from api.user.service import chutes_user_id
@@ -88,6 +88,7 @@ LLM_PATHS = {"chat_stream", "completion_stream", "chat", "completion"}
 
 BASE_UNIFIED_INVOCATION_INSERT = """
 INSERT INTO {table_name} (
+    bounty,
     parent_invocation_id,
     invocation_id,
     chute_id,
@@ -103,9 +104,9 @@ INSERT INTO {table_name} (
     completed_at,
     error_message,
     compute_multiplier,
-    bounty,
     metrics
 ) VALUES (
+    0,
     :parent_invocation_id,
     :invocation_id,
     :chute_id,
@@ -121,7 +122,6 @@ INSERT INTO {table_name} (
     CURRENT_TIMESTAMP,
     :error_message,
     :compute_multiplier,
-    :bounty,
     :metrics
 )
 """
@@ -156,7 +156,6 @@ async def store_invocation(
     duration: float,
     compute_multiplier: float,
     error_message: Optional[str] = None,
-    bounty: Optional[int] = 0,
     metrics: Optional[dict] = {},
     legacy: Optional[bool] = False,
 ):
@@ -181,7 +180,6 @@ async def store_invocation(
                     "duration": duration,
                     "error_message": error_message,
                     "compute_multiplier": compute_multiplier,
-                    "bounty": bounty,
                     "metrics": json.dumps(metrics).decode(),
                 },
             )
@@ -1010,11 +1008,6 @@ async def invoke(
                         ...
                     yield sse({"result": data})
 
-                # Check any bounty values.
-                bounty = await claim_bounty(chute_id)
-                if bounty is None:
-                    bounty = 0
-
                 # Store complete record in new invocations database, async.
                 # XXX this is a different started_at from global request started_at, for compute units
                 duration = time.time() - started_at
@@ -1034,39 +1027,33 @@ async def invoke(
                         duration,
                         multiplier,
                         error_message=None,
-                        bounty=bounty,
                         metrics=metrics,
                         legacy=False,
                     )
                 )
 
                 # Track in the legacy DB.
-                compute_units = 0.0
-                try:
-                    store_result = await asyncio.shield(
-                        store_invocation(
-                            parent_invocation_id,
-                            invocation_id,
-                            chute.chute_id,
-                            chute.user_id,
-                            function,
-                            user_id,
-                            chute.image_id,
-                            chute.image.user_id,
-                            target.instance_id,
-                            target.miner_uid,
-                            target.miner_hotkey,
-                            duration,
-                            multiplier,
-                            error_message=None,
-                            bounty=bounty,
-                            metrics=metrics,
-                            legacy=True,
-                        )
+                compute_units = multiplier * math.ceil(duration)
+                asyncio.create_task(
+                    store_invocation(
+                        parent_invocation_id,
+                        invocation_id,
+                        chute.chute_id,
+                        chute.user_id,
+                        function,
+                        user_id,
+                        chute.image_id,
+                        chute.image.user_id,
+                        target.instance_id,
+                        target.miner_uid,
+                        target.miner_hotkey,
+                        duration,
+                        multiplier,
+                        error_message=None,
+                        metrics=metrics,
+                        legacy=True,
                     )
-                    compute_units = store_result.total_compute_units if store_result else 0
-                except asyncio.CancelledError:
-                    logger.warning("Request task cancelled after legacy store; continuing cleanup.")
+                )
 
                 # Clear any consecutive failure flags.
                 asyncio.create_task(
@@ -1271,22 +1258,24 @@ async def invoke(
                 )
 
                 # Legacy invocations table storage.
-                store_result = await store_invocation(
-                    parent_invocation_id,
-                    invocation_id,
-                    chute.chute_id,
-                    chute.user_id,
-                    function,
-                    user_id,
-                    chute.image_id,
-                    chute.image.user_id,
-                    target.instance_id,
-                    target.miner_uid,
-                    target.miner_hotkey,
-                    duration,
-                    multiplier,
-                    error_message=error_message,
-                    legacy=True,
+                asyncio.create_task(
+                    store_invocation(
+                        parent_invocation_id,
+                        invocation_id,
+                        chute.chute_id,
+                        chute.user_id,
+                        function,
+                        user_id,
+                        chute.image_id,
+                        chute.image.user_id,
+                        target.instance_id,
+                        target.miner_uid,
+                        target.miner_hotkey,
+                        duration,
+                        multiplier,
+                        error_message=error_message,
+                        legacy=True,
+                    )
                 )
 
                 async with get_session() as session:
