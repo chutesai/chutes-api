@@ -1419,7 +1419,7 @@ async def verify_launch_config_instance(
     launch_config.verified_at = func.now()
     await _verify_job_ports(db, instance)
     await _mark_instance_verified(db, instance, launch_config)
-    return_value = _build_launch_config_verified_response(db, instance, launch_config)
+    return_value = await _build_launch_config_verified_response(db, instance, launch_config)
     
 
     await db.refresh(instance)
