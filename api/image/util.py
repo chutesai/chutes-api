@@ -3,6 +3,7 @@ from sqlalchemy import or_
 from sqlalchemy.future import select
 from api.image.schemas import Image
 from api.user.schemas import User
+from api.database import get_session
 
 
 async def get_image_by_id_or_name(image_id_or_name, db, current_user):
@@ -32,3 +33,12 @@ async def get_image_by_id_or_name(image_id_or_name, db, current_user):
         query = query.where(Image.image_id == image_id_or_name)
     result = await db.execute(query)
     return result.scalar_one_or_none()
+
+
+async def get_inspecto_hash(image_id: str):
+    async with get_session() as session:
+        return (
+            (await session.execute(select(Image.inspecto).where(Image.image_id == image_id)))
+            .unique()
+            .scalar_one_or_none()
+        )

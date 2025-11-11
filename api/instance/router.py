@@ -2,6 +2,8 @@
 Routes for instances.
 """
 
+import csv
+from io import StringIO
 import os
 import uuid
 import base64
@@ -12,11 +14,12 @@ import socket
 import secrets
 import asyncio
 import orjson as json  # noqa
+from api.image.util import get_inspecto_hash
 import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional, Tuple
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Header, Request
 from sqlalchemy import select, text, func, update, and_
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,7 +31,7 @@ from api.config import settings
 from api.constants import (
     HOTKEY_HEADER,
     AUTHORIZATION_HEADER,
-    PRIVATE_INSTANCE_MULTIPLIER,
+    PRIVATE_INSTANCE_BONUS,
 )
 from api.node.schemas import Node
 from api.payment.util import decrypt_secret
@@ -46,6 +49,8 @@ from api.instance.schemas import (
 )
 from api.job.schemas import Job
 from api.instance.util import (
+    create_launch_jwt_v2,
+    generate_fs_key,
     get_instance_by_chute_and_id,
     create_launch_jwt,
     create_job_jwt,
@@ -68,7 +73,7 @@ from api.util import (
     load_shared_object,
     has_legacy_private_billing,
 )
-from api.bounty.util import check_bounty_exists, delete_bounty
+from api.bounty.util import check_bounty_exists, delete_bounty, claim_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -196,56 +201,6 @@ async def _check_scalable_private(db, chute, miner):
             detail=f"Private chute {chute_id} has reached its target capacity of {target_count} instances.",
         )
 
-    public_chute_query = text("""
-    WITH miner_age AS (
-      SELECT
-        MIN(ia.activated_at) AS first_activated_at
-      FROM instance_audit ia
-      WHERE ia.miner_hotkey = :miner_hotkey
-        AND ia.activated_at IS NOT NULL
-    ),
-    counts AS (
-      SELECT
-        COUNT(DISTINCT i.instance_id) AS public_instance_count,
-        COUNT(DISTINCT nn.node_id) FILTER (
-          WHERE n.name IN ('NVIDIA H200', 'NVIDIA B200')
-            AND n.created_at <= NOW() - INTERVAL '7 days'
-        ) AS public_instance_gpu_count
-      FROM instances i
-      JOIN instance_nodes nn ON nn.instance_id = i.instance_id
-      LEFT JOIN nodes n ON n.uuid = nn.node_id
-      JOIN chutes c ON i.chute_id = c.chute_id
-      WHERE i.miner_hotkey = :miner_hotkey
-        AND i.activated_at IS NOT NULL
-        AND c.public IS TRUE
-    )
-    SELECT
-      counts.public_instance_count,
-      counts.public_instance_gpu_count,
-      ma.first_activated_at,
-      (NOW() - ma.first_activated_at) AS miner_age_interval,
-      EXTRACT(EPOCH FROM (NOW() - ma.first_activated_at)) / 86400.0 AS miner_age_days
-    FROM counts
-    CROSS JOIN miner_age ma
-    """)
-    public_result = (
-        (await db.execute(public_chute_query, {"miner_hotkey": miner.hotkey})).mappings().first()
-    )
-    too_few_public_instances = (public_result["public_instance_count"] or 0) < 1
-    too_few_public_gpus = (public_result["public_instance_gpu_count"] or 0) < 8
-    miner_age_days = public_result.get("miner_age_days")
-    miner_too_new = miner_age_days is None or miner_age_days < 7
-    if too_few_public_instances or too_few_public_gpus or miner_too_new:
-        detail = (
-            f"Miner {miner.hotkey} insufficient to deploy private chutes: "
-            f"public_instances={public_result['public_instance_count']}, "
-            f"public_gpus_7d={public_result['public_instance_gpu_count']}, "
-            f"miner_age_days={0 if miner_age_days is None else round(miner_age_days, 2)}."
-        )
-        logger.warning(detail)
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=detail)
-
-
 async def _validate_node(db, chute, node_id: str, hotkey: str) -> Node:
     node = await get_node_by_id(node_id, db, hotkey)
     if not node:
@@ -349,6 +304,32 @@ async def _validate_host_port(db, host, port):
             detail=f"Invalid instance host: {host}",
         )
     
+@router.get("/reconciliation_csv")
+async def get_instance_reconciliation_csv(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get all instance audit instance_id, deleted_at records to help reconcile audit data.
+    """
+    query = """
+        SELECT
+            instance_id,
+            deleted_at
+        FROM instance_audit
+        WHERE deleted_at IS NOT NULL
+        AND activated_at IS NOT NULL
+    """
+    output = StringIO()
+    writer = csv.writer(output)
+    result = await db.execute(text(query))
+    writer.writerow([col for col in result.keys()])
+    writer.writerows(result)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="audit-reconciliation.csv"'},
+    )
+
 async def _validate_launch_config_env(
     db: AsyncSession,
     launch_config: LaunchConfig,
@@ -362,8 +343,9 @@ async def _validate_launch_config_env(
         code = None
         try:
             dump = DUMPER.decrypt(launch_config.env_key, args.env)
-            code_data = DUMPER.decrypt(launch_config.env_key, args.code)
-            code = base64.b64decode(code_data["content"]).decode()
+            if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
+                code_data = DUMPER.decrypt(launch_config.env_key, args.code)
+                code = base64.b64decode(code_data["content"]).decode()
         except Exception as exc:
             logger.error(
                 f"Attempt to claim {launch_config.config_id=} failed, invalid envdump payload received: {exc}"
@@ -383,7 +365,8 @@ async def _validate_launch_config_env(
                 chute,
                 miner_hotkey=launch_config.miner_hotkey,
             )
-            assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
+            if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
+                assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
         except AssertionError as exc:
             logger.error(f"Attempt to claim {launch_config.config_id=} failed, invalid command: {exc}")
             launch_config.failed_at = func.now()
@@ -432,11 +415,7 @@ async def _validate_launch_config_inspecto(
         inspecto_valid = True
         fail_reason = None
         if enforce_inspecto:
-            inspecto_hash = (
-                (await db.execute(select(Image.inspecto).where(Image.image_id == chute.image_id)))
-                .unique()
-                .scalar_one_or_none()
-            )
+            inspecto_hash = await get_inspecto_hash(chute.image_id)
             if not inspecto_hash:
                 logger.info(f"INSPECTO: image_id={chute.image_id} has no inspecto hash; allowing.")
                 inspecto_valid = True
@@ -678,8 +657,12 @@ async def _validate_launch_config_instance(
         and not has_legacy_private_billing(chute)
         and chute.user_id != await chutes_user_id()
     ):
-        instance.compute_multiplier *= PRIVATE_INSTANCE_MULTIPLIER
+        instance.compute_multiplier *= PRIVATE_INSTANCE_BONUS
         instance.billed_to = chute.user_id
+
+    # Add chute boost.
+    if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
+        instance.compute_multiplier *= chute.boost
 
     db.add(instance)
 
@@ -892,10 +875,19 @@ async def get_launch_config(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Launch config conflict/unique constraint error: {exc}",
         )
-
+    
     # Generate the JWT.
+    token = None
+    if semcomp(chute.chutes_version or "0.0.0", "0.3.61") >= 0:
+        token = create_launch_jwt_v2(
+            launch_config, egress=chute.allow_external_egress, disk_gb=disk_gb
+        )
+    else:
+        token = create_launch_jwt(launch_config, disk_gb=disk_gb)
+
+
     return {
-        "token": create_launch_jwt(launch_config, disk_gb=disk_gb),
+        "token": token,
         "config_id": launch_config.config_id,
     }
 
@@ -1091,6 +1083,13 @@ async def activate_launch_config_instance(
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
+        # If a bounty exists for this chute, claim it.
+        bounty = await claim_bounty(instance.chute_id)
+        if bounty is None:
+            bounty = 0
+        if bounty:
+            instance.bounty = True
+
         # Verify egress.
         # net_success = True
         # if semcomp(chute.chutes_version, "0.3.56") >= 0:
@@ -1124,12 +1123,9 @@ async def activate_launch_config_instance(
             instance.stop_billing_at = func.now() + timedelta(
                 seconds=chute.shutdown_after_seconds or 300
             )
-            # For private instances, we need to delete the bounty to prevent scaling back up
-            # if this instance is terminated before a request is made. The miner will still a
-            # bounty, however, since each private instance automatically counts as a bounty (see metasync/shared.py)
-            await delete_bounty(chute.chute_id)
         await db.commit()
         await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
+        await delete_bounty(chute.chute_id)
         asyncio.create_task(notify_activated(instance))
     return {"ok": True}
 
@@ -1278,6 +1274,11 @@ async def _build_launch_config_verified_response(
         "instance_id": instance.instance_id,
         "verified_at": launch_config.verified_at.isoformat(),
     }
+    if semcomp(instance.chutes_version or "0.0.0", "0.3.61") >= 0:
+        return_value["code"] = instance.chute.code
+        return_value["fs_key"] = generate_fs_key(launch_config),
+        if not instance.chute.encrypted_fs:
+            return_value["efs"] = True
     if instance.job:
         job_token = create_job_jwt(instance.job.job_id)
         return_value.update(

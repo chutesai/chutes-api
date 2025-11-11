@@ -278,6 +278,26 @@ async def unshare_chute(
     }
 
 
+@router.get("/boosted")
+async def list_boosted_chutes():
+    """
+    Get a list of chutes that have a boost.
+    """
+    async with get_session() as session:
+        query = (
+            select(Chute.chute_id, Chute.name, Chute.boost)
+            .where(Chute.boost.isnot(None))
+            .where(Chute.boost >= 1)
+            .where(Chute.boost <= 20)
+        )
+        result = await session.execute(query)
+        chutes = [
+            {"chute_id": str(cid), "name": name, "boost": boost}
+            for cid, name, boost in result.all()
+        ]
+        return chutes
+
+
 @router.get("/affine_available")
 async def list_available_affine_chutes():
     """

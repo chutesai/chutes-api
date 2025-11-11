@@ -79,13 +79,14 @@ async def _hard_delete_instance(session, instance: Instance, reason: str) -> Non
             logger.error(
                 f"Hmmm, why 429?: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} {chute.name=} {chute.chute_id=}"
             )
+            return
+    if "turbovision" not in chute.name.lower():
+        return
+
     logger.error(
         f"🛑 HARD FAIL (egress policy violation): deleting {instance.instance_id=} "
         f"{instance.miner_hotkey=} {instance.chute_id=} {chute.name=} {chute.chute_id=}. Reason: {reason}"
     )
-    if "turbovision" not in chute.name.lower():
-        return
-
     await session.delete(instance)
     await session.execute(
         text(

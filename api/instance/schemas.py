@@ -54,6 +54,7 @@ class LaunchConfigArgs(BaseModel):
     gpus: list[dict]
     host: str
     port_mappings: list[PortMap]
+    code: Optional[str] = None
     fsv: Optional[str] = None
     egress: Optional[bool] = None
     netnanny_hash: Optional[str] = None
@@ -63,7 +64,6 @@ class LaunchConfigArgs(BaseModel):
 
 class GravalLaunchConfigArgs(LaunchConfigArgs):
     env: str
-    code: str
     run_code: Optional[str] = None
 
 class TeeLaunchConfigArgs(LaunchConfigArgs):
@@ -103,6 +103,7 @@ class Instance(Base):
     port_mappings = Column(JSONB, nullable=True)
     inspecto = Column(String, nullable=True)
     env_creation = Column(JSONB, nullable=True)
+    bounty = Column(Boolean, default=False)
 
     # Hourly rate charged to customer, which may differ from the hourly rate of the actual
     # GPUs used for this instance due to node selector. For example, if a chute supports

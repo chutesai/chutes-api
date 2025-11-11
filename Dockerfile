@@ -113,7 +113,7 @@ ADD --chown=chutes watchtower.py /forge/watchtower.py
 ENV BUILDAH_ISOLATION=chroot
 ENV STORAGE_DRIVER=overlay
 
-ENTRYPOINT ["poetry", "run", "taskiq", "worker", "api.image.forge:broker", "--workers", "1", "--max-async-tasks", "1"]
+ENTRYPOINT ["poetry", "run", "python", "-m", "api.image.forge"]
 
 
 ###

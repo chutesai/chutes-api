@@ -223,7 +223,6 @@ async def get_recent_export(
             completed_at,
             error_message,
             compute_multiplier,
-            bounty,
             metrics
         FROM partitioned_invocations
         WHERE started_at >= CURRENT_TIMESTAMP - INTERVAL '1 day'
@@ -382,6 +381,7 @@ async def _invoke(
                 status_code=status.HTTP_402_PAYMENT_REQUIRED,
                 detail="Chute unavailable because the creator of this chute {chute.user_id=} has zero balance.",
             )
+        request.state.free_invocation = True
 
     # Check account quotas if not free/invoiced.
     quota_date = date.today()
