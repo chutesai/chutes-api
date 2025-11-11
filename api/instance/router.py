@@ -2,8 +2,9 @@
 Routes for instances.
 """
 
-import os
 import csv
+from io import StringIO
+import os
 import uuid
 import base64
 import ctypes
@@ -12,13 +13,13 @@ import random
 import socket
 import secrets
 import asyncio
-from io import StringIO
 import orjson as json  # noqa
+from api.image.util import get_inspecto_hash
 import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional, Tuple
 from datetime import timedelta
-from fastapi import APIRouter, Depends, HTTPException, status, Header, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Header, Request
 from sqlalchemy import select, text, func, update, and_
 from sqlalchemy.orm import joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,7 +39,6 @@ from api.node.util import get_node_by_id
 from api.chute.schemas import Chute, NodeSelector
 from api.secret.schemas import Secret
 from api.image.schemas import Image  # noqa
-from api.image.util import get_inspecto_hash
 from api.instance.schemas import (
     GravalLaunchConfigArgs,
     TeeLaunchConfigArgs,
@@ -49,11 +49,11 @@ from api.instance.schemas import (
 )
 from api.job.schemas import Job
 from api.instance.util import (
+    create_launch_jwt_v2,
+    generate_fs_key,
     get_instance_by_chute_and_id,
     create_launch_jwt,
-    create_launch_jwt_v2,
     create_job_jwt,
-    generate_fs_key,
     load_launch_config_from_jwt,
     invalidate_instance_cache,
 )
@@ -201,7 +201,6 @@ async def _check_scalable_private(db, chute, miner):
             detail=f"Private chute {chute_id} has reached its target capacity of {target_count} instances.",
         )
 
-
 async def _validate_node(db, chute, node_id: str, hotkey: str) -> Node:
     node = await get_node_by_id(node_id, db, hotkey)
     if not node:
@@ -304,8 +303,7 @@ async def _validate_host_port(db, host, port):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid instance host: {host}",
         )
-
-
+    
 @router.get("/reconciliation_csv")
 async def get_instance_reconciliation_csv(
     db: AsyncSession = Depends(get_db_session),
@@ -331,7 +329,7 @@ async def get_instance_reconciliation_csv(
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="audit-reconciliation.csv"'},
     )
-    
+
 async def _validate_launch_config_env(
     db: AsyncSession,
     launch_config: LaunchConfig,
@@ -877,10 +875,19 @@ async def get_launch_config(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Launch config conflict/unique constraint error: {exc}",
         )
-
+    
     # Generate the JWT.
+    token = None
+    if semcomp(chute.chutes_version or "0.0.0", "0.3.61") >= 0:
+        token = create_launch_jwt_v2(
+            launch_config, egress=chute.allow_external_egress, disk_gb=disk_gb
+        )
+    else:
+        token = create_launch_jwt(launch_config, disk_gb=disk_gb)
+
+
     return {
-        "token": create_launch_jwt(launch_config, disk_gb=disk_gb),
+        "token": token,
         "config_id": launch_config.config_id,
     }
 
@@ -1267,6 +1274,11 @@ async def _build_launch_config_verified_response(
         "instance_id": instance.instance_id,
         "verified_at": launch_config.verified_at.isoformat(),
     }
+    if semcomp(instance.chutes_version or "0.0.0", "0.3.61") >= 0:
+        return_value["code"] = instance.chute.code
+        return_value["fs_key"] = generate_fs_key(launch_config),
+        if not instance.chute.encrypted_fs:
+            return_value["efs"] = True
     if instance.job:
         job_token = create_job_jwt(instance.job.job_id)
         return_value.update(
