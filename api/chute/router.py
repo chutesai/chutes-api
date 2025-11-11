@@ -891,6 +891,8 @@ async def _deploy_chute(
         allow_egress = False
     if "affine" in chute_args.name.lower() or "turbovision" in chute_args.name.lower():
         allow_egress = False
+    if chute_args.encrypted_fs is None:
+        chute_args.encrypted_fs = False
 
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
@@ -1060,6 +1062,7 @@ async def _deploy_chute(
             else (chute_args.scaling_threshold or 0.75)
         )
         chute.allow_external_egress = allow_egress
+        chute.encrypted_fs = chute.encrypted_fs and chute_args.encrypted_fs  # XX prevent changing
     else:
         try:
             is_public = (
@@ -1102,6 +1105,7 @@ async def _deploy_chute(
                 if is_public or current_user.user_id == await chutes_user_id()
                 else (chute_args.shutdown_after_seconds or 300),
                 allow_external_egress=allow_egress,
+                encrypted_fs=chute_args.encrypted_fs,
             )
         except ValueError as exc:
             raise HTTPException(

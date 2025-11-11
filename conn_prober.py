@@ -71,22 +71,24 @@ async def _hard_delete_instance(session, instance: Instance, reason: str) -> Non
         .unique()
         .scalar_one_or_none()
     )
+    if not chute:
+        return
     if "too many requests" in reason.lower():
         if semcomp(instance.chutes_version or "0.0.0", "0.3.58") < 0:
             logger.warning("Ignoring 429 from older chutes version...")
-            return
         else:
             logger.error(
                 f"Hmmm, why 429?: {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} {chute.name=} {chute.chute_id=}"
             )
-            return
-    if "turbovision" not in chute.name.lower():
+        return
+    if chute.public or "affine" in chute.name.lower():
         return
 
     logger.error(
         f"🛑 HARD FAIL (egress policy violation): deleting {instance.instance_id=} "
         f"{instance.miner_hotkey=} {instance.chute_id=} {chute.name=} {chute.chute_id=}. Reason: {reason}"
     )
+    return
     await session.delete(instance)
     await session.execute(
         text(
