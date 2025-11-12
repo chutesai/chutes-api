@@ -635,6 +635,29 @@ async def my_price_overrides(
     return overrides
 
 
+@router.get("/me/quota_usage")
+async def general_quota_usage(
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Check the current general quota usage
+    """
+    if current_user.has_role(Permissioning.free_account) or current_user.has_role(
+        Permissioning.invoice_billing
+    ):
+        return {"quota": "unlimited", "used": 0}
+    quota = await InvocationQuota.get(current_user.user_id, "*")
+    key = await InvocationQuota.quota_key(current_user.user_id, "*")
+    used_raw = await settings.quota_client.get(key)
+    used = 0.0
+    try:
+        used = float(used_raw or "0.0")
+    except ValueError:
+        await settings.quota_client.delete(key)
+    return {"quota": quota, "used": used}
+
+
 @router.get("/me/quota_usage/{chute_id}")
 async def chute_quota_usage(
     chute_id: str,
@@ -642,12 +665,17 @@ async def chute_quota_usage(
     current_user: User = Depends(get_current_user()),
 ):
     """
-    Check the current quota usage for a chute.
+    Check the current quota usage for a specific chute.
     """
     if current_user.has_role(Permissioning.free_account) or current_user.has_role(
         Permissioning.invoice_billing
     ):
         return {"quota": "unlimited", "used": 0}
+    if not chute_id or chute_id == '""' or chute_id == "*":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please provide a specific chute_id or use /me/quota_usage for general quota"
+        )
     quota = await InvocationQuota.get(current_user.user_id, chute_id)
     key = await InvocationQuota.quota_key(current_user.user_id, chute_id)
     used_raw = await settings.quota_client.get(key)
