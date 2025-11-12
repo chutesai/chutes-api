@@ -635,19 +635,26 @@ async def my_price_overrides(
     return overrides
 
 
+@router.get("/me/quota_usage")
 @router.get("/me/quota_usage/{chute_id}")
-async def chute_quota_usage(
-    chute_id: str,
+async def quota_usage(
+    chute_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user()),
 ):
     """
-    Check the current quota usage for a chute.
+    Check the current quota usage. 
+    - Without chute_id: returns general quota usage
+    - With chute_id: returns quota usage for that specific chute
     """
     if current_user.has_role(Permissioning.free_account) or current_user.has_role(
         Permissioning.invoice_billing
     ):
         return {"quota": "unlimited", "used": 0}
+    
+    if not chute_id or chute_id == '""':
+        chute_id = "*"
+    
     quota = await InvocationQuota.get(current_user.user_id, chute_id)
     key = await InvocationQuota.quota_key(current_user.user_id, chute_id)
     used_raw = await settings.quota_client.get(key)
