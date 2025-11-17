@@ -60,7 +60,6 @@ from api.instance.util import (
     invalidate_instance_cache,
 )
 from api.server.service import (
-    check_server_ownership,
     validate_request_nonce,
     verify_gpu_evidence,
 )
