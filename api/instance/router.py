@@ -797,7 +797,6 @@ async def _validate_tee_launch_config_instance(
 @router.get("/launch_config")
 async def get_launch_config(
     chute_id: str,
-    server_id: Optional[str] = None,
     job_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
@@ -857,28 +856,6 @@ async def get_launch_config(
         )
         disk_gb = job.job_args["_disk_gb"]
 
-    if server_id:
-        server = await check_server_ownership(db, server_id, hotkey)
-
-        if not server:
-            logger.error(
-                f"Server {server_id} does not exist or does not belong to miner {hotkey=}."
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Your hotkey does not own server {server_id=} or server does not exist.",
-            )
-        env_type = "tee" if server.is_tee else "graval"
-    else:
-        # Fallback to graval for backwards compatability
-        env_type = "graval"
-
-    if chute.tee and env_type != "tee":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Can not deploy TEE chute to non TEE node.",
-        )
-
     # Create the launch config and JWT.
     try:
         launch_config = LaunchConfig(
@@ -889,7 +866,7 @@ async def get_launch_config(
             miner_hotkey=hotkey,
             miner_uid=miner.node_id,
             miner_coldkey=miner.coldkey,
-            env_type=env_type,
+            env_type="tee" if chute.tee else "graval",
             seed=0,
         )
         db.add(launch_config)
