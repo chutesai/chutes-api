@@ -796,6 +796,7 @@ async def _validate_tee_launch_config_instance(
 @router.get("/launch_config")
 async def get_launch_config(
     chute_id: str,
+    server_id: Optional[str] = None,
     job_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
