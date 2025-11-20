@@ -302,7 +302,7 @@ async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> 
 
         # Create attestation record
         server_attestation = ServerAttestation(
-            quote_data=base64.b64encode(quote.raw_bytes).decode('utf-8'),
+            quote_data=base64.b64encode(quote.raw_bytes).decode("utf-8"),
             server_id=server.server_id,
             created_at=func.now(),
             verified_at=func.now(),
@@ -335,7 +335,7 @@ async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> 
         if failure_reason:
             # Create attestation record
             server_attestation = ServerAttestation(
-                quote_data=base64.b64encode(quote.raw_bytes).decode('utf-8') if quote else None,
+                quote_data=base64.b64encode(quote.raw_bytes).decode("utf-8") if quote else None,
                 server_id=server.server_id,
                 verification_error=failure_reason,
                 created_at=func.now(),
