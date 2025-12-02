@@ -90,12 +90,15 @@ class Settings(BaseSettings):
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
     redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
     memcached_host: str = os.getenv("MEMCACHED", "memcached.chutes.svc.cluster.local")
+    memcached_port: int = int(os.getenv("MEMCACHED_PORT", "11211"))
 
+    redis_host = os.getenv("CM_REDIS_HOST", "127.0.0.1")
+    redis_password = str(os.getenv("REDIS_PASSWORD", "password"))
     _redis_client: Optional[redis.Redis] = None
     _cm_redis_clients: Optional[list[redis.Redis]] = None
-    _quota_client: Optional[redis.Redis] = None
     _memcache: Optional[aiomcache.Client] = None
     cm_redis_shard_count: int = int(os.getenv("CM_REDIS_SHARD_COUNT", "1"))
+    cm_redis_start_port: int = int(os.getenv("CM_REDIS_START_PORT", "1700"))
 
     @property
     def redis_client(self) -> redis.Redis:
@@ -108,10 +111,7 @@ class Settings(BaseSettings):
         if self._cm_redis_clients is None:
             self._cm_redis_clients = [
                 redis.Redis.from_url(
-                    self.redis_url.replace(
-                        "@redis.chutes.svc.cluster.local",
-                        f"@cm-redis-{idx}.chutes.svc.cluster.local",
-                    ),
+                    f"redis://:{self.redis_password}@{self.redis_host}:{self.cm_redis_start_port + idx}/0",
                     socket_timeout=10.0,
                     socket_connect_timeout=3.0,
                     socket_keepalive=True,
@@ -122,19 +122,9 @@ class Settings(BaseSettings):
         return self._cm_redis_clients
 
     @property
-    def quota_client(self) -> redis.Redis:
-        if self._quota_client is None:
-            self._quota_client = redis.Redis.from_url(
-                self.redis_url.replace(
-                    "@redis.chutes.svc.cluster.local", "@quota-redis.chutes.svc.cluster.local"
-                )
-            )
-        return self._quota_client
-
-    @property
     def memcache(self) -> Optional[aiomcache.Client]:
         if self._memcache is None and self.memcached_host:
-            self._memcache = aiomcache.Client(self.memcached_host, 11211, pool_size=4)
+            self._memcache = aiomcache.Client(self.memcached_host, self.memcached_port, pool_size=2)
         return self._memcache
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")

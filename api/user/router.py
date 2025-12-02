@@ -278,13 +278,13 @@ async def admin_batch_user_lookup(
         else:
             for quota in quotas_by_user.get(user.user_id, []):
                 key = await InvocationQuota.quota_key(user.user_id, quota.chute_id)
-                used_raw = await settings.quota_client.get(key)
+                used_raw = await settings.redis_client.get(key)
                 used = 0.0
                 try:
                     used = float(used_raw or "0.0")
                 except (TypeError, ValueError):
                     if used_raw is not None:
-                        await settings.quota_client.delete(key)
+                        await settings.redis_client.delete(key)
                 user_quota_entries.append(
                     {
                         "chute_id": quota.chute_id,
@@ -730,12 +730,12 @@ async def chute_quota_usage(
         return {"quota": "unlimited", "used": 0}
     quota = await InvocationQuota.get(current_user.user_id, chute_id)
     key = await InvocationQuota.quota_key(current_user.user_id, chute_id)
-    used_raw = await settings.quota_client.get(key)
+    used_raw = await settings.redis_client.get(key)
     used = 0.0
     try:
         used = float(used_raw or "0.0")
     except ValueError:
-        await settings.quota_client.delete(key)
+        await settings.redis_client.delete(key)
     return {"quota": quota, "used": used}
 
 

@@ -341,13 +341,13 @@ async def _invoke(
                 free_usage = 0
                 try:
                     qkey = f"free_usage:{quota_date}:{current_user.user_id}"
-                    free_usage = await settings.quota_client.incr(qkey)
+                    free_usage = await settings.redis_client.incr(qkey)
                     if free_usage == 1:
                         tomorrow = datetime.combine(quota_date, datetime.min.time()) + timedelta(
                             days=1
                         )
                         exp = max(int((tomorrow - datetime.now()).total_seconds()), 1)
-                        await settings.quota_client.expire(qkey, exp)
+                        await settings.redis_client.expire(qkey, exp)
                 except Exception as exc:
                     logger.warning(
                         f"Error checking free usage for {current_user.user_id=}: {str(exc)}"
@@ -406,19 +406,28 @@ async def _invoke(
     ):
         quota = await InvocationQuota.get(current_user.user_id, chute.chute_id)
         key = await InvocationQuota.quota_key(current_user.user_id, chute.chute_id)
-        cached = await settings.quota_client.get(key)
+        cached = None
+        quota_init = True
+        try:
+            cached = await settings.redis_client.get(key)
+        except Exception as exc:
+            logger.error(f"Failed to fetch quota for {current_user.user_id=}: {str(exc)}")
+            quota_init = False
         request_count = 0.0
         if cached:
             try:
                 request_count = float(cached.decode())
             except ValueError:
-                await settings.quota_client.delete(key)
-        else:
+                await settings.redis_client.delete(key)
+        elif quota_init:
             # Initialize the quota key with an expiration date (keys are daily)
-            pipe = settings.quota_client.pipeline()
-            pipe.incrbyfloat(key, 0.0)
-            pipe.expire(key, 25 * 60 * 60)
-            await pipe.execute()
+            try:
+                pipe = settings.redis_client.pipeline()
+                pipe.incrbyfloat(key, 0.0)
+                pipe.expire(key, 25 * 60 * 60)
+                await pipe.execute()
+            except Exception as exc:
+                logger.error(f"Failed to initialize quota for {current_user.user_id=}: {str(exc)}")
 
         # No quota for private/user-created chutes.
         effective_balance = (
