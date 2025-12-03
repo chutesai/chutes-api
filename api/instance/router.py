@@ -60,7 +60,6 @@ from api.instance.util import (
     load_launch_config_from_jwt,
     invalidate_instance_cache,
 )
-from api.server.schemas import Server
 from api.server.service import (
     validate_request_nonce,
     verify_gpu_evidence,
@@ -661,7 +660,7 @@ async def _validate_launch_config_instance(
         compute_multiplier=node_selector.compute_multiplier,
         billed_to=None,
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
-        inspecto=args.inspecto,
+        inspecto=getattr(args, "inspecto", None),
         env_creation=args.model_dump(),
     )
     if launch_config.job_id or (
