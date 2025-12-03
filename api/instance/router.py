@@ -546,30 +546,6 @@ async def _validate_launch_config_instance(
                 detail=f"Egress and ingress IPs much match for jobs: {actual_ip} vs {args.host}",
             )
 
-    # Check server matches chute env type.
-    if chute.tee:
-        # Enforces egress mathces ingress, optionally use args.host?
-        server = (
-            await db.execute(select(Server).where(Server.ip == actual_ip))
-        ).unique().scalar_one_or_none()
-        if not server:
-            logger.warning(
-                f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} has no matching server for host {args.host=}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"No server found for host {args.host}.",
-            )
-
-        if server.is_tee != chute.tee:
-            logger.warning(
-                f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} server/chute env mismatch!: {server.is_tee=} {chute.tee=}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Server environment type does not match chute environment type.",
-            )
-
     # Uniqueness of host/miner_hotkey.
     result = await db.scalar(
         select(Instance).where(
@@ -791,6 +767,12 @@ async def _validate_graval_launch_config_instance(
     chute = await _load_chute(db, launch_config.chute_id)
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
 
+    if chute.tee:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can not claim a graval launch config for a TEE chute.",
+        )
+
     # This does change order from previous graval only implementation
     # If want to preserve order need to split up final shared config check
     await _validate_launch_config_env(db, launch_config, chute, args, log_prefix)
@@ -813,6 +795,12 @@ async def _validate_tee_launch_config_instance(
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
+
+    if not chute.tee:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can not claim a TEE launch config for a non-TEE chute.",
+        )
 
     return await _validate_launch_config_instance(
         db, request, args, launch_config, chute, log_prefix
