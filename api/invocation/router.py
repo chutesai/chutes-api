@@ -1010,6 +1010,30 @@ async def hostname_invocation(
                 }
             )
 
+        # Normalize the chat template kwargs thinking keys since there are two...
+        if "chat_template_kwargs" in payload:
+            if (
+                "thinking" in payload["chat_template_kwargs"]
+                and "enable_thinking" not in payload["chat_template_kwargs"]
+            ):
+                payload["chat_template_kwargs"]["enable_thinking"] = payload[
+                    "chat_template_kwargs"
+                ]["thinking"]
+            if (
+                "enable_thinking" in payload["chat_template_kwargs"]
+                and "thinking" not in payload["chat_template_kwargs"]
+            ):
+                payload["chat_template_kwargs"]["thinking"] = payload["chat_template_kwargs"][
+                    "enable_thinking"
+                ]
+            if (
+                "thinking" not in payload["chat_template_kwargs"]
+                and model == "deepseek-ai/DeepSeek-V3.2-Speciale"
+            ):
+                payload["chat_template_kwargs"]["thinking"] = True
+        elif model == "deepseek-ai/DeepSeek-V3.2-Speciale":
+            payload["chat_template_kwargs"] = {"thinking": True}
+
         # Auto tool choice default.
         if payload.get("tools") and "tool_choice" not in payload:
             payload["tool_choice"] = "auto"

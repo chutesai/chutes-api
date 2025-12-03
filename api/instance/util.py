@@ -550,6 +550,7 @@ def create_launch_jwt_v2(launch_config, disk_gb: int = None, egress: bool = Fals
         "env_key": launch_config.env_key,
         "iss": "chutes",
         "egress": egress,
+        "env_type": launch_config.env_type if launch_config.env_type else "graval",
     }
     if launch_config.job_id:
         payload["job_id"] = launch_config.job_id
