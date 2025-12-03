@@ -547,26 +547,28 @@ async def _validate_launch_config_instance(
             )
 
     # Check server matches chute env type.
-    server = (
-        await db.execute(select(Server).where(Server.ip == args.host))
-    ).unique().scalar_one_or_none()
-    if not server:
-        logger.warning(
-            f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} has no matching server for host {args.host=}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"No server found for host {args.host}.",
-        )
+    if chute.tee:
+        # Enforces egress mathces ingress, optionally use args.host?
+        server = (
+            await db.execute(select(Server).where(Server.ip == actual_ip))
+        ).unique().scalar_one_or_none()
+        if not server:
+            logger.warning(
+                f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} has no matching server for host {args.host=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"No server found for host {args.host}.",
+            )
 
-    if server.is_tee != chute.tee:
-        logger.warning(
-            f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} server/chute env mismatch!: {server.is_tee=} {chute.tee=}"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Server environment type does not match chute environment type.",
-        )
+        if server.is_tee != chute.tee:
+            logger.warning(
+                f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} server/chute env mismatch!: {server.is_tee=} {chute.tee=}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Server environment type does not match chute environment type.",
+            )
 
     # Uniqueness of host/miner_hotkey.
     result = await db.scalar(
