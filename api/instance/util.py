@@ -538,7 +538,9 @@ def _decode_chutes_jwt(token: str, *, require_exp: bool) -> dict:
     )
 
 
-def create_launch_jwt_v2(launch_config, disk_gb: int = None, egress: bool = False) -> str:
+def create_launch_jwt_v2(
+    launch_config: LaunchConfig, disk_gb: int = None, egress: bool = False
+) -> str:
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=2)
     payload = {

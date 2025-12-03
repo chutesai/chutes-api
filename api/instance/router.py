@@ -60,6 +60,7 @@ from api.instance.util import (
     load_launch_config_from_jwt,
     invalidate_instance_cache,
 )
+from api.server.schemas import Server
 from api.server.service import (
     validate_request_nonce,
     verify_gpu_evidence,
@@ -544,6 +545,28 @@ async def _validate_launch_config_instance(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Egress and ingress IPs much match for jobs: {actual_ip} vs {args.host}",
             )
+
+    # Check server matches chute env type.
+    server = (
+        await db.execute(select(Server).where(Server.ip == args.host))
+    ).unique().scalar_one_or_none()
+    if not server:
+        logger.warning(
+            f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} has no matching server for host {args.host=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"No server found for host {args.host}.",
+        )
+
+    if server.is_tee != chute.tee:
+        logger.warning(
+            f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} server/chute env mismatch!: {server.is_tee=} {chute.tee=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Server environment type does not match chute environment type.",
+        )
 
     # Uniqueness of host/miner_hotkey.
     result = await db.scalar(
