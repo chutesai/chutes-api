@@ -8,8 +8,12 @@ from pathlib import Path
 import aioboto3
 import aiomcache
 import json
+from api.safe_redis import SafeRedis
+from api.safe_mcache import SafeMemcached
 from functools import cached_property, lru_cache
 import redis.asyncio as redis
+from redis.retry import Retry
+from redis.backoff import NoBackoff
 from boto3.session import Config
 from typing import Dict, Optional
 from bittensor_wallet.keypair import Keypair
@@ -88,34 +92,67 @@ class Settings(BaseSettings):
 
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
-    redis_url: str = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
-    memcached_host: str = os.getenv("MEMCACHED", "memcached.chutes.svc.cluster.local")
-    memcached_port: int = int(os.getenv("MEMCACHED_PORT", "11211"))
 
-    redis_host = os.getenv("CM_REDIS_HOST", "127.0.0.1")
+    # Base memcached settings.
+    memcached_host: str = os.getenv("MEMCACHED", "172.16.0.100")
+    memcached_port: int = int(os.getenv("MEMCACHED_PORT", "22122"))
+    memcached_pool_size: int = int(os.getenv("MEMCACHED_POOL_SIZE", "8"))
+    memcached_connect_timeout: float = float(os.getenv("MEMCACHED_CONNECT_TIMEOUT", "0.075"))
+    memcached_timeout: float = float(os.getenv("MEMCACHED_TIMEOUT", "0.15"))
+
+    # Base redis settings.
+    redis_host: str = os.getenv("REDIS_HOST", "172.16.0.100")
+    redis_port: int = int(os.getenv("REDIS_PORT", "1600"))
     redis_password = str(os.getenv("REDIS_PASSWORD", "password"))
+    redis_db: int = int(os.getenv("REDIS_DB", "0"))
+    redis_max_connections: int = int(os.getenv("REDIS_MAX_CONNECTIONS", 8))
+    redis_connect_timeout: float = float(os.getenv("REDIS_CONNECT_TIMEOUT", "0.2"))
+    redis_socket_timeout: float = float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.5"))
+
     _redis_client: Optional[redis.Redis] = None
     _cm_redis_clients: Optional[list[redis.Redis]] = None
     _memcache: Optional[aiomcache.Client] = None
-    cm_redis_shard_count: int = int(os.getenv("CM_REDIS_SHARD_COUNT", "1"))
+    cm_redis_shard_count: int = int(os.getenv("CM_REDIS_SHARD_COUNT", "5"))
     cm_redis_start_port: int = int(os.getenv("CM_REDIS_START_PORT", "1700"))
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
 
     @property
     def redis_client(self) -> redis.Redis:
         if self._redis_client is None:
-            self._redis_client = redis.Redis.from_url(self.redis_url)
+            self._redis_client = SafeRedis(
+                host=self.redis_host,
+                port=self.redis_port,
+                db=self.redis_db,
+                password=self.redis_password,
+                socket_connect_timeout=self.redis_connect_timeout,
+                socket_timeout=self.redis_socket_timeout,
+                max_connections=self.redis_max_connections,
+                socket_keepalive=True,
+                health_check_interval=30,
+                retry_on_timeout=True,
+                retry=Retry(NoBackoff(), 2),
+            )
         return self._redis_client
 
     @property
     def cm_redis_client(self) -> list[redis.Redis]:
         if self._cm_redis_clients is None:
             self._cm_redis_clients = [
-                redis.Redis.from_url(
-                    f"redis://:{self.redis_password}@{self.redis_host}:{self.cm_redis_start_port + idx}/0",
-                    socket_timeout=10.0,
-                    socket_connect_timeout=3.0,
+                SafeRedis(
+                    host=self.redis_host,
+                    port=self.cm_redis_start_port + idx,
+                    db=self.redis_db,
+                    password=self.redis_password,
+                    socket_connect_timeout=self.redis_connect_timeout,
+                    socket_timeout=self.redis_socket_timeout,
+                    max_connections=self.redis_max_connections,
                     socket_keepalive=True,
                     health_check_interval=30,
+                    retry_on_timeout=False,
+                    retry=None,
                 )
                 for idx in range(self.cm_redis_shard_count)
             ]
@@ -123,8 +160,15 @@ class Settings(BaseSettings):
 
     @property
     def memcache(self) -> Optional[aiomcache.Client]:
-        if self._memcache is None and self.memcached_host:
-            self._memcache = aiomcache.Client(self.memcached_host, self.memcached_port, pool_size=2)
+        if self._memcache is None:
+            self._memcache = SafeMemcached(
+                host=self.memcached_host,
+                port=self.memcached_port,
+                pool_size=self.memcached_pool_size,
+                connect_timeout=self.memcached_connect_timeout,
+                timeout=self.memcached_timeout,
+                default=None,
+            )
         return self._memcache
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")

@@ -619,12 +619,10 @@ async def _invoke(
         and "json" in request_body
     ):
         body_target = request_body["json"]
-    request_hash = None
-    user_dupe_count = 0
-    total_dupe_count = 0
+
+    # Check for re-rolls, which are cheaper/consume fewer quota units.
     reroll = False
     try:
-        raw_dump = json.dumps(body_target).decode()
         prompt_dump = None
         if "messages" in body_target:
             try:
@@ -633,15 +631,6 @@ async def _invoke(
                 logger.warning(f"Error generating prompt key for dupe tracking: {exc}")
         elif "prompt" in body_target and isinstance(body_target, str):
             prompt_dump = body_target["prompt"]
-        request_hash_str = "::".join(
-            [
-                chute.name,
-                request.url.path,
-                raw_dump,
-            ]
-        ).encode()
-        request_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, request_hash_str)).replace("-", "")
-        _prompt_hash = None
         if prompt_dump:
             prompt_hash_str = "::".join(
                 [
@@ -650,76 +639,18 @@ async def _invoke(
                     prompt_dump,
                 ]
             ).encode()
-            _prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
-
-            # Check for rerolls, which are cheaper.
-            rr_key = f"userreq:{current_user.user_id}{_prompt_hash}".encode()
-            value = await memcache_get(rr_key)
-            if value is None:
-                await memcache_set(rr_key, b"0")
-            try:
-                count = await settings.memcache.incr(rr_key, 1)
-                await settings.memcache.touch(rr_key, 1200)
-                if count > 1:
-                    reroll = True
-            except Exception:
-                ...
-
-        for _hash in (request_hash, _prompt_hash):
-            if not _hash:
-                continue
-            req_key = f"req:{_hash}".encode()
-            value = await memcache_get(req_key)
-            if value is None:
-                await memcache_set(req_key, b"0")
-            try:
-                count = await settings.memcache.incr(req_key, 1)
-                await settings.memcache.touch(req_key, exptime=60 * 60 * 3)
-                if count > 1 and _hash == request_hash:
-                    total_dupe_count = count
-
-                    # Check for user specific spam.
-                    ureq_key = f"userreq:{current_user.user_id}{_hash}".encode()
-                    value = await memcache_get(ureq_key)
-                    if value is None:
-                        await memcache_set(ureq_key, b"0")
-                    user_dupe_count = await settings.memcache.incr(ureq_key, 1)
-                    await settings.memcache.touch(ureq_key, 60 * 60 * 3)
-            except Exception:
-                ...
+            prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
+            prompt_count = await settings.redis_client.incr(
+                f"userreq:{current_user.user_id}{prompt_hash}"
+            )
+            await settings.redis_client.expire(30 * 60)  # 30 minute re-roll clock.
+            if prompt_count and 1 < prompt_count < 15:
+                reroll = True
+            elif prompt_count > 15:
+                logger.warning(f"User seems to be spamming: {current_user.user_id=} {current_user.username=} {chute.chute_id=} {chute.name=} -- removing reroll flag for excessive use")
 
     except Exception as exc:
         logger.warning(f"Error updating request hash tracking: {exc}")
-
-    # Handle cacheable requests.
-    if total_dupe_count >= 1500:
-        logger.warning(f"REQSPAM: {total_dupe_count=} for {request_hash=} on {chute.name=}")
-
-    # And user spam.
-    if (
-        user_dupe_count >= 1000
-        and not current_user.has_role(Permissioning.unlimited)
-        and current_user.user_id
-        not in [
-            "8930c58d-00f6-57d3-bc62-156eb8b73026",
-            "dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f",
-            "376536e8-674b-5e6f-b36e-c9168f0bf4a7",
-            "b6bb1347-6ea5-556f-8b23-50b124f3ffc8",
-            "5682c3e0-3635-58f7-b7f5-694962450dfc",
-            "2104acf4-999e-5452-84f1-de82de35a7e7",
-            "18c244ab-8a2e-5767-ae0e-5d20b50d05b5",
-            "90fd1e31-84c9-5bc4-b628-ccc1e5dc75e6",
-            "596a9bd6-2904-546a-a3d7-e2c5b271427b",
-        ]
-    ):
-        logger.warning(
-            f"USERSPAM: {current_user.username} sent {user_dupe_count} requests for {chute.name}"
-        )
-        if user_dupe_count > 5000:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Stop spamming this prompt, please...",
-            )
 
     # Handle streaming responses, either because the user asked for X-Chutes-Trace,
     # or in the case of LLMs with stream: true in request.

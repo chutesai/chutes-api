@@ -1175,14 +1175,9 @@ async def invoke(
                         or chute.user_id == await chutes_user_id()
                     )
                 ):
-                    try:
-                        value = 1.0 if not reroll else settings.reroll_multiplier
-                        key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
-                        _ = await settings.redis_client.incrbyfloat(key, value)
-                    except Exception as exc:
-                        logger.error(
-                            f"Error updating quota usage for {user.user_id} chute {chute.chute_id}: {exc}"
-                        )
+                    value = 1.0 if not reroll else settings.reroll_multiplier
+                    key = await InvocationQuota.quota_key(user.user_id, chute.chute_id)
+                    await settings.redis_client.incrbyfloat(key, value)
 
                 # For private chutes, push back the instance termination timestamp.
                 if (
@@ -1298,15 +1293,9 @@ async def invoke(
 
                     elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
                         # Handle consecutive failures (auto-delete instances).
-                        consecutive_failures = 0
-                        try:
-                            consecutive_failures = await settings.redis_client.incr(
-                                f"consecutive_failures:{target.instance_id}"
-                            )
-                        except Exception as incr_exc:
-                            logger.error(
-                                f"Failed to increment consecutive failures for {target.instance_id=}: {str(incr_exc)}"
-                            )
+                        consecutive_failures = await settings.redis_client.incr(
+                            f"consecutive_failures:{target.instance_id}"
+                        )
                         if (
                             consecutive_failures
                             and consecutive_failures >= settings.consecutive_failure_limit
