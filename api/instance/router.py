@@ -29,6 +29,7 @@ from api.gpu import SUPPORTED_GPUS
 from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
 from api.constants import (
+    TEE_BONUS,
     HOTKEY_HEADER,
     AUTHORIZATION_HEADER,
     PRIVATE_INSTANCE_BONUS,
@@ -660,7 +661,7 @@ async def _validate_launch_config_instance(
         compute_multiplier=node_selector.compute_multiplier,
         billed_to=None,
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
-        inspecto=args.inspecto,
+        inspecto=getattr(args, "inspecto", None),
         env_creation=args.model_dump(),
     )
     if launch_config.job_id or (
@@ -685,6 +686,14 @@ async def _validate_launch_config_instance(
     # Add chute boost.
     if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
         instance.compute_multiplier *= chute.boost
+
+    # Add TEE boost.
+    if chute.tee:
+        instance.compute_muliplier *= TEE_BONUS
+        logger.info(
+            f"Adding TEE instance bonus value {TEE_BONUS} to {instance.instance_id} "
+            f"for total {instance.compute_multiplier=} for {chute.name=} {chute.chute_id=}"
+        )
 
     db.add(instance)
 
@@ -766,6 +775,12 @@ async def _validate_graval_launch_config_instance(
     chute = await _load_chute(db, launch_config.chute_id)
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
 
+    if chute.tee:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can not claim a graval launch config for a TEE chute.",
+        )
+
     # This does change order from previous graval only implementation
     # If want to preserve order need to split up final shared config check
     await _validate_launch_config_env(db, launch_config, chute, args, log_prefix)
@@ -788,6 +803,12 @@ async def _validate_tee_launch_config_instance(
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
+
+    if not chute.tee:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Can not claim a TEE launch config for a non-TEE chute.",
+        )
 
     return await _validate_launch_config_instance(
         db, request, args, launch_config, chute, log_prefix

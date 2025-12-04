@@ -71,6 +71,7 @@ class GravalLaunchConfigArgs(LaunchConfigArgs):
 
 class TeeLaunchConfigArgs(LaunchConfigArgs):
     gpu_evidence: list[dict]
+    inspecto: Optional[str] = None
 
 
 class Instance(Base):

@@ -1147,6 +1147,12 @@ ENTRYPOINT []
                             permitted[instance.miner_hotkey] = 0
                         permitted[instance.miner_hotkey] += 1
                     chute.chutes_version = chutes_version
+                    chute.version = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_OID,
+                            f"{image.image_id}:{image.patch_version}:{chute.code}",
+                        )
+                    )
                     affected_chute_ids.append(chute.chute_id)
 
                     # Create the rolling update record

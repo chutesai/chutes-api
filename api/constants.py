@@ -59,6 +59,9 @@ VLM_MAX_SIZE = 100 * 1024 * 1024
 PRIVATE_INSTANCE_BONUS = 2
 INTEGRATED_SUBNET_BONUS = 3
 
+# TEE bonus.
+TEE_BONUS = 1.5
+
 # Subnet integrations.
 INTEGRATED_SUBNETS = {
     "affine": {

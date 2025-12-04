@@ -1611,6 +1611,8 @@ async def list_usage(
                     chute_id=data.chute_id,
                     amount=data.amount,
                     count=data.count,
+                    input_tokens=int(data.input_tokens),
+                    output_tokens=int(data.output_tokens),
                 )
             )
     else:
@@ -1618,6 +1620,8 @@ async def list_usage(
             UsageData.bucket,
             func.sum(UsageData.amount).label("amount"),
             func.sum(UsageData.count).label("count"),
+            func.sum(UsageData.input_tokens).label("input_tokens"),
+            func.sum(UsageData.output_tokens).label("output_tokens"),
         ).where(UsageData.user_id == user_id)
 
         if chute_id:
@@ -1651,6 +1655,8 @@ async def list_usage(
                     bucket=row.bucket.isoformat(),
                     amount=row.amount,
                     count=row.count,
+                    input_tokens=int(row.input_tokens),
+                    output_tokens=int(row.output_tokens),
                 )
             )
 

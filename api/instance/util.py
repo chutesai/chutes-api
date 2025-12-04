@@ -440,27 +440,18 @@ async def get_chute_target_manager(
             bounty_lifetime = 3600 if "/affine" not in chute.name.lower() else 7200
 
         # Increase the bounty.
-        async with get_session() as bounty_session:
-            update_result = await bounty_session.execute(
-                text("SELECT 1 FROM rolling_updates WHERE chute_id = :chute_id"),
-                {"chute_id": chute_id},
-            )
-            if update_result.first() is not None:
-                logger.warning(
-                    f"Skipping bounty event for {chute_id=} due to in-progress rolling update."
-                )
-            elif not no_bounty:
-                if await create_bounty_if_not_exists(chute_id, lifetime=bounty_lifetime):
-                    logger.success(f"Successfully created a bounty for {chute_id=}")
-                current_time = int(time.time())
-                window = current_time - (current_time % 30)
-                notification_key = f"bounty_notification:{chute_id}:{window}"
-                if await settings.redis_client.setnx(notification_key, b"1"):
-                    await settings.redis_client.expire(notification_key, 33)
-                    amount = await get_bounty_amount(chute_id)
-                    if amount:
-                        logger.info(f"Bounty for {chute_id=} is now {amount}")
-                        await send_bounty_notification(chute_id, amount)
+        if not no_bounty:
+            if await create_bounty_if_not_exists(chute_id, lifetime=bounty_lifetime):
+                logger.success(f"Successfully created a bounty for {chute_id=}")
+            current_time = int(time.time())
+            window = current_time - (current_time % 30)
+            notification_key = f"bounty_notification:{chute_id}:{window}"
+            if await settings.redis_client.setnx(notification_key, b"1"):
+                await settings.redis_client.expire(notification_key, 33)
+                amount = await get_bounty_amount(chute_id)
+                if amount:
+                    logger.info(f"Bounty for {chute_id=} is now {amount}")
+                    await send_bounty_notification(chute_id, amount)
         if not max_wait or time.time() - started_at >= max_wait:
             break
         await asyncio.sleep(1.0)
@@ -538,7 +529,9 @@ def _decode_chutes_jwt(token: str, *, require_exp: bool) -> dict:
     )
 
 
-def create_launch_jwt_v2(launch_config, disk_gb: int = None, egress: bool = False) -> str:
+def create_launch_jwt_v2(
+    launch_config: LaunchConfig, disk_gb: int = None, egress: bool = False
+) -> str:
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=2)
     payload = {
