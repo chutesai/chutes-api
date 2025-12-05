@@ -32,8 +32,6 @@ class SafeMemcached:
         port: int = 22122,
         *,
         pool_size: int = 4,
-        connect_timeout: float = 0.1,
-        timeout: float = 0.2,
         default: Any = None,
     ):
         self.default = default
@@ -41,8 +39,6 @@ class SafeMemcached:
             host=host.encode() if isinstance(host, str) else host,
             port=port,
             pool_size=pool_size,
-            connect_timeout=connect_timeout,
-            timeout=timeout,
         )
 
     @property

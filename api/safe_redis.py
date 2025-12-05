@@ -124,21 +124,11 @@ class SafeRedis:
         socket_timeout: float = 0.5,
         max_connections: int = 8,
         socket_keepalive: bool = True,
-        socket_keepalive_options: Optional[dict] = None,
         health_check_interval: int = 30,
         retry_on_timeout: bool = False,
         retry: Any = None,
         **kwargs,
     ):
-        if socket_keepalive_options is None:
-            socket_keepalive_options = {
-                socket.IPPROTO_TCP: {
-                    socket.TCP_KEEPIDLE: 60,
-                    socket.TCP_KEEPINTVL: 15,
-                    socket.TCP_KEEPCNT: 4,
-                }
-            }
-
         self.default = default
 
         self.client = redis.Redis(
@@ -150,7 +140,6 @@ class SafeRedis:
             socket_timeout=socket_timeout,
             max_connections=max_connections,
             socket_keepalive=socket_keepalive,
-            socket_keepalive_options=socket_keepalive_options,
             health_check_interval=health_check_interval,
             retry_on_timeout=retry_on_timeout,
             retry=retry,

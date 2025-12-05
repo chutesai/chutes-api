@@ -94,16 +94,14 @@ class Settings(BaseSettings):
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
 
     # Base memcached settings.
-    memcached_host: str = os.getenv("MEMCACHED", "172.16.0.100")
-    memcached_port: int = int(os.getenv("MEMCACHED_PORT", "22122"))
+    memcached_host: str = os.getenv("PRIMARY_MEMCACHED_HOST", "172.16.0.100")
+    memcached_port: int = int(os.getenv("PRIMARY_MEMCACHED_PORT", "22122"))
     memcached_pool_size: int = int(os.getenv("MEMCACHED_POOL_SIZE", "8"))
-    memcached_connect_timeout: float = float(os.getenv("MEMCACHED_CONNECT_TIMEOUT", "0.075"))
-    memcached_timeout: float = float(os.getenv("MEMCACHED_TIMEOUT", "0.15"))
 
     # Base redis settings.
-    redis_host: str = os.getenv("REDIS_HOST", "172.16.0.100")
-    redis_port: int = int(os.getenv("REDIS_PORT", "1600"))
-    redis_password = str(os.getenv("REDIS_PASSWORD", "password"))
+    redis_host: str = os.getenv("PRIMARY_REDIS_HOST", "172.16.0.100")
+    redis_port: int = int(os.getenv("PRIMARY_REDIS_PORT", "1600"))
+    redis_password: str = str(os.getenv("REDIS_PASSWORD", "password"))
     redis_db: int = int(os.getenv("REDIS_DB", "0"))
     redis_max_connections: int = int(os.getenv("REDIS_MAX_CONNECTIONS", 8))
     redis_connect_timeout: float = float(os.getenv("REDIS_CONNECT_TIMEOUT", "0.2"))
@@ -165,8 +163,6 @@ class Settings(BaseSettings):
                 host=self.memcached_host,
                 port=self.memcached_port,
                 pool_size=self.memcached_pool_size,
-                connect_timeout=self.memcached_connect_timeout,
-                timeout=self.memcached_timeout,
                 default=None,
             )
         return self._memcache

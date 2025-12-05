@@ -647,7 +647,9 @@ async def _invoke(
             if prompt_count and 1 < prompt_count < 15:
                 reroll = True
             elif prompt_count > 15:
-                logger.warning(f"User seems to be spamming: {current_user.user_id=} {current_user.username=} {chute.chute_id=} {chute.name=} -- removing reroll flag for excessive use")
+                logger.warning(
+                    f"User seems to be spamming: {current_user.user_id=} {current_user.username=} {chute.chute_id=} {chute.name=} -- removing reroll flag for excessive use"
+                )
 
     except Exception as exc:
         logger.warning(f"Error updating request hash tracking: {exc}")
