@@ -689,7 +689,7 @@ async def _validate_launch_config_instance(
 
     # Add TEE boost.
     if chute.tee:
-        instance.compute_muliplier *= TEE_BONUS
+        instance.compute_multiplier *= TEE_BONUS
         logger.info(
             f"Adding TEE instance bonus value {TEE_BONUS} to {instance.instance_id} "
             f"for total {instance.compute_multiplier=} for {chute.name=} {chute.chute_id=}"

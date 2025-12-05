@@ -22,7 +22,12 @@ from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
 from api.gpu import SUPPORTED_GPUS
-from api.bounty.util import check_bounty_exists
+from api.bounty.util import (
+    check_bounty_exists,
+    create_bounty_if_not_exists,
+    get_bounty_amount,
+    send_bounty_notification,
+)
 from api.user.service import chutes_user_id
 from api.util import notify_deleted, has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
@@ -47,7 +52,7 @@ LIMIT_OVERRIDES = {
 }
 FAILSAFE = {
     "722df757-203b-58df-b54b-22130fd1fc53": 35,
-    "e75f8264-bd20-5a30-a577-29eb8a77e85a": 15,
+    "e75f8264-bd20-5a30-a577-29eb8a77e85a": 20,
     "154ad01c-a431-5744-83c8-651215124360": 15,
     "4fa0c7f5-82f7-59d1-8996-661bb778893d": 15,
     "07cb1b3a-ec4d-594a-96c2-b547fddcadb0": 10,
@@ -388,6 +393,14 @@ async def perform_autoscale(dry_run: bool = False):
                     logger.info(
                         f"Private chute {chute_id=} has reached {utilization_basis=} with {info.max_instances=}, adding capacity"
                     )
+                    if await create_bounty_if_not_exists(chute_id, lifetime=3600):
+                        logger.success(
+                            f"Successfully created additional bounty for private chute {chute_id=}"
+                        )
+                    amount = await get_bounty_amount(chute_id)
+                    if amount:
+                        logger.info(f"Bounty for {chute_id=} is now {amount}")
+                        await send_bounty_notification(chute_id, amount)
                     continue
 
                 # Need to scale down?

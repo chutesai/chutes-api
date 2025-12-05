@@ -338,15 +338,6 @@ class LeastConnManager:
 
     @asynccontextmanager
     async def get_target(self, avoid=[], prefixes=None):
-        # Shortcut for single instance chutes.
-        if len(self.instances) == 1:
-            iid, instance = next(iter(self.instances.items()), (None, None))
-            if not instance or iid in avoid:
-                yield None, "No infrastructure available to serve request"
-            else:
-                yield instance, None
-            return
-
         conn_id = str(uuid.uuid4())
         instance = None
         try:

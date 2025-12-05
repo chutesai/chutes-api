@@ -918,6 +918,15 @@ async def hostname_invocation(
         if model == "deepseek-ai/DeepSeek-R1-sgtest":
             payload["model"] = "deepseek-ai/DeepSeek-R1"
 
+        # Disable logprobs for now on 3.2* models.
+        if model in (
+            "deepseek-ai/DeepSeek-V3.2-Speciale",
+            "deepseek-ai/DeepSeek-V3.2",
+            "deepseek-ai/DeepSeek-V3.2-Exp",
+        ):
+            payload.pop("logprobs", None)
+            payload.pop("top_logprobs", None)
+
         # Turbo consolidation.
         if model in ("zai-org/GLM-4.6-turbo", "zai-org/GLM-4.6-FP8"):
             payload["model"] = "zai-org/GLM-4.6"
@@ -962,7 +971,10 @@ async def hostname_invocation(
                 and model == "deepseek-ai/DeepSeek-V3.2-Speciale"
             ):
                 payload["chat_template_kwargs"]["thinking"] = True
-        elif model == "deepseek-ai/DeepSeek-V3.2-Speciale":
+        elif model in (
+            "deepseek-ai/DeepSeek-V3.2-Speciale",
+            "deepseek-ai/DeepSeek-V3.2-Speciale-TEE",
+        ):
             payload["chat_template_kwargs"] = {"thinking": True}
 
         # Auto tool choice default.
