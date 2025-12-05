@@ -56,13 +56,13 @@ def is_pipeline(obj) -> bool:
     return hasattr(obj, "execute") and hasattr(obj, "command_stack")
 
 
-def wrap_pipeline(pipe, default=None):
+def wrap_pipeline(pipe, default=None, timeout: float = 0.5):
     """Make pipeline.execute() fail-open."""
     orig_execute = pipe.execute
 
     async def safe_execute(*args, **kwargs):
         try:
-            return await orig_execute(*args, **kwargs)
+            return await asyncio.wait_for(orig_execute(*args, **kwargs), timeout)
         except FAIL_OPEN_EXCEPTIONS as exc:
             logger.error(f"SafeRedis: pipeline.execute fail-open: {exc}")
             return []  # pipelines return lists normally
@@ -122,6 +122,7 @@ class SafeRedis:
         default: Any = None,
         socket_connect_timeout: float = 0.2,
         socket_timeout: float = 0.5,
+        op_timeout: float = 0.5,
         max_connections: int = 8,
         socket_keepalive: bool = True,
         health_check_interval: int = 30,
@@ -130,7 +131,7 @@ class SafeRedis:
         **kwargs,
     ):
         self.default = default
-
+        self.timeout = op_timeout
         self.client = redis.Redis(
             host=host,
             port=port,
@@ -147,6 +148,8 @@ class SafeRedis:
         )
 
     def __getattr__(self, name):
+        name_lower = name.lower()
+
         attr = getattr(self.client, name)
 
         if not callable(attr):
@@ -157,21 +160,25 @@ class SafeRedis:
                 result = attr(*args, **kwargs)
             except FAIL_OPEN_EXCEPTIONS as exc:
                 logger.error(f"SafeRedis fail-open on {name} (call): {exc}")
+                if name_lower == "scan":
+                    return (0, [])
                 return self.default
+
+            if is_pipeline(result):
+                return wrap_pipeline(result, self.default, timeout=self.timeout)
 
             if inspect.isawaitable(result):
 
                 async def safe_coro():
+                    timeout = 30.0 if name_lower == "scan" else self.timeout
                     try:
-                        return await result
+                        return await asyncio.wait_for(result, timeout)
                     except FAIL_OPEN_EXCEPTIONS as exc:
                         logger.error(f"SafeRedis fail-open on {name} (await): {exc}")
                         return self.default
 
                 return safe_coro()
 
-            if is_pipeline(result):
-                return wrap_pipeline(result, self.default)
             if is_async_iterable(result):
                 return SafeAsyncIterator(result, default=self.default)
             if is_sync_iterable(result):

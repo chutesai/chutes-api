@@ -208,7 +208,10 @@ class LeastConnManager:
             total_removed = 0
             cursor = 0
             while True:
-                cursor, keys = await self.redis_client.scan(cursor, match=pattern, count=100)
+                res = await self.redis_client.scan(cursor, match=pattern, count=100)
+                if not res:
+                    break
+                cursor, keys = res
                 if keys:
                     pipe = self.redis_client.pipeline()
                     for key in keys:

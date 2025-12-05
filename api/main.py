@@ -11,11 +11,10 @@ from urllib.parse import quote
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, APIRouter, HTTPException, status, Response
 from fastapi.responses import ORJSONResponse
-from fastapi_cache import FastAPICache
-from fastapi_cache.backends.memcached import MemcachedBackend
 from sqlalchemy import text
 import api.database.orms  # noqa: F401
 from prometheus_client import generate_latest, CollectorRegistry, multiprocess, CONTENT_TYPE_LATEST
+from concurrent.futures import ThreadPoolExecutor
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
 from api.bounty.router import router as bounty_router
@@ -45,7 +44,9 @@ async def lifespan(_: FastAPI):
     """
     Execute all initialization/startup code, e.g. ensuring tables exist and such.
     """
-    FastAPICache.init(MemcachedBackend(settings.memcache), prefix="chutes-api-cache")
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=32)
+    loop.set_default_executor(executor)
 
     # Prom multi-proc dir.
     os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
@@ -262,7 +263,6 @@ async def host_router_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# NOTE: Do we really want to do this in middleware, for every request?
 @app.middleware("http")
 async def request_body_checksum(request: Request, call_next):
     if request.method in ["POST", "PUT", "PATCH"]:

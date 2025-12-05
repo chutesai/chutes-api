@@ -56,7 +56,7 @@ class SafeMemcached:
                 result = attr(*args, **kwargs)
                 if asyncio.iscoroutine(result):
                     try:
-                        return await result
+                        return await asyncio.wait_for(result, 0.5)
                     except FAIL_OPEN_EXCEPTIONS as exc:
                         logger.error(f"SafeMemcached fail-open on {name}(await): {exc}")
                         return self.default

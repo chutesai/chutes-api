@@ -6,7 +6,7 @@ import secrets
 from pydantic import BaseModel, Field, constr
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, deferred
 from sqlalchemy import (
     Column,
     String,
@@ -107,7 +107,7 @@ class Instance(Base):
     cacert = Column(String, nullable=True)
     port_mappings = Column(JSONB, nullable=True)
     inspecto = Column(String, nullable=True)
-    env_creation = Column(JSONB, nullable=True)
+    env_creation = deferred(Column(JSONB, nullable=True))
     bounty = Column(Boolean, default=False)
 
     # Hourly rate charged to customer, which may differ from the hourly rate of the actual

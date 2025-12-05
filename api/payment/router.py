@@ -6,11 +6,9 @@ import orjson as json
 from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, status, HTTPException, Depends, Request
-from fastapi_cache.decorator import cache
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.gpu import SUPPORTED_GPUS, COMPUTE_UNIT_PRICE_BASIS, COMPUTE_MIN
 from api.fmv.fetcher import get_fetcher
-from api.config import settings
 from api.database import get_db_session
 from api.user.util import refund_deposit
 from api.user.schemas import User
@@ -26,7 +24,6 @@ class ReturnDepositArgs(BaseModel):
     address: str
 
 
-@cache(expire=300)
 @router.get("/daily_revenue_summary")
 async def get_daily_revenue_summary(db: AsyncSession = Depends(get_db_session)):
     """
@@ -59,7 +56,6 @@ async def get_daily_revenue_summary(db: AsyncSession = Depends(get_db_session)):
     ]
 
 
-@cache(expire=300)
 @router.get("/payments/summary/tao")
 async def get_tao_payment_totals(db: AsyncSession = Depends(get_db_session)):
     """
@@ -89,21 +85,6 @@ async def get_tao_payment_totals(db: AsyncSession = Depends(get_db_session)):
     }
 
 
-@cache(expire=90)
-@router.get("/quota_unlock_amount")
-async def get_quota_unlock_amount():
-    """
-    Amount, in USD, of payment history that provides the "free" tier quota.
-    """
-    tao_usd = await get_fetcher().get_price("tao")
-    return {
-        "usd": settings.quota_unlock_amount,
-        # For tao, we'll add a bit onto the estimate to hopefully accomodate any instantaneous price fluctuations.
-        "tao": (settings.quota_unlock_amount / tao_usd) * 1.05,
-    }
-
-
-@cache(expire=60)
 @router.get("/fmv")
 async def get_fmv():
     """
@@ -118,7 +99,6 @@ async def get_fmv():
     return prices
 
 
-@cache(expire=60)
 @router.get("/pricing")
 async def get_pricing():
     """

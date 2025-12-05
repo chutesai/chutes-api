@@ -9,7 +9,6 @@ from typing import Optional
 from collections import defaultdict
 from taskiq_redis.exceptions import ResultIsMissingError
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
-from fastapi_cache.decorator import cache
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -60,7 +59,6 @@ async def _list_nodes_compact(db: AsyncSession = Depends(get_db_session)):
     return results
 
 
-@cache(expire=60)
 @router.get("/")
 async def list_nodes(
     model: Optional[str] = None,

@@ -7,7 +7,6 @@ import uuid
 from datetime import datetime, timedelta
 from loguru import logger
 from fastapi import APIRouter, Depends, Request, Header, Response, HTTPException, status
-from fastapi_cache.decorator import cache
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.constants import HOTKEY_HEADER
@@ -58,7 +57,6 @@ async def add_miner_audit_data(
     return audit_entry
 
 
-@cache(expire=600)
 @router.get("/", response_model=list[AuditEntryResponse])
 async def list_audit_entries(db: AsyncSession = Depends(get_db_session)):
     """
@@ -71,7 +69,6 @@ async def list_audit_entries(db: AsyncSession = Depends(get_db_session)):
     return results
 
 
-@cache(expire=24 * 3 * 60 * 60)
 @router.get("/download")
 async def download_audit_data(path: str, db: AsyncSession = Depends(get_db_session)):
     """

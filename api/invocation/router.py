@@ -17,7 +17,6 @@ from pydantic import BaseModel, ValidationError, Field
 from datetime import date, datetime, timedelta, UTC
 from io import BytesIO, StringIO
 from typing import Optional
-from fastapi_cache.decorator import cache
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
@@ -199,7 +198,6 @@ async def get_export(
     )
 
 
-@cache(expire=60)
 @router.get("/exports/recent")
 async def get_recent_export(
     hotkey: Optional[str] = None,
@@ -640,10 +638,9 @@ async def _invoke(
                 ]
             ).encode()
             prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
-            prompt_count = await settings.redis_client.incr(
-                f"userreq:{current_user.user_id}{prompt_hash}"
-            )
-            await settings.redis_client.expire(30 * 60)  # 30 minute re-roll clock.
+            prompt_key = f"userreq:{current_user.user_id}{prompt_hash}"
+            prompt_count = await settings.redis_client.incr(prompt_key)
+            await settings.redis_client.expire(prompt_key, 30 * 60)  # 30 minute re-roll clock.
             if prompt_count and 1 < prompt_count < 15:
                 reroll = True
             elif prompt_count > 15:

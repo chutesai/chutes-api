@@ -18,7 +18,6 @@ from fastapi import (
     Response,
     Request,
 )
-from fastapi_cache.decorator import cache
 from starlette.responses import StreamingResponse
 from sqlalchemy import and_, or_, exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -121,7 +120,6 @@ async def stream_build_logs(
     )
 
 
-@cache(expire=60)
 @router.get("/", response_model=PaginatedResponse)
 async def list_images(
     include_public: Optional[bool] = False,
