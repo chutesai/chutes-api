@@ -103,7 +103,7 @@ class Settings(BaseSettings):
         default=22122,
         validation_alias="PRIMARY_MEMCACHED_PORT",
     )
-    memcached_pool_size: int = int(os.getenv("MEMCACHED_POOL_SIZE", "64"))
+    memcached_pool_size: int = int(os.getenv("MEMCACHED_POOL_SIZE", "128"))
 
     # Base redis settings.
     redis_host: str = Field(
@@ -116,8 +116,8 @@ class Settings(BaseSettings):
     )
     redis_password: str = str(os.getenv("REDIS_PASSWORD", "password"))
     redis_db: int = int(os.getenv("REDIS_DB", "0"))
-    redis_max_connections: int = int(os.getenv("REDIS_MAX_CONNECTIONS", 64))
-    redis_connect_timeout: float = float(os.getenv("REDIS_CONNECT_TIMEOUT", "0.2"))
+    redis_max_connections: int = int(os.getenv("REDIS_MAX_CONNECTIONS", 128))
+    redis_connect_timeout: float = float(os.getenv("REDIS_CONNECT_TIMEOUT", "0.25"))
     redis_socket_timeout: float = float(os.getenv("REDIS_SOCKET_TIMEOUT", "0.5"))
 
     _redis_client: Optional[redis.Redis] = None
