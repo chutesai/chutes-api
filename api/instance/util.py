@@ -131,7 +131,7 @@ class LeastConnManager:
         concurrency: int,
         instances: list[Instance],
         connection_expiry: int = 600,
-        cleanup_interval: int = 5,
+        cleanup_interval: int = 30,
     ):
         self.concurrency = concurrency or 1
         self.chute_id = chute_id
@@ -200,7 +200,7 @@ class LeastConnManager:
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}", exc_info=True)
             finally:
-                await self.redis_client.expire(lock_key, self.cleanup_interval * 5)
+                await self.redis_client.expire(lock_key, self.cleanup_interval * 3)
             await asyncio.sleep(self.cleanup_interval)
 
     async def _cleanup_expired_connections(self):
