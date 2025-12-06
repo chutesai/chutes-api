@@ -2,6 +2,7 @@
 Routes for chutes.
 """
 
+import re
 import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -140,6 +141,27 @@ async def create_secret(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Did not find target chute {str(args.purpose)}, or it does not belong to you",
         )
+
+    exclude = {
+        "UV_SYSTEM_PYTHON",
+        "PYTHONUNBUFFERED",
+        "PYTHONIOENCODING",
+        "PYTHONWARNINGS",
+    }
+    banned = {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "HF_HUB_DISABLE_SSL_VERIFY",
+    }
+    if (
+        re.search(r"python|sglang|^sgl_|^ld_", args.key.lower(), re.I)
+        and args.key.upper() not in exclude
+    ) or args.key.upper() in banned:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Banned secret key: {args.key}",
+        )
+
     encrypted_value = await encrypt_secret(args.value)
     secret = Secret(
         secret_id=str(

@@ -764,11 +764,17 @@ def is_kubernetes_env(
             "PYTHONUNBUFFERED",
             "PYTHONIOENCODING",
             "PYTHONWARNINGS",
+        }
+        banned = {
             "HTTP_PROXY",
             "HTTPS_PROXY",
             "HF_HUB_DISABLE_SSL_VERIFY",
         }
-        bad = [key for key in dump["env"] if "python" in key.lower() and key.upper() not in exclude]
+        bad = [
+            key
+            for key in dump["env"]
+            if ("python" in key.lower() and key.upper() not in exclude) or key.upper() in banned
+        ]
         if bad:
             logger.warning(f"{log_prefix} Invalid environment found: PYTHON env override(s): {bad}")
             return False
