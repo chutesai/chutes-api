@@ -45,7 +45,7 @@ async def lifespan(_: FastAPI):
     Execute all initialization/startup code, e.g. ensuring tables exist and such.
     """
     loop = asyncio.get_event_loop()
-    executor = ThreadPoolExecutor(max_workers=32)
+    executor = ThreadPoolExecutor(max_workers=64)
     loop.set_default_executor(executor)
 
     # Prom multi-proc dir.

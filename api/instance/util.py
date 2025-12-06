@@ -192,15 +192,15 @@ class LeastConnManager:
         lock_key = f"_cleanuplock:{self.chute_id}"
         while True:
             try:
-                if await settings.redis_client.setnx(lock_key, "1"):
+                if await self.redis_client.setnx(lock_key, "1"):
                     await self._cleanup_expired_connections()
-                    await settings.redis_client.delete(lock_key)
+                    await self.redis_client.delete(lock_key)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in cleanup loop: {e}", exc_info=True)
             finally:
-                await settings.redis_client.expire(lock_key, self.cleanup_interval * 5)
+                await self.redis_client.expire(lock_key, self.cleanup_interval * 5)
             await asyncio.sleep(self.cleanup_interval)
 
     async def _cleanup_expired_connections(self):

@@ -2,6 +2,7 @@
 Track capacity (connections per instance vs chute concurrency).
 """
 
+import asyncio
 from prometheus_client import Gauge, Counter
 
 mean_connections = Gauge(
@@ -34,7 +35,7 @@ requests_rate_limited = Counter(
 )
 
 
-def track_capacity(chute_id: str, mean_conn: float, chute_concurrency: int):
+def _track_capacity(chute_id: str, mean_conn: float, chute_concurrency: int):
     """
     Track connection capacity metrics per chute.
     """
@@ -45,6 +46,15 @@ def track_capacity(chute_id: str, mean_conn: float, chute_concurrency: int):
         utilization.labels(chute_id=chute_id).set(util_ratio)
     else:
         utilization.labels(chute_id=chute_id).set(0.0)
+
+
+async def track_capacity(chute_id: str, mean_conn: float, chute_concurrency: int) -> None:
+    """
+    Async wrapper around the gauge updates for capacity.
+    """
+    await asyncio.to_thread(
+        _track_capacity, chute_id=chute_id, mean_conn=mean_conn, chute_concurrency=chute_concurrency
+    )
 
 
 def track_request_completed(chute_id: str):

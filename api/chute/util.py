@@ -466,6 +466,13 @@ async def _invoke_one(
 
     session, response = None, None
     timeout = 1800
+    if (
+        semcomp(target.chutes_version or "0.0.0", "0.4.3") >= 0
+        and chute.standard_template == "vllm"
+        and plain_path.endswith("_stream")
+    ):
+        # No timeouts for streaming LLM calls with newer chutes lib versions.
+        timeout = None
     if semcomp(target.chutes_version or "0.0.0", "0.3.59") < 0:
         timeout = 600
     elif semcomp(target.chutes_version or "0.0.0", "0.4.2") < 0:
@@ -956,7 +963,9 @@ async def invoke(
         async with manager.get_target(avoid=avoid, prefixes=prefixes) as (target, error_message):
             try:
                 if attempt_idx == 0 and manager.mean_count is not None:
-                    track_capacity(chute.chute_id, manager.mean_count, chute.concurrency or 1.0)
+                    await track_capacity(
+                        chute.chute_id, manager.mean_count, chute.concurrency or 1.0
+                    )
             except Exception as cap_err:
                 logger.error(
                     f"Failed tracking chute capacity metrics: {cap_err}\n{traceback.format_exc()}"
