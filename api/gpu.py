@@ -8,6 +8,7 @@ ALLOW_INCLUDE = [
     "h100_nvl",
     "h200",
     "b200",
+    "b300",
     "mi300x",
     "a100",
     "a100_sxm",
@@ -458,6 +459,18 @@ SUPPORTED_GPUS = {
         "graval": {
             "iterations": 2,
             "estimate": 75,
+        },
+    },
+    "b300": {
+        "model_name_check": " B300",
+        "memory": 288,
+        "processors": 148,
+        "clock_rate": {"base": 1590, "boost": 2032},
+        "max_threads_per_processor": 1024,
+        "hourly_rate": 4.5,
+        "graval": {
+            "iterations": 1,
+            "estimate": 430,
         },
     },
 }

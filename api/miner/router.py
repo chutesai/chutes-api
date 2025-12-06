@@ -37,7 +37,11 @@ def model_to_dict(obj):
     Helper to convert object to dict.
     """
     mapper = class_mapper(obj.__class__)
-    data = {column.key: getattr(obj, column.key) for column in mapper.columns}
+    data = {
+        column.key: getattr(obj, column.key)
+        for column in mapper.columns
+        if column.key != "env_creation"
+    }
     for name, value in vars(obj.__class__).items():
         if isinstance(getattr(value, "decorator_info", None), ComputedFieldInfo):
             data[name] = getattr(obj, name)

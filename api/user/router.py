@@ -1655,8 +1655,8 @@ async def list_usage(
                     bucket=row.bucket.isoformat(),
                     amount=row.amount,
                     count=row.count,
-                    input_tokens=int(row.input_tokens),
-                    output_tokens=int(row.output_tokens),
+                    input_tokens=int(row.input_tokens or 0),
+                    output_tokens=int(row.output_tokens or 0),
                 )
             )
 

@@ -465,7 +465,11 @@ async def _invoke_one(
         path = encrypted_path
 
     session, response = None, None
-    timeout = 600 if semcomp(target.chutes_version or "0.0.0", "0.3.59") < 0 else 900
+    timeout = 1800
+    if semcomp(target.chutes_version or "0.0.0", "0.3.59") < 0:
+        timeout = 600
+    elif semcomp(target.chutes_version or "0.0.0", "0.4.2") < 0:
+        timeout = 900
     try:
         session = await get_miner_session(target, timeout=timeout)
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)

@@ -917,9 +917,14 @@ async def hostname_invocation(
         if model == "deepseek-ai/DeepSeek-R1-sgtest":
             payload["model"] = "deepseek-ai/DeepSeek-R1"
 
+        # Route 3.2-Speciale to TEE variant.
+        if model == "deepseek-ai/DeepSeek-V3.2-Speciale":
+            payload["model"] = "deepseek-ai/DeepSeek-V3.2-Speciale-TEE"
+
         # Disable logprobs for now on 3.2* models.
         if model in (
             "deepseek-ai/DeepSeek-V3.2-Speciale",
+            "deepseek-ai/DeepSeek-V3.2-Speciale-TEE",
             "deepseek-ai/DeepSeek-V3.2",
             "deepseek-ai/DeepSeek-V3.2-Exp",
         ):

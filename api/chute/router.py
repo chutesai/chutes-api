@@ -1613,7 +1613,7 @@ async def easy_deploy_tei_chute(
     node_selector.exclude = list(
         set(
             node_selector.exclude
-            or [] + ["h200", "b200", "h100", "h100_sxm", "h100_nvl", "h800", "mi300x"]
+            or [] + ["h200", "b300", "b200", "h100", "h100_sxm", "h100_nvl", "h800", "mi300x"]
         )
     )
 
