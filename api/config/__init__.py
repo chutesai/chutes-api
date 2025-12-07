@@ -134,7 +134,7 @@ class Settings(BaseSettings):
                 op_timeout=self.redis_op_timeout,
                 max_connections=self.redis_max_connections,
                 socket_keepalive=True,
-                health_check_interval=30,
+                health_check_interval=0,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
             )
@@ -154,7 +154,7 @@ class Settings(BaseSettings):
                     op_timeout=self.cm_redis_op_timeout,
                     max_connections=self.redis_max_connections,
                     socket_keepalive=True,
-                    health_check_interval=30,
+                    health_check_interval=0,
                     retry_on_timeout=True,
                     retry=Retry(ConstantBackoff(0.5), 2),
                 )

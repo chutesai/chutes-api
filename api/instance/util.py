@@ -64,8 +64,9 @@ async def load_chute_target(instance_id: str) -> Instance:
     cached = await settings.redis_client.get(cache_key)
     if cached:
         try:
-            return pickle.loads(cached)
-        except Exception:
+            return await asyncio.to_thread(pickle.loads, cached)
+        except Exception as exc:
+            logger.error(f"Error loading cached instance: {str(exc)}")
             await settings.redis_client.delete(cache_key)
 
     # Load from DB.
@@ -95,10 +96,10 @@ async def load_chute_target(instance_id: str) -> Instance:
                 _ = instance.chute.rolling_update
                 _ = instance.chute.user
             try:
-                serialized = pickle.dumps(instance)
+                serialized = await asyncio.to_thread(pickle.dumps, instance)
                 await settings.redis_client.set(cache_key, serialized, ex=300)
-            except Exception:
-                ...
+            except Exception as exc:
+                logger.error(f"Error setting cache for {instance.instance_id=}: {str(exc)}")
         return instance
 
 
@@ -130,7 +131,6 @@ class LeastConnManager:
         concurrency: int,
         instances: list[Instance],
         connection_expiry: int = 600,
-        cleanup_interval: int = 30,
     ):
         self.concurrency = concurrency or 1
         self.chute_id = chute_id
@@ -139,11 +139,7 @@ class LeastConnManager:
         self.redis_client_index = _u_idx
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
-        self.cleanup_interval = cleanup_interval
         self.mean_count = None
-
-        # Start continuous cleanup task immediately
-        self._cleanup_task = asyncio.create_task(self._continuous_cleanup())
 
         # Pre-register Lua scripts for better performance
         self._register_lua_scripts()
@@ -175,56 +171,6 @@ class LeastConnManager:
         end
         return removed
         """
-
-    async def close(self):
-        if hasattr(self, "_cleanup_task") and self._cleanup_task:
-            self._cleanup_task.cancel()
-            try:
-                await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
-
-    async def _continuous_cleanup(self):
-        """
-        Run cleanup continuously while CM is alive.
-        """
-        lock_key = f"_cleanuplock:{self.chute_id}"
-        while True:
-            try:
-                if random.random() <= 0.01 and await self.redis_client.setnx(lock_key, "1"):
-                    await self._cleanup_expired_connections()
-                    await self.redis_client.delete(lock_key)
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in cleanup loop: {e}", exc_info=True)
-            await self.redis_client.expire(lock_key, self.cleanup_interval * 3)
-            await asyncio.sleep(self.cleanup_interval)
-
-    async def _cleanup_expired_connections(self):
-        now = int(time.time())
-        try:
-            pattern = f"conn:{self.chute_id}:*"
-            now = time.time()
-            cutoff = now - self.connection_expiry
-            total_removed = 0
-            cursor = 0
-            while True:
-                res = await self.redis_client.scan(cursor, match=pattern, count=100)
-                if not res:
-                    break
-                cursor, keys = res
-                if keys:
-                    pipe = self.redis_client.pipeline()
-                    for key in keys:
-                        pipe.zremrangebyscore(key, 0, cutoff)
-                    results = await pipe.execute()
-                    total_removed += sum(results)
-                if cursor == 0:
-                    break
-            return total_removed
-        except Exception as e:
-            logger.error(f"Error in batch cleanup: {e}", exc_info=True)
 
     async def get_connection_counts(self, instance_ids: list[str]) -> dict[str, int]:
         """
@@ -412,10 +358,6 @@ class LeastConnManager:
                     )
                 except Exception as e:
                     logger.error(f"Error cleaning up connection {conn_id}: {e}")
-
-    def __del__(self):
-        if hasattr(self, "_cleanup_task") and self._cleanup_task:
-            self._cleanup_task.cancel()
 
 
 async def get_chute_target_manager(
@@ -713,3 +655,35 @@ async def update_shutdown_timestamp(instance_id: str):
             await settings.redis_client.delete(key)
         except Exception:
             pass
+
+
+async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
+    """
+    Global cleanup of expired connection entries across all cm_redis_client shards.
+    """
+    cutoff = time.time() - connection_expiry
+    total_removed = 0
+
+    for idx, redis_client in enumerate(settings.cm_redis_client):
+        logger.info(f"Cleaning up cm_redis_client[{idx}]...")
+        cursor = 0
+        pattern = "conn:*:*"
+
+        while True:
+            cursor, keys = await redis_client.scan(cursor, match=pattern, count=100)
+            if not keys:
+                if cursor == 0:
+                    break
+                continue
+
+            pipe = redis_client.pipeline()
+            for key in keys:
+                pipe.zremrangebyscore(key, 0, cutoff)
+            results = await pipe.execute()
+            total_removed += sum(results)
+
+            if cursor == 0:
+                break
+
+    logger.success(f"Finished cleanup_expired_connections() loop, total_removed={total_removed}")
+    return total_removed

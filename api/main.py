@@ -4,9 +4,12 @@ Main API entrypoint.
 
 import os
 import re
+import gc
 import asyncio
 import fickling
 import hashlib
+import traceback
+from loguru import logger
 from urllib.parse import quote
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, APIRouter, HTTPException, status, Response
@@ -39,14 +42,64 @@ from api.database import Base, engine, get_session
 from api.config import settings
 
 
+async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2, max_tasks: int = 20):
+    """
+    Monitor event loop lag and, when it exceeds warn_threshold, dump stacks
+    of running/pending tasks so we can see what's blocking.
+
+    Uses loguru ({}-style formatting).
+    """
+    loop = asyncio.get_running_loop()
+    last = loop.time()
+
+    while True:
+        await asyncio.sleep(interval)
+        now = loop.time()
+        lag = now - last - interval
+        last = now
+
+        if lag <= warn_threshold:
+            continue
+
+        ms = lag * 1000.0
+        logger.warning(f"Event loop lag: {ms:.1f}ms — collecting task stacks")
+
+        tasks = list(asyncio.all_tasks(loop))
+        # Avoid dumping hundreds of tasks if something is crazy
+        tasks = tasks[:max_tasks]
+
+        for task in tasks:
+            if task is asyncio.current_task(loop=loop):
+                continue
+
+            logger.warning(f"Task {task.get_name()!r} (state={task._state})")
+
+            stack = task.get_stack()
+            if not stack:
+                logger.warning("  (no stack: task is likely idle / awaiting)")
+                continue
+
+            # You can dump the whole stack; start with the top frame for brevity
+            formatted = "".join(traceback.format_stack(stack[-1]))
+            logger.warning(
+                "Stack for task {}:\n{}",
+                task.get_name(),
+                formatted,
+            )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     """
     Execute all initialization/startup code, e.g. ensuring tables exist and such.
     """
+    gc.set_threshold(5000, 50, 50)
+
     loop = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=64)
     loop.set_default_executor(executor)
+
+    asyncio.create_task(loop_lag_monitor())
 
     # Prom multi-proc dir.
     os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)

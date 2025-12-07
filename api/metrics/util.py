@@ -43,6 +43,7 @@ async def update_gauges():
             logger.error(
                 f"Failed here updating gauges for {chute.chute_id=} and {chute.concurrency=}: : {str(exc)}"
             )
+        await asyncio.sleep(0.05)
 
 
 async def keep_gauges_fresh():

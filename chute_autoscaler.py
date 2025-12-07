@@ -32,7 +32,7 @@ from api.user.service import chutes_user_id
 from api.util import notify_deleted, has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
-from api.instance.util import invalidate_instance_cache
+from api.instance.util import invalidate_instance_cache, cleanup_expired_connections
 from api.capacity_log.schemas import CapacityLog
 from watchtower import purge, purge_and_notify  # noqa
 from api.constants import (
@@ -309,6 +309,9 @@ async def perform_autoscale(dry_run: bool = False):
     logger.info("Performing instance cleanup...")
     await instance_cleanup()
 
+    # Cleanup the connections while we are at it...
+    conn_task = asyncio.create_task(cleanup_expired_connections())
+
     logger.info(f"Fetching metrics from Prometheus and database... (dry_run={dry_run})")
     chute_metrics = await get_all_chute_metrics()
 
@@ -317,6 +320,7 @@ async def perform_autoscale(dry_run: bool = False):
         logger.warning(
             f"Only found {len(chute_metrics)} chutes total, need at least {MIN_CHUTES_FOR_SCALING}. Aborting."
         )
+        await conn_task
         return
     logger.info(f"Processing metrics for {len(chute_metrics)} chutes")
 
@@ -973,6 +977,8 @@ async def perform_autoscale(dry_run: bool = False):
 
     if instances_removed:
         logger.success(f"Scaled down, {instances_removed=} and {gpus_removed=}")
+
+    await conn_task
     return instances_removed
 
 
