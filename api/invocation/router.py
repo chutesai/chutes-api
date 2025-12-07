@@ -3,7 +3,7 @@ Invocations router.
 """
 
 import re
-import base64
+import pybase64 as base64
 import pickle
 import asyncio
 import gzip

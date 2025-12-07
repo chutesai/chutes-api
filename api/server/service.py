@@ -3,7 +3,7 @@ Core server management and TDX attestation logic.
 """
 
 import asyncio
-import base64
+import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
 import tempfile

@@ -7,7 +7,7 @@ import re
 import time
 import uuid
 import aiodns
-import base64
+import pybase64 as base64
 import ctypes
 import random
 import semver

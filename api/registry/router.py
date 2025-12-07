@@ -2,7 +2,7 @@
 Registry authentication.
 """
 
-import base64
+import pybase64 as base64
 from fastapi import Request, Response, APIRouter, Depends
 from api.user.schemas import User
 from api.user.service import get_current_user

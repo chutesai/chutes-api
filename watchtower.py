@@ -2,7 +2,7 @@ import re
 import os
 import uuid
 import time
-import base64
+import pybase64 as base64
 import asyncio
 import aiohttp
 import socket

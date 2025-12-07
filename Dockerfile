@@ -16,6 +16,7 @@ RUN apt-get update && apt-get upgrade && apt-get install -y \
     wget \
     jq \
     vim \
+    git \
     gcc \
     g++ \
     make \
@@ -37,6 +38,10 @@ RUN curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/s
 
 # Set Python 3.12 as default python3
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1
+
+# NN verification lib.
+ADD data/chutes-nnverify.so /usr/local/lib/chutes-nnverify.so
+RUN chmod 755 /usr/local/lib/chutes-nnverify.so
 
 ###
 # FORGE
@@ -86,17 +91,18 @@ RUN curl -LO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VER
     dpkg -i cosign_${COSIGN_VERSION}_amd64.deb && \
     rm cosign_${COSIGN_VERSION}_amd64.deb
 
-# Install poetry
-RUN curl -sSL https://install.python-poetry.org | python3 -
+# Install uv (instead of Poetry) for dependency management
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:$PATH"
 
 # Copy and install Python dependencies
 ADD pyproject.toml /forge/
-ADD poetry.lock /forge/
+ADD uv.lock /forge/
+ADD README.md /forge/
 WORKDIR /forge/
-RUN poetry install --no-root
+RUN uv sync --no-dev
 
-# Copy scripts
+# Copy scripts (unchanged)
 ADD data/buildah_cleanup.sh /usr/local/bin/buildah_cleanup.sh
 ADD data/generate_fs_challenge.sh /usr/local/bin/generate_fs_challenge.sh
 ADD data/trivy_scan.sh /usr/local/bin/trivy_scan.sh
@@ -112,7 +118,7 @@ ADD --chown=chutes watchtower.py /forge/watchtower.py
 ENV BUILDAH_ISOLATION=chroot
 ENV STORAGE_DRIVER=overlay
 
-ENTRYPOINT ["poetry", "run", "python", "-m", "api.image.forge"]
+ENTRYPOINT ["uv", "run", "python", "-m", "api.image.forge"]
 
 
 ###
@@ -160,10 +166,16 @@ RUN rm -rf /tmp/nv-attest
 RUN ln -s /app/nv-attest/bin/chutes-nvattest /usr/bin/chutes-nvattest
 USER chutes
 
-ADD pyproject.toml /app/
-ADD poetry.lock /app/
+# Install uv for main app deps
 WORKDIR /app
-RUN poetry install --no-root
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/home/chutes/.local/bin:$PATH"
+
+ADD pyproject.toml /app/
+ADD uv.lock /app/
+ADD --chown=chutes README.md /app/
+RUN uv sync --extra dev
+
 ADD --chown=chutes api /app/api
 ADD --chown=chutes audit_exporter.py /app/audit_exporter.py
 ADD --chown=chutes failed_chute_cleanup.py /app/failed_chute_cleanup.py
@@ -179,4 +191,5 @@ ADD --chown=chutes conn_prober.py /app/conn_prober.py
 ADD --chown=chutes scripts /app/scripts
 
 ENV PYTHONPATH=/app
-ENTRYPOINT ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+ENTRYPOINT ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--loop", "uvloop", "--http", "httptools"]

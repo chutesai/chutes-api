@@ -11,7 +11,7 @@ import io
 import time
 import traceback
 import orjson as json
-import base64
+import pybase64 as base64
 import gzip
 import math
 import pickle

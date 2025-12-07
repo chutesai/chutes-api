@@ -6,7 +6,7 @@ import csv
 from io import StringIO
 import os
 import uuid
-import base64
+import pybase64 as base64
 import ctypes
 import traceback
 import random
@@ -91,7 +91,7 @@ INSPECTO = load_shared_object("chutes", "chutes-inspecto.so")
 INSPECTO.verify_hash.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
 INSPECTO.verify_hash.restype = ctypes.c_char_p
 
-NETNANNY = load_shared_object("chutes", "chutes-netnanny.so")
+NETNANNY = ctypes.CDLL("/usr/local/lib/chutes-nnverify.so")
 NETNANNY.verify.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint8]
 NETNANNY.verify.restype = ctypes.c_int
 

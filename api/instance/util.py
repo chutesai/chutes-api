@@ -5,7 +5,7 @@ Helper functions for instances.
 import jwt
 import time
 import uuid
-import base64
+import pybase64 as base64
 import asyncio
 import random
 import pickle

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-import base64
+import pybase64 as base64
 import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
