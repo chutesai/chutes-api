@@ -70,8 +70,6 @@ async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2):
             continue
 
         ms = lag * 1000.0
-        logger.warning(f"Event loop lag: {ms:.1f}ms — summarizing tasks...")
-
         tasks = [
             t
             for t in asyncio.all_tasks(loop)
@@ -85,7 +83,7 @@ async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2):
             name = getattr(coro, "__qualname__", coro.__class__.__name__)
             summary.setdefault(name, 0)
             summary[name] += 1
-        logger.warning("Event loop lag: {ms:.1f}ms, task summary during lag: {summary}")
+        logger.warning(f"Event loop lag: {ms:.1f}ms, task summary during lag: {summary}")
 
 
 @asynccontextmanager
