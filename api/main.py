@@ -8,7 +8,6 @@ import gc
 import asyncio
 import fickling
 import hashlib
-import traceback
 from loguru import logger
 from urllib.parse import quote
 from contextlib import asynccontextmanager
@@ -42,15 +41,24 @@ from api.database import Base, engine, get_session
 from api.config import settings
 
 
-async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2, max_tasks: int = 20):
+async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2):
     """
-    Monitor event loop lag and, when it exceeds warn_threshold, dump stacks
-    of running/pending tasks so we can see what's blocking.
-
-    Uses loguru ({}-style formatting).
+    Very lightweight event-loop lag monitor.
+    Produces *summary only* — no full stack traces.
     """
     loop = asyncio.get_running_loop()
     last = loop.time()
+
+    ignored_task_str = (
+        "aiohttp",
+        "ClientSession",
+        "ClientResponse",
+        "TCPConnector",
+    )
+
+    def _should_ignore(task: asyncio.Task) -> bool:
+        r = repr(task)
+        return any(s in r for s in ignored_task_str)
 
     while True:
         await asyncio.sleep(interval)
@@ -62,30 +70,22 @@ async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2, m
             continue
 
         ms = lag * 1000.0
-        logger.warning(f"Event loop lag: {ms:.1f}ms — collecting task stacks")
+        logger.warning(f"Event loop lag: {ms:.1f}ms — summarizing tasks...")
 
-        tasks = list(asyncio.all_tasks(loop))
-        # Avoid dumping hundreds of tasks if something is crazy
-        tasks = tasks[:max_tasks]
+        tasks = [
+            t
+            for t in asyncio.all_tasks(loop)
+            if t is not asyncio.current_task(loop=loop) and not _should_ignore(t)
+        ]
 
-        for task in tasks:
-            if task is asyncio.current_task(loop=loop):
-                continue
-
-            logger.warning(f"Task {task.get_name()!r} (state={task._state})")
-
-            stack = task.get_stack()
-            if not stack:
-                logger.warning("  (no stack: task is likely idle / awaiting)")
-                continue
-
-            # You can dump the whole stack; start with the top frame for brevity
-            formatted = "".join(traceback.format_stack(stack[-1]))
-            logger.warning(
-                "Stack for task {}:\n{}",
-                task.get_name(),
-                formatted,
-            )
+        # Group tasks by coroutine/function name (high-level signal)
+        summary = {}
+        for t in tasks:
+            coro = t.get_coro()
+            name = getattr(coro, "__qualname__", coro.__class__.__name__)
+            summary.setdefault(name, 0)
+            summary[name] += 1
+        logger.warning("Event loop lag: {ms:.1f}ms, task summary during lag: {summary}")
 
 
 @asynccontextmanager

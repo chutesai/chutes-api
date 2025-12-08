@@ -14,6 +14,7 @@ class MinimalImageResponse(BaseModel):
     name: str
     tag: str
     public: bool
+    chutes_version: Optional[str]
     patch_version: Optional[str]
 
     class Config:
@@ -33,6 +34,7 @@ class ImageResponse(BaseModel):
     user: UserResponse
     logo_id: Optional[str]
     patch_version: Optional[str]
+    chutes_version: Optional[str]
 
     class Config:
         from_attributes = True
