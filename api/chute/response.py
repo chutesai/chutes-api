@@ -20,6 +20,7 @@ class MinimalChuteResponse(BaseModel):
     slug: str
     chutes_version: str
     preemptible: bool
+    tee: Optional[bool] = False
     image: MinimalImageResponse
 
     class Config:
@@ -59,6 +60,7 @@ class ChuteResponse(BaseModel):
     shutdown_after_seconds: Optional[int] = None
     preemptible: bool
     allow_external_egress: Optional[bool] = True
+    tee: Optional[bool] = False
 
     class Config:
         from_attributes = True
