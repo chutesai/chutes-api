@@ -15,14 +15,14 @@ from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
 from loguru import logger
 from contextlib import asynccontextmanager
-from api.constants import INSTANCE_DISABLE_BASE_TIMEOUT
+from api.constants import INSTANCE_DISABLE_BASE_TIMEOUT, MAX_INSTANCE_DISABLES
 from api.exceptions import InfraOverload
 from api.chute.schemas import Chute
 from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
-from api.util import has_legacy_private_billing
+from api.util import has_legacy_private_billing, notify_deleted
 from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.future import select
@@ -135,31 +135,20 @@ async def get_instance_disable_count(instance_id: str) -> int:
 
 
 async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -> bool:
-    """
-    Disable an instance temporarily, or delete it if already disabled twice.
-    Uses setnx to prevent race conditions across replicas.
-
-    Returns True if this replica took action (disable or delete), False if another replica handled it.
-    """
-    from api.util import notify_deleted
-
     disabled_key = f"instance_disabled:{instance_id}"
     count_key = f"instance_disable_count:{instance_id}"
 
-    # Try to acquire the disable lock - only one replica should proceed
-    acquired = await settings.redis_client.set(
+    # Use the raw redis client to ensure we don't silently discard.
+    acquired = await settings.redis_client.client.set(
         disabled_key, b"1", nx=True, ex=INSTANCE_DISABLE_BASE_TIMEOUT
     )
     if not acquired:
         return False
 
-    # We won the race - increment disable count (returns 1 if key didn't exist)
     disable_count = await settings.redis_client.incr(count_key)
     await settings.redis_client.expire(count_key, 3600)
-
-    # Decide: disable or delete based on count
-    if disable_count > 2:
-        # Already disabled twice before, delete the instance
+    if disable_count > MAX_INSTANCE_DISABLES:
+        # Already disabled several times, delete the instance.
         async with get_session() as session:
             delete_result = await session.execute(
                 text("DELETE FROM instances WHERE instance_id = :instance_id"),
@@ -186,8 +175,6 @@ async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -
                         message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted after {disable_count - 1} temporary disables due to consecutive failures.",
                     )
                 )
-        # Clean up the disable state since instance is deleted
-        await settings.redis_client.delete(disabled_key, count_key)
     else:
         # Disable temporarily with increasing timeout
         timeout_seconds = INSTANCE_DISABLE_BASE_TIMEOUT * disable_count
@@ -195,9 +182,6 @@ async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -
         logger.warning(
             f"INSTANCE DISABLED: {instance_id} for {timeout_seconds}s (disable_count={disable_count})"
         )
-
-    # Clear consecutive failures now that we've taken action
-    await settings.redis_client.delete(f"consecutive_failures:{instance_id}")
 
     return True
 

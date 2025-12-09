@@ -65,6 +65,9 @@ TEE_BONUS = 1.5
 # Duration for instance disablement when consecutive errors are hit (increases linearly until max).
 INSTANCE_DISABLE_BASE_TIMEOUT = 90
 
+# Number of times an instance can be disabled before deleting (after consecutive failures).
+MAX_INSTANCE_DISABLES = 2
+
 # Subnet integrations.
 INTEGRATED_SUBNETS = {
     "affine": {

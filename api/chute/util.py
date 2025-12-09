@@ -1339,7 +1339,10 @@ async def invoke(
                             )
 
                     elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
-                        # Handle consecutive failures with temporary disable before deletion.
+                        # Handle consecutive failures - when an instance hits a configured number of
+                        # failures in a row, it will be disabled, and a counter incremented for the
+                        # number of times disabled in a given time window. If this instance has
+                        # hit this disabled block several times, it's ejected/deleted.
                         consecutive_failures = await settings.redis_client.incr(
                             f"consecutive_failures:{target.instance_id}"
                         )
@@ -1350,7 +1353,6 @@ async def invoke(
                             logger.warning(
                                 f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
                             )
-                            # Disable (or delete if already disabled twice) - handles race conditions
                             await disable_instance(
                                 target.instance_id, target.chute_id, target.miner_hotkey
                             )
