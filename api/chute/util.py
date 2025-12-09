@@ -60,7 +60,13 @@ from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOve
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager, update_shutdown_timestamp, invalidate_instance_cache
+from api.instance.util import (
+    LeastConnManager,
+    update_shutdown_timestamp,
+    invalidate_instance_cache,
+    disable_instance,
+    clear_instance_disable_state,
+)
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
@@ -1107,10 +1113,11 @@ async def invoke(
                     )
                 )
 
-                # Clear any consecutive failure flags.
+                # Clear any consecutive failure flags and disable state.
                 asyncio.create_task(
                     settings.redis_client.delete(f"consecutive_failures:{target.instance_id}")
                 )
+                asyncio.create_task(clear_instance_disable_state(target.instance_id))
 
                 # Update capacity tracking.
                 track_request_completed(chute.chute_id)
@@ -1332,7 +1339,7 @@ async def invoke(
                             )
 
                     elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
-                        # Handle consecutive failures (auto-delete instances).
+                        # Handle consecutive failures with temporary disable before deletion.
                         consecutive_failures = await settings.redis_client.incr(
                             f"consecutive_failures:{target.instance_id}"
                         )
@@ -1343,27 +1350,10 @@ async def invoke(
                             logger.warning(
                                 f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
                             )
-                            delete_result = await session.execute(
-                                text("DELETE FROM instances WHERE instance_id = :instance_id"),
-                                {"instance_id": target.instance_id},
+                            # Disable (or delete if already disabled twice) - handles race conditions
+                            await disable_instance(
+                                target.instance_id, target.chute_id, target.miner_hotkey
                             )
-                            if delete_result.rowcount > 0:
-                                await invalidate_instance_cache(
-                                    target.chute_id, instance_id=target.instance_id
-                                )
-                                await session.execute(
-                                    text(
-                                        f"UPDATE instance_audit SET deletion_reason = 'max consecutive failures {consecutive_failures} reached' WHERE instance_id = :instance_id"
-                                    ),
-                                    {"instance_id": target.instance_id},
-                                )
-                                await session.commit()
-                                asyncio.create_task(
-                                    notify_deleted(
-                                        target,
-                                        message=f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
-                                    )
-                                )
 
                 if error_message == "BAD_REQUEST":
                     logger.warning(

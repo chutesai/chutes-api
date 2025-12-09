@@ -62,6 +62,9 @@ INTEGRATED_SUBNET_BONUS = 3
 # TEE bonus.
 TEE_BONUS = 1.5
 
+# Duration for instance disablement when consecutive errors are hit (increases linearly until max).
+INSTANCE_DISABLE_BASE_TIMEOUT = 90
+
 # Subnet integrations.
 INTEGRATED_SUBNETS = {
     "affine": {

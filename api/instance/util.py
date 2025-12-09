@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
 from loguru import logger
 from contextlib import asynccontextmanager
+from api.constants import INSTANCE_DISABLE_BASE_TIMEOUT
 from api.exceptions import InfraOverload
 from api.chute.schemas import Chute
 from api.instance.schemas import Instance, LaunchConfig
@@ -121,6 +122,91 @@ async def invalidate_instance_cache(chute_id, instance_id: str = None):
     await settings.redis_client.delete(f"instance:{instance_id}")
 
 
+async def is_instance_disabled(instance_id: str) -> bool:
+    disabled = await settings.redis_client.get(f"instance_disabled:{instance_id}")
+    return disabled is not None
+
+
+async def get_instance_disable_count(instance_id: str) -> int:
+    count = await settings.redis_client.get(f"instance_disable_count:{instance_id}")
+    if count is None:
+        return 0
+    return int(count)
+
+
+async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -> bool:
+    """
+    Disable an instance temporarily, or delete it if already disabled twice.
+    Uses setnx to prevent race conditions across replicas.
+
+    Returns True if this replica took action (disable or delete), False if another replica handled it.
+    """
+    from api.util import notify_deleted
+
+    disabled_key = f"instance_disabled:{instance_id}"
+    count_key = f"instance_disable_count:{instance_id}"
+
+    # Try to acquire the disable lock - only one replica should proceed
+    acquired = await settings.redis_client.set(
+        disabled_key, b"1", nx=True, ex=INSTANCE_DISABLE_BASE_TIMEOUT
+    )
+    if not acquired:
+        return False
+
+    # We won the race - increment disable count (returns 1 if key didn't exist)
+    disable_count = await settings.redis_client.incr(count_key)
+    await settings.redis_client.expire(count_key, 3600)
+
+    # Decide: disable or delete based on count
+    if disable_count > 2:
+        # Already disabled twice before, delete the instance
+        async with get_session() as session:
+            delete_result = await session.execute(
+                text("DELETE FROM instances WHERE instance_id = :instance_id"),
+                {"instance_id": instance_id},
+            )
+            if delete_result.rowcount > 0:
+                await invalidate_instance_cache(chute_id, instance_id=instance_id)
+                await session.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {
+                        "instance_id": instance_id,
+                        "reason": f"max consecutive failures reached after {disable_count - 1} temporary disables",
+                    },
+                )
+                await session.commit()
+                logger.warning(
+                    f"INSTANCE DELETED: {instance_id} after {disable_count - 1} temporary disables"
+                )
+                asyncio.create_task(
+                    notify_deleted(
+                        {"instance_id": instance_id, "miner_hotkey": miner_hotkey},
+                        message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted after {disable_count - 1} temporary disables due to consecutive failures.",
+                    )
+                )
+        # Clean up the disable state since instance is deleted
+        await settings.redis_client.delete(disabled_key, count_key)
+    else:
+        # Disable temporarily with increasing timeout
+        timeout_seconds = INSTANCE_DISABLE_BASE_TIMEOUT * disable_count
+        await settings.redis_client.expire(disabled_key, timeout_seconds)
+        logger.warning(
+            f"INSTANCE DISABLED: {instance_id} for {timeout_seconds}s (disable_count={disable_count})"
+        )
+
+    # Clear consecutive failures now that we've taken action
+    await settings.redis_client.delete(f"consecutive_failures:{instance_id}")
+
+    return True
+
+
+async def clear_instance_disable_state(instance_id: str) -> None:
+    await settings.redis_client.delete(f"instance_disabled:{instance_id}")
+    await settings.redis_client.delete(f"instance_disable_count:{instance_id}")
+
+
 MANAGERS = {}
 
 
@@ -196,6 +282,7 @@ class LeastConnManager:
         available_instances = [iid for iid in self.instances.keys() if iid not in avoid]
         if not available_instances:
             return []
+
         started_at = time.time()
         counts = await self.get_connection_counts(available_instances)
         time_taken = time.time() - started_at
@@ -301,7 +388,18 @@ class LeastConnManager:
             if not targets:
                 yield None, "No infrastructure available to serve request"
                 return
-            instance = targets[0]
+
+            # Find first non-disabled instance (lazy check with caching)
+            instance = None
+            for candidate in targets:
+                if not await is_instance_disabled(candidate.instance_id):
+                    instance = candidate
+                    break
+
+            if not instance:
+                yield None, "infra_overload"
+                return
+
             try:
                 key = f"conn:{self.chute_id}:{instance.instance_id}"
                 _ = await asyncio.wait_for(
