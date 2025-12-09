@@ -1257,6 +1257,8 @@ async def invoke(
                 ).replace(target.host, "[host redacted]")
 
                 error_detail = None
+                instant_delete = False
+                skip_disable_loop = False
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
                     infra_overload = True
@@ -1268,8 +1270,16 @@ async def invoke(
                     error_message = "KEY_EXCHANGE_REQUIRED"
                 elif isinstance(exc, EmptyLLMResponse):
                     error_message = "EMPTY_STREAM"
+                    instant_delete = True
                 elif isinstance(exc, InvalidCLLMV):
                     error_message = "CLLMV_FAILURE"
+                    instant_delete = True
+                elif isinstance(exc, InvalidResponse):
+                    error_message = "INVALID_RESPONSE"
+                    instant_delete = True
+                elif isinstance(exc, aiohttp.ClientResponseError) and exc.status >= 500:
+                    error_message = f"HTTP_{exc.status}"
+                    skip_disable_loop = True
 
                 # Store complete record in new invocations database, async.
                 duration = time.time() - started_at
@@ -1341,23 +1351,36 @@ async def invoke(
                             )
 
                     elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
-                        # Handle consecutive failures - when an instance hits a configured number of
-                        # failures in a row, it will be disabled, and a counter incremented for the
-                        # number of times disabled in a given time window. If this instance has
-                        # hit this disabled block several times, it's ejected/deleted.
-                        consecutive_failures = await settings.redis_client.incr(
-                            f"consecutive_failures:{target.instance_id}"
-                        )
-                        if (
-                            consecutive_failures
-                            and consecutive_failures >= settings.consecutive_failure_limit
-                        ):
-                            logger.warning(
-                                f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
-                            )
+                        if instant_delete:
+                            # Catastrophic errors (cheating, broken responses) - delete immediately
+                            logger.warning(f"INSTANT DELETE: {target.instance_id}: {error_message}")
                             await disable_instance(
-                                target.instance_id, target.chute_id, target.miner_hotkey
+                                target.instance_id,
+                                target.chute_id,
+                                target.miner_hotkey,
+                                instant_delete=True,
                             )
+                        else:
+                            # Handle consecutive failures - when an instance hits a configured number of
+                            # failures in a row, it will be disabled, and a counter incremented for the
+                            # number of times disabled in a given time window. If this instance has
+                            # hit this disabled block several times, it's ejected/deleted.
+                            consecutive_failures = await settings.redis_client.incr(
+                                f"consecutive_failures:{target.instance_id}"
+                            )
+                            if (
+                                consecutive_failures
+                                and consecutive_failures >= settings.consecutive_failure_limit
+                            ):
+                                logger.warning(
+                                    f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
+                                )
+                                await disable_instance(
+                                    target.instance_id,
+                                    target.chute_id,
+                                    target.miner_hotkey,
+                                    skip_disable_loop=skip_disable_loop,
+                                )
 
                 if error_message == "BAD_REQUEST":
                     logger.warning(

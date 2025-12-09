@@ -134,7 +134,13 @@ async def get_instance_disable_count(instance_id: str) -> int:
     return int(count)
 
 
-async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -> bool:
+async def disable_instance(
+    instance_id: str,
+    chute_id: str,
+    miner_hotkey: str,
+    skip_disable_loop: bool = False,
+    instant_delete: bool = False,
+) -> bool:
     disabled_key = f"instance_disabled:{instance_id}"
     count_key = f"instance_disable_count:{instance_id}"
 
@@ -147,8 +153,11 @@ async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -
 
     disable_count = await settings.redis_client.incr(count_key)
     await settings.redis_client.expire(count_key, 3600)
-    if disable_count > MAX_INSTANCE_DISABLES:
-        # Already disabled several times, delete the instance.
+
+    should_delete = disable_count > MAX_INSTANCE_DISABLES or skip_disable_loop or instant_delete
+
+    if should_delete:
+        # Delete the instance
         async with get_session() as session:
             delete_result = await session.execute(
                 text("DELETE FROM instances WHERE instance_id = :instance_id"),
@@ -156,23 +165,24 @@ async def disable_instance(instance_id: str, chute_id: str, miner_hotkey: str) -
             )
             if delete_result.rowcount > 0:
                 await invalidate_instance_cache(chute_id, instance_id=instance_id)
+                if instant_delete:
+                    reason = "catastrophic error (invalid/empty response or verification failure)"
+                elif skip_disable_loop:
+                    reason = f"server error after {disable_count} consecutive failure events"
+                else:
+                    reason = f"max consecutive failures reached after {disable_count - 1} temporary disables"
                 await session.execute(
                     text(
                         "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
                     ),
-                    {
-                        "instance_id": instance_id,
-                        "reason": f"max consecutive failures reached after {disable_count - 1} temporary disables",
-                    },
+                    {"instance_id": instance_id, "reason": reason},
                 )
                 await session.commit()
-                logger.warning(
-                    f"INSTANCE DELETED: {instance_id} after {disable_count - 1} temporary disables"
-                )
+                logger.warning(f"INSTANCE DELETED: {instance_id}: {reason}")
                 asyncio.create_task(
                     notify_deleted(
                         {"instance_id": instance_id, "miner_hotkey": miner_hotkey},
-                        message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted after {disable_count - 1} temporary disables due to consecutive failures.",
+                        message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted: {reason}",
                     )
                 )
     else:
