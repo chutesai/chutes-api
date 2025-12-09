@@ -15,7 +15,13 @@ from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
 from loguru import logger
 from contextlib import asynccontextmanager
-from api.constants import INSTANCE_DISABLE_BASE_TIMEOUT, MAX_INSTANCE_DISABLES
+from api.constants import (
+    INSTANCE_DISABLE_BASE_TIMEOUT,
+    MAX_INSTANCE_DISABLES,
+    CASCADE_FAILURE_THRESHOLD,
+    CASCADE_DETECTION_DELAY,
+    CASCADE_PENDING_TTL,
+)
 from api.exceptions import InfraOverload
 from api.chute.schemas import Chute
 from api.instance.schemas import Instance, LaunchConfig
@@ -134,6 +140,78 @@ async def get_instance_disable_count(instance_id: str) -> int:
     return int(count)
 
 
+async def _execute_instance_deletion(
+    instance_id: str,
+    chute_id: str,
+    miner_hotkey: str,
+    reason: str,
+) -> bool:
+    """Actually delete an instance from the database."""
+    async with get_session() as session:
+        delete_result = await session.execute(
+            text("DELETE FROM instances WHERE instance_id = :instance_id"),
+            {"instance_id": instance_id},
+        )
+        if delete_result.rowcount > 0:
+            await invalidate_instance_cache(chute_id, instance_id=instance_id)
+            await session.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                ),
+                {"instance_id": instance_id, "reason": reason},
+            )
+            await session.commit()
+            logger.warning(f"INSTANCE DELETED: {instance_id}: {reason}")
+            asyncio.create_task(
+                notify_deleted(
+                    {"instance_id": instance_id, "miner_hotkey": miner_hotkey},
+                    message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted: {reason}",
+                )
+            )
+            return True
+    return False
+
+
+async def _check_cascade_and_delete(
+    instance_id: str,
+    chute_id: str,
+    miner_hotkey: str,
+    reason: str,
+):
+    await asyncio.sleep(CASCADE_DETECTION_DELAY)
+
+    # Count how many instances are pending deletion
+    pending_key = f"pending_deletion:{instance_id}"
+    try:
+        cursor = 0
+        pending_count = 0
+        while True:
+            cursor, keys = await settings.redis_client.scan(
+                cursor, match="pending_deletion:*", count=100
+            )
+            pending_count += len(keys)
+            if cursor == 0:
+                break
+
+        if pending_count >= CASCADE_FAILURE_THRESHOLD:
+            # Cascade failure detected - don't delete, just disable temporarily
+            logger.error(
+                f"CASCADE FAILURE DETECTED: {pending_count} instances pending deletion, "
+                f"skipping deletion of {instance_id}"
+            )
+            # Extend the disable timeout instead of deleting
+            disabled_key = f"instance_disabled:{instance_id}"
+            await settings.redis_client.expire(disabled_key, INSTANCE_DISABLE_BASE_TIMEOUT * 3)
+        else:
+            # Safe to delete
+            await _execute_instance_deletion(instance_id, chute_id, miner_hotkey, reason)
+    except Exception as e:
+        logger.error(f"Error in cascade check for {instance_id}: {e}")
+    finally:
+        # Clean up pending marker
+        await settings.redis_client.delete(pending_key)
+
+
 async def disable_instance(
     instance_id: str,
     chute_id: str,
@@ -157,34 +235,27 @@ async def disable_instance(
     should_delete = disable_count > MAX_INSTANCE_DISABLES or skip_disable_loop or instant_delete
 
     if should_delete:
-        # Delete the instance
-        async with get_session() as session:
-            delete_result = await session.execute(
-                text("DELETE FROM instances WHERE instance_id = :instance_id"),
-                {"instance_id": instance_id},
+        if instant_delete:
+            reason = "catastrophic error (invalid/empty response or verification failure)"
+        elif skip_disable_loop:
+            reason = f"server error after {disable_count} consecutive failure events"
+        else:
+            reason = (
+                f"max consecutive failures reached after {disable_count - 1} temporary disables"
             )
-            if delete_result.rowcount > 0:
-                await invalidate_instance_cache(chute_id, instance_id=instance_id)
-                if instant_delete:
-                    reason = "catastrophic error (invalid/empty response or verification failure)"
-                elif skip_disable_loop:
-                    reason = f"server error after {disable_count} consecutive failure events"
-                else:
-                    reason = f"max consecutive failures reached after {disable_count - 1} temporary disables"
-                await session.execute(
-                    text(
-                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
-                    ),
-                    {"instance_id": instance_id, "reason": reason},
-                )
-                await session.commit()
-                logger.warning(f"INSTANCE DELETED: {instance_id}: {reason}")
-                asyncio.create_task(
-                    notify_deleted(
-                        {"instance_id": instance_id, "miner_hotkey": miner_hotkey},
-                        message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted: {reason}",
-                    )
-                )
+
+        # For catastrophic errors (instant_delete) or server errors (skip_disable_loop),
+        # delete immediately - no cascade check needed because connection worked
+        if instant_delete or skip_disable_loop:
+            await _execute_instance_deletion(instance_id, chute_id, miner_hotkey, reason)
+        else:
+            # For network-related deletions (timeouts, disconnects), use cascade detection
+            # Mark as pending deletion and schedule background check
+            pending_key = f"pending_deletion:{instance_id}"
+            await settings.redis_client.set(pending_key, b"1", ex=CASCADE_PENDING_TTL)
+            asyncio.create_task(
+                _check_cascade_and_delete(instance_id, chute_id, miner_hotkey, reason)
+            )
     else:
         # Disable temporarily with increasing timeout
         timeout_seconds = INSTANCE_DISABLE_BASE_TIMEOUT * disable_count

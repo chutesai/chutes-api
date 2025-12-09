@@ -1279,6 +1279,7 @@ async def invoke(
                     instant_delete = True
                 elif isinstance(exc, aiohttp.ClientResponseError) and exc.status >= 500:
                     error_message = f"HTTP_{exc.status}"
+                    # Server returned an error - connection worked, server is broken
                     skip_disable_loop = True
 
                 # Store complete record in new invocations database, async.
