@@ -597,6 +597,7 @@ async def _invoke_one(
                             "110bf8d9-d07e-54dd-9c31-abe1a9919c7a",
                             "39d75699-957f-571f-8737-f2c72819d3e8",
                             "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
+                            "579ca543-dda4-51d0-83ef-5667d1a5ed5f",
                         )
                         and "model" in data
                         and not data.get("error")
@@ -816,6 +817,7 @@ async def _invoke_one(
                             "110bf8d9-d07e-54dd-9c31-abe1a9919c7a",
                             "39d75699-957f-571f-8737-f2c72819d3e8",
                             "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
+                            "579ca543-dda4-51d0-83ef-5667d1a5ed5f",
                         )
                     ):
                         verification_token = json_data.get("chutes_verification")
