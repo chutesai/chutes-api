@@ -90,19 +90,17 @@ async def list_nodes(
                     "gpu": node.gpu_identifier,
                     "chute": (
                         {
-                            "username": node.instance.chute.user.username,
-                            "name": node.instance.chute.name,
+                            "username": node.instance.chute.user.username
+                            if node.instance.chute.public
+                            else None,
+                            "name": node.instance.chute.name
+                            if node.instance.chute.public
+                            else "[private chute]",
                             "chute_id": node.instance.chute_id,
                             "verified": node.instance.verified,
+                            "activated_at": node.instance.activated_at,
                             "instance_id": node.instance.instance_id,
-                        }
-                        if node.instance.chute.public
-                        else {
-                            "username": None,
-                            "name": "[private chute]",
-                            "chute_id": node.instance.chute_id,
-                            "verified": node.instance.verified,
-                            "instance_id": node.instance.instance_id,
+                            "bounty": node.instance.bounty,
                         }
                     ),
                 }
