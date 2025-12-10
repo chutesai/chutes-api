@@ -4,7 +4,7 @@ Application-wide settings.
 
 import os
 from typing import Optional
-from fiber import Keypair
+from bittensor_wallet.keypair import Keypair
 from pydantic import Field
 from pydantic_settings import BaseSettings
 

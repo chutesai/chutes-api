@@ -1,7 +1,7 @@
 import sys
 import asyncio
+import hashlib
 import traceback
-from time import sleep
 from typing import Optional
 from loguru import logger
 from api.database import get_session
@@ -9,8 +9,9 @@ from api.user.schemas import User
 from api.payment.util import decrypt_secret
 from sqlalchemy.future import select
 from api.config import settings
-from async_substrate_interface.sync_substrate import SubstrateInterface
+from async_substrate_interface import AsyncSubstrateInterface
 from bittensor_wallet.keypair import Keypair
+from bittensor_drand import encrypt_mlkem768
 import api.database.orms  # noqa
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 
@@ -23,11 +24,157 @@ broker = ListQueueBroker(url=settings.redis_url, queue_name="autostaker").with_r
 class InsufficientBalance(Exception): ...
 
 
-def get_balance(substrate, address, block_hash) -> int:
+async def get_mev_shield_next_key(substrate: AsyncSubstrateInterface) -> Optional[bytes]:
+    """Get the ML-KEM-768 public key for MEV shield encryption."""
+    try:
+        result = await substrate.query(
+            module="MevShield",
+            storage_function="NextKey",
+            params=[],
+        )
+        if result and result.value:
+            return bytes(result.value)
+    except Exception as e:
+        logger.warning(f"Could not get MEV shield key: {e}")
+    return None
+
+
+async def encrypt_extrinsic(substrate: AsyncSubstrateInterface, signed_extrinsic) -> Optional[object]:
+    """Encrypt an extrinsic for MEV protection."""
+    ml_kem_768_public_key = await get_mev_shield_next_key(substrate)
+    if ml_kem_768_public_key is None:
+        logger.warning("MEV Shield NextKey not available on chain, skipping MEV protection")
+        return None
+
+    plaintext = bytes(signed_extrinsic.data.data)
+    ciphertext = encrypt_mlkem768(ml_kem_768_public_key, plaintext)
+    commitment_hash = hashlib.blake2b(plaintext, digest_size=32).digest()
+    commitment_hex = "0x" + commitment_hash.hex()
+
+    encrypted_call = await substrate.compose_call(
+        call_module="MevShield",
+        call_function="submit_encrypted",
+        call_params={
+            "commitment": commitment_hex,
+            "ciphertext": list(ciphertext),
+        },
+    )
+    return encrypted_call
+
+
+def extract_mev_shield_id(receipt) -> Optional[str]:
+    """Extract the MEV shield ID from an extrinsic receipt."""
+    try:
+        events = receipt.triggered_events if hasattr(receipt, "triggered_events") else []
+        for event in events:
+            event_data = event.value if hasattr(event, "value") else event
+            if isinstance(event_data, dict):
+                event_id = event_data.get("event_id") or event_data.get("event", {}).get("event_id")
+                if event_id == "EncryptedSubmitted":
+                    attrs = event_data.get("attributes") or event_data.get("event", {}).get("attributes", {})
+                    return attrs.get("id")
+    except Exception as e:
+        logger.warning(f"Could not extract MEV shield ID: {e}")
+    return None
+
+
+async def wait_for_mev_extrinsic(
+    substrate: AsyncSubstrateInterface,
+    extrinsic_hash: str,
+    shield_id: str,
+    submit_block: int,
+    timeout_blocks: int = 3,
+) -> tuple[bool, Optional[str]]:
+    """Wait for MEV-protected extrinsic to be executed."""
+    current_block = submit_block + 1
+
+    while current_block - submit_block <= timeout_blocks:
+        logger.info(f"Waiting for MEV shield (block {current_block - submit_block}/{timeout_blocks})...")
+
+        # Wait for the block to exist
+        head = await substrate.get_chain_head()
+        while await substrate.get_block_number(head) < current_block:
+            await asyncio.sleep(3)
+            head = await substrate.get_chain_head()
+
+        block_hash = await substrate.get_block_hash(current_block)
+        try:
+            block_data = await substrate.get_block(block_hash=block_hash)
+            extrinsics = block_data.get("extrinsics", []) if block_data else []
+
+            for idx, extrinsic in enumerate(extrinsics):
+                ext_hash = f"0x{extrinsic.extrinsic_hash.hex()}" if hasattr(extrinsic, "extrinsic_hash") else None
+                if ext_hash == extrinsic_hash:
+                    logger.success(f"MEV-protected extrinsic found in block {current_block}")
+                    return True, None
+
+                # Check for decryption failure
+                ext_value = extrinsic.value if hasattr(extrinsic, "value") else extrinsic
+                if isinstance(ext_value, dict):
+                    call = ext_value.get("call", {})
+                    if (
+                        call.get("call_module") == "MevShield"
+                        and call.get("call_function") == "mark_decryption_failed"
+                    ):
+                        call_args = call.get("call_args", [])
+                        for arg in call_args:
+                            if arg.get("name") == "id" and arg.get("value") == shield_id:
+                                return False, "MEV shield decryption failed"
+        except Exception as e:
+            logger.warning(f"Error checking block {current_block}: {e}")
+
+        current_block += 1
+
+    return False, "MEV shield timeout - inner extrinsic not found"
+
+
+async def submit_extrinsic(
+    substrate: AsyncSubstrateInterface,
+    call,
+    keypair: Keypair,
+    wait_for_inclusion: bool = True,
+) -> tuple[bool, Optional[str], Optional[object]]:
     """
-    Get free balance on an account.
+    Submit an extrinsic with MEV protection (when available).
     """
-    result = substrate.query(
+    # Create the inner signed extrinsic
+    inner_extrinsic = await substrate.create_signed_extrinsic(call=call, keypair=keypair)
+    inner_hash = f"0x{inner_extrinsic.extrinsic_hash.hex()}"
+
+    # Try to encrypt for MEV protection
+    encrypted_call = await encrypt_extrinsic(substrate, inner_extrinsic)
+    if encrypted_call is None:
+        # MEV shield not available, submit directly
+        logger.info("MEV shield not available, submitting directly")
+        receipt = await substrate.submit_extrinsic(inner_extrinsic, wait_for_inclusion=wait_for_inclusion)
+        error_msg = None
+        if not receipt.is_success:
+            error_msg = getattr(receipt, "error_message", None)
+        return receipt.is_success, error_msg, receipt
+
+    # Submit the encrypted wrapper
+    logger.info("Submitting with MEV protection...")
+    wrapper_extrinsic = await substrate.create_signed_extrinsic(call=encrypted_call, keypair=keypair)
+    head = await substrate.get_chain_head()
+    submit_block = await substrate.get_block_number(head)
+    wrapper_receipt = await substrate.submit_extrinsic(wrapper_extrinsic, wait_for_inclusion=True)
+
+    if not wrapper_receipt.is_success:
+        return False, f"MEV wrapper submission failed: {wrapper_receipt.error_message}", wrapper_receipt
+
+    # Extract shield ID and wait for inner extrinsic
+    shield_id = extract_mev_shield_id(wrapper_receipt)
+    if shield_id is None:
+        logger.warning("Could not extract shield ID, assuming success")
+        return True, None, wrapper_receipt
+
+    success, error = await wait_for_mev_extrinsic(substrate, inner_hash, shield_id, submit_block)
+    return success, error, wrapper_receipt
+
+
+async def get_balance(substrate: AsyncSubstrateInterface, address: str, block_hash: str) -> int:
+    """Get free balance on an account."""
+    result = await substrate.query(
         module="System",
         storage_function="Account",
         params=[address],
@@ -36,11 +183,9 @@ def get_balance(substrate, address, block_hash) -> int:
     return result["data"]["free"]
 
 
-def get_stake(substrate, address, block_hash) -> int:
-    """
-    Get stake amount for an account.
-    """
-    result = substrate.runtime_call(
+async def get_stake(substrate: AsyncSubstrateInterface, address: str, block_hash: str) -> int:
+    """Get stake amount for an account."""
+    result = await substrate.runtime_call(
         "StakeInfoRuntimeApi",
         "get_stake_info_for_hotkey_coldkey_netuid",
         [settings.validator_ss58, address, settings.netuid],
@@ -52,12 +197,16 @@ def get_stake(substrate, address, block_hash) -> int:
     return 0
 
 
-def get_alpha_stake(substrate, coldkey_address, hotkey_address, netuid, block_hash) -> int:
-    """
-    Get alpha stake amount for a cold/hot key pair on a specific subnet.
-    """
+async def get_alpha_stake(
+    substrate: AsyncSubstrateInterface,
+    coldkey_address: str,
+    hotkey_address: str,
+    netuid: int,
+    block_hash: str,
+) -> int:
+    """Get alpha stake amount for a cold/hot key pair on a specific subnet."""
     try:
-        result = substrate.runtime_call(
+        result = await substrate.runtime_call(
             "StakeInfoRuntimeApi",
             "get_stake_info_for_hotkey_coldkey_netuid",
             [hotkey_address, coldkey_address, netuid],
@@ -69,7 +218,7 @@ def get_alpha_stake(substrate, coldkey_address, hotkey_address, netuid, block_ha
     except Exception as e:
         logger.warning(f"Could not get alpha stake via runtime API: {e}")
         try:
-            result = substrate.query(
+            result = await substrate.query(
                 module="SubtensorModule",
                 storage_function="Alpha",
                 params=[netuid, hotkey_address, coldkey_address],
@@ -82,23 +231,28 @@ def get_alpha_stake(substrate, coldkey_address, hotkey_address, netuid, block_ha
     return 0
 
 
-def _add_stake(
-    substrate,
+async def _add_stake(
+    substrate: AsyncSubstrateInterface,
     keypair: Keypair,
-    hotkey_ss58: Optional[str] = settings.validator_ss58,
-    netuid: Optional[int] = settings.netuid,
-    amount: Optional[float] = settings.autostake_amount,
+    hotkey_ss58: Optional[str] = None,
+    netuid: Optional[int] = None,
+    amount: Optional[float] = None,
 ) -> float:
     """
-    Create an subnet an extrinsic to stake to the chutes validator.
+    Create a subnet extrinsic to stake to the chutes validator.
     """
-    logger.info(f"Syncing with chain: {settings.subtensor}...")
-    block = substrate.get_block_number(substrate.get_chain_head())
-    block_hash = substrate.get_block_hash(block)
-    old_balance = get_balance(substrate, keypair.ss58_address, block_hash)
-    old_stake = get_stake(substrate, keypair.ss58_address, block_hash)
+    hotkey_ss58 = hotkey_ss58 or settings.validator_ss58
+    netuid = netuid if netuid is not None else settings.netuid
+    amount = amount if amount is not None else settings.autostake_amount
 
-    result = substrate.get_constant(
+    logger.info(f"Syncing with chain: {settings.subtensor}...")
+    head = await substrate.get_chain_head()
+    block = await substrate.get_block_number(head)
+    block_hash = await substrate.get_block_hash(block)
+    old_balance = await get_balance(substrate, keypair.ss58_address, block_hash)
+    old_stake = await get_stake(substrate, keypair.ss58_address, block_hash)
+
+    result = await substrate.get_constant(
         module_name="Balances",
         constant_name="ExistentialDeposit",
         block_hash=block_hash,
@@ -129,7 +283,7 @@ def _add_stake(
     logger.info(
         f"Staking to netuid: {netuid}, amount: {staking_balance} from {keypair.ss58_address} to {hotkey_ss58}"
     )
-    call = substrate.compose_call(
+    call = await substrate.compose_call(
         call_module="SubtensorModule",
         call_function="add_stake",
         call_params={
@@ -139,46 +293,57 @@ def _add_stake(
             "rate_tolerance": 0.05,
         },
     )
-    extrinsic = substrate.create_signed_extrinsic(call=call, keypair=keypair)
-    receipt = substrate.submit_extrinsic(extrinsic, wait_for_inclusion=True)
-    if not receipt.is_success:
-        logger.error(f"Failed to add stake: {receipt.error_message=}")
-        if receipt.error_message and receipt.error_message["name"] == "AmountTooLow":
+
+    success, error_msg, receipt = await submit_extrinsic(substrate, call, keypair, wait_for_inclusion=True)
+
+    if not success:
+        logger.error(f"Failed to add stake: {error_msg}")
+        if error_msg and "AmountTooLow" in str(error_msg):
             raise InsufficientBalance(
                 f"Account {keypair.ss58_address} has insufficient balance to stake."
             )
-        raise Exception(f"Failed to submit stake extrinsic: {str(receipt.error_message)}")
-    logger.success(f"Receipt success: {receipt.is_success=} {receipt.error_message=}")
+        raise Exception(f"Failed to submit stake extrinsic: {error_msg}")
+    logger.success(f"Stake extrinsic succeeded")
 
     # Check balance and stake.
-    while (new_block := substrate.get_block_number(substrate.get_chain_head())) == block:
-        sleep(3)
-    block_hash = substrate.get_block_hash(new_block)
-    new_balance = get_balance(substrate, keypair.ss58_address, block_hash)
-    new_stake = get_stake(substrate, keypair.ss58_address, block_hash)
+    head = await substrate.get_chain_head()
+    new_block = await substrate.get_block_number(head)
+    while new_block == block:
+        await asyncio.sleep(3)
+        head = await substrate.get_chain_head()
+        new_block = await substrate.get_block_number(head)
+
+    block_hash = await substrate.get_block_hash(new_block)
+    new_balance = await get_balance(substrate, keypair.ss58_address, block_hash)
+    new_stake = await get_stake(substrate, keypair.ss58_address, block_hash)
     logger.info(f"Balance of {keypair.ss58_address} after stake operation is now {new_balance}")
     logger.info(f"Stake of {keypair.ss58_address} after stake operation is now {new_stake}")
     return (new_balance - existential_deposit) / 10**9
 
 
-def _burn_alpha(
-    substrate,
+async def _burn_alpha(
+    substrate: AsyncSubstrateInterface,
     keypair: Keypair,
-    hotkey_ss58: Optional[str] = settings.validator_ss58,
-    netuid: Optional[int] = settings.netuid,
+    hotkey_ss58: Optional[str] = None,
+    netuid: Optional[int] = None,
     amount: Optional[int] = None,
 ) -> bool:
     """
     Burn alpha after it's staked.
+    Note: Burning doesn't need MEV protection since it's not subject to sandwich attacks.
     """
+    hotkey_ss58 = hotkey_ss58 or settings.validator_ss58
+    netuid = netuid if netuid is not None else settings.netuid
+
     if netuid == 0:
         logger.error("Cannot burn alpha on root subnet (netuid=0)")
         return False
     logger.info(f"🔥 Preparing to burn alpha on netuid {netuid}...")
 
-    block = substrate.get_block_number(substrate.get_chain_head())
-    block_hash = substrate.get_block_hash(block)
-    old_alpha_stake = get_alpha_stake(
+    head = await substrate.get_chain_head()
+    block = await substrate.get_block_number(head)
+    block_hash = await substrate.get_block_hash(block)
+    old_alpha_stake = await get_alpha_stake(
         substrate, keypair.ss58_address, hotkey_ss58, netuid, block_hash
     )
     if old_alpha_stake == 0:
@@ -200,7 +365,7 @@ def _burn_alpha(
         )
 
     try:
-        call = substrate.compose_call(
+        call = await substrate.compose_call(
             call_module="SubtensorModule",
             call_function="burn_alpha",
             call_params={
@@ -209,26 +374,35 @@ def _burn_alpha(
                 "netuid": netuid,
             },
         )
-        extrinsic = substrate.create_signed_extrinsic(call=call, keypair=keypair)
-        receipt = substrate.submit_extrinsic(extrinsic, wait_for_inclusion=True)
+
+        extrinsic = await substrate.create_signed_extrinsic(call=call, keypair=keypair)
+        receipt = await substrate.submit_extrinsic(extrinsic, wait_for_inclusion=True)
+
         if not receipt.is_success:
-            logger.error(f"Failed to burn alpha: {receipt.error_message=}")
-            if receipt.error_message:
-                error_name = receipt.error_message.get("name", "")
-                if error_name == "SubNetworkDoesNotExist":
+            error_msg = getattr(receipt, "error_message", None)
+            logger.error(f"Failed to burn alpha: {error_msg}")
+            if error_msg:
+                if "SubNetworkDoesNotExist" in str(error_msg):
                     logger.error(f"Subnet {netuid} does not exist")
-                elif error_name == "CannotBurnOrRecycleOnRootSubnet":
+                elif "CannotBurnOrRecycleOnRootSubnet" in str(error_msg):
                     logger.error("Cannot burn alpha on root subnet")
-                elif error_name == "HotKeyAccountNotExists":
+                elif "HotKeyAccountNotExists" in str(error_msg):
                     logger.error(f"Hotkey {hotkey_ss58} does not exist")
-                elif error_name == "InsufficientLiquidity":
+                elif "InsufficientLiquidity" in str(error_msg):
                     logger.error(f"Insufficient liquidity on subnet {netuid}")
             return False
-        logger.success(f"✅ Alpha burn successful: {receipt.is_success=}")
-        while (new_block := substrate.get_block_number(substrate.get_chain_head())) == block:
-            sleep(3)
-        block_hash = substrate.get_block_hash(new_block)
-        new_alpha_stake = get_alpha_stake(
+
+        logger.success(f"✅ Alpha burn successful")
+
+        head = await substrate.get_chain_head()
+        new_block = await substrate.get_block_number(head)
+        while new_block == block:
+            await asyncio.sleep(3)
+            head = await substrate.get_chain_head()
+            new_block = await substrate.get_block_number(head)
+
+        block_hash = await substrate.get_block_hash(new_block)
+        new_alpha_stake = await get_alpha_stake(
             substrate, keypair.ss58_address, hotkey_ss58, netuid, block_hash
         )
         actual_burned = old_alpha_stake - new_alpha_stake
@@ -241,6 +415,66 @@ def _burn_alpha(
 
     except Exception as e:
         logger.error(f"Error burning alpha: {e}\n{traceback.format_exc()}")
+        return False
+
+
+async def _move_stake(
+    substrate: AsyncSubstrateInterface,
+    keypair: Keypair,
+    origin_hotkey: str,
+    origin_netuid: int,
+    destination_hotkey: str,
+    destination_netuid: int,
+    amount: Optional[int] = None,
+) -> bool:
+    """
+    Move stake from one hotkey/netuid to another.
+    Used for converting incoming alpha token payments to our subnet stake.
+    """
+    logger.info(
+        f"Moving stake from {origin_hotkey}:{origin_netuid} to {destination_hotkey}:{destination_netuid}"
+    )
+
+    head = await substrate.get_chain_head()
+    block_hash = await substrate.get_block_hash(await substrate.get_block_number(head))
+
+    # Get current stake at origin
+    origin_stake = await get_alpha_stake(
+        substrate, keypair.ss58_address, origin_hotkey, origin_netuid, block_hash
+    )
+    if origin_stake == 0:
+        logger.warning(f"No stake to move from {origin_hotkey}:{origin_netuid}")
+        return True
+
+    move_amount = amount if amount is not None else origin_stake
+    move_amount = min(move_amount, origin_stake)
+
+    logger.info(f"Moving {move_amount / 10**9:.9f} stake")
+
+    try:
+        call = await substrate.compose_call(
+            call_module="SubtensorModule",
+            call_function="move_stake",
+            call_params={
+                "origin_hotkey": origin_hotkey,
+                "origin_netuid": origin_netuid,
+                "destination_hotkey": destination_hotkey,
+                "destination_netuid": destination_netuid,
+                "alpha_amount": move_amount,
+            },
+        )
+
+        success, error_msg, receipt = await submit_extrinsic(substrate, call, keypair, wait_for_inclusion=True)
+
+        if not success:
+            logger.error(f"Failed to move stake: {error_msg}")
+            return False
+
+        logger.success(f"✅ Stake move successful")
+        return True
+
+    except Exception as e:
+        logger.error(f"Error moving stake: {e}\n{traceback.format_exc()}")
         return False
 
 
@@ -268,7 +502,6 @@ async def stake(user_id: str) -> None:
             await settings.redis_client.delete(f"autostake:{user_id}")
             return
 
-    # Load the keypair.
     try:
         keypair = Keypair.create_from_mnemonic(await decrypt_secret(user.wallet_secret))
     except Exception as exc:
@@ -276,77 +509,139 @@ async def stake(user_id: str) -> None:
         return
 
     consecutive_failures = 0
-    substrate = None
     staking_complete = False
 
     # Phase 1: Stake all TAO
-    while not staking_complete:
-        amount = settings.autostake_amount
-        try:
-            if not substrate:
-                substrate = SubstrateInterface(url=settings.subtensor)
-            available = _add_stake(substrate, keypair, amount=amount)
-            if available < amount:
-                amount = available
-                logger.warning(f"Fallback to lower available balance: {available=} {amount=}")
-        except InsufficientBalance:
-            logger.success(f"All TAO balance is now staked to {settings.validator_ss58}")
-            staking_complete = True
-            break
-        except Exception as exc:
-            await asyncio.sleep(30)
-            substrate = SubstrateInterface(url=settings.subtensor)
-            logger.error(
-                f"Unhandled exception performing staking operation: {exc}\n{traceback.format_exc()}"
-            )
-            consecutive_failures += 1
-            if consecutive_failures >= 15:
-                logger.error(
-                    f"Giving up staking, max consecutive failures reached for {user.user_id=} {keypair.ss58_address=}"
-                )
-                await settings.redis_client.delete(f"autostake:{user_id}")
-                return
-        await asyncio.sleep(12)
-
-    # Phase 2: Burn all alpha.
-    if staking_complete:
-        logger.info(f"🔥 Starting alpha burn phase for {user.user_id=}")
-        if not substrate:
-            substrate = SubstrateInterface(url=settings.subtensor)
-        burn_success = False
-        burn_attempts = 0
-        max_burn_attempts = 3
-        while not burn_success and burn_attempts < max_burn_attempts:
+    async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
+        while not staking_complete:
+            amount = settings.autostake_amount
             try:
-                burn_attempts += 1
-                logger.info(f"Alpha burn attempt {burn_attempts}/{max_burn_attempts}")
-                burn_success = _burn_alpha(
-                    substrate=substrate,
-                    keypair=keypair,
-                    hotkey_ss58=settings.validator_ss58,
-                    netuid=settings.netuid,
-                    amount=None,
-                )
-                if burn_success:
-                    logger.success(
-                        f"✅ Successfully burned all alpha for {user.user_id=} on netuid {settings.netuid}"
-                    )
-                else:
-                    logger.warning(f"Alpha burn attempt {burn_attempts} failed, retrying...")
-                    await asyncio.sleep(10)
+                available = await _add_stake(substrate, keypair, amount=amount)
+                if available < amount:
+                    amount = available
+                    logger.warning(f"Fallback to lower available balance: {available=} {amount=}")
+            except InsufficientBalance:
+                logger.success(f"All TAO balance is now staked to {settings.validator_ss58}")
+                staking_complete = True
+                break
             except Exception as exc:
+                await asyncio.sleep(30)
                 logger.error(
-                    f"Exception during alpha burn attempt {burn_attempts}: {exc}\n{traceback.format_exc()}"
+                    f"Unhandled exception performing staking operation: {exc}\n{traceback.format_exc()}"
                 )
-                await asyncio.sleep(10)
-                substrate = SubstrateInterface(url=settings.subtensor)
-        if not burn_success:
-            logger.error(
-                f"Failed to burn alpha after {max_burn_attempts} attempts for {user.user_id=}"
-            )
+                consecutive_failures += 1
+                if consecutive_failures >= 15:
+                    logger.error(
+                        f"Giving up staking, max consecutive failures reached for {user.user_id=} {keypair.ss58_address=}"
+                    )
+                    await settings.redis_client.delete(f"autostake:{user_id}")
+                    return
+            await asyncio.sleep(12)
+
+        # Phase 2: Burn all alpha.
+        if staking_complete:
+            logger.info(f"🔥 Starting alpha burn phase for {user.user_id=}")
+            burn_success = False
+            burn_attempts = 0
+            max_burn_attempts = 3
+            while not burn_success and burn_attempts < max_burn_attempts:
+                try:
+                    burn_attempts += 1
+                    logger.info(f"Alpha burn attempt {burn_attempts}/{max_burn_attempts}")
+                    burn_success = await _burn_alpha(
+                        substrate=substrate,
+                        keypair=keypair,
+                        hotkey_ss58=settings.validator_ss58,
+                        netuid=settings.netuid,
+                        amount=None,
+                    )
+                    if burn_success:
+                        logger.success(
+                            f"✅ Successfully burned all alpha for {user.user_id=} on netuid {settings.netuid}"
+                        )
+                    else:
+                        logger.warning(f"Alpha burn attempt {burn_attempts} failed, retrying...")
+                        await asyncio.sleep(10)
+                except Exception as exc:
+                    logger.error(
+                        f"Exception during alpha burn attempt {burn_attempts}: {exc}\n{traceback.format_exc()}"
+                    )
+                    await asyncio.sleep(10)
+            if not burn_success:
+                logger.error(
+                    f"Failed to burn alpha after {max_burn_attempts} attempts for {user.user_id=}"
+                )
 
     await settings.redis_client.delete(f"autostake:{user_id}")
     logger.info(f"Auto-staking and alpha burning completed for {user.user_id=}")
+
+
+@broker.task
+async def process_alpha_payment(
+    user_id: str,
+    origin_hotkey: str,
+    origin_netuid: int,
+    amount_rao: int,
+) -> None:
+    """
+    Process an incoming alpha token payment by moving the stake to chutes, then burning.
+    """
+    try:
+        lock_key = f"alpha_payment:{user_id}:{origin_netuid}:{amount_rao}"
+        if not (await settings.redis_client.setnx(lock_key, "1")):
+            logger.warning(f"Alpha payment already being processed for {user_id=}")
+            return
+    finally:
+        await settings.redis_client.expire(lock_key, 60 * 60)
+
+    async with get_session() as session:
+        user = (
+            (await session.execute(select(User).where(User.user_id == user_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if user is None:
+            logger.warning(f"User {user_id} not found")
+            await settings.redis_client.delete(lock_key)
+            return
+
+    # Load the keypair.
+    try:
+        keypair = Keypair.create_from_mnemonic(await decrypt_secret(user.wallet_secret))
+    except Exception as exc:
+        logger.error(f"Failed to initialize wallet: {exc}")
+        return
+
+    async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
+        # Step 1: Move stake from origin netuid to our validator on our netuid
+        move_success = await _move_stake(
+            substrate=substrate,
+            keypair=keypair,
+            origin_hotkey=origin_hotkey,
+            origin_netuid=origin_netuid,
+            destination_hotkey=settings.validator_ss58,
+            destination_netuid=settings.netuid,
+            amount=amount_rao,
+        )
+
+        if not move_success:
+            logger.error(f"Failed to move stake for alpha payment from {origin_netuid} to {settings.netuid}")
+            await settings.redis_client.delete(lock_key)
+            return
+
+        # Step 2: Burn ALL alpha on our validator (not just the moved amount)
+        burn_success = await _burn_alpha(
+            substrate=substrate,
+            keypair=keypair,
+            hotkey_ss58=settings.validator_ss58,
+            netuid=settings.netuid,
+            amount=None,  # Burn all
+        )
+        if not burn_success:
+            logger.error(f"Failed to burn alpha after move for {user.user_id=}")
+
+    await settings.redis_client.delete(lock_key)
+    logger.info(f"Alpha payment processing completed for {user.user_id=}")
 
 
 async def main():

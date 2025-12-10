@@ -14,6 +14,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.exc import IntegrityError
+from async_substrate_interface import AsyncSubstrateInterface
 from async_substrate_interface.sync_substrate import SubstrateInterface
 from async_substrate_interface.types import ss58_encode
 import asyncio
@@ -26,7 +27,10 @@ from api.user.schemas import User
 from api.payment.schemas import Payment, PaymentMonitorState
 from api.config import settings
 from api.database import get_session, engine, Base
-from api.autostaker import stake
+from api.autostaker import stake, process_alpha_payment
+
+# Bonus multiplier for alpha token payments (10% bonus)
+ALPHA_PAYMENT_BONUS = 1.10
 
 
 class PaymentMonitor:
@@ -172,6 +176,19 @@ class PaymentMonitor:
                 self._payment_addresses.add(payment_address)
                 self._user_refresh_timestamp = updated_at
 
+    async def _get_alpha_price_at_block(self, fetcher, netuid: int, block_hash: str) -> float:
+        """
+        Get alpha price for a specific subnet at a specific block.
+        Uses async substrate to fetch the price at the exact block.
+        """
+        try:
+            async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
+                return await fetcher.fetch_subnet_price_at_block(substrate, netuid, block_hash)
+        except Exception as e:
+            logger.error(f"Error fetching alpha price at block: {e}")
+            # Fall back to cached price if available
+            return await fetcher.get_subnet_alpha_price(netuid)
+
     async def _handle_payment(
         self,
         to_address: str,
@@ -237,8 +254,86 @@ class PaymentMonitor:
                 f"Received payment [user_id={user.user_id} username={user.username}]: {amount} rao @ ${fmv} FMV = ${delta} balance increase, updated balance: ${user.balance}"
             )
 
-            # Autostake the payment tao to chutes.
+            # Autostake the payment TAO to chutes.
             await stake.kiq(user.user_id)
+
+    async def _handle_stake_payment(
+        self,
+        coldkey_address: str,
+        hotkey_address: str,
+        netuid: int,
+        alpha_amount: int,
+        block: int,
+        block_hash: str,
+        alpha_price_in_tao: float,
+        tao_fmv: float,
+        extrinsic_idx: int,
+    ):
+        """
+        Process an incoming stake payment (alpha tokens staked to user's coldkey).
+        Applies a 10% bonus for alpha payments.
+        """
+        async with get_session() as session:
+            user = (
+                await session.execute(select(User).where(User.payment_address == coldkey_address))
+            ).scalar_one_or_none()
+            if not user:
+                logger.warning(f"Failed to find user with payment address {coldkey_address}")
+                return
+
+            # Calculate USD value: alpha_amount * alpha_price_in_tao * tao_fmv / 1e9
+            usd_value = alpha_amount * alpha_price_in_tao * tao_fmv / 1e9
+
+            # Store the payment record with the real USD value (no bonus in record)
+            payment_id = str(
+                uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{coldkey_address}:{hotkey_address}:{netuid}:{alpha_amount}")
+            )
+
+            if alpha_amount < 7000000:
+                logger.warning("Dust stake was sent, ignoring...")
+                return
+
+            payment = Payment(
+                payment_id=payment_id,
+                user_id=user.user_id,
+                source_address=hotkey_address,
+                block=block,
+                rao_amount=alpha_amount,
+                usd_amount=usd_value,
+                fmv=alpha_price_in_tao * tao_fmv,
+                transaction_hash=block_hash,
+                extrinsic_idx=extrinsic_idx,
+            )
+            session.add(payment)
+
+            # Apply 10% bonus to the balance increase
+            balance_increase = usd_value * ALPHA_PAYMENT_BONUS
+            user.balance += balance_increase
+
+            # Track wallet balance (in alpha amount, not TAO)
+            await session.execute(
+                text(
+                    "INSERT INTO wallet_balances (wallet_id, balance) VALUES (:wallet_id, :balance) ON CONFLICT (wallet_id) DO UPDATE SET balance = wallet_balances.balance + EXCLUDED.balance"
+                ),
+                {"wallet_id": user.payment_address, "balance": alpha_amount},
+            )
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                if "UniqueViolationError" in str(exc):
+                    logger.warning(f"Skipping (apparent) duplicate stake transaction: {payment_id=}")
+                    await session.rollback()
+                    return
+                else:
+                    raise
+            logger.success(
+                f"Received alpha stake payment [user_id={user.user_id} username={user.username}]: "
+                f"{alpha_amount} alpha on netuid {netuid} @ ${alpha_price_in_tao * tao_fmv:.4f} FMV = "
+                f"${usd_value:.2f} (with 10% bonus: ${balance_increase:.2f}), updated balance: ${user.balance:.2f}"
+            )
+
+            # Process the alpha payment (move to our subnet and burn)
+            await process_alpha_payment.kiq(user.user_id, hotkey_address, netuid, alpha_amount)
 
     async def _get_state(self) -> Tuple[int, str]:
         """
@@ -317,38 +412,96 @@ class PaymentMonitor:
                     current_block_hash = self.get_block_hash(current_block_number)
                     events = self.get_events(current_block_hash)
                     payments = 0
+                    stake_payments = 0
                     logger.info(f"Processing block {current_block_number}...")
                     for raw_event in events:
                         event = raw_event.get("event")
                         if not event:
                             continue
+
+                        module_id = event.get("module_id")
+                        event_id = event.get("event_id")
+                        attributes = event.get("attributes")
+
+                        # Handle TAO transfers (Balances.Transfer)
                         if (
-                            event.get("module_id") != "Balances"
-                            or event.get("event_id") != "Transfer"
-                            or not event.get("attributes")
-                            or {"from", "to", "amount"} - set(event["attributes"])
+                            module_id == "Balances"
+                            and event_id == "Transfer"
+                            and attributes
+                            and not ({"from", "to", "amount"} - set(attributes))
                         ):
-                            continue
-                        from_address = event["attributes"]["from"]
-                        to_address = event["attributes"]["to"]
-                        if isinstance(from_address, (list, tuple)):
-                            from_address = ss58_encode(bytes(from_address[0]).hex(), ss58_format=42)
-                            to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
-                        amount = event["attributes"]["amount"]
-                        if to_address in self._payment_addresses:
-                            await self._handle_payment(
-                                to_address,
-                                from_address,
-                                amount,
-                                current_block_number,
-                                current_block_hash,
-                                fmv,
-                                raw_event.get("extrinsic_idx"),
-                            )
-                            payments += 1
-                    if payments:
+                            from_address = attributes["from"]
+                            to_address = attributes["to"]
+                            if isinstance(from_address, (list, tuple)):
+                                from_address = ss58_encode(bytes(from_address[0]).hex(), ss58_format=42)
+                                to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
+                            amount = attributes["amount"]
+                            if to_address in self._payment_addresses:
+                                await self._handle_payment(
+                                    to_address,
+                                    from_address,
+                                    amount,
+                                    current_block_number,
+                                    current_block_hash,
+                                    fmv,
+                                    raw_event.get("extrinsic_idx"),
+                                )
+                                payments += 1
+
+                        # Handle stake payments (SubtensorModule.StakeAdded)
+                        # Event params: coldkey, hotkey, TaoCurrency, AlphaCurrency, NetUid, u64
+                        elif (
+                            module_id == "SubtensorModule"
+                            and event_id == "StakeAdded"
+                            and attributes
+                        ):
+                            # Extract attributes - may be positional list or dict
+                            if isinstance(attributes, (list, tuple)):
+                                coldkey = attributes[0]
+                                hotkey = attributes[1]
+                                # tao_amount = attributes[2]  # Not used for alpha payments
+                                alpha_amount = attributes[3]
+                                netuid = attributes[4]
+                            else:
+                                coldkey = attributes.get("coldkey") or attributes.get("0")
+                                hotkey = attributes.get("hotkey") or attributes.get("1")
+                                alpha_amount = attributes.get("alpha_amount") or attributes.get("3")
+                                netuid = attributes.get("netuid") or attributes.get("4")
+
+                            # Convert addresses if needed
+                            if isinstance(coldkey, (list, tuple)):
+                                coldkey = ss58_encode(bytes(coldkey[0]).hex(), ss58_format=42)
+                            if isinstance(hotkey, (list, tuple)):
+                                hotkey = ss58_encode(bytes(hotkey[0]).hex(), ss58_format=42)
+
+                            # Check if this stake was sent to one of our user's coldkeys
+                            if coldkey in self._payment_addresses and alpha_amount > 0:
+                                # Fetch alpha price at this exact block for accuracy
+                                alpha_price = await self._get_alpha_price_at_block(
+                                    fetcher, netuid, current_block_hash
+                                )
+                                if alpha_price is None:
+                                    logger.warning(
+                                        f"No alpha price for netuid {netuid}, skipping stake payment"
+                                    )
+                                    continue
+
+                                await self._handle_stake_payment(
+                                    coldkey,
+                                    hotkey,
+                                    netuid,
+                                    alpha_amount,
+                                    current_block_number,
+                                    current_block_hash,
+                                    alpha_price,
+                                    fmv,
+                                    raw_event.get("extrinsic_idx"),
+                                )
+                                stake_payments += 1
+
+                    if payments or stake_payments:
                         logger.success(
-                            f"Processed {payments} payment(s) in block: {current_block_number}"
+                            f"Processed {payments} TAO payment(s) and {stake_payments} stake payment(s) in block: {current_block_number}"
                         )
 
                     # Update state and continue to next block.

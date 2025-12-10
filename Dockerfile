@@ -122,28 +122,6 @@ ENTRYPOINT ["uv", "run", "python", "-m", "api.image.forge"]
 
 
 ###
-# METASYNC
-###
-FROM base AS metasync
-RUN apt update
-RUN apt -y install gcc cmake g++ python3-dev git
-RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
-USER chutes
-RUN python3 -m venv /home/chutes/venv
-ENV PATH=/home/chutes/venv/bin:$PATH
-ADD pyproject.toml /tmp/
-RUN egrep '^(SQLAlchemy|pydantic-settings|asyncpg|aioboto3|cryptography|loguru) ' /tmp/pyproject.toml | sed 's/ = "^/==/g' | sed 's/ = "/==/g' | sed 's/"//g' > /tmp/requirements.txt
-# TODO: Pin the below versions
-RUN pip install git+https://github.com/rayonlabs/fiber.git redis netaddr aiomcache cryptography 'transformers<4.49.0' && pip install -r /tmp/requirements.txt
-ADD --chown=chutes api /app/api
-ADD --chown=chutes metasync /app/metasync
-ADD --chown=chutes tokenizer /app/tokenizer
-WORKDIR /app
-ENV PYTHONPATH=/app
-ENTRYPOINT ["python", "metasync/sync_metagraph.py"]
-
-
-###
 # API
 ###
 FROM base AS api
