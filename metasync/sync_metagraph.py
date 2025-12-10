@@ -6,7 +6,6 @@ import os
 import hashlib
 import json
 import asyncio
-import redis
 from sqlalchemy import text
 from sqlalchemy.dialects.postgresql import insert
 from fiber.chain.interface import get_substrate
