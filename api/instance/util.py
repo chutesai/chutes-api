@@ -15,13 +15,20 @@ from datetime import datetime, timedelta, timezone
 from async_lru import alru_cache
 from loguru import logger
 from contextlib import asynccontextmanager
+from api.constants import (
+    INSTANCE_DISABLE_BASE_TIMEOUT,
+    MAX_INSTANCE_DISABLES,
+    CASCADE_FAILURE_THRESHOLD,
+    CASCADE_DETECTION_DELAY,
+    CASCADE_PENDING_TTL,
+)
 from api.exceptions import InfraOverload
 from api.chute.schemas import Chute
 from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
-from api.util import has_legacy_private_billing
+from api.util import has_legacy_private_billing, notify_deleted
 from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.future import select
@@ -34,7 +41,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 InstanceAlias = aliased(Instance)
 
 
-@alru_cache(maxsize=1000, ttl=30)
+@alru_cache(maxsize=3000, ttl=30)
 async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
     cache_key = f"inst_ids:{chute_id}:{nonce}"
     cached = await settings.redis_client.get(cache_key)
@@ -54,11 +61,11 @@ async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
     async with get_session() as session:
         result = await session.execute(query)
         instance_ids = [row[0] for row in result.all()]
-        await settings.redis_client.set(cache_key, "|".join(instance_ids), ex=60)
+        await settings.redis_client.set(cache_key, "|".join(instance_ids), ex=300)
         return instance_ids
 
 
-@alru_cache(maxsize=5000, ttl=300)
+@alru_cache(maxsize=5000, ttl=30)
 async def load_chute_target(instance_id: str) -> Instance:
     cache_key = f"instance:{instance_id}"
     cached = await settings.redis_client.get(cache_key)
@@ -103,7 +110,7 @@ async def load_chute_target(instance_id: str) -> Instance:
         return instance
 
 
-@alru_cache(maxsize=1000, ttl=60)
+@alru_cache(maxsize=3000, ttl=30)
 async def load_chute_targets(chute_id: str, nonce: int = 0) -> list[Instance]:
     instance_ids = await load_chute_target_ids(chute_id, nonce=nonce)
     instances = []
@@ -119,6 +126,150 @@ async def invalidate_instance_cache(chute_id, instance_id: str = None):
     load_chute_target.cache_invalidate(instance_id)
     await settings.redis_client.delete(f"inst_ids:{chute_id}:0")
     await settings.redis_client.delete(f"instance:{instance_id}")
+
+
+async def is_instance_disabled(instance_id: str) -> bool:
+    disabled = await settings.redis_client.get(f"instance_disabled:{instance_id}")
+    return disabled is not None
+
+
+async def get_instance_disable_count(instance_id: str) -> int:
+    count = await settings.redis_client.get(f"instance_disable_count:{instance_id}")
+    if count is None:
+        return 0
+    return int(count)
+
+
+async def _execute_instance_deletion(
+    instance_id: str,
+    chute_id: str,
+    miner_hotkey: str,
+    reason: str,
+) -> bool:
+    """Actually delete an instance from the database."""
+    async with get_session() as session:
+        delete_result = await session.execute(
+            text("DELETE FROM instances WHERE instance_id = :instance_id"),
+            {"instance_id": instance_id},
+        )
+        if delete_result.rowcount > 0:
+            await invalidate_instance_cache(chute_id, instance_id=instance_id)
+            await session.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                ),
+                {"instance_id": instance_id, "reason": reason},
+            )
+            await session.commit()
+            logger.warning(f"INSTANCE DELETED: {instance_id}: {reason}")
+            asyncio.create_task(
+                notify_deleted(
+                    {"instance_id": instance_id, "miner_hotkey": miner_hotkey},
+                    message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted: {reason}",
+                )
+            )
+            return True
+    return False
+
+
+async def _check_cascade_and_delete(
+    instance_id: str,
+    chute_id: str,
+    miner_hotkey: str,
+    reason: str,
+):
+    await asyncio.sleep(CASCADE_DETECTION_DELAY)
+
+    # Count how many instances are pending deletion
+    pending_key = f"pending_deletion:{instance_id}"
+    try:
+        cursor = 0
+        pending_count = 0
+        while True:
+            cursor, keys = await settings.redis_client.scan(
+                cursor, match="pending_deletion:*", count=100
+            )
+            pending_count += len(keys)
+            if cursor == 0:
+                break
+
+        if pending_count >= CASCADE_FAILURE_THRESHOLD:
+            # Cascade failure detected - don't delete, just disable temporarily
+            logger.error(
+                f"CASCADE FAILURE DETECTED: {pending_count} instances pending deletion, "
+                f"skipping deletion of {instance_id}"
+            )
+            # Extend the disable timeout instead of deleting
+            disabled_key = f"instance_disabled:{instance_id}"
+            await settings.redis_client.expire(disabled_key, INSTANCE_DISABLE_BASE_TIMEOUT * 3)
+        else:
+            # Safe to delete
+            await _execute_instance_deletion(instance_id, chute_id, miner_hotkey, reason)
+    except Exception as e:
+        logger.error(f"Error in cascade check for {instance_id}: {e}")
+    finally:
+        # Clean up pending marker
+        await settings.redis_client.delete(pending_key)
+
+
+async def disable_instance(
+    instance_id: str,
+    chute_id: str,
+    miner_hotkey: str,
+    skip_disable_loop: bool = False,
+    instant_delete: bool = False,
+) -> bool:
+    disabled_key = f"instance_disabled:{instance_id}"
+    count_key = f"instance_disable_count:{instance_id}"
+
+    # Use the raw redis client to ensure we don't silently discard.
+    acquired = await settings.redis_client.client.set(
+        disabled_key, b"1", nx=True, ex=INSTANCE_DISABLE_BASE_TIMEOUT
+    )
+    if not acquired:
+        return False
+
+    disable_count = await settings.redis_client.incr(count_key)
+    await settings.redis_client.expire(count_key, 3600)
+
+    should_delete = disable_count > MAX_INSTANCE_DISABLES or skip_disable_loop or instant_delete
+
+    if should_delete:
+        if instant_delete:
+            reason = "catastrophic error (invalid/empty response or verification failure)"
+        elif skip_disable_loop:
+            reason = f"server error after {disable_count} consecutive failure events"
+        else:
+            reason = (
+                f"max consecutive failures reached after {disable_count - 1} temporary disables"
+            )
+
+        # For catastrophic errors (instant_delete) or server errors (skip_disable_loop),
+        # delete immediately - no cascade check needed because connection worked
+        if instant_delete or skip_disable_loop:
+            await _execute_instance_deletion(instance_id, chute_id, miner_hotkey, reason)
+        else:
+            # For network-related deletions (timeouts, disconnects), use cascade detection
+            # Mark as pending deletion and schedule background check
+            pending_key = f"pending_deletion:{instance_id}"
+            await settings.redis_client.set(pending_key, b"1", ex=CASCADE_PENDING_TTL)
+            asyncio.create_task(
+                _check_cascade_and_delete(instance_id, chute_id, miner_hotkey, reason)
+            )
+    else:
+        # Disable temporarily with increasing timeout
+        timeout_seconds = INSTANCE_DISABLE_BASE_TIMEOUT * disable_count
+        await settings.redis_client.expire(disabled_key, timeout_seconds)
+        logger.warning(
+            f"INSTANCE DISABLED: {instance_id} for {timeout_seconds}s (disable_count={disable_count})"
+        )
+
+    return True
+
+
+async def clear_instance_disable_state(instance_id: str) -> None:
+    await settings.redis_client.delete(f"instance_disabled:{instance_id}")
+    await settings.redis_client.delete(f"instance_disable_count:{instance_id}")
 
 
 MANAGERS = {}
@@ -196,6 +347,7 @@ class LeastConnManager:
         available_instances = [iid for iid in self.instances.keys() if iid not in avoid]
         if not available_instances:
             return []
+
         started_at = time.time()
         counts = await self.get_connection_counts(available_instances)
         time_taken = time.time() - started_at
@@ -301,7 +453,18 @@ class LeastConnManager:
             if not targets:
                 yield None, "No infrastructure available to serve request"
                 return
-            instance = targets[0]
+
+            # Find first non-disabled instance (lazy check with caching)
+            instance = None
+            for candidate in targets:
+                if not await is_instance_disabled(candidate.instance_id):
+                    instance = candidate
+                    break
+
+            if not instance:
+                yield None, "infra_overload"
+                return
+
             try:
                 key = f"conn:{self.chute_id}:{instance.instance_id}"
                 _ = await asyncio.wait_for(
@@ -384,13 +547,13 @@ async def get_chute_target_manager(
         if not no_bounty:
             if await create_bounty_if_not_exists(chute_id, lifetime=bounty_lifetime):
                 logger.success(f"Successfully created a bounty for {chute_id=}")
-            current_time = int(time.time())
-            window = current_time - (current_time % 30)
-            notification_key = f"bounty_notification:{chute_id}:{window}"
-            if await settings.redis_client.setnx(notification_key, b"1"):
-                await settings.redis_client.expire(notification_key, 33)
-                amount = await get_bounty_amount(chute_id)
-                if amount:
+            amount = await get_bounty_amount(chute_id)
+            if amount:
+                current_time = int(time.time())
+                window = current_time - (current_time % 30)
+                notification_key = f"bounty_notification:{chute_id}:{window}"
+                if await settings.redis_client.setnx(notification_key, b"1"):
+                    await settings.redis_client.expire(notification_key, 33)
                     logger.info(f"Bounty for {chute_id=} is now {amount}")
                     await send_bounty_notification(chute_id, amount)
         if not max_wait or time.time() - started_at >= max_wait:

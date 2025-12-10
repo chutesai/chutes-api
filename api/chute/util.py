@@ -60,7 +60,13 @@ from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOve
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
 from api.instance.schemas import Instance
-from api.instance.util import LeastConnManager, update_shutdown_timestamp, invalidate_instance_cache
+from api.instance.util import (
+    LeastConnManager,
+    update_shutdown_timestamp,
+    invalidate_instance_cache,
+    disable_instance,
+    clear_instance_disable_state,
+)
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
@@ -591,6 +597,7 @@ async def _invoke_one(
                             "110bf8d9-d07e-54dd-9c31-abe1a9919c7a",
                             "39d75699-957f-571f-8737-f2c72819d3e8",
                             "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
+                            "579ca543-dda4-51d0-83ef-5667d1a5ed5f",
                         )
                         and "model" in data
                         and not data.get("error")
@@ -810,6 +817,7 @@ async def _invoke_one(
                             "110bf8d9-d07e-54dd-9c31-abe1a9919c7a",
                             "39d75699-957f-571f-8737-f2c72819d3e8",
                             "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
+                            "579ca543-dda4-51d0-83ef-5667d1a5ed5f",
                         )
                     ):
                         verification_token = json_data.get("chutes_verification")
@@ -1107,10 +1115,11 @@ async def invoke(
                     )
                 )
 
-                # Clear any consecutive failure flags.
+                # Clear any consecutive failure flags and disable state.
                 asyncio.create_task(
                     settings.redis_client.delete(f"consecutive_failures:{target.instance_id}")
                 )
+                asyncio.create_task(clear_instance_disable_state(target.instance_id))
 
                 # Update capacity tracking.
                 track_request_completed(chute.chute_id)
@@ -1248,6 +1257,8 @@ async def invoke(
                 ).replace(target.host, "[host redacted]")
 
                 error_detail = None
+                instant_delete = False
+                skip_disable_loop = False
                 if isinstance(exc, InstanceRateLimit):
                     error_message = "RATE_LIMIT"
                     infra_overload = True
@@ -1259,8 +1270,17 @@ async def invoke(
                     error_message = "KEY_EXCHANGE_REQUIRED"
                 elif isinstance(exc, EmptyLLMResponse):
                     error_message = "EMPTY_STREAM"
+                    instant_delete = True
                 elif isinstance(exc, InvalidCLLMV):
                     error_message = "CLLMV_FAILURE"
+                    instant_delete = True
+                elif isinstance(exc, InvalidResponse):
+                    error_message = "INVALID_RESPONSE"
+                    instant_delete = True
+                elif isinstance(exc, aiohttp.ClientResponseError) and exc.status >= 500:
+                    error_message = f"HTTP_{exc.status}"
+                    # Server returned an error - connection worked, server is broken
+                    skip_disable_loop = True
 
                 # Store complete record in new invocations database, async.
                 duration = time.time() - started_at
@@ -1332,37 +1352,35 @@ async def invoke(
                             )
 
                     elif error_message not in ("RATE_LIMIT", "BAD_REQUEST"):
-                        # Handle consecutive failures (auto-delete instances).
-                        consecutive_failures = await settings.redis_client.incr(
-                            f"consecutive_failures:{target.instance_id}"
-                        )
-                        if (
-                            consecutive_failures
-                            and consecutive_failures >= settings.consecutive_failure_limit
-                        ):
-                            logger.warning(
-                                f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
+                        if instant_delete:
+                            # Catastrophic errors (cheating, broken responses) - delete immediately
+                            logger.warning(f"INSTANT DELETE: {target.instance_id}: {error_message}")
+                            await disable_instance(
+                                target.instance_id,
+                                target.chute_id,
+                                target.miner_hotkey,
+                                instant_delete=True,
                             )
-                            delete_result = await session.execute(
-                                text("DELETE FROM instances WHERE instance_id = :instance_id"),
-                                {"instance_id": target.instance_id},
+                        else:
+                            # Handle consecutive failures - when an instance hits a configured number of
+                            # failures in a row, it will be disabled, and a counter incremented for the
+                            # number of times disabled in a given time window. If this instance has
+                            # hit this disabled block several times, it's ejected/deleted.
+                            consecutive_failures = await settings.redis_client.incr(
+                                f"consecutive_failures:{target.instance_id}"
                             )
-                            if delete_result.rowcount > 0:
-                                await invalidate_instance_cache(
-                                    target.chute_id, instance_id=target.instance_id
+                            if (
+                                consecutive_failures
+                                and consecutive_failures >= settings.consecutive_failure_limit
+                            ):
+                                logger.warning(
+                                    f"CONSECUTIVE FAILURES: {target.instance_id}: {consecutive_failures=}"
                                 )
-                                await session.execute(
-                                    text(
-                                        f"UPDATE instance_audit SET deletion_reason = 'max consecutive failures {consecutive_failures} reached' WHERE instance_id = :instance_id"
-                                    ),
-                                    {"instance_id": target.instance_id},
-                                )
-                                await session.commit()
-                                asyncio.create_task(
-                                    notify_deleted(
-                                        target,
-                                        message=f"Instance {target.instance_id} of miner {target.miner_hotkey} has reached the consecutive failure limit of {settings.consecutive_failure_limit} and has been deleted.",
-                                    )
+                                await disable_instance(
+                                    target.instance_id,
+                                    target.chute_id,
+                                    target.miner_hotkey,
+                                    skip_disable_loop=skip_disable_loop,
                                 )
 
                 if error_message == "BAD_REQUEST":

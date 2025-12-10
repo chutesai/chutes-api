@@ -62,6 +62,22 @@ INTEGRATED_SUBNET_BONUS = 3
 # TEE bonus.
 TEE_BONUS = 1.5
 
+# Duration for instance disablement when consecutive errors are hit (increases linearly until max).
+INSTANCE_DISABLE_BASE_TIMEOUT = 90
+
+# Number of times an instance can be disabled before deleting (after consecutive failures).
+MAX_INSTANCE_DISABLES = 2
+
+# Cascade failure detection: if more than this many instances are pending deletion
+# within the detection window, assume network outage and skip deletions.
+CASCADE_FAILURE_THRESHOLD = 50
+
+# How long to wait before checking for cascade failures (seconds).
+CASCADE_DETECTION_DELAY = 45
+
+# TTL for pending deletion markers (seconds).
+CASCADE_PENDING_TTL = 75
+
 # Subnet integrations.
 INTEGRATED_SUBNETS = {
     "affine": {
