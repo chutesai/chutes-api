@@ -28,7 +28,6 @@ async def sync_and_save_metagraph(netuid: int):
     nodes = get_nodes_for_netuid(substrate, netuid)
     if not nodes:
         raise Exception("Failed to load metagraph nodes!")
-    redis_client = redis.Redis.from_url(settings.redis_url)
     updated = 0
     async with SessionLocal() as session:
         hotkeys = ", ".join([f"'{node.hotkey}'" for node in nodes])
@@ -53,14 +52,12 @@ async def sync_and_save_metagraph(netuid: int):
             result = await session.execute(statement)
             if result.rowcount > 0:
                 logger.info(f"Detected metagraph update for {node.hotkey=}")
-                redis_client.publish(f"metagraph_change:{netuid}", json.dumps(node_dict))
                 updated += 1
         if updated:
             logger.info(f"Updated {updated} nodes for {netuid=}")
         else:
             logger.info(f"No metagraph changes detected for {netuid=}")
         await session.commit()
-        redis_client.close()
 
 
 async def main():

@@ -41,7 +41,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 InstanceAlias = aliased(Instance)
 
 
-@alru_cache(maxsize=1000, ttl=30)
+@alru_cache(maxsize=3000, ttl=30)
 async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
     cache_key = f"inst_ids:{chute_id}:{nonce}"
     cached = await settings.redis_client.get(cache_key)
@@ -61,11 +61,11 @@ async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
     async with get_session() as session:
         result = await session.execute(query)
         instance_ids = [row[0] for row in result.all()]
-        await settings.redis_client.set(cache_key, "|".join(instance_ids), ex=60)
+        await settings.redis_client.set(cache_key, "|".join(instance_ids), ex=300)
         return instance_ids
 
 
-@alru_cache(maxsize=5000, ttl=300)
+@alru_cache(maxsize=5000, ttl=30)
 async def load_chute_target(instance_id: str) -> Instance:
     cache_key = f"instance:{instance_id}"
     cached = await settings.redis_client.get(cache_key)
@@ -110,7 +110,7 @@ async def load_chute_target(instance_id: str) -> Instance:
         return instance
 
 
-@alru_cache(maxsize=1000, ttl=60)
+@alru_cache(maxsize=3000, ttl=30)
 async def load_chute_targets(chute_id: str, nonce: int = 0) -> list[Instance]:
     instance_ids = await load_chute_target_ids(chute_id, nonce=nonce)
     instances = []
