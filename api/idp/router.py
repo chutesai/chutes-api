@@ -14,7 +14,6 @@ from bittensor_wallet.keypair import Keypair
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from loguru import logger
-from passlib.hash import argon2
 from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -1155,6 +1154,8 @@ async def introspect_token(
     """
     OAuth2 Token Introspection Endpoint (RFC 7662).
 
+    Token format includes embedded token_id for O(1) lookup, so client auth is optional.
+
     Allows clients to check if a token is still valid and get metadata about it.
     Useful for determining if a user needs to re-authenticate.
 
@@ -1176,90 +1177,99 @@ async def introspect_token(
                 status_code=401,
             )
 
-    # Check access token
+    # Check access token - O(1) lookup by embedded token_id
     if token.startswith("cak_") or token_type_hint == "access_token":
-        result = await validate_access_token(token)
-        if result:
-            # Get the actual token object for expiration info
-            token_result = await db.execute(
-                select(OAuthAccessToken)
-                .options(
-                    joinedload(OAuthAccessToken.authorization).joinedload(OAuthAuthorization.user),
-                    joinedload(OAuthAccessToken.authorization).joinedload(OAuthAuthorization.app),
-                )
-                .where(OAuthAccessToken.revoked.is_(False))
+        token_id, _ = OAuthAccessToken.parse_token(token)
+        if not token_id:
+            return {"active": False}
+
+        token_result = await db.execute(
+            select(OAuthAccessToken)
+            .options(
+                joinedload(OAuthAccessToken.authorization).joinedload(OAuthAuthorization.user),
+                joinedload(OAuthAccessToken.authorization).joinedload(OAuthAuthorization.app),
             )
-            tokens = token_result.unique().scalars().all()
+            .where(OAuthAccessToken.token_id == token_id)
+        )
+        token_obj = token_result.unique().scalar_one_or_none()
 
-            token_obj = None
-            for t in tokens:
-                try:
-                    if argon2.verify(token, t.token_hash):
-                        token_obj = t
-                        break
-                except Exception:
-                    continue
+        if token_obj:
+            # Verify token secret (single argon2 verify)
+            if not token_obj.verify_secret(token):
+                return {"active": False}
 
-            if token_obj:
-                exp_dt = token_obj.expires_at.replace(tzinfo=timezone.utc)
-                iat_dt = (
-                    token_obj.created_at.replace(tzinfo=timezone.utc)
-                    if token_obj.created_at
-                    else None
-                )
+            # Check if revoked or expired
+            if token_obj.revoked:
+                return {"active": False}
 
-                return {
-                    "active": True,
-                    "token_type": "access_token",
-                    "exp": int(exp_dt.timestamp()),
-                    "iat": int(iat_dt.timestamp()) if iat_dt else None,
-                    "scope": " ".join(result.scopes),
-                    "client_id": token_obj.authorization.app.client_id,
-                    "username": result.user.username,
-                    "sub": result.user.user_id,
-                }
+            exp_dt = token_obj.expires_at.replace(tzinfo=timezone.utc)
+            if exp_dt < datetime.now(timezone.utc):
+                return {"active": False}
 
-    # Check refresh token
+            if token_obj.authorization.revoked:
+                return {"active": False}
+
+            iat_dt = (
+                token_obj.created_at.replace(tzinfo=timezone.utc) if token_obj.created_at else None
+            )
+
+            return {
+                "active": True,
+                "token_type": "access_token",
+                "exp": int(exp_dt.timestamp()),
+                "iat": int(iat_dt.timestamp()) if iat_dt else None,
+                "scope": " ".join(token_obj.scopes or []),
+                "client_id": token_obj.authorization.app.client_id,
+                "username": token_obj.authorization.user.username,
+                "sub": token_obj.authorization.user.user_id,
+            }
+
+    # Check refresh token - O(1) lookup by embedded token_id
     if token.startswith("crt_") or token_type_hint == "refresh_token":
+        token_id, _ = OAuthRefreshToken.parse_token(token)
+        if not token_id:
+            return {"active": False}
+
         token_result = await db.execute(
             select(OAuthRefreshToken)
             .options(
                 joinedload(OAuthRefreshToken.authorization).joinedload(OAuthAuthorization.user),
                 joinedload(OAuthRefreshToken.authorization).joinedload(OAuthAuthorization.app),
             )
-            .where(
-                OAuthRefreshToken.used.is_(False),
-                OAuthRefreshToken.revoked.is_(False),
-            )
+            .where(OAuthRefreshToken.token_id == token_id)
         )
-        tokens = token_result.unique().scalars().all()
+        token_obj = token_result.unique().scalar_one_or_none()
 
-        for t in tokens:
-            try:
-                if argon2.verify(token, t.token_hash):
-                    exp_dt = t.expires_at.replace(tzinfo=timezone.utc)
-                    iat_dt = t.created_at.replace(tzinfo=timezone.utc) if t.created_at else None
+        if token_obj:
+            # Verify token secret (single argon2 verify)
+            if not token_obj.verify_secret(token):
+                return {"active": False}
 
-                    # Check if expired
-                    if exp_dt < datetime.now(timezone.utc):
-                        break
+            # Check if used, revoked, or expired
+            if token_obj.used or token_obj.revoked:
+                return {"active": False}
 
-                    # Check if authorization is revoked
-                    if t.authorization.revoked:
-                        break
+            exp_dt = token_obj.expires_at.replace(tzinfo=timezone.utc)
+            if exp_dt < datetime.now(timezone.utc):
+                return {"active": False}
 
-                    return {
-                        "active": True,
-                        "token_type": "refresh_token",
-                        "exp": int(exp_dt.timestamp()),
-                        "iat": int(iat_dt.timestamp()) if iat_dt else None,
-                        "scope": " ".join(t.authorization.scopes),
-                        "client_id": t.authorization.app.client_id,
-                        "username": t.authorization.user.username,
-                        "sub": t.authorization.user.user_id,
-                    }
-            except Exception:
-                continue
+            if token_obj.authorization.revoked:
+                return {"active": False}
+
+            iat_dt = (
+                token_obj.created_at.replace(tzinfo=timezone.utc) if token_obj.created_at else None
+            )
+
+            return {
+                "active": True,
+                "token_type": "refresh_token",
+                "exp": int(exp_dt.timestamp()),
+                "iat": int(iat_dt.timestamp()) if iat_dt else None,
+                "scope": " ".join(token_obj.authorization.scopes or []),
+                "client_id": token_obj.authorization.app.client_id,
+                "username": token_obj.authorization.user.username,
+                "sub": token_obj.authorization.user.user_id,
+            }
 
     # Token is not active (invalid, expired, or revoked)
     return {"active": False}

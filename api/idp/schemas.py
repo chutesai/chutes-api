@@ -629,8 +629,6 @@ class OAuthAccessToken(Base):
 
     token_id = Column(String, primary_key=True, default=generate_uuid)
     token_hash = Column(String, nullable=False)
-    # SHA256 prefix for O(1) lookup - avoids scanning entire table
-    token_lookup = Column(String(64), nullable=False, unique=True, index=True)
     authorization_id = Column(
         String,
         ForeignKey("oauth_authorizations.authorization_id", ondelete="CASCADE"),
@@ -645,27 +643,62 @@ class OAuthAccessToken(Base):
     authorization = relationship("OAuthAuthorization", back_populates="access_tokens")
 
     @classmethod
-    def generate_token(cls) -> str:
-        """Generate a secure access token with cak_ prefix (Chutes Access Key)."""
-        return f"cak_{''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))}"
+    def generate_token(cls, token_id: str) -> str:
+        """
+        Generate a secure access token with embedded token_id for O(1) lookup.
+        Format: cak_{token_id}.{secret}
+        """
+        secret = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(48))
+        return f"cak_{token_id}.{secret}"
 
     @classmethod
     def hash_token(cls, token: str) -> str:
-        """Hash a token for secure storage (argon2)."""
-        return argon2.hash(token)
+        """Hash the secret portion of a token for secure storage (argon2)."""
+        # Only hash the secret part, not the token_id
+        parts = token.split(".", 1)
+        if len(parts) != 2:
+            return argon2.hash(token)
+        return argon2.hash(parts[1])
 
     @classmethod
-    def lookup_key(cls, token: str) -> str:
-        """Generate lookup key (SHA256) for O(1) database lookup."""
-        return hashlib.sha256(token.encode()).hexdigest()
+    def parse_token(cls, token: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Parse a token string into (token_id, secret).
+        Returns (None, None) if format is invalid.
+        """
+        if not token.startswith("cak_"):
+            return None, None
+        rest = token[4:]  # Remove "cak_" prefix
+        parts = rest.split(".", 1)
+        if len(parts) != 2:
+            return None, None
+        return parts[0], parts[1]
+
+    def verify_secret(self, token: str) -> bool:
+        """Verify the secret portion of a token against the stored hash."""
+        _, secret = self.parse_token(token)
+        if not secret:
+            return False
+        try:
+            return argon2.verify(secret, self.token_hash)
+        except Exception:
+            return False
 
     @staticmethod
     def could_be_valid(token: str) -> bool:
         """Fast check for token validity format."""
+        if not token.startswith("cak_"):
+            return False
+        rest = token[4:]
+        parts = rest.split(".", 1)
+        if len(parts) != 2:
+            return False
+        token_id, secret = parts
+        # token_id is UUID (36 chars), secret is 48 chars alphanumeric
         return (
-            token.startswith("cak_")
-            and len(token) == 68
-            and re.match(r"^cak_[a-zA-Z0-9]{64}$", token) is not None
+            len(token_id) == 36
+            and len(secret) == 48
+            and re.match(r"^[a-zA-Z0-9]+$", secret) is not None
         )
 
 
@@ -676,8 +709,6 @@ class OAuthRefreshToken(Base):
 
     token_id = Column(String, primary_key=True, default=generate_uuid)
     token_hash = Column(String, nullable=False)
-    # SHA256 prefix for O(1) lookup - avoids scanning entire table
-    token_lookup = Column(String(64), nullable=False, unique=True, index=True)
     authorization_id = Column(
         String,
         ForeignKey("oauth_authorizations.authorization_id", ondelete="CASCADE"),
@@ -692,19 +723,61 @@ class OAuthRefreshToken(Base):
     authorization = relationship("OAuthAuthorization", back_populates="refresh_tokens")
 
     @classmethod
-    def generate_token(cls) -> str:
-        """Generate a secure refresh token."""
-        return f"crt_{''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(64))}"
+    def generate_token(cls, token_id: str) -> str:
+        """
+        Generate a secure refresh token with embedded token_id for O(1) lookup.
+        Format: crt_{token_id}.{secret}
+        """
+        secret = "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(48))
+        return f"crt_{token_id}.{secret}"
 
     @classmethod
     def hash_token(cls, token: str) -> str:
-        """Hash a token for secure storage (argon2)."""
-        return argon2.hash(token)
+        """Hash the secret portion of a token for secure storage (argon2)."""
+        parts = token.split(".", 1)
+        if len(parts) != 2:
+            return argon2.hash(token)
+        return argon2.hash(parts[1])
 
     @classmethod
-    def lookup_key(cls, token: str) -> str:
-        """Generate lookup key (SHA256) for O(1) database lookup."""
-        return hashlib.sha256(token.encode()).hexdigest()
+    def parse_token(cls, token: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Parse a token string into (token_id, secret).
+        Returns (None, None) if format is invalid.
+        """
+        if not token.startswith("crt_"):
+            return None, None
+        rest = token[4:]  # Remove "crt_" prefix
+        parts = rest.split(".", 1)
+        if len(parts) != 2:
+            return None, None
+        return parts[0], parts[1]
+
+    def verify_secret(self, token: str) -> bool:
+        """Verify the secret portion of a token against the stored hash."""
+        _, secret = self.parse_token(token)
+        if not secret:
+            return False
+        try:
+            return argon2.verify(secret, self.token_hash)
+        except Exception:
+            return False
+
+    @staticmethod
+    def could_be_valid(token: str) -> bool:
+        """Fast check for token validity format."""
+        if not token.startswith("crt_"):
+            return False
+        rest = token[4:]
+        parts = rest.split(".", 1)
+        if len(parts) != 2:
+            return False
+        token_id, secret = parts
+        return (
+            len(token_id) == 36
+            and len(secret) == 48
+            and re.match(r"^[a-zA-Z0-9]+$", secret) is not None
+        )
 
 
 class OAuthAuthorizationCode(BaseModel):

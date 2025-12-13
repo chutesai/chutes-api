@@ -8,7 +8,6 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
-from passlib.hash import argon2
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -231,13 +230,14 @@ async def exchange_authorization_code(
             auth.revoked_at = None
             auth.scopes = auth_code.scopes
 
-        # Create access token
-        access_token = OAuthAccessToken.generate_token()
+        # Create access token with embedded token_id for O(1) lookup
+        access_token_id = str(uuid.uuid4())
+        access_token = OAuthAccessToken.generate_token(access_token_id)
         access_expires = datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_EXPIRY_SECONDS)
 
         access_token_obj = OAuthAccessToken(
+            token_id=access_token_id,
             token_hash=OAuthAccessToken.hash_token(access_token),
-            token_lookup=OAuthAccessToken.lookup_key(access_token),
             authorization_id=auth.authorization_id,
             scopes=auth_code.scopes,
             expires_at=access_expires,
@@ -245,13 +245,14 @@ async def exchange_authorization_code(
         session.add(access_token_obj)
 
         # Create refresh token with per-app configurable lifetime
-        refresh_token = OAuthRefreshToken.generate_token()
+        refresh_token_id = str(uuid.uuid4())
+        refresh_token = OAuthRefreshToken.generate_token(refresh_token_id)
         refresh_lifetime_days = auth.app.refresh_token_lifetime_days
         refresh_expires = datetime.now(timezone.utc) + timedelta(days=refresh_lifetime_days)
 
         refresh_token_obj = OAuthRefreshToken(
+            token_id=refresh_token_id,
             token_hash=OAuthRefreshToken.hash_token(refresh_token),
-            token_lookup=OAuthRefreshToken.lookup_key(refresh_token),
             authorization_id=auth.authorization_id,
             expires_at=refresh_expires,
         )
@@ -271,28 +272,25 @@ async def refresh_access_token(
     Use a refresh token to get a new access token.
     Returns (access_token, refresh_token, expires_in, error).
     """
-    # Validate token format
-    if not refresh_token.startswith("crt_"):
+    # Parse token to get token_id for O(1) lookup
+    token_id, _ = OAuthRefreshToken.parse_token(refresh_token)
+    if not token_id:
         return None, None, None, "invalid_grant"
 
     async with get_session() as session:
-        # O(1) lookup by token_lookup (SHA256 of token)
-        lookup_key = OAuthRefreshToken.lookup_key(refresh_token)
+        # O(1) lookup by token_id (primary key)
         result = await session.execute(
             select(OAuthRefreshToken)
             .options(joinedload(OAuthRefreshToken.authorization).joinedload(OAuthAuthorization.app))
-            .where(OAuthRefreshToken.token_lookup == lookup_key)
+            .where(OAuthRefreshToken.token_id == token_id)
         )
         refresh_obj = result.unique().scalar_one_or_none()
 
         if not refresh_obj:
             return None, None, None, "invalid_grant"
 
-        # Verify the token hash (single argon2 verify, not O(N))
-        try:
-            if not argon2.verify(refresh_token, refresh_obj.token_hash):
-                return None, None, None, "invalid_grant"
-        except Exception:
+        # Verify the token secret (single argon2 verify)
+        if not refresh_obj.verify_secret(refresh_token):
             return None, None, None, "invalid_grant"
 
         # Check if already used or revoked
@@ -326,13 +324,14 @@ async def refresh_access_token(
         # Mark old refresh token as used
         refresh_obj.used = True
 
-        # Create new access token
-        new_access_token = OAuthAccessToken.generate_token()
+        # Create new access token with embedded token_id
+        new_access_token_id = str(uuid.uuid4())
+        new_access_token = OAuthAccessToken.generate_token(new_access_token_id)
         access_expires = datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_EXPIRY_SECONDS)
 
         access_token_obj = OAuthAccessToken(
+            token_id=new_access_token_id,
             token_hash=OAuthAccessToken.hash_token(new_access_token),
-            token_lookup=OAuthAccessToken.lookup_key(new_access_token),
             authorization_id=auth.authorization_id,
             scopes=auth.scopes,
             expires_at=access_expires,
@@ -340,13 +339,14 @@ async def refresh_access_token(
         session.add(access_token_obj)
 
         # Create new refresh token (token rotation with sliding expiration)
-        new_refresh_token = OAuthRefreshToken.generate_token()
+        new_refresh_token_id = str(uuid.uuid4())
+        new_refresh_token = OAuthRefreshToken.generate_token(new_refresh_token_id)
         refresh_lifetime_days = auth.app.refresh_token_lifetime_days
         refresh_expires = datetime.now(timezone.utc) + timedelta(days=refresh_lifetime_days)
 
         new_refresh_obj = OAuthRefreshToken(
+            token_id=new_refresh_token_id,
             token_hash=OAuthRefreshToken.hash_token(new_refresh_token),
-            token_lookup=OAuthRefreshToken.lookup_key(new_refresh_token),
             authorization_id=auth.authorization_id,
             expires_at=refresh_expires,
         )
@@ -371,12 +371,12 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
     Validate an access token and return the associated user and scopes.
     Returns None if invalid.
     """
-    if not OAuthAccessToken.could_be_valid(token):
+    # Parse token to get token_id for O(1) lookup
+    token_id, _ = OAuthAccessToken.parse_token(token)
+    if not token_id:
         return None
 
-    # Use lookup key for cache (same as DB lookup key)
-    lookup_key = OAuthAccessToken.lookup_key(token)
-    cache_key = f"idp:token:{lookup_key[:32]}"
+    cache_key = f"idp:token:{token_id}"
 
     # Check cache first
     cached = await settings.redis_client.get(cache_key)
@@ -398,14 +398,14 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
             await settings.redis_client.delete(cache_key)
 
     async with get_session() as session:
-        # O(1) lookup by token_lookup
+        # O(1) lookup by token_id (primary key)
         result = await session.execute(
             select(OAuthAccessToken)
             .options(
                 joinedload(OAuthAccessToken.authorization).joinedload(OAuthAuthorization.user),
                 joinedload(OAuthAccessToken.authorization).joinedload(OAuthAuthorization.app),
             )
-            .where(OAuthAccessToken.token_lookup == lookup_key)
+            .where(OAuthAccessToken.token_id == token_id)
         )
         token_obj = result.unique().scalar_one_or_none()
 
@@ -414,12 +414,9 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
             await settings.redis_client.set(cache_key, json.dumps({"valid": False}), ex=60)
             return None
 
-        # Verify the token hash (single argon2 verify)
-        try:
-            if not argon2.verify(token, token_obj.token_hash):
-                await settings.redis_client.set(cache_key, json.dumps({"valid": False}), ex=60)
-                return None
-        except Exception:
+        # Verify the token secret (single argon2 verify)
+        if not token_obj.verify_secret(token):
+            await settings.redis_client.set(cache_key, json.dumps({"valid": False}), ex=60)
             return None
 
         # Check if revoked
@@ -468,9 +465,9 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
         )
 
 
-async def _invalidate_token_cache(token_lookup: str):
-    """Invalidate the cache for a token by its lookup key."""
-    cache_key = f"idp:token:{token_lookup[:32]}"
+async def _invalidate_token_cache(token_id: str):
+    """Invalidate the cache for a token by its token_id."""
+    cache_key = f"idp:token:{token_id}"
     await settings.redis_client.delete(cache_key)
 
 
@@ -510,7 +507,7 @@ async def revoke_authorization(user_id: str, app_id: str) -> bool:
         )
         for token in access_tokens:
             token.revoked = True
-            await _invalidate_token_cache(token.token_lookup)
+            await _invalidate_token_cache(token.token_id)
 
         # Revoke all refresh tokens
         refresh_tokens = (
@@ -534,37 +531,33 @@ async def revoke_authorization(user_id: str, app_id: str) -> bool:
 async def revoke_token(token: str) -> bool:
     """Revoke a specific token (access or refresh)."""
     async with get_session() as session:
-        # Try access token - O(1) lookup
+        # Try access token - O(1) lookup by token_id
         if token.startswith("cak_"):
-            lookup_key = OAuthAccessToken.lookup_key(token)
+            token_id, _ = OAuthAccessToken.parse_token(token)
+            if not token_id:
+                return False
             result = await session.execute(
-                select(OAuthAccessToken).where(OAuthAccessToken.token_lookup == lookup_key)
+                select(OAuthAccessToken).where(OAuthAccessToken.token_id == token_id)
             )
             token_obj = result.scalar_one_or_none()
-            if token_obj:
-                try:
-                    if argon2.verify(token, token_obj.token_hash):
-                        token_obj.revoked = True
-                        await _invalidate_token_cache(token_obj.token_lookup)
-                        await session.commit()
-                        return True
-                except Exception:
-                    pass
+            if token_obj and token_obj.verify_secret(token):
+                token_obj.revoked = True
+                await _invalidate_token_cache(token_obj.token_id)
+                await session.commit()
+                return True
 
-        # Try refresh token - O(1) lookup
+        # Try refresh token - O(1) lookup by token_id
         if token.startswith("crt_"):
-            lookup_key = OAuthRefreshToken.lookup_key(token)
+            token_id, _ = OAuthRefreshToken.parse_token(token)
+            if not token_id:
+                return False
             result = await session.execute(
-                select(OAuthRefreshToken).where(OAuthRefreshToken.token_lookup == lookup_key)
+                select(OAuthRefreshToken).where(OAuthRefreshToken.token_id == token_id)
             )
             token_obj = result.scalar_one_or_none()
-            if token_obj:
-                try:
-                    if argon2.verify(token, token_obj.token_hash):
-                        token_obj.revoked = True
-                        await session.commit()
-                        return True
-                except Exception:
-                    pass
+            if token_obj and token_obj.verify_secret(token):
+                token_obj.revoked = True
+                await session.commit()
+                return True
 
         return False
