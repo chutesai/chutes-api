@@ -4,6 +4,7 @@ OAuth2/IDP Router for authentication and authorization endpoints.
 
 import base64
 import hashlib
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -35,6 +36,7 @@ from api.idp.schemas import (
     OAuthRefreshToken,
     get_available_scopes,
     get_scope_descriptions,
+    validate_requested_scopes,
 )
 from api.idp.response import (
     OAuthAppCreationResponse,
@@ -811,68 +813,127 @@ async def login_post(
             status_code=400,
         )
 
-    # User authenticated successfully - store session and redirect to consent page
+    # User authenticated successfully - store session with full authorization context
+    # This prevents session replay attacks where attacker reuses session_id with different params
     session_id = str(uuid.uuid4())
+    session_data = json.dumps(
+        {
+            "user_id": user.user_id,
+            "client_id": client_id,
+            "redirect_uri": redirect_uri,
+            "scope": scope,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": code_challenge_method,
+        }
+    )
     await settings.redis_client.set(
         f"idp:session:{session_id}",
-        user.user_id,
+        session_data,
         ex=600,  # 10 minutes
     )
 
+    # Auto-submit to consent page
+    return RedirectResponse(
+        url=f"/idp/authorize/consent?session_id={session_id}",
+        status_code=302,
+    )
+
+
+async def _get_session_data(session_id: str) -> Optional[dict]:
+    """Get and parse session data from Redis."""
+    if not session_id:
+        return None
+    session_raw = await settings.redis_client.get(f"idp:session:{session_id}")
+    if not session_raw:
+        return None
+    try:
+        data = session_raw.decode() if isinstance(session_raw, bytes) else session_raw
+        return json.loads(data)
+    except Exception:
+        return None
+
+
+@router.get("/authorize/consent", response_class=HTMLResponse)
+async def authorize_consent_page(
+    session_id: str = Query(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Show authorization consent page."""
+    session_data = await _get_session_data(session_id)
+    if not session_data:
+        return HTMLResponse(
+            content=error_page("invalid_request", "Session expired. Please try again."),
+            status_code=400,
+        )
+
+    user_id = session_data["user_id"]
+    client_id = session_data["client_id"]
+    redirect_uri = session_data["redirect_uri"]
+    scope = session_data.get("scope", "")
+    code_challenge = session_data.get("code_challenge", "")
+    code_challenge_method = session_data.get("code_challenge_method", "")
+
+    app = await get_app_by_client_id(client_id)
+    if not app:
+        return HTMLResponse(
+            content=error_page("invalid_client", "Unknown client_id"),
+            status_code=400,
+        )
+
+    user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
+    if not user:
+        return HTMLResponse(
+            content=error_page("invalid_request", "User not found"),
+            status_code=400,
+        )
+
+    scopes_list = scope.split() if scope else ["profile"]
+
     return HTMLResponse(
-        content=f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Authorize - Chutes</title>
-</head>
-<body>
-    <form id="consent-form" action="/idp/authorize/consent" method="POST">
-        <input type="hidden" name="session_id" value="{session_id}">
-        <input type="hidden" name="client_id" value="{client_id}">
-        <input type="hidden" name="redirect_uri" value="{redirect_uri}">
-        <input type="hidden" name="state" value="{state}">
-        <input type="hidden" name="scope" value="{scope}">
-        <input type="hidden" name="code_challenge" value="{code_challenge}">
-        <input type="hidden" name="code_challenge_method" value="{code_challenge_method}">
-    </form>
-    <script>document.getElementById('consent-form').submit();</script>
-</body>
-</html>
-""".replace("\n", "")
+        content=authorize_page(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=session_data.get("state", ""),
+            scope=scope,
+            app_name=app.name,
+            app_description=app.description or "",
+            app_logo_url=app.logo_url or "",
+            user_name=user.username,
+            scopes=get_scope_descriptions(scopes_list),
+            code_challenge=code_challenge,
+            code_challenge_method=code_challenge_method,
+            refresh_token_lifetime_days=app.refresh_token_lifetime_days,
+        ).replace(
+            'action="/idp/authorize/consent"',
+            f'action="/idp/authorize/consent?session_id={session_id}"',
+        )
     )
 
 
 @router.post("/authorize/consent", response_class=HTMLResponse)
 async def authorize_consent(
-    request: Request,
-    session_id: Optional[str] = Form(None),
-    client_id: str = Form(...),
-    redirect_uri: str = Form(...),
-    state: str = Form(""),
-    scope: str = Form(""),
-    action: str = Form(""),
-    code_challenge: str = Form(""),
-    code_challenge_method: str = Form(""),
+    session_id: str = Query(...),
+    action: str = Form(...),
     db: AsyncSession = Depends(get_db_session),
 ):
-    """Handle authorization consent form."""
-    # Get user from session
-    if not session_id:
+    """Handle authorization consent form submission."""
+    # Get session data (contains all authorization context)
+    session_data = await _get_session_data(session_id)
+    if not session_data:
         return HTMLResponse(
             content=error_page("invalid_request", "Session expired. Please try again."),
             status_code=400,
         )
 
-    user_id = await settings.redis_client.get(f"idp:session:{session_id}")
-    if not user_id:
-        return HTMLResponse(
-            content=error_page("invalid_request", "Session expired. Please try again."),
-            status_code=400,
-        )
-    user_id = user_id.decode()
+    # Extract data from session (NOT from form - prevents tampering)
+    user_id = session_data["user_id"]
+    client_id = session_data["client_id"]
+    redirect_uri = session_data["redirect_uri"]
+    scope = session_data.get("scope", "")
+    state = session_data.get("state", "")
+    code_challenge = session_data.get("code_challenge", "")
+    code_challenge_method = session_data.get("code_challenge_method", "")
 
     # Get app
     app = await get_app_by_client_id(client_id)
@@ -884,38 +945,13 @@ async def authorize_consent(
 
     # Get user
     user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
-
     if not user:
         return HTMLResponse(
             content=error_page("invalid_request", "User not found"),
             status_code=400,
         )
 
-    # If this is a GET (via POST redirect) and no action yet, show consent page
-    if not action:
-        scopes_list = scope.split() if scope else ["profile"]
-
-        return HTMLResponse(
-            content=authorize_page(
-                client_id=client_id,
-                redirect_uri=redirect_uri,
-                state=state,
-                scope=scope,
-                app_name=app.name,
-                app_description=app.description or "",
-                app_logo_url=app.logo_url or "",
-                user_name=user.username,
-                scopes=get_scope_descriptions(scopes_list),
-                code_challenge=code_challenge,
-                code_challenge_method=code_challenge_method,
-                refresh_token_lifetime_days=app.refresh_token_lifetime_days,
-            ).replace(
-                'action="/idp/authorize/consent"',
-                f'action="/idp/authorize/consent?session_id={session_id}"',
-            )
-        )
-
-    # Clean up session
+    # Clean up session (single use)
     await settings.redis_client.delete(f"idp:session:{session_id}")
 
     if action == "deny":
@@ -928,13 +964,27 @@ async def authorize_consent(
             status_code=302,
         )
 
-    # User approved - create authorization code
+    # User approved - validate and create authorization code
     scopes_list = scope.split() if scope else ["profile"]
+
+    # Validate scopes against app's allowed scopes
+    is_valid, error_msg, validated_scopes = validate_requested_scopes(
+        scopes_list, app.allowed_scopes
+    )
+    if not is_valid:
+        params = {"error": "invalid_scope", "error_description": error_msg}
+        if state:
+            params["state"] = state
+        return RedirectResponse(
+            url=f"{redirect_uri}?{urlencode(params)}",
+            status_code=302,
+        )
+
     code = await create_authorization_code(
         app_id=app.app_id,
         user_id=user.user_id,
         redirect_uri=redirect_uri,
-        scopes=scopes_list,
+        scopes=validated_scopes,
         state=state,
         code_challenge=code_challenge if code_challenge else None,
         code_challenge_method=code_challenge_method if code_challenge_method else None,
@@ -1073,6 +1123,16 @@ async def userinfo_endpoint(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
+        )
+
+    # Check for required scope (openid or profile)
+    has_required_scope = any(
+        s in result.scopes for s in ("openid", "profile", "account:read", "admin")
+    )
+    if not has_required_scope:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Token does not have required scope (openid, profile, or account:read)",
         )
 
     user = result.user

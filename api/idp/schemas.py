@@ -284,6 +284,63 @@ def get_scope_descriptions(scopes: List[str]) -> List[str]:
     return [get_scope_description(s) for s in scopes]
 
 
+# Default scopes that any app can request without explicit registration
+DEFAULT_ALLOWED_SCOPES = {
+    "profile",
+    "openid",
+    "account:read",
+    "chutes:read",
+    "chutes:invoke",
+    "images:read",
+    "invocations:read",
+}
+
+# Privileged scopes that require explicit app registration
+PRIVILEGED_SCOPES = {
+    "admin",
+    "account:write",
+    "account:delete",
+    "billing:read",
+    "billing:write",
+    "secrets:read",
+    "secrets:write",
+    "secrets:delete",
+    "chutes:write",
+    "chutes:delete",
+    "images:write",
+    "images:delete",
+}
+
+
+def validate_requested_scopes(
+    requested_scopes: List[str],
+    app_allowed_scopes: Optional[List[str]],
+) -> tuple[bool, Optional[str], List[str]]:
+    """
+    Validate that the requested scopes are allowed for this app.
+
+    Returns (is_valid, error_message, filtered_scopes).
+    - filtered_scopes contains only the valid scopes that can be granted.
+    """
+    all_available = get_available_scopes()
+    valid_scopes = []
+    app_allowed = set(app_allowed_scopes or [])
+
+    for scope in requested_scopes:
+        # Check if scope exists (allow openid/profile as standard OIDC scopes)
+        if scope not in all_available and scope not in ("openid", "profile"):
+            return False, f"Unknown scope: {scope}", []
+
+        # Check if scope requires explicit registration
+        if scope in PRIVILEGED_SCOPES:
+            if scope not in app_allowed:
+                return False, f"Scope '{scope}' requires explicit app registration", []
+
+        valid_scopes.append(scope)
+
+    return True, None, valid_scopes
+
+
 class OAuthAppCreateRequest(BaseModel):
     """Request model for creating an OAuth application."""
 
@@ -294,6 +351,8 @@ class OAuthAppCreateRequest(BaseModel):
     logo_url: Optional[str] = None
     public: bool = True
     refresh_token_lifetime_days: Optional[int] = DEFAULT_REFRESH_TOKEN_LIFETIME_DAYS
+    # Scopes this app is allowed to request (if empty, allows basic scopes only)
+    allowed_scopes: Optional[List[str]] = None
 
     @field_validator("name")
     @classmethod
@@ -340,6 +399,7 @@ class OAuthAppUpdateRequest(BaseModel):
     active: Optional[bool] = None
     public: Optional[bool] = None
     refresh_token_lifetime_days: Optional[int] = None
+    allowed_scopes: Optional[List[str]] = None
 
     @field_validator("name")
     @classmethod
@@ -402,6 +462,9 @@ class OAuthApp(Base):
     refresh_token_lifetime_days = Column(
         Integer, default=DEFAULT_REFRESH_TOKEN_LIFETIME_DAYS, nullable=False
     )
+    # Scopes this app is allowed to request. If NULL/empty, only basic scopes allowed.
+    # "admin" scope requires explicit registration.
+    allowed_scopes = Column(ARRAY(String), nullable=True, default=list)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
@@ -457,6 +520,7 @@ class OAuthApp(Base):
             public=args.public,
             refresh_token_lifetime_days=args.refresh_token_lifetime_days
             or DEFAULT_REFRESH_TOKEN_LIFETIME_DAYS,
+            allowed_scopes=args.allowed_scopes or [],
         )
         return instance, client_secret
 
@@ -564,7 +628,9 @@ class OAuthAccessToken(Base):
     __tablename__ = "oauth_access_tokens"
 
     token_id = Column(String, primary_key=True, default=generate_uuid)
-    token_hash = Column(String, nullable=False, index=True)
+    token_hash = Column(String, nullable=False)
+    # SHA256 prefix for O(1) lookup - avoids scanning entire table
+    token_lookup = Column(String(64), nullable=False, unique=True, index=True)
     authorization_id = Column(
         String,
         ForeignKey("oauth_authorizations.authorization_id", ondelete="CASCADE"),
@@ -585,8 +651,13 @@ class OAuthAccessToken(Base):
 
     @classmethod
     def hash_token(cls, token: str) -> str:
-        """Hash a token for storage."""
+        """Hash a token for secure storage (argon2)."""
         return argon2.hash(token)
+
+    @classmethod
+    def lookup_key(cls, token: str) -> str:
+        """Generate lookup key (SHA256) for O(1) database lookup."""
+        return hashlib.sha256(token.encode()).hexdigest()
 
     @staticmethod
     def could_be_valid(token: str) -> bool:
@@ -604,7 +675,9 @@ class OAuthRefreshToken(Base):
     __tablename__ = "oauth_refresh_tokens"
 
     token_id = Column(String, primary_key=True, default=generate_uuid)
-    token_hash = Column(String, nullable=False, index=True)
+    token_hash = Column(String, nullable=False)
+    # SHA256 prefix for O(1) lookup - avoids scanning entire table
+    token_lookup = Column(String(64), nullable=False, unique=True, index=True)
     authorization_id = Column(
         String,
         ForeignKey("oauth_authorizations.authorization_id", ondelete="CASCADE"),
@@ -625,8 +698,13 @@ class OAuthRefreshToken(Base):
 
     @classmethod
     def hash_token(cls, token: str) -> str:
-        """Hash a token for storage."""
+        """Hash a token for secure storage (argon2)."""
         return argon2.hash(token)
+
+    @classmethod
+    def lookup_key(cls, token: str) -> str:
+        """Generate lookup key (SHA256) for O(1) database lookup."""
+        return hashlib.sha256(token.encode()).hexdigest()
 
 
 class OAuthAuthorizationCode(BaseModel):
