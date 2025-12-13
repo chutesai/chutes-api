@@ -1,5 +1,5 @@
 """
-Helpers and application logic related to API keys.
+Helpers and application logic related to API keys and OAuth access tokens.
 """
 
 import re
@@ -24,7 +24,7 @@ def reinject_dash(uuid_str: str) -> str:
 @alru_cache(maxsize=1000, ttl=60)
 async def _load_key(token_id: str):
     """
-    Load API key from database with caching.
+    Load API key (normal, not oauth2) from database with caching.
     """
     cache_key = f"akey:{token_id}"
     cached = await settings.redis_client.get(cache_key)
@@ -55,11 +55,86 @@ async def _load_key(token_id: str):
         return api_key
 
 
+async def get_user_from_oauth_token(token: str, request: Request):
+    """
+    Validate an OAuth access token (cak_ prefix) and return the user and scopes.
+    Returns (None, None) if invalid.
+    """
+    from api.idp.schemas import OAuthAccessToken
+
+    if not OAuthAccessToken.could_be_valid(token):
+        return None, None
+
+    from api.idp.service import validate_access_token
+
+    result = await validate_access_token(token)
+    if not result:
+        return None, None
+
+    # Result is now a TokenValidationResult with user and scopes
+    user = result.user
+    scopes = result.scopes
+
+    # Store OAuth context on request state
+    request.state.oauth_token = True
+    request.state.oauth_scopes = scopes
+
+    return user, scopes
+
+
+class OAuthTokenWrapper:
+    """
+    Wrapper to make OAuth tokens behave like API keys for compatibility.
+    Implements the same interface as APIKey for scope checking.
+    """
+
+    def __init__(self, user, scopes: list):
+        self.user = user
+        self.scopes = scopes or []
+        self.admin = "admin" in self.scopes
+
+    def has_access(self, object_type: str, object_id: str, action: str) -> bool:
+        """
+        Check if the OAuth token has access to the specified resource.
+        """
+        from api.idp.schemas import check_scope_access
+
+        if self.admin:
+            return True
+
+        if object_type == "chutes" and object_id in (
+            "__megallm__",
+            "__megadiffuser__",
+            "__megaembed__",
+        ):
+            if check_scope_access(self.scopes, "chutes", None, "invoke"):
+                return True
+
+        return check_scope_access(self.scopes, object_type, object_id, action)
+
+
 async def get_and_check_api_key(key: str, request: Request):
     """
-    Take the `key` from the authorization header which comprosises of the user_id and token_id,
-    then check them against the available scopes.
+    Check the API key, check scopes, then fetch the user (oauth tokens AND API keys).
     """
+    # OAuth2 style tokens.
+    if key.startswith("cak_"):
+        user, scopes = await get_user_from_oauth_token(key, request)
+        if user:
+            wrapper = OAuthTokenWrapper(user, scopes)
+            if not wrapper.has_access(
+                request.state.auth_object_type,
+                request.state.auth_object_id,
+                request.state.auth_method,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Token does not have permission for this resource",
+                )
+            return wrapper
+        return None
+
+    # Normal API keys.
     if not APIKey.could_be_valid(key):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -88,5 +163,4 @@ async def get_and_check_api_key(key: str, request: Request):
             detail="Invalid token or user not found",
         )
 
-    # TODO: Add checking of the user_id?
     return api_token

@@ -52,6 +52,7 @@ from api.config import settings
 from api.api_key.schemas import APIKey, APIKeyArgs
 from api.api_key.response import APIKeyCreationResponse
 from api.user.util import validate_the_username, generate_payment_address
+from api.user.templater import registration_token_form, registration_token_success, error_page
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
@@ -1005,79 +1006,7 @@ async def get_registration_token(request: Request):
     await settings.redis_client.incr(f"rtoken_fetch:{actual_ip}")
     await settings.redis_client.expire(f"rtoken_fetch:{actual_ip}", 24 * 60 * 60)
 
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Registration Token Request</title>
-        <script src="https://js.hcaptcha.com/1/api.js" async defer></script>
-        <style>
-            body {{
-                margin: 0;
-                padding: 20px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                min-height: 100vh;
-                background: #f0f2f5;
-            }}
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                width: 400px;
-                text-align: center;
-            }}
-            .label {{
-                color: #666;
-                font-size: 12px;
-                margin-bottom: 20px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            .h-captcha {{
-                display: inline-block;
-                margin: 20px 0;
-            }}
-            .submit-btn {{
-                background: #4CAF50;
-                color: white;
-                border: none;
-                padding: 10px 30px;
-                border-radius: 4px;
-                font-size: 14px;
-                cursor: pointer;
-                margin-top: 20px;
-                transition: background 0.3s;
-            }}
-            .submit-btn:hover {{
-                background: #45a049;
-            }}
-            .info {{
-                margin-top: 15px;
-                font-size: 11px;
-                color: #999;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="label">Chutes CLI Registration Token Request</div>
-            <form action="/users/registration_token" method="POST">
-                <div class="h-captcha" data-sitekey="{settings.hcaptcha_sitekey}"></div>
-                <br />
-                <input type="submit" class="submit-btn" value="Get Token" />
-            </form>
-            <div class="info">Please complete the verification to receive your token</div>
-        </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
+    return HTMLResponse(content=registration_token_form(settings.hcaptcha_sitekey))
 
 
 @router.post("/registration_token")
@@ -1105,7 +1034,7 @@ async def post_rtok(request: Request):
     h_captcha_response = form_data.get("h-captcha-response")
     if not h_captcha_response:
         logger.warning(f"RTOK: missing hCaptcha response from {actual_ip}")
-        return HTMLResponse(content=error_html("hCaptcha verification required"), status_code=400)
+        return HTMLResponse(content=error_page("hCaptcha verification required"), status_code=400)
     async with aiohttp.ClientSession() as session:
         try:
             async with session.post(
@@ -1122,165 +1051,19 @@ async def post_rtok(request: Request):
                         f"RTOK: hCaptcha verification failed for {actual_ip}: {verify_data}"
                     )
                     return HTMLResponse(
-                        content=error_html("hCaptcha verification failed. Please try again."),
+                        content=error_page("hCaptcha verification failed. Please try again."),
                         status_code=400,
                     )
         except Exception as e:
             logger.error(f"RTOK: hCaptcha verification error: {e}")
             return HTMLResponse(
-                content=error_html("Verification error. Please try again."), status_code=500
+                content=error_page("Verification error. Please try again."), status_code=500
             )
 
     # Create the token and render it.
     token = str(uuid.uuid4())
     await settings.redis_client.set(f"regtoken:{token}", actual_ip, ex=300)
-    html_content = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Registration Token</title>
-        <style>
-            body {{
-                margin: 0;
-                padding: 20px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                min-height: 100vh;
-                background: #f0f2f5;
-            }}
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                width: 400px;
-                text-align: center;
-            }}
-            .label {{
-                color: #666;
-                font-size: 12px;
-                margin-bottom: 10px;
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-            }}
-            .token {{
-                font-family: monospace;
-                font-size: 14px;
-                word-break: break-all;
-                color: #333;
-                background: #f8f9fa;
-                padding: 10px;
-                border-radius: 4px;
-                user-select: all;
-                cursor: pointer;
-                position: relative;
-            }}
-            .token:hover {{
-                background: #e9ecef;
-            }}
-            .expires {{
-                margin-top: 15px;
-                font-size: 11px;
-                color: #999;
-            }}
-            .copy-hint {{
-                margin-top: 10px;
-                font-size: 11px;
-                color: #666;
-            }}
-        </style>
-        <script>
-            function copyToken() {{
-                const token = document.querySelector('.token');
-                const selection = window.getSelection();
-                const range = document.createRange();
-                range.selectNodeContents(token);
-                selection.removeAllRanges();
-                selection.addRange(range);
-                document.execCommand('copy');
-                const hint = document.querySelector('.copy-hint');
-                hint.textContent = 'Copied!';
-                setTimeout(() => {{
-                    hint.textContent = 'Click token to select all';
-                }}, 2000);
-            }}
-        </script>
-    </head>
-    <body>
-        <div class="container">
-            <div class="label">Chutes CLI Registration Token</div>
-            <div class="token" onclick="copyToken()">{token}</div>
-            <div class="copy-hint">Click token to select all</div>
-            <div class="expires">Expires in 5 minutes</div>
-        </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html_content)
-
-
-def error_html(message: str) -> str:
-    """
-    Generate error HTML page.
-    """
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <title>Error</title>
-        <style>
-            body {{
-                margin: 0;
-                padding: 20px;
-                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                min-height: 100vh;
-                background: #f0f2f5;
-            }}
-            .container {{
-                background: white;
-                padding: 30px;
-                border-radius: 8px;
-                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-                width: 400px;
-                text-align: center;
-            }}
-            .error-icon {{
-                color: #f44336;
-                font-size: 48px;
-                margin-bottom: 20px;
-            }}
-            .message {{
-                color: #333;
-                font-size: 14px;
-                margin-bottom: 20px;
-            }}
-            .back-link {{
-                color: #4CAF50;
-                text-decoration: none;
-                font-size: 14px;
-            }}
-            .back-link:hover {{
-                text-decoration: underline;
-            }}
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="error-icon">✕</div>
-            <div class="message">{message}</div>
-        </div>
-    </body>
-    </html>
-    """
+    return HTMLResponse(content=registration_token_success(token))
 
 
 @router.post(
@@ -1473,15 +1256,38 @@ async def change_fingerprint(
     return {"status": "Fingerprint updated"}
 
 
+@router.get("/login/nonce")
+async def get_login_nonce():
+    """
+    Get a nonce for hotkey signature login.
+    The nonce is a UUID4 string that must be signed by the user's hotkey.
+    Valid for 5 minutes.
+    """
+    from api.idp.service import create_login_nonce
+
+    nonce = await create_login_nonce()
+    return {"nonce": nonce, "expires_in": 300}
+
+
 @router.post("/login")
-async def fingerprint_login(
+async def login(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
-    Exchange the fingerprint for a JWT.
+    Exchange credentials for a JWT.
+
+    Supports two authentication methods:
+    1. Fingerprint: {"fingerprint": "your-fingerprint"}
+    2. Hotkey signature: {"hotkey": "5...", "signature": "hex...", "nonce": "uuid"}
+
+    For hotkey auth, first call GET /users/login/nonce to get a nonce,
+    sign it with your hotkey (e.g., `btcli w sign --message <nonce>`),
+    then submit the hotkey, signature, and nonce.
     """
     body = await request.json()
+
+    # Method 1: Fingerprint authentication
     fingerprint = body.get("fingerprint")
     if fingerprint and isinstance(fingerprint, str) and fingerprint.strip():
         fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
@@ -1489,12 +1295,62 @@ async def fingerprint_login(
             await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
         ).scalar_one_or_none()
         if user:
-            return {
-                "token": create_token(user),
-            }
+            return {"token": create_token(user)}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid fingerprint.",
+        )
+
+    # Method 2: Hotkey signature authentication
+    hotkey = body.get("hotkey")
+    signature = body.get("signature")
+    nonce = body.get("nonce")
+
+    if hotkey and signature and nonce:
+        from api.idp.service import verify_and_consume_login_nonce
+
+        # Verify nonce exists and hasn't been used
+        if not await verify_and_consume_login_nonce(nonce):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid or expired nonce. Please request a new one.",
+            )
+
+        # Verify signature
+        try:
+            signature_bytes = bytes.fromhex(signature)
+            keypair = Keypair(hotkey)
+            if not keypair.verify(nonce, signature_bytes):
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid signature.",
+                )
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid signature format.",
+            )
+        except Exception as e:
+            logger.warning(f"Hotkey signature verification failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Signature verification failed.",
+            )
+
+        # Find user by hotkey
+        user = (await db.execute(select(User).where(User.hotkey == hotkey))).scalar_one_or_none()
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No account found for this hotkey.",
+            )
+
+        return {"token": create_token(user)}
+
     raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Missing or invalid fingerprint provided.",
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="Please provide either 'fingerprint' or 'hotkey'+'signature'+'nonce' for authentication.",
     )
 
 

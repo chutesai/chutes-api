@@ -36,6 +36,7 @@ from api.guesser import router as guess_router
 from api.audit.router import router as audit_router
 from api.server.router import router as servers_router
 from api.misc.router import router as misc_router
+from api.idp.router import router as idp_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
 from api.config import settings
@@ -193,6 +194,7 @@ default_router.include_router(jobs_router, prefix="/jobs", tags=["Job"])
 default_router.include_router(secrets_router, prefix="/secrets", tags=["Secret"])
 default_router.include_router(misc_router, prefix="/misc", tags=["Miscellaneous"])
 default_router.include_router(servers_router, prefix="/servers", tags=["Servers"])
+default_router.include_router(idp_router, prefix="/idp", tags=["Identity Provider"])
 
 
 # Do not use app for this, else middleware picks it up
@@ -220,6 +222,44 @@ async def get_latest_metrics(request: Request):
 
 default_router.get("/ping")(ping)
 default_router.get("/_metrics")(get_latest_metrics)
+
+
+# OpenID Connect discovery endpoint at root level (standard location)
+@default_router.get("/.well-known/openid-configuration")
+async def openid_configuration_root(request: Request):
+    """
+    OpenID Connect Discovery endpoint.
+    """
+    from api.idp.schemas import get_available_scopes
+
+    idp_base = f"https://api.{settings.base_url}/idp"
+
+    return {
+        "issuer": f"https://api.{settings.base_url}",
+        "authorization_endpoint": f"{idp_base}/authorize",
+        "token_endpoint": f"{idp_base}/token",
+        "userinfo_endpoint": f"{idp_base}/userinfo",
+        "revocation_endpoint": f"{idp_base}/token/revoke",
+        "introspection_endpoint": f"{idp_base}/token/introspect",
+        "scopes_supported": list(get_available_scopes().keys()),
+        "response_types_supported": ["code"],
+        "response_modes_supported": ["query"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "token_endpoint_auth_methods_supported": [
+            "client_secret_post",
+            "client_secret_basic",
+            "none",
+        ],
+        "code_challenge_methods_supported": ["plain", "S256"],
+        "service_documentation": "https://docs.chutes.ai/oauth",
+        "subject_types_supported": ["public"],
+        "claims_supported": [
+            "sub",
+            "username",
+            "created_at",
+        ],
+    }
+
 
 app.include_router(default_router)
 app.include_router(host_invocation_router)

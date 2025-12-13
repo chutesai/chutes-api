@@ -1,0 +1,95 @@
+{% extends "base.jinja2" %}
+
+{% block title %}Sign in - Chutes{% endblock %}
+
+{% block content %}
+<h1>Sign in to continue</h1>
+<p class="subtitle">Authorize access to your Chutes account</p>
+
+<div class="app-info">
+    <div class="app-name">{{ app_name or "Application" }}</div>
+    <div class="app-desc">{{ app_description or "wants to access your account" }}</div>
+</div>
+
+{% if error %}
+<div class="error-message">{{ error }}</div>
+{% endif %}
+
+<div class="tabs">
+    <button class="tab active" onclick="showTab('fingerprint')">Fingerprint</button>
+    <button class="tab" onclick="showTab('hotkey')">Hotkey Signature</button>
+</div>
+
+<div id="fingerprint-form">
+    <form action="/idp/login" method="POST">
+        <input type="hidden" name="client_id" value="{{ client_id }}">
+        <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+        <input type="hidden" name="state" value="{{ state }}">
+        <input type="hidden" name="scope" value="{{ scope }}">
+        <input type="hidden" name="auth_method" value="fingerprint">
+        <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+        <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+        <div class="form-group">
+            <label for="fingerprint">Account Fingerprint</label>
+            <input type="password" id="fingerprint" name="fingerprint"
+                   placeholder="Enter your account fingerprint" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+</div>
+
+<div id="hotkey-form" class="hidden">
+    <form action="/idp/login" method="POST" id="hotkeyForm">
+        <input type="hidden" name="client_id" value="{{ client_id }}">
+        <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+        <input type="hidden" name="state" value="{{ state }}">
+        <input type="hidden" name="scope" value="{{ scope }}">
+        <input type="hidden" name="auth_method" value="hotkey">
+        <input type="hidden" name="nonce" value="{{ nonce }}">
+        <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+        <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+        <div class="nonce-display">
+            <label>Message to Sign (click to copy)</label>
+            <code id="nonceCode" onclick="copyNonce()">{{ nonce }}</code>
+        </div>
+
+        <div class="form-group">
+            <label for="hotkey">Hotkey Address (SS58)</label>
+            <input type="text" id="hotkey" name="hotkey"
+                   placeholder="5..." required>
+        </div>
+
+        <div class="form-group">
+            <label for="signature">Signature</label>
+            <input type="text" id="signature" name="signature"
+                   placeholder="Signature hex from btcli or wallet" required>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Sign In with Hotkey</button>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function showTab(tab) {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelector(`[onclick="showTab('${tab}')"]`).classList.add('active');
+
+        document.getElementById('fingerprint-form').classList.toggle('hidden', tab !== 'fingerprint');
+        document.getElementById('hotkey-form').classList.toggle('hidden', tab !== 'hotkey');
+    }
+
+    function copyNonce() {
+        const nonce = document.getElementById('nonceCode').textContent;
+        navigator.clipboard.writeText(nonce);
+        document.getElementById('nonceCode').style.color = '#4ade80';
+        setTimeout(() => {
+            document.getElementById('nonceCode').style.color = '#a5b4fc';
+        }, 1000);
+    }
+</script>
+{% endblock %}

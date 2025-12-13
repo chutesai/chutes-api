@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Chutes{% endblock %}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #16213e 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: #e0e0e0;
+        }
+
+        .container {
+            background: rgba(26, 26, 46, 0.95);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 16px;
+            padding: 40px;
+            width: 100%;
+            max-width: 440px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
+                        0 0 60px rgba(99, 102, 241, 0.1);
+        }
+
+        .logo {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .logo svg {
+            width: 48px;
+            height: 48px;
+        }
+
+        .logo-text {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-top: 8px;
+        }
+
+        h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #f0f0f0;
+            text-align: center;
+            margin-bottom: 8px;
+        }
+
+        .subtitle {
+            color: #9ca3af;
+            text-align: center;
+            font-size: 14px;
+            margin-bottom: 32px;
+        }
+
+        .app-info {
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 24px;
+            text-align: center;
+        }
+
+        .app-info .app-name {
+            font-size: 18px;
+            font-weight: 600;
+            color: #f0f0f0;
+            margin-bottom: 4px;
+        }
+
+        .app-info .app-desc {
+            font-size: 13px;
+            color: #9ca3af;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 24px;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px 16px;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 8px;
+            background: transparent;
+            color: #9ca3af;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab:hover {
+            border-color: rgba(99, 102, 241, 0.5);
+            color: #e0e0e0;
+        }
+
+        .tab.active {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            border-color: transparent;
+            color: white;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 13px;
+            font-weight: 500;
+            color: #d1d5db;
+            margin-bottom: 8px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 16px;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 8px;
+            background: rgba(15, 15, 26, 0.8);
+            color: #f0f0f0;
+            font-size: 14px;
+            transition: all 0.2s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #6366f1;
+            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+        }
+
+        .form-group input::placeholder {
+            color: #6b7280;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            margin-top: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            color: #9ca3af;
+        }
+
+        .btn-secondary:hover {
+            border-color: rgba(99, 102, 241, 0.5);
+            color: #e0e0e0;
+        }
+
+        .nonce-display {
+            background: rgba(15, 15, 26, 0.8);
+            border: 1px solid rgba(99, 102, 241, 0.3);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 20px;
+        }
+
+        .nonce-display label {
+            display: block;
+            font-size: 12px;
+            color: #9ca3af;
+            margin-bottom: 8px;
+        }
+
+        .nonce-display code {
+            display: block;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 13px;
+            color: #a5b4fc;
+            word-break: break-all;
+            user-select: all;
+            cursor: pointer;
+        }
+
+        .error-message {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #f87171;
+            font-size: 13px;
+            margin-bottom: 20px;
+        }
+
+        .success-message {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            border-radius: 8px;
+            padding: 12px 16px;
+            color: #4ade80;
+            font-size: 13px;
+            margin-bottom: 20px;
+        }
+
+        .scopes-list {
+            background: rgba(15, 15, 26, 0.8);
+            border: 1px solid rgba(99, 102, 241, 0.2);
+            border-radius: 8px;
+            padding: 16px;
+            margin-bottom: 24px;
+        }
+
+        .scopes-list h3 {
+            font-size: 13px;
+            font-weight: 500;
+            color: #9ca3af;
+            margin-bottom: 12px;
+        }
+
+        .scope-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+        }
+
+        .scope-item:last-child {
+            border-bottom: none;
+        }
+
+        .scope-item .icon {
+            color: #6366f1;
+        }
+
+        .scope-item .text {
+            font-size: 14px;
+            color: #e0e0e0;
+        }
+
+        .auth-actions {
+            display: flex;
+            gap: 12px;
+        }
+
+        .auth-actions .btn {
+            flex: 1;
+        }
+
+        .auth-info {
+            background: rgba(15, 15, 26, 0.6);
+            border: 1px solid rgba(99, 102, 241, 0.15);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #9ca3af;
+        }
+
+        .auth-info p {
+            margin: 4px 0;
+        }
+
+        .auth-info .highlight {
+            color: #a5b4fc;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 24px;
+            font-size: 12px;
+            color: #6b7280;
+        }
+
+        .footer a {
+            color: #6366f1;
+            text-decoration: none;
+        }
+
+        .footer a:hover {
+            text-decoration: underline;
+        }
+    </style>
+    {% block extra_styles %}{% endblock %}
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M24 4L4 14v20l20 10 20-10V14L24 4z" fill="url(#grad1)" opacity="0.9"/>
+                <path d="M24 4L4 14l20 10 20-10L24 4z" fill="url(#grad2)"/>
+                <path d="M4 14v20l20 10V24L4 14z" fill="#4f46e5" opacity="0.8"/>
+                <path d="M44 14v20l-20 10V24l20-10z" fill="#7c3aed" opacity="0.8"/>
+                <defs>
+                    <linearGradient id="grad1" x1="4" y1="4" x2="44" y2="44">
+                        <stop offset="0%" stop-color="#6366f1"/>
+                        <stop offset="100%" stop-color="#8b5cf6"/>
+                    </linearGradient>
+                    <linearGradient id="grad2" x1="4" y1="14" x2="44" y2="14">
+                        <stop offset="0%" stop-color="#818cf8"/>
+                        <stop offset="100%" stop-color="#a78bfa"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+            <div class="logo-text">Chutes</div>
+        </div>
+
+        {% block content %}{% endblock %}
+
+        <div class="footer">
+            <a href="https://chutes.ai" target="_blank">chutes.ai</a>
+        </div>
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>
