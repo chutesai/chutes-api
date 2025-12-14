@@ -24,6 +24,7 @@ from api.pagination import PaginatedResponse
 from api.permissions import Permissioning
 from api.user.schemas import User
 from api.user.service import get_current_user
+from api.user.tokens import get_user_from_token, create_token
 from api.idp.schemas import (
     OAuthAccessToken,
     OAuthApp,
@@ -584,6 +585,7 @@ async def authorize_get(
     """
     OAuth2 Authorization Endpoint.
     Displays login page if not authenticated, consent page if authenticated.
+    Checks for existing chutes-session-token cookie for SSO.
     """
     # Validate response_type
     if response_type != "code":
@@ -618,6 +620,43 @@ async def authorize_get(
             status_code=400,
         )
 
+    # Check for existing session cookie (SSO)
+    session_token = request.cookies.get("chutes-session-token")
+    if session_token:
+        try:
+            # Mock request state for get_user_from_token
+            request.state.auth_method = "read"
+            user = await get_user_from_token(session_token, request)
+            if user:
+                # User is already authenticated - skip to consent page
+                session_id = str(uuid.uuid4())
+                session_data = json.dumps(
+                    {
+                        "user_id": user.user_id,
+                        "client_id": client_id,
+                        "redirect_uri": redirect_uri,
+                        "scope": scope or "",
+                        "state": state or "",
+                        "code_challenge": code_challenge or "",
+                        "code_challenge_method": code_challenge_method or "",
+                    }
+                )
+                await settings.redis_client.set(
+                    f"idp:session:{session_id}",
+                    session_data,
+                    ex=600,
+                )
+                return RedirectResponse(
+                    url=f"/idp/authorize/consent?session_id={session_id}",
+                    status_code=302,
+                )
+        except Exception:
+            # Invalid session token - fall through to login page
+            pass
+
+    # Build the current authorization URL for the create account redirect
+    current_url = str(request.url)
+
     # Generate login nonce for hotkey auth
     nonce = await create_login_nonce()
 
@@ -633,6 +672,7 @@ async def authorize_get(
             nonce=nonce,
             code_challenge=code_challenge or "",
             code_challenge_method=code_challenge_method or "",
+            create_account_url=f"https://{settings.base_domain}/auth/start?redirect_to={current_url}",
         )
     )
 
@@ -832,11 +872,23 @@ async def login_post(
         ex=600,  # 10 minutes
     )
 
-    # Auto-submit to consent page
-    return RedirectResponse(
+    # Create session token for SSO
+    session_token = create_token(user)
+
+    # Auto-submit to consent page, setting the session cookie for future SSO
+    response = RedirectResponse(
         url=f"/idp/authorize/consent?session_id={session_id}",
         status_code=302,
     )
+    response.set_cookie(
+        key="chutes-session-token",
+        value=session_token,
+        max_age=7 * 24 * 60 * 60,  # 7 days (matches token expiry)
+        httponly=True,
+        secure=True,
+        samesite="lax",
+    )
+    return response
 
 
 async def _get_session_data(session_id: str) -> Optional[dict]:

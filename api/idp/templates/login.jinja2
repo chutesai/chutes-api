@@ -71,6 +71,12 @@
         <button type="submit" class="btn btn-primary">Sign In with Hotkey</button>
     </form>
 </div>
+
+{% if create_account_url %}
+<div class="create-account">
+    <p>Don't have an account? <a href="{{ create_account_url }}">Create one</a></p>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}

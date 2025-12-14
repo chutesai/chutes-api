@@ -41,6 +41,7 @@ def login_page(
     error: str = "",
     code_challenge: str = "",
     code_challenge_method: str = "",
+    create_account_url: str = "",
 ) -> str:
     """Generate the login page HTML."""
     template = _env.get_template("login.jinja2")
@@ -55,6 +56,7 @@ def login_page(
         error=error,
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
+        create_account_url=create_account_url,
     )
 
 
