@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{% block title %}Chutes{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         * {
             margin: 0;
@@ -12,96 +15,88 @@
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 50%, #16213e 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
             min-height: 100vh;
             display: flex;
             justify-content: center;
             align-items: center;
             padding: 20px;
-            color: #e0e0e0;
+            color: #ffffff;
         }
 
         .container {
-            background: rgba(26, 26, 46, 0.95);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            border-radius: 16px;
-            padding: 40px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 40px;
             width: 100%;
-            max-width: 440px;
-            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4),
-                        0 0 60px rgba(99, 102, 241, 0.1);
+            max-width: 320px;
         }
 
         .logo {
-            text-align: center;
-            margin-bottom: 32px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0;
         }
 
         .logo svg {
-            width: 48px;
-            height: 48px;
-        }
-
-        .logo-text {
-            font-size: 24px;
-            font-weight: 700;
-            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
-            margin-top: 8px;
+            width: 40px;
+            height: 40px;
+            color: #ffffff;
         }
 
         h1 {
-            font-size: 20px;
+            font-size: 30px;
             font-weight: 600;
-            color: #f0f0f0;
+            color: #ffffff;
             text-align: center;
-            margin-bottom: 8px;
+            margin-top: 24px;
         }
 
         .subtitle {
-            color: #9ca3af;
+            color: #a3a3a3;
             text-align: center;
             font-size: 14px;
-            margin-bottom: 32px;
+            margin-top: 8px;
         }
 
         .app-info {
-            background: rgba(99, 102, 241, 0.1);
-            border: 1px solid rgba(99, 102, 241, 0.2);
-            border-radius: 12px;
-            padding: 16px;
-            margin-bottom: 24px;
+            background: rgba(217, 217, 217, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 16px 20px;
             text-align: center;
+            width: 100%;
         }
 
         .app-info .app-name {
-            font-size: 18px;
+            font-size: 16px;
             font-weight: 600;
-            color: #f0f0f0;
+            color: #ffffff;
             margin-bottom: 4px;
         }
 
         .app-info .app-desc {
             font-size: 13px;
-            color: #9ca3af;
+            color: #a3a3a3;
         }
 
         .tabs {
             display: flex;
             gap: 8px;
-            margin-bottom: 24px;
+            width: 100%;
         }
 
         .tab {
             flex: 1;
             padding: 12px 16px;
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            border-radius: 8px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
             background: transparent;
-            color: #9ca3af;
+            color: #a3a3a3;
+            font-family: inherit;
             font-size: 14px;
             font-weight: 500;
             cursor: pointer;
@@ -109,102 +104,144 @@
         }
 
         .tab:hover {
-            border-color: rgba(99, 102, 241, 0.5);
-            color: #e0e0e0;
+            border-color: rgba(255, 255, 255, 0.2);
+            color: #ffffff;
         }
 
         .tab.active {
-            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-            border-color: transparent;
-            color: white;
+            background: #ffffff;
+            border-color: #ffffff;
+            color: #0a0a0a;
         }
 
         .form-group {
-            margin-bottom: 20px;
+            margin-bottom: 8px;
+            width: 100%;
         }
 
         .form-group label {
             display: block;
             font-size: 13px;
             font-weight: 500;
-            color: #d1d5db;
+            color: #a3a3a3;
             margin-bottom: 8px;
+        }
+
+        .form-group .input-wrapper {
+            position: relative;
+        }
+
+        .form-group .input-icon {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #737373;
+            width: 16px;
+            height: 16px;
         }
 
         .form-group input {
             width: 100%;
-            padding: 12px 16px;
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            border-radius: 8px;
-            background: rgba(15, 15, 26, 0.8);
-            color: #f0f0f0;
+            padding: 14px 16px;
+            padding-left: 40px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            background: rgba(217, 217, 217, 0.1);
+            color: #ffffff;
+            font-family: inherit;
             font-size: 14px;
             transition: all 0.2s ease;
         }
 
         .form-group input:focus {
             outline: none;
-            border-color: #6366f1;
-            box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+            border-color: rgba(255, 255, 255, 0.3);
+            background: rgba(217, 217, 217, 0.15);
         }
 
         .form-group input::placeholder {
-            color: #6b7280;
+            color: #737373;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: #737373;
+            margin-top: 8px;
         }
 
         .btn {
             width: 100%;
-            padding: 14px 24px;
+            padding: 12px 24px;
             border: none;
-            border-radius: 8px;
+            border-radius: 9999px;
+            font-family: inherit;
             font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
-            margin-top: 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
         }
 
         .btn-primary {
-            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
-            color: white;
+            background: #ffffff;
+            color: #0a0a0a;
         }
 
         .btn-primary:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+            background: #e5e5e5;
         }
 
         .btn-secondary {
             background: transparent;
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            color: #9ca3af;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #ffffff;
         }
 
         .btn-secondary:hover {
-            border-color: rgba(99, 102, 241, 0.5);
-            color: #e0e0e0;
+            border-color: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .btn-danger {
+            background: transparent;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+        }
+
+        .btn-danger:hover {
+            border-color: rgba(239, 68, 68, 0.5);
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .btn svg {
+            width: 16px;
+            height: 16px;
         }
 
         .nonce-display {
-            background: rgba(15, 15, 26, 0.8);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            border-radius: 8px;
+            background: rgba(217, 217, 217, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
             padding: 16px;
-            margin-bottom: 20px;
+            width: 100%;
         }
 
         .nonce-display label {
             display: block;
             font-size: 12px;
-            color: #9ca3af;
+            color: #737373;
             margin-bottom: 8px;
         }
 
         .nonce-display code {
             display: block;
             font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 13px;
-            color: #a5b4fc;
+            font-size: 12px;
+            color: #ffffff;
             word-break: break-all;
             user-select: all;
             cursor: pointer;
@@ -212,63 +249,74 @@
 
         .error-message {
             background: rgba(239, 68, 68, 0.1);
-            border: 1px solid rgba(239, 68, 68, 0.3);
-            border-radius: 8px;
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: 12px;
             padding: 12px 16px;
             color: #f87171;
-            font-size: 13px;
-            margin-bottom: 20px;
+            font-size: 14px;
+            width: 100%;
+            text-align: center;
         }
 
         .success-message {
             background: rgba(34, 197, 94, 0.1);
-            border: 1px solid rgba(34, 197, 94, 0.3);
-            border-radius: 8px;
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            border-radius: 12px;
             padding: 12px 16px;
             color: #4ade80;
-            font-size: 13px;
-            margin-bottom: 20px;
+            font-size: 14px;
+            width: 100%;
+            text-align: center;
         }
 
         .scopes-list {
-            background: rgba(15, 15, 26, 0.8);
-            border: 1px solid rgba(99, 102, 241, 0.2);
-            border-radius: 8px;
+            background: rgba(217, 217, 217, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
             padding: 16px;
-            margin-bottom: 24px;
+            width: 100%;
         }
 
         .scopes-list h3 {
             font-size: 13px;
             font-weight: 500;
-            color: #9ca3af;
+            color: #737373;
             margin-bottom: 12px;
         }
 
         .scope-item {
             display: flex;
             align-items: center;
-            gap: 8px;
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(99, 102, 241, 0.1);
+            gap: 10px;
+            padding: 10px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
 
         .scope-item:last-child {
             border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .scope-item:first-child {
+            padding-top: 0;
         }
 
         .scope-item .icon {
-            color: #6366f1;
+            color: #98cfb2;
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
         }
 
         .scope-item .text {
             font-size: 14px;
-            color: #e0e0e0;
+            color: #e5e5e5;
         }
 
         .auth-actions {
             display: flex;
             gap: 12px;
+            width: 100%;
         }
 
         .auth-actions .btn {
@@ -276,41 +324,72 @@
         }
 
         .auth-info {
-            background: rgba(15, 15, 26, 0.6);
-            border: 1px solid rgba(99, 102, 241, 0.15);
-            border-radius: 8px;
-            padding: 12px 16px;
-            margin-bottom: 20px;
-            font-size: 13px;
-            color: #9ca3af;
-        }
-
-        .auth-info p {
-            margin: 4px 0;
+            text-align: center;
+            font-size: 14px;
+            color: #a3a3a3;
+            width: 100%;
         }
 
         .auth-info .highlight {
-            color: #a5b4fc;
+            color: #ffffff;
+            font-weight: 500;
+        }
+
+        .divider {
+            position: relative;
+            width: 100%;
+            text-align: center;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .divider span {
+            position: relative;
+            background: #0a0a0a;
+            padding: 0 12px;
+            color: #737373;
+            font-size: 12px;
         }
 
         .hidden {
             display: none;
         }
 
-        .footer {
+        .footer-link {
             text-align: center;
-            margin-top: 24px;
-            font-size: 12px;
-            color: #6b7280;
+            width: 100%;
+            padding-top: 16px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
         }
 
-        .footer a {
-            color: #6366f1;
+        .footer-link a, .footer-link button {
+            color: #ffffff;
             text-decoration: none;
+            font-size: 14px;
+            font-weight: 600;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
         }
 
-        .footer a:hover {
+        .footer-link a:hover, .footer-link button:hover {
             text-decoration: underline;
+        }
+
+        .form-content {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+            width: 100%;
         }
     </style>
     {% block extra_styles %}{% endblock %}
@@ -318,30 +397,19 @@
 <body>
     <div class="container">
         <div class="logo">
-            <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M24 4L4 14v20l20 10 20-10V14L24 4z" fill="url(#grad1)" opacity="0.9"/>
-                <path d="M24 4L4 14l20 10 20-10L24 4z" fill="url(#grad2)"/>
-                <path d="M4 14v20l20 10V24L4 14z" fill="#4f46e5" opacity="0.8"/>
-                <path d="M44 14v20l-20 10V24l20-10z" fill="#7c3aed" opacity="0.8"/>
+            <svg width="62" height="41" viewBox="0 0 62 41" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M38.01 39.6943C37.1263 41.1364 35.2525 41.4057 34.0442 40.2642L28.6738 35.1904C27.4656 34.049 27.4843 32.0273 28.7133 30.9115L34.1258 25.9979C40.1431 20.5352 48.069 18.406 55.6129 20.2255L59.6853 21.2078C59.8306 21.2428 59.9654 21.3165 60.0771 21.422C60.6663 21.9787 60.3364 23.0194 59.552 23.078L59.465 23.0845C52.0153 23.6409 45.1812 27.9913 40.9759 34.8542L38.01 39.6943Z" fill="currentColor"/>
+                <path d="M15.296 36.5912C14.1726 37.8368 12.2763 37.7221 11.2913 36.349L0.547139 21.3709C-0.432786 20.0048 -0.0547272 18.0273 1.34794 17.1822L22.7709 4.27482C29.6029 0.158495 37.7319 -0.277291 44.8086 3.0934L60.3492 10.4956C60.5897 10.6101 60.7997 10.7872 60.9599 11.0106C61.8149 12.2025 60.8991 13.9056 59.5058 13.7148L50.2478 12.4467C42.8554 11.4342 35.4143 14.2848 30.1165 20.1587L15.296 36.5912Z" fill="url(#paint0_linear)"/>
                 <defs>
-                    <linearGradient id="grad1" x1="4" y1="4" x2="44" y2="44">
-                        <stop offset="0%" stop-color="#6366f1"/>
-                        <stop offset="100%" stop-color="#8b5cf6"/>
-                    </linearGradient>
-                    <linearGradient id="grad2" x1="4" y1="14" x2="44" y2="14">
-                        <stop offset="0%" stop-color="#818cf8"/>
-                        <stop offset="100%" stop-color="#a78bfa"/>
+                    <linearGradient id="paint0_linear" x1="33.8526" y1="0.173618" x2="25.5505" y2="41.4493" gradientUnits="userSpaceOnUse">
+                        <stop stop-color="currentColor"/>
+                        <stop offset="1" stop-color="currentColor"/>
                     </linearGradient>
                 </defs>
             </svg>
-            <div class="logo-text">Chutes</div>
         </div>
 
         {% block content %}{% endblock %}
-
-        <div class="footer">
-            <a href="https://chutes.ai" target="_blank">chutes.ai</a>
-        </div>
     </div>
     {% block scripts %}{% endblock %}
 </body>

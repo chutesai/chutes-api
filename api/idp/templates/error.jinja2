@@ -3,12 +3,18 @@
 {% block title %}Error - Chutes{% endblock %}
 
 {% block content %}
-<h1>Authentication Error</h1>
+<h1>Something went wrong</h1>
 
-<div class="error-message">
-    <strong>{{ error }}</strong>
-    {% if error_description %}
-    <p style="margin-top: 8px;">{{ error_description }}</p>
-    {% endif %}
+<div class="form-content">
+    <div class="error-message">
+        <strong>{{ error }}</strong>
+        {% if error_description %}
+        <p style="margin-top: 8px; opacity: 0.8;">{{ error_description }}</p>
+        {% endif %}
+    </div>
+
+    <a href="https://chutes.ai" class="btn btn-secondary">
+        Return to Chutes
+    </a>
 </div>
 {% endblock %}
