@@ -1085,7 +1085,7 @@ async def token_endpoint(
                 status_code=400,
             )
 
-        access_token, refresh_tok, expires_in, error = await exchange_authorization_code(
+        access_token, refresh_tok, expires_in, scopes, error = await exchange_authorization_code(
             code=code,
             client_id=client_id,
             client_secret=client_secret,
@@ -1104,6 +1104,7 @@ async def token_endpoint(
             token_type="Bearer",
             expires_in=expires_in,
             refresh_token=refresh_tok,
+            scope=" ".join(scopes) if scopes else None,
         )
 
     elif grant_type == "refresh_token":
@@ -1116,7 +1117,7 @@ async def token_endpoint(
                 status_code=400,
             )
 
-        access_token, new_refresh, expires_in, error = await refresh_access_token(
+        access_token, new_refresh, expires_in, scopes, error = await refresh_access_token(
             refresh_token=refresh_token,
             client_id=client_id,
             client_secret=client_secret,
@@ -1133,6 +1134,7 @@ async def token_endpoint(
             token_type="Bearer",
             expires_in=expires_in,
             refresh_token=new_refresh,
+            scope=" ".join(scopes) if scopes else None,
         )
 
     else:

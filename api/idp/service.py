@@ -150,10 +150,10 @@ async def exchange_authorization_code(
     client_secret: Optional[str],
     redirect_uri: str,
     code_verifier: Optional[str] = None,
-) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str]]:
+) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[List[str]], Optional[str]]:
     """
     Exchange an authorization code for access and refresh tokens.
-    Returns (access_token, refresh_token, expires_in, error).
+    Returns (access_token, refresh_token, expires_in, scopes, error).
     """
     # Look up the code in Redis (atomic get-and-delete for single use)
     code_hash = OAuthAuthorizationCode.hash_code(code)
@@ -161,41 +161,41 @@ async def exchange_authorization_code(
     code_data = await settings.redis_client.getdel(redis_key)
 
     if not code_data:
-        return None, None, None, "invalid_grant"
+        return None, None, None, None, "invalid_grant"
 
     try:
         auth_code = OAuthAuthorizationCode.from_json(code_data)
     except Exception:
-        return None, None, None, "invalid_grant"
+        return None, None, None, None, "invalid_grant"
 
     # Verify redirect_uri matches
     if auth_code.redirect_uri != redirect_uri:
-        return None, None, None, "invalid_grant"
+        return None, None, None, None, "invalid_grant"
 
     # Load the app to verify client credentials
     app = await get_app_by_client_id(client_id)
     if not app or app.app_id != auth_code.app_id:
-        return None, None, None, "invalid_client"
+        return None, None, None, None, "invalid_client"
 
     # Verify client secret or PKCE
     if auth_code.code_challenge:
         # PKCE flow
         if not code_verifier:
-            return None, None, None, "invalid_grant"
+            return None, None, None, None, "invalid_grant"
 
         if auth_code.code_challenge_method == "S256":
             # RFC 7636: BASE64URL(SHA256(code_verifier))
             sha256_hash = hashlib.sha256(code_verifier.encode()).digest()
             expected = base64.urlsafe_b64encode(sha256_hash).rstrip(b"=").decode("ascii")
             if expected != auth_code.code_challenge:
-                return None, None, None, "invalid_grant"
+                return None, None, None, None, "invalid_grant"
         elif auth_code.code_challenge_method == "plain":
             if code_verifier != auth_code.code_challenge:
-                return None, None, None, "invalid_grant"
+                return None, None, None, None, "invalid_grant"
     else:
         # Standard flow - verify client secret
         if not client_secret or not app.verify_secret(client_secret):
-            return None, None, None, "invalid_client"
+            return None, None, None, None, "invalid_client"
 
     async with get_session() as session:
         # Get or create authorization
@@ -261,22 +261,22 @@ async def exchange_authorization_code(
 
         await session.commit()
 
-        return access_token, refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, None
+        return access_token, refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, auth_code.scopes, None
 
 
 async def refresh_access_token(
     refresh_token: str,
     client_id: str,
     client_secret: Optional[str],
-) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[str]]:
+) -> Tuple[Optional[str], Optional[str], Optional[int], Optional[List[str]], Optional[str]]:
     """
     Use a refresh token to get a new access token.
-    Returns (access_token, refresh_token, expires_in, error).
+    Returns (access_token, refresh_token, expires_in, scopes, error).
     """
     # Parse token to get token_id for O(1) lookup
     token_id, _ = OAuthRefreshToken.parse_token(refresh_token)
     if not token_id:
-        return None, None, None, "invalid_grant"
+        return None, None, None, None, "invalid_grant"
 
     async with get_session() as session:
         # O(1) lookup by token_id (primary key)
@@ -288,39 +288,39 @@ async def refresh_access_token(
         refresh_obj = result.unique().scalar_one_or_none()
 
         if not refresh_obj:
-            return None, None, None, "invalid_grant"
+            return None, None, None, None, "invalid_grant"
 
         # Verify the token secret (single argon2 verify)
         if not refresh_obj.verify_secret(refresh_token):
-            return None, None, None, "invalid_grant"
+            return None, None, None, None, "invalid_grant"
 
         # Check if already used or revoked
         if refresh_obj.used or refresh_obj.revoked:
-            return None, None, None, "invalid_grant"
+            return None, None, None, None, "invalid_grant"
 
         # Check expiration
         if refresh_obj.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
             refresh_obj.revoked = True
             await session.commit()
-            return None, None, None, "invalid_grant"
+            return None, None, None, None, "invalid_grant"
 
         auth = refresh_obj.authorization
 
         # Check authorization isn't revoked
         if auth.revoked:
-            return None, None, None, "invalid_grant"
+            return None, None, None, None, "invalid_grant"
 
         # Verify client
         if auth.app.client_id != client_id:
-            return None, None, None, "invalid_client"
+            return None, None, None, None, "invalid_client"
 
         # For confidential clients (those with a secret), require client auth on refresh
         if auth.app.client_secret_hash and not client_secret:
-            return None, None, None, "invalid_client"
+            return None, None, None, None, "invalid_client"
 
         # Verify client secret if provided
         if client_secret and not auth.app.verify_secret(client_secret):
-            return None, None, None, "invalid_client"
+            return None, None, None, None, "invalid_client"
 
         # Mark old refresh token as used
         refresh_obj.used = True
@@ -356,7 +356,7 @@ async def refresh_access_token(
 
         await session.commit()
 
-        return new_access_token, new_refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, None
+        return new_access_token, new_refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, auth.scopes, None
 
 
 class TokenValidationResult:
