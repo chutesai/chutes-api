@@ -8,7 +8,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from bittensor_wallet.keypair import Keypair
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
@@ -672,7 +672,8 @@ async def authorize_get(
             nonce=nonce,
             code_challenge=code_challenge or "",
             code_challenge_method=code_challenge_method or "",
-            create_account_url=f"https://{settings.base_domain}/auth/start?redirect_to={current_url}",
+            create_account_url=f"https://{settings.base_domain}/auth/start?redirect_to={quote(current_url, safe='')}",
+            login_url=f"https://{settings.base_domain}/auth?redirect_to={quote(current_url, safe='')}",
         )
     )
 
