@@ -29,7 +29,7 @@
             display: flex;
             flex-direction: column;
             align-items: center;
-            gap: 40px;
+            gap: 24px;
             width: 100%;
             max-width: 320px;
         }
@@ -42,44 +42,45 @@
         }
 
         .logo svg {
-            width: 40px;
-            height: 40px;
+            width: 32px;
+            height: 32px;
             color: #ffffff;
         }
 
         h1 {
-            font-size: 30px;
+            font-size: 24px;
             font-weight: 600;
             color: #ffffff;
             text-align: center;
-            margin-top: 24px;
+            margin-top: 16px;
+            letter-spacing: -0.02em;
         }
 
         .subtitle {
             color: #a3a3a3;
             text-align: center;
-            font-size: 14px;
-            margin-top: 8px;
+            font-size: 13px;
+            margin-top: 4px;
         }
 
         .app-info {
             background: rgba(217, 217, 217, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
-            padding: 16px 20px;
+            border-radius: 12px;
+            padding: 14px 16px;
             text-align: center;
             width: 100%;
         }
 
         .app-info .app-name {
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
             color: #ffffff;
-            margin-bottom: 4px;
+            margin-bottom: 2px;
         }
 
         .app-info .app-desc {
-            font-size: 13px;
+            font-size: 12px;
             color: #a3a3a3;
         }
 
@@ -91,13 +92,13 @@
 
         .tab {
             flex: 1;
-            padding: 12px 16px;
+            padding: 10px 14px;
             border: 1px solid rgba(255, 255, 255, 0.1);
             border-radius: 9999px;
             background: transparent;
             color: #a3a3a3;
             font-family: inherit;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 500;
             cursor: pointer;
             transition: all 0.2s ease;
@@ -115,16 +116,16 @@
         }
 
         .form-group {
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             width: 100%;
         }
 
         .form-group label {
             display: block;
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 500;
             color: #a3a3a3;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
 
         .form-group .input-wrapper {
@@ -137,20 +138,20 @@
             top: 50%;
             transform: translateY(-50%);
             color: #737373;
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
         }
 
         .form-group input {
             width: 100%;
-            padding: 14px 16px;
-            padding-left: 40px;
+            padding: 12px 14px;
+            padding-left: 36px;
             border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
+            border-radius: 12px;
             background: rgba(217, 217, 217, 0.1);
             color: #ffffff;
             font-family: inherit;
-            font-size: 14px;
+            font-size: 13px;
             transition: all 0.2s ease;
         }
 
@@ -165,25 +166,25 @@
         }
 
         .form-hint {
-            font-size: 12px;
+            font-size: 11px;
             color: #737373;
-            margin-top: 8px;
+            margin-top: 6px;
         }
 
         .btn {
             width: 100%;
-            padding: 12px 24px;
+            padding: 10px 20px;
             border: none;
             border-radius: 9999px;
             font-family: inherit;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.2s ease;
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 6px;
         }
 
         .btn-primary {
@@ -218,29 +219,29 @@
         }
 
         .btn svg {
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
         }
 
         .nonce-display {
             background: rgba(217, 217, 217, 0.1);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
-            padding: 16px;
+            border-radius: 12px;
+            padding: 12px;
             width: 100%;
         }
 
         .nonce-display label {
             display: block;
-            font-size: 12px;
+            font-size: 11px;
             color: #737373;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
         }
 
         .nonce-display code {
             display: block;
             font-family: 'Monaco', 'Menlo', monospace;
-            font-size: 12px;
+            font-size: 11px;
             color: #ffffff;
             word-break: break-all;
             user-select: all;
@@ -250,10 +251,10 @@
         .error-message {
             background: rgba(239, 68, 68, 0.1);
             border: 1px solid rgba(239, 68, 68, 0.2);
-            border-radius: 12px;
-            padding: 12px 16px;
+            border-radius: 10px;
+            padding: 10px 14px;
             color: #f87171;
-            font-size: 14px;
+            font-size: 13px;
             width: 100%;
             text-align: center;
         }
@@ -261,10 +262,10 @@
         .success-message {
             background: rgba(34, 197, 94, 0.1);
             border: 1px solid rgba(34, 197, 94, 0.2);
-            border-radius: 12px;
-            padding: 12px 16px;
+            border-radius: 10px;
+            padding: 10px 14px;
             color: #4ade80;
-            font-size: 14px;
+            font-size: 13px;
             width: 100%;
             text-align: center;
         }
@@ -272,23 +273,23 @@
         .scopes-list {
             background: rgba(217, 217, 217, 0.05);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 16px;
-            padding: 16px;
+            border-radius: 12px;
+            padding: 12px 14px;
             width: 100%;
         }
 
         .scopes-list h3 {
-            font-size: 13px;
+            font-size: 12px;
             font-weight: 500;
             color: #737373;
-            margin-bottom: 12px;
+            margin-bottom: 8px;
         }
 
         .scope-item {
             display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 0;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px 0;
             border-bottom: 1px solid rgba(255, 255, 255, 0.05);
         }
 
@@ -303,19 +304,21 @@
 
         .scope-item .icon {
             color: #98cfb2;
-            width: 16px;
-            height: 16px;
+            width: 14px;
+            height: 14px;
             flex-shrink: 0;
+            margin-top: 1px;
         }
 
         .scope-item .text {
-            font-size: 14px;
+            font-size: 12px;
             color: #e5e5e5;
+            line-height: 1.4;
         }
 
         .auth-actions {
             display: flex;
-            gap: 12px;
+            gap: 10px;
             width: 100%;
         }
 
@@ -325,14 +328,15 @@
 
         .auth-info {
             text-align: center;
-            font-size: 14px;
+            font-size: 12px;
             color: #a3a3a3;
             width: 100%;
+            line-height: 1.5;
         }
 
         .auth-info .highlight {
             color: #ffffff;
-            font-weight: 500;
+            font-weight: 600;
         }
 
         .divider {
@@ -354,9 +358,9 @@
         .divider span {
             position: relative;
             background: #0a0a0a;
-            padding: 0 12px;
+            padding: 0 10px;
             color: #737373;
-            font-size: 12px;
+            font-size: 11px;
         }
 
         .hidden {
@@ -366,14 +370,14 @@
         .footer-link {
             text-align: center;
             width: 100%;
-            padding-top: 16px;
+            padding-top: 12px;
             border-top: 1px solid rgba(255, 255, 255, 0.1);
         }
 
         .footer-link a, .footer-link button {
             color: #ffffff;
             text-decoration: none;
-            font-size: 14px;
+            font-size: 13px;
             font-weight: 600;
             background: none;
             border: none;
@@ -388,7 +392,7 @@
         .form-content {
             display: flex;
             flex-direction: column;
-            gap: 16px;
+            gap: 12px;
             width: 100%;
         }
     </style>
