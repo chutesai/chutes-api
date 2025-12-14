@@ -232,10 +232,10 @@ async def openid_configuration_root(request: Request):
     """
     from api.idp.schemas import get_available_scopes
 
-    idp_base = f"https://api.{settings.base_url}/idp"
+    idp_base = f"https://api.{settings.base_domain}/idp"
 
     return {
-        "issuer": f"https://api.{settings.base_url}",
+        "issuer": f"https://api.{settings.base_domain}",
         "authorization_endpoint": f"{idp_base}/authorize",
         "token_endpoint": f"{idp_base}/token",
         "userinfo_endpoint": f"{idp_base}/userinfo",

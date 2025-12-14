@@ -233,7 +233,8 @@ async def exchange_authorization_code(
         # Create access token with embedded token_id for O(1) lookup
         access_token_id = str(uuid.uuid4())
         access_token = OAuthAccessToken.generate_token(access_token_id)
-        access_expires = datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_EXPIRY_SECONDS)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        access_expires = now + timedelta(seconds=ACCESS_TOKEN_EXPIRY_SECONDS)
 
         access_token_obj = OAuthAccessToken(
             token_id=access_token_id,
@@ -248,7 +249,7 @@ async def exchange_authorization_code(
         refresh_token_id = str(uuid.uuid4())
         refresh_token = OAuthRefreshToken.generate_token(refresh_token_id)
         refresh_lifetime_days = auth.app.refresh_token_lifetime_days
-        refresh_expires = datetime.now(timezone.utc) + timedelta(days=refresh_lifetime_days)
+        refresh_expires = now + timedelta(days=refresh_lifetime_days)
 
         refresh_token_obj = OAuthRefreshToken(
             token_id=refresh_token_id,
@@ -327,7 +328,8 @@ async def refresh_access_token(
         # Create new access token with embedded token_id
         new_access_token_id = str(uuid.uuid4())
         new_access_token = OAuthAccessToken.generate_token(new_access_token_id)
-        access_expires = datetime.now(timezone.utc) + timedelta(seconds=ACCESS_TOKEN_EXPIRY_SECONDS)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        access_expires = now + timedelta(seconds=ACCESS_TOKEN_EXPIRY_SECONDS)
 
         access_token_obj = OAuthAccessToken(
             token_id=new_access_token_id,
@@ -342,7 +344,7 @@ async def refresh_access_token(
         new_refresh_token_id = str(uuid.uuid4())
         new_refresh_token = OAuthRefreshToken.generate_token(new_refresh_token_id)
         refresh_lifetime_days = auth.app.refresh_token_lifetime_days
-        refresh_expires = datetime.now(timezone.utc) + timedelta(days=refresh_lifetime_days)
+        refresh_expires = now + timedelta(days=refresh_lifetime_days)
 
         new_refresh_obj = OAuthRefreshToken(
             token_id=new_refresh_token_id,
@@ -491,7 +493,7 @@ async def revoke_authorization(user_id: str, app_id: str) -> bool:
             return False
 
         auth.revoked = True
-        auth.revoked_at = datetime.now(timezone.utc)
+        auth.revoked_at = datetime.now(timezone.utc).replace(tzinfo=None)
 
         # Revoke all access tokens and invalidate their caches
         access_tokens = (
