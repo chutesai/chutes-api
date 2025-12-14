@@ -887,6 +887,7 @@ async def login_post(
         httponly=True,
         secure=True,
         samesite="lax",
+        domain=f".{settings.base_domain}",
     )
     return response
 
