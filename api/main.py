@@ -341,15 +341,25 @@ async def host_router_middleware(request: Request, call_next):
                 request.state.auth_object_type = "chutes"
 
         if request.state.auth_method != "invoke":
-            request.state.auth_object_type = request.url.path.split("/")[-1]
-            # XXX at some point, perhaps we can support objects by name too, but for
-            # now, for auth to work (easily) we just need to only support UUIDs when
-            # using API keys.
-            path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
-            if path_match:
-                request.state.auth_object_id = path_match.group(1)
+            # Handle /users/me/* paths specially for OAuth scope checking
+            if request.url.path.startswith("/users/me"):
+                if "/balance" in request.url.path:
+                    request.state.auth_object_type = "billing"
+                elif "/quota" in request.url.path:
+                    request.state.auth_object_type = "account"
+                else:
+                    request.state.auth_object_type = "account"
+                request.state.auth_object_id = "__self__"
             else:
-                request.state.auth_object_id = "__list_or_invalid__"
+                request.state.auth_object_type = request.url.path.split("/")[-1]
+                # XXX at some point, perhaps we can support objects by name too, but for
+                # now, for auth to work (easily) we just need to only support UUIDs when
+                # using API keys.
+                path_match = re.match(r"^/[^/]+/([^/]+)$", request.url.path)
+                if path_match:
+                    request.state.auth_object_id = path_match.group(1)
+                else:
+                    request.state.auth_object_id = "__list_or_invalid__"
         app.router = default_router
     return await call_next(request)
 
