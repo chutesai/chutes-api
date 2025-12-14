@@ -71,6 +71,75 @@ async def list_scopes():
     return {"scopes": get_available_scopes()}
 
 
+@router.get("/cli_login/nonce")
+async def get_cli_login_nonce():
+    """
+    Get a nonce for CLI-based hotkey signature login.
+    """
+    nonce = await create_login_nonce()
+    return {"nonce": nonce}
+
+
+@router.get("/cli_login", response_class=HTMLResponse)
+async def cli_login(
+    hotkey: str = Query(...),
+    signature: str = Query(...),
+    nonce: str = Query(...),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    CLI login endpoint for hotkey signature authentication.
+    """
+    # Verify nonce exists and hasn't been used
+    if not await verify_and_consume_login_nonce(nonce):
+        return HTMLResponse(
+            content=error_page("invalid_nonce", "Invalid or expired nonce. Please try again."),
+            status_code=400,
+        )
+
+    # Verify signature
+    try:
+        signature_bytes = bytes.fromhex(signature)
+        keypair = Keypair(hotkey)
+        if not keypair.verify(nonce, signature_bytes):
+            return HTMLResponse(
+                content=error_page("invalid_signature", "Invalid signature."),
+                status_code=400,
+            )
+    except Exception as e:
+        logger.warning(f"CLI login signature verification failed: {e}")
+        return HTMLResponse(
+            content=error_page("invalid_signature", "Invalid signature format."),
+            status_code=400,
+        )
+
+    # Find user by hotkey
+    user = (await db.execute(select(User).where(User.hotkey == hotkey))).scalar_one_or_none()
+
+    if not user:
+        return HTMLResponse(
+            content=error_page("no_account", "No account found for this hotkey."),
+            status_code=404,
+        )
+
+    # Create session token and set cookie
+    session_token = create_token(user)
+    response = RedirectResponse(
+        url=f"https://{settings.base_domain}/app",
+        status_code=302,
+    )
+    response.set_cookie(
+        key="chutes-session-token",
+        value=session_token,
+        max_age=7 * 24 * 60 * 60,  # 7 days
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        domain=f".{settings.base_domain}",
+    )
+    return response
+
+
 @router.get("/apps", response_model=PaginatedResponse)
 async def list_apps(
     include_public: Optional[bool] = True,
