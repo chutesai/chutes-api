@@ -238,13 +238,13 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         d.output_tokens,
                         d.compute_time
                     FROM unnest(
-                        :user_ids::text[],
-                        :chute_ids::text[],
-                        :amounts::double precision[],
-                        :counts::bigint[],
-                        :input_tokens::bigint[],
-                        :output_tokens::bigint[],
-                        :compute_times::double precision[]
+                        :user_ids,
+                        :chute_ids,
+                        :amounts,
+                        :counts,
+                        :input_tokens,
+                        :output_tokens,
+                        :compute_times
                     ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, compute_time)
                     JOIN users u ON u.user_id = d.user_id
                     ON CONFLICT (user_id, chute_id, bucket)
@@ -308,7 +308,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         text("""
                             UPDATE users
                             SET balance = balance - deductions.amount
-                            FROM unnest(:user_ids::text[], :amounts::double precision[])
+                            FROM unnest(:user_ids, :amounts)
                                 AS deductions(user_id, amount)
                             WHERE users.user_id = deductions.user_id
                         """),
@@ -423,9 +423,16 @@ async def process_usage_queue():
                     except Exception as exc:
                         logger.error(f"Failed to process queue item: {exc}, raw={data}")
 
+        except asyncio.TimeoutError:
+            # BLPOP timeout or connection timeout - this is normal, just continue
+            pass
         except Exception as exc:
-            logger.error(f"Error in usage queue processing: {exc}")
-            await asyncio.sleep(5)
+            if "Timeout" in str(exc):
+                # Redis timeout - normal when queue is idle
+                pass
+            else:
+                logger.error(f"Error in usage queue processing: {exc}")
+                await asyncio.sleep(5)
 
 
 async def main():
