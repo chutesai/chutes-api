@@ -151,17 +151,21 @@ async def update_usage_data(
 ) -> None:
     """
     Push usage data metrics to redis for async processing.
+
+    Uses compact format to minimize network/storage overhead:
+    - Short keys: u=user_id, c=chute_id, a=amount, i=input_tokens, o=output_tokens, t=compute_time, s=timestamp
+    - compute_time rounded to 4 decimal places (0.1ms precision)
+    - count omitted (always 1, handled by consumer)
     """
     record = json.dumps(
         {
-            "user_id": user_id,
-            "chute_id": chute_id,
-            "amount": balance_used,
-            "count": 1,
-            "input_tokens": metrics.get("it", 0) if metrics else 0,
-            "output_tokens": metrics.get("ot", 0) if metrics else 0,
-            "compute_time": compute_time,
-            "timestamp": int(time.time()),
+            "u": user_id,
+            "c": chute_id,
+            "a": balance_used,
+            "i": metrics.get("it", 0) if metrics else 0,
+            "o": metrics.get("ot", 0) if metrics else 0,
+            "t": round(compute_time, 4),
+            "s": int(time.time()),
         }
     ).decode()
     await settings.billing_redis_client.client.rpush("usage_queue", record)

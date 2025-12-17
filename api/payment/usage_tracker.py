@@ -52,34 +52,30 @@ async def increment_bucket(redis, record: dict) -> None:
     Increment counters in the minute-bucket hash for this record.
 
     Key: usage_pending:{minute_ts}
-    Fields: {user_id}:{chute_id}:amount, :count, :input_tokens, :output_tokens, :compute_time
+    Fields: {user_id}:{chute_id}:a (amount), :n (count), :i (input_tokens), :o (output_tokens), :t (compute_time)
+
+    Record format (compact):
+    - u: user_id, c: chute_id, a: amount, i: input_tokens, o: output_tokens, t: compute_time, s: timestamp
     """
-    user_id = record["user_id"]
-    chute_id = record["chute_id"]
-    timestamp = int(record.get("timestamp", time.time()))
+    user_id = record["u"]
+    chute_id = record["c"]
+    timestamp = int(record.get("s", time.time()))
     minute_ts = get_minute_ts(timestamp)
 
     bucket_key = f"{BUCKET_PREFIX}:{minute_ts}"
     field_prefix = f"{user_id}:{chute_id}"
 
-    amount = float(record.get("amount", 0))
-    count = int(record.get("count", 1))
-    input_tokens = int(record.get("input_tokens", 0))
-    output_tokens = int(record.get("output_tokens", 0))
-    compute_time = float(record.get("compute_time", 0))
-
-    # XXX debug logging
-    # logger.info(
-    #     f"increment_bucket: {user_id}:{chute_id} -> {bucket_key} "
-    #     f"amount={amount} count={count} it={input_tokens} ot={output_tokens} ct={compute_time:.2f}"
-    # )
+    amount = float(record.get("a", 0))
+    input_tokens = int(record.get("i", 0))
+    output_tokens = int(record.get("o", 0))
+    compute_time = float(record.get("t", 0))
 
     pipeline = redis.pipeline()
-    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:amount", amount)
-    pipeline.hincrby(bucket_key, f"{field_prefix}:count", count)
-    pipeline.hincrby(bucket_key, f"{field_prefix}:input_tokens", input_tokens)
-    pipeline.hincrby(bucket_key, f"{field_prefix}:output_tokens", output_tokens)
-    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:compute_time", compute_time)
+    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:a", amount)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:n", 1)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:i", input_tokens)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:o", output_tokens)
+    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", compute_time)
     await pipeline.execute()
 
 
@@ -154,14 +150,14 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
     hour_bucket = (int(bucket_ts) // 3600) * 3600
 
     # Parse fields into aggregated data using HSCAN to avoid loading everything at once
-    # Fields are: {user_id}:{chute_id}:amount, :count, :input_tokens, :output_tokens, :compute_time
+    # Fields are: {user_id}:{chute_id}:a (amount), :n (count), :i (input_tokens), :o (output_tokens), :t (compute_time)
     aggregated = defaultdict(
         lambda: {
-            "amount": 0.0,
-            "count": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "compute_time": 0.0,
+            "a": 0.0,  # amount
+            "n": 0,  # count
+            "i": 0,  # input_tokens
+            "o": 0,  # output_tokens
+            "t": 0.0,  # compute_time
         }
     )
 
@@ -181,16 +177,16 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
             user_id, chute_id, metric = parts[0], parts[1], parts[2]
             key = (user_id, chute_id)
 
-            if metric == "amount":
-                aggregated[key]["amount"] = float(value_str)
-            elif metric == "count":
-                aggregated[key]["count"] = int(value_str)
-            elif metric == "input_tokens":
-                aggregated[key]["input_tokens"] = int(value_str)
-            elif metric == "output_tokens":
-                aggregated[key]["output_tokens"] = int(value_str)
-            elif metric == "compute_time":
-                aggregated[key]["compute_time"] = float(value_str)
+            if metric == "a":
+                aggregated[key]["a"] = float(value_str)
+            elif metric == "n":
+                aggregated[key]["n"] = int(value_str)
+            elif metric == "i":
+                aggregated[key]["i"] = int(value_str)
+            elif metric == "o":
+                aggregated[key]["o"] = int(value_str)
+            elif metric == "t":
+                aggregated[key]["t"] = float(value_str)
 
             field_count += 1
 
@@ -202,17 +198,15 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
         return
 
     logger.info(f"Scanned {field_count} fields from {bucket_key} (processing as {processing_key})")
-    for (user_id, chute_id), metrics in aggregated.items():
+    for (user_id, chute_id), m in aggregated.items():
         logger.info(
-            f"  aggregated: {user_id}:{chute_id} -> "
-            f"amount={metrics['amount']} count={metrics['count']} "
-            f"it={metrics['input_tokens']} ot={metrics['output_tokens']} ct={metrics['compute_time']:.2f}"
+            f"  {user_id}:{chute_id} -> amt={m['a']:.6f} n={m['n']} it={m['i']} ot={m['o']} t={m['t']:.4f}s"
         )
 
     # Calculate user totals for balance deduction
     user_totals = defaultdict(float)
-    for (user_id, chute_id), metrics in aggregated.items():
-        user_totals[user_id] += metrics["amount"]
+    for (user_id, chute_id), m in aggregated.items():
+        user_totals[user_id] += m["a"]
 
     # Delete from Redis BEFORE commit - never double-charge
     await redis.delete(processing_key)
@@ -227,13 +221,13 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                     "user_id": user_id,
                     "hour_bucket": hour_bucket,
                     "chute_id": chute_id,
-                    "amount": metrics["amount"],
-                    "count": metrics["count"],
-                    "input_tokens": metrics["input_tokens"],
-                    "output_tokens": metrics["output_tokens"],
-                    "compute_time": metrics["compute_time"],
+                    "amount": m["a"],
+                    "count": m["n"],
+                    "input_tokens": m["i"],
+                    "output_tokens": m["o"],
+                    "compute_time": m["t"],
                 }
-                for (user_id, chute_id), metrics in aggregated.items()
+                for (user_id, chute_id), m in aggregated.items()
             ]
 
             # Process in batches of 1000 to avoid query size limits
