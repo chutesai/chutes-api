@@ -52,11 +52,11 @@ PRICE_COMPATIBILITY_THRESHOLD = 0.67
 # Higher min instance counts for some chutes...
 LIMIT_OVERRIDES = {}
 FAILSAFE = {
-    "0d7184a2-32a3-53e0-9607-058c37edaab5": 20,
+    "0d7184a2-32a3-53e0-9607-058c37edaab5": 36,
     "579ca543-dda4-51d0-83ef-5667d1a5ed5f": 16,
     "4fa0c7f5-82f7-59d1-8996-661bb778893d": 15,
     "0df3133d-c477-56d2-b4db-f2093bb150a1": 15,
-    "d711f181-5b21-5169-a011-ccb472a1604f": 7,
+    "d711f181-5b21-5169-a011-ccb472a1604f": 10,
     "39d75699-957f-571f-8737-f2c72819d3e8": 7,
     "8f3bb827-b9e6-5487-88bc-ee8f0c6f5810": 6,
     "3048cf8d-67de-5a6d-9fdd-18ac9c560c05": 5,
@@ -551,8 +551,8 @@ async def perform_autoscale(dry_run: bool = False):
             num_to_remove = max(1, int(excess_instances * removal_percentage))
 
             # Ensure post-removal utilization stays well below scale-up threshold to prevent flapping
-            # Use threshold * 0.75 as target ceiling for better hysteresis
-            target_utilization = threshold * 0.75
+            # Use threshold * 0.85 as target ceiling for better hysteresis
+            target_utilization = threshold * 0.85
             post_removal_count = info.instance_count - num_to_remove
             post_removal_utilization = (
                 utilization_basis * info.instance_count
