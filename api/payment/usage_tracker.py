@@ -1,130 +1,436 @@
 """
-Script to continuously pop microtransactions out of redis and
+Script to continuously pop usage records from redis queue and
 update the actual database with usage data, deduct user balance.
+
+Architecture:
+1. Producer (util.py): RPUSH individual records to usage_queue
+2. Consumer (this file):
+   a. BRPOP from usage_queue
+   b. HINCRBY/HINCRBYFLOAT to minute-bucket hash: usage_pending:{minute_ts}
+      Fields: {user_id}:{chute_id}:amount, :count, :input_tokens, :output_tokens
+   c. When minute rolls over, process completed buckets to DB
+   d. DELETE processed bucket keys
+
+Recovery on startup:
+- Find all usage_pending:* keys
+- Current minute = skip (still accumulating)
+- Older minutes = process to DB (they're complete)
+
+This gives us:
+- Atomic increments (no race conditions)
+- Only 1-2 Redis keys at any time
+- Natural 60-second batching
+- Simple recovery (completed minutes are self-contained)
 """
 
 import gc
 import time
 import asyncio
+import orjson as json
 import api.database.orms  # noqa
-from sqlalchemy import select, text, bindparam, String
+from collections import defaultdict
+from sqlalchemy import text
 from loguru import logger
-from api.user.schemas import User
 from api.config import settings
 from api.permissions import Permissioning
 from api.database import get_session
 
+QUEUE_KEY = "usage_queue"
+BUCKET_PREFIX = "usage_pending"
+PROCESSING_PREFIX = "usage_processing"
+POLL_TIMEOUT = 5
 
-async def process_balance_changes():
-    current_time = int(time.time())
-    redis = settings.redis_client.client
 
-    # Fetch all pending payment data in redis.
-    keys_to_process = []
+def get_minute_ts(timestamp: int = None) -> int:
+    if timestamp is None:
+        timestamp = int(time.time())
+    return timestamp - (timestamp % 60)
+
+
+async def increment_bucket(redis, record: dict) -> None:
+    """
+    Increment counters in the minute-bucket hash for this record.
+
+    Key: usage_pending:{minute_ts}
+    Fields: {user_id}:{chute_id}:amount, :count, :input_tokens, :output_tokens, :compute_time
+    """
+    user_id = record["user_id"]
+    chute_id = record["chute_id"]
+    timestamp = int(record.get("timestamp", time.time()))
+    minute_ts = get_minute_ts(timestamp)
+
+    bucket_key = f"{BUCKET_PREFIX}:{minute_ts}"
+    field_prefix = f"{user_id}:{chute_id}"
+
+    pipeline = redis.pipeline()
+    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:amount", float(record.get("amount", 0)))
+    pipeline.hincrby(bucket_key, f"{field_prefix}:count", int(record.get("count", 1)))
+    pipeline.hincrby(bucket_key, f"{field_prefix}:input_tokens", int(record.get("input_tokens", 0)))
+    pipeline.hincrby(
+        bucket_key, f"{field_prefix}:output_tokens", int(record.get("output_tokens", 0))
+    )
+    pipeline.hincrbyfloat(
+        bucket_key, f"{field_prefix}:compute_time", float(record.get("compute_time", 0))
+    )
+    await pipeline.execute()
+
+
+async def get_completed_buckets(redis, current_minute_ts: int) -> list[str]:
+    """
+    Find all bucket keys that are older than the current minute (i.e., complete).
+    """
+    keys = []
     cursor = 0
-    pattern = "balance:*"
+    pattern = f"{BUCKET_PREFIX}:*"
     while True:
-        cursor, keys = await redis.scan(cursor, pattern, 1000)
-        for key in keys:
-            keys_to_process.append(key)
+        cursor, found_keys = await redis.scan(cursor, pattern, 1000)
+        for key in found_keys:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            # Extract timestamp from key
+            try:
+                bucket_ts = int(key_str.split(":")[-1])
+                if bucket_ts < current_minute_ts:
+                    keys.append(key_str)
+            except (ValueError, IndexError):
+                logger.warning(f"Invalid bucket key format: {key_str}")
+        if cursor == 0:
+            break
+    return keys
+
+
+async def get_stale_processing_buckets(redis) -> list[str]:
+    """
+    Find any usage_processing:* keys left over from a crashed worker.
+    These need to be processed on startup.
+    """
+    keys = []
+    cursor = 0
+    pattern = f"{PROCESSING_PREFIX}:*"
+    while True:
+        cursor, found_keys = await redis.scan(cursor, pattern, 1000)
+        for key in found_keys:
+            key_str = key.decode() if isinstance(key, bytes) else key
+            keys.append(key_str)
+        if cursor == 0:
+            break
+    return keys
+
+
+async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) -> None:
+    """
+    Process a completed minute bucket to the database.
+
+    1. Atomically rename bucket to claim it (prevents double-processing by multiple workers)
+    2. Read fields from the hash using HSCAN (streaming since there are boatloads of keys)
+    3. Aggregate by user_id/chute_id
+    4. Delete from Redis BEFORE commit to ensure we never double-charge
+    5. Write to DB
+    """
+    bucket_ts = bucket_key.split(":")[-1]
+
+    if already_claimed:
+        # This is a stale usage_processing:* key from a crashed worker
+        processing_key = bucket_key
+    else:
+        # Atomically claim the bucket by renaming it
+        # If another worker already renamed it, this will fail and we skip
+        processing_key = f"{PROCESSING_PREFIX}:{bucket_ts}"
+        try:
+            await redis.rename(bucket_key, processing_key)
+        except Exception as e:
+            # Key doesn't exist (already claimed by another worker) - skip
+            logger.info(f"Bucket {bucket_key} already claimed by another worker: {e}")
+            return
+
+    # Extract minute timestamp from bucket key for the hour bucket
+    hour_bucket = (int(bucket_ts) // 3600) * 3600
+
+    # Parse fields into aggregated data using HSCAN to avoid loading everything at once
+    # Fields are: {user_id}:{chute_id}:amount, :count, :input_tokens, :output_tokens, :compute_time
+    aggregated = defaultdict(
+        lambda: {
+            "amount": 0.0,
+            "count": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "compute_time": 0.0,
+        }
+    )
+
+    cursor = 0
+    field_count = 0
+    while True:
+        cursor, data = await redis.hscan(processing_key, cursor, count=1000)
+        for field, value in data.items():
+            field_str = field.decode() if isinstance(field, bytes) else field
+            value_str = value.decode() if isinstance(value, bytes) else value
+
+            parts = field_str.rsplit(":", 2)
+            if len(parts) != 3:
+                logger.warning(f"Invalid field format: {field_str}")
+                continue
+
+            user_id, chute_id, metric = parts[0], parts[1], parts[2]
+            key = (user_id, chute_id)
+
+            if metric == "amount":
+                aggregated[key]["amount"] = float(value_str)
+            elif metric == "count":
+                aggregated[key]["count"] = int(value_str)
+            elif metric == "input_tokens":
+                aggregated[key]["input_tokens"] = int(value_str)
+            elif metric == "output_tokens":
+                aggregated[key]["output_tokens"] = int(value_str)
+            elif metric == "compute_time":
+                aggregated[key]["compute_time"] = float(value_str)
+
+            field_count += 1
+
         if cursor == 0:
             break
 
-    # Update the usage_data table with the pending micro-payment data, and deduct from user balance.
-    async with get_session() as session:
-        user_totals = {}
-        for key in keys_to_process:
-            parts = key.decode().split(":")
-            user_id = parts[1]
-            chute_id = parts[2]
+    if not aggregated:
+        await redis.delete(processing_key)
+        return
 
-            # Fetch the individual amounts, counts, and timestamps.
-            values = await redis.hgetall(key)
-            amount = float(values.get(b"amount", 0))
-            count = int(values.get(b"count", 0))
-            timestamp = int(values.get(b"timestamp", 0))
-            input_tokens = int(values.get(b"input_tokens") or 0)
-            output_tokens = int(values.get(b"output_tokens") or 0)
-            if user_id not in user_totals:
-                user_totals[user_id] = 0
-            user_totals[user_id] += amount
+    logger.info(f"Scanned {field_count} fields from {bucket_key} (processing as {processing_key})")
 
-            # The usage data is tracked at hour granularity.
-            hour_bucket = (timestamp // 3600) * 3600
+    # Calculate user totals for balance deduction
+    user_totals = defaultdict(float)
+    for (user_id, chute_id), metrics in aggregated.items():
+        user_totals[user_id] += metrics["amount"]
 
-            # Upsert the data.
-            logger.info(
-                f"Updating usage data for {user_id=} {chute_id=} {hour_bucket=} {amount=} {count=}"
-            )
-            stmt = text("""
-                INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens)
-                SELECT :user_id, to_timestamp(:hour_bucket), :chute_id, :amount, :count, :input_tokens, :output_tokens
-                WHERE EXISTS (SELECT 1 FROM users WHERE user_id = :user_id)
-                ON CONFLICT (user_id, chute_id, bucket)
-                DO UPDATE SET
-                    amount = (usage_data.amount + :amount),
-                    count = (usage_data.count + :count),
-                    input_tokens = (usage_data.input_tokens + :input_tokens),
-                    output_tokens = (usage_data.output_tokens + :output_tokens)
-            """).bindparams(
-                bindparam("user_id", type_=String),
-                bindparam("chute_id", type_=String),
-            )
-            await session.execute(
-                stmt,
+    # Delete from Redis BEFORE commit - never double-charge
+    await redis.delete(processing_key)
+
+    # Write to database
+    try:
+        async with get_session() as session:
+            # Batch upsert usage_data using unnest for efficiency
+            # This does all inserts in a single query instead of N queries
+            usage_params = [
                 {
                     "user_id": user_id,
                     "hour_bucket": hour_bucket,
                     "chute_id": chute_id,
-                    "amount": amount,
-                    "count": count,
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                },
-            )
+                    "amount": metrics["amount"],
+                    "count": metrics["count"],
+                    "input_tokens": metrics["input_tokens"],
+                    "output_tokens": metrics["output_tokens"],
+                    "compute_time": metrics["compute_time"],
+                }
+                for (user_id, chute_id), metrics in aggregated.items()
+            ]
 
-        # Update user balances
-        for user_id, amount in user_totals.items():
-            user = (
-                (await session.execute(select(User).where(User.user_id == user_id)))
-                .unique()
-                .scalar_one_or_none()
-            )
-            if (
-                user
-                and user.has_role(Permissioning.free_account)
-                and not user.has_role(Permissioning.invoice_billing)
-            ):
-                logger.warning(
-                    f"Free account {user_id} [{user.username}], skipping deduction: {amount}"
+            # Process in batches of 1000 to avoid query size limits
+            batch_size = 1000
+            for i in range(0, len(usage_params), batch_size):
+                batch = usage_params[i : i + batch_size]
+                stmt = text("""
+                    INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens, compute_time)
+                    SELECT
+                        u.user_id,
+                        to_timestamp(:hour_bucket),
+                        d.chute_id,
+                        d.amount,
+                        d.count,
+                        d.input_tokens,
+                        d.output_tokens,
+                        d.compute_time
+                    FROM unnest(
+                        :user_ids::text[],
+                        :chute_ids::text[],
+                        :amounts::double precision[],
+                        :counts::bigint[],
+                        :input_tokens::bigint[],
+                        :output_tokens::bigint[],
+                        :compute_times::double precision[]
+                    ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, compute_time)
+                    JOIN users u ON u.user_id = d.user_id
+                    ON CONFLICT (user_id, chute_id, bucket)
+                    DO UPDATE SET
+                        amount = (usage_data.amount + EXCLUDED.amount),
+                        count = (usage_data.count + EXCLUDED.count),
+                        input_tokens = (usage_data.input_tokens + EXCLUDED.input_tokens),
+                        output_tokens = (usage_data.output_tokens + EXCLUDED.output_tokens),
+                        compute_time = (COALESCE(usage_data.compute_time, 0) + EXCLUDED.compute_time)
+                """)
+                await session.execute(
+                    stmt,
+                    {
+                        "hour_bucket": hour_bucket,
+                        "user_ids": [p["user_id"] for p in batch],
+                        "chute_ids": [p["chute_id"] for p in batch],
+                        "amounts": [p["amount"] for p in batch],
+                        "counts": [p["count"] for p in batch],
+                        "input_tokens": [p["input_tokens"] for p in batch],
+                        "output_tokens": [p["output_tokens"] for p in batch],
+                        "compute_times": [p["compute_time"] for p in batch],
+                    },
                 )
-            elif user:
-                logger.info(f"Deducting from {user_id} [{user.username}]: {amount}")
-                user.balance -= amount
 
-        # Delete processed keys from Redis, while in the transaction.
-        # If the transaction fails, we lose the ability to deduct this
-        # balance amount, but really that's fine since this loop is
-        # performed frequently and it's better than the alternative, i.e.
-        # double charging.
-        pipeline = redis.pipeline()
-        for key in keys_to_process:
-            pipeline.delete(key)
-        await pipeline.execute()
-        await session.commit()
+            logger.info(f"Upserted {len(usage_params)} usage_data rows for bucket {bucket_key}")
 
-    # Update last processed timestamp
-    await redis.set("last_processed_timestamp", current_time)
+            # Batch update user balances using a single UPDATE with CASE
+            # Filter out zero amounts and prepare for batch update
+            nonzero_user_totals = {uid: amt for uid, amt in user_totals.items() if amt > 0}
+
+            if nonzero_user_totals:
+                # Get users who should NOT be charged (free accounts without invoice billing)
+                free_users_result = await session.execute(
+                    text("""
+                        SELECT user_id FROM users
+                        WHERE user_id = ANY(:user_ids)
+                        AND (permissions_bitmask & :free_mask) = :free_mask
+                        AND (permissions_bitmask & :invoice_mask) = 0
+                    """),
+                    {
+                        "user_ids": list(nonzero_user_totals.keys()),
+                        "free_mask": Permissioning.free_account.bitmask,
+                        "invoice_mask": Permissioning.invoice_billing.bitmask,
+                    },
+                )
+                free_user_ids = {row[0] for row in free_users_result}
+
+                if free_user_ids:
+                    logger.warning(
+                        f"Skipping balance deduction for {len(free_user_ids)} free accounts"
+                    )
+
+                # Filter to only chargeable users
+                chargeable = {
+                    uid: amt for uid, amt in nonzero_user_totals.items() if uid not in free_user_ids
+                }
+
+                if chargeable:
+                    # Batch update balances in a single query
+                    await session.execute(
+                        text("""
+                            UPDATE users
+                            SET balance = balance - deductions.amount
+                            FROM unnest(:user_ids::text[], :amounts::double precision[])
+                                AS deductions(user_id, amount)
+                            WHERE users.user_id = deductions.user_id
+                        """),
+                        {
+                            "user_ids": list(chargeable.keys()),
+                            "amounts": list(chargeable.values()),
+                        },
+                    )
+                    logger.info(f"Deducted balance from {len(chargeable)} users")
+
+            await session.commit()
+
+        logger.info(
+            f"Processed bucket {bucket_key}: "
+            f"{len(aggregated)} user/chute combos, "
+            f"{len(user_totals)} users"
+        )
+
+    except Exception as exc:
+        # DB failed but Redis key already deleted - data is lost (under-charge)
+        # This is acceptable - better than double-charging
+        logger.error(f"DB commit failed for bucket {bucket_key}: {exc}")
+        raise
+
+
+async def process_queue_items(redis) -> int:
+    """
+    Pop items from queue and increment their minute buckets.
+    """
+    count = 0
+    while True:
+        item = await redis.lpop(QUEUE_KEY)
+        if item is None:
+            break
+        try:
+            record = json.loads(item)
+            await increment_bucket(redis, record)
+            count += 1
+        except Exception as exc:
+            logger.error(f"Failed to process queue item: {exc}, raw={item}")
+
+    return count
+
+
+async def process_usage_queue():
+    """
+    Main processing loop:
+    1. On startup, process any completed minute buckets (recovery)
+    2. Continuously pop from queue and increment minute buckets
+    3. When minute rolls over, process completed buckets to DB
+    """
+    redis = settings.redis_client.client
+    last_minute_ts = get_minute_ts()
+
+    # On startup, we first drain the queue to ensure the timestamp buckets are complete.
+    logger.info("Draining queue before recovery...")
+    drained = await process_queue_items(redis)
+    if drained > 0:
+        logger.info(f"Drained {drained} items from queue into minute buckets")
+
+    # Now, process any of  the stake keys from crashed workers.
+    logger.info("Checking for stale processing buckets to recover...")
+    stale_processing = await get_stale_processing_buckets(redis)
+    if stale_processing:
+        logger.warning(
+            f"Recovering {len(stale_processing)} stale processing buckets from crashed worker"
+        )
+        for processing_key in stale_processing:
+            try:
+                await process_bucket(redis, processing_key, already_claimed=True)
+            except Exception as exc:
+                logger.error(f"Failed to recover stale processing bucket {processing_key}: {exc}")
+
+    # And finally, process any completed buckets from before startup.
+    logger.info("Checking for completed buckets to recover...")
+    completed = await get_completed_buckets(redis, last_minute_ts)
+    if completed:
+        logger.warning(f"Recovering {len(completed)} completed buckets from previous run")
+        for bucket_key in completed:
+            try:
+                await process_bucket(redis, bucket_key)
+            except Exception as exc:
+                logger.error(f"Failed to recover bucket {bucket_key}: {exc}")
+
+    logger.info("Starting main processing loop")
+
+    while True:
+        try:
+            current_minute_ts = get_minute_ts()
+            if current_minute_ts > last_minute_ts:
+                completed = await get_completed_buckets(redis, current_minute_ts)
+                for bucket_key in completed:
+                    try:
+                        await process_bucket(redis, bucket_key)
+                    except Exception as exc:
+                        logger.error(f"Failed to process bucket {bucket_key}: {exc}")
+                last_minute_ts = current_minute_ts
+
+            # Process any items in the queue
+            processed = await process_queue_items(redis)
+
+            if processed > 0:
+                logger.info(f"Processed {processed} queue items into minute buckets")
+            else:
+                # Queue is empty, wait for more items
+                item = await redis.blpop(QUEUE_KEY, timeout=POLL_TIMEOUT)
+                if item:
+                    _, data = item
+                    try:
+                        record = json.loads(data)
+                        await increment_bucket(redis, record)
+                    except Exception as exc:
+                        logger.error(f"Failed to process queue item: {exc}, raw={data}")
+
+        except Exception as exc:
+            logger.error(f"Error in usage queue processing: {exc}")
+            await asyncio.sleep(5)
 
 
 async def main():
-    while True:
-        try:
-            await process_balance_changes()
-            logger.success("Successfully updated usage data/balances, waiting for next interval...")
-        except Exception as exc:
-            logger.error(f"Error processing balance changes: {exc}")
-        await asyncio.sleep(60)
+    logger.info("Starting usage tracker with minute-bucket processing")
+    await process_usage_queue()
 
 
 if __name__ == "__main__":

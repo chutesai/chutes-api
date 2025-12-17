@@ -147,17 +147,24 @@ ON CONFLICT (invocation_id, started_at)
 
 
 async def update_usage_data(
-    user_id: str, chute_id: str, balance_used: float, metrics: dict
+    user_id: str, chute_id: str, balance_used: float, metrics: dict, compute_time: float = 0.0
 ) -> None:
-    pipeline = settings.redis_client.pipeline()
-    key = f"balance:{user_id}:{chute_id}"
-    pipeline.hincrbyfloat(key, "amount", balance_used)
-    pipeline.hincrby(key, "count", 1)
-    if metrics:
-        pipeline.hincrby(key, "input_tokens", metrics.get("it", 0))
-        pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
-    pipeline.hset(key, "timestamp", int(time.time()))
-    await pipeline.execute()
+    """
+    Push usage data metrics to redis for async processing.
+    """
+    record = json.dumps(
+        {
+            "user_id": user_id,
+            "chute_id": chute_id,
+            "amount": balance_used,
+            "count": 1,
+            "input_tokens": metrics.get("it", 0) if metrics else 0,
+            "output_tokens": metrics.get("ot", 0) if metrics else 0,
+            "compute_time": compute_time,
+            "timestamp": int(time.time()),
+        }
+    ).decode()
+    await settings.redis_client.rpush("usage_queue", record)
 
 
 async def store_invocation(
@@ -1207,6 +1214,7 @@ async def invoke(
                         chute.chute_id,
                         balance_used,
                         metrics if chute.standard_template == "vllm" else None,
+                        compute_time=duration,
                     )
                 )
 

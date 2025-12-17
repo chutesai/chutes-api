@@ -69,6 +69,7 @@ class UsageData(Base):
     count = Column(BigInteger, nullable=False)
     input_tokens = Column(Numeric, nullable=True)
     output_tokens = Column(Numeric, nullable=True)
+    compute_time = Column(Double, nullable=True)
 
 
 class AdminBalanceChange(Base):
