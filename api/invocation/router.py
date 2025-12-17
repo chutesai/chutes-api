@@ -922,7 +922,7 @@ async def hostname_invocation(
             payload["model"] = "deepseek-ai/DeepSeek-V3-0324-TEE"
         elif model == "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8":
             payload["model"] = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8-TEE"
-        elif model == "deepseek-ai/DeepSeek-V3.2" and random.random() <= 0.15:
+        elif model == "deepseek-ai/DeepSeek-V3.2" and random.random() <= 0.25:
             payload["model"] = "deepseek-ai/DeepSeek-V3.2-TEE"
         elif model == "deepseek-ai/DeepSeek-R1-0528" and random.random() <= 0.1:
             payload["model"] = "deepseek-ai/DeepSeek-R1-0528-TEE"
