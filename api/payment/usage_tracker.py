@@ -238,13 +238,13 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         d.output_tokens,
                         d.compute_time
                     FROM unnest(
-                        :user_ids,
-                        :chute_ids,
-                        :amounts,
-                        :counts,
-                        :input_tokens,
-                        :output_tokens,
-                        :compute_times
+                        CAST(:user_ids AS text[]),
+                        CAST(:chute_ids AS text[]),
+                        CAST(:amounts AS double precision[]),
+                        CAST(:counts AS bigint[]),
+                        CAST(:input_tokens AS bigint[]),
+                        CAST(:output_tokens AS bigint[]),
+                        CAST(:compute_times AS double precision[])
                     ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, compute_time)
                     JOIN users u ON u.user_id = d.user_id
                     ON CONFLICT (user_id, chute_id, bucket)
@@ -308,8 +308,10 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         text("""
                             UPDATE users
                             SET balance = balance - deductions.amount
-                            FROM unnest(:user_ids, :amounts)
-                                AS deductions(user_id, amount)
+                            FROM unnest(
+                                CAST(:user_ids AS text[]),
+                                CAST(:amounts AS double precision[])
+                            ) AS deductions(user_id, amount)
                             WHERE users.user_id = deductions.user_id
                         """),
                         {
