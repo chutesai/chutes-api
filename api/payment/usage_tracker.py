@@ -68,10 +68,11 @@ async def increment_bucket(redis, record: dict) -> None:
     output_tokens = int(record.get("output_tokens", 0))
     compute_time = float(record.get("compute_time", 0))
 
-    logger.info(
-        f"increment_bucket: {user_id}:{chute_id} -> {bucket_key} "
-        f"amount={amount} count={count} it={input_tokens} ot={output_tokens} ct={compute_time:.2f}"
-    )
+    # XXX debug logging
+    # logger.info(
+    #     f"increment_bucket: {user_id}:{chute_id} -> {bucket_key} "
+    #     f"amount={amount} count={count} it={input_tokens} ot={output_tokens} ct={compute_time:.2f}"
+    # )
 
     pipeline = redis.pipeline()
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:amount", amount)
