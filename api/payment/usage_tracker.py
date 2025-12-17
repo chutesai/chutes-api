@@ -62,16 +62,23 @@ async def increment_bucket(redis, record: dict) -> None:
     bucket_key = f"{BUCKET_PREFIX}:{minute_ts}"
     field_prefix = f"{user_id}:{chute_id}"
 
+    amount = float(record.get("amount", 0))
+    count = int(record.get("count", 1))
+    input_tokens = int(record.get("input_tokens", 0))
+    output_tokens = int(record.get("output_tokens", 0))
+    compute_time = float(record.get("compute_time", 0))
+
+    logger.info(
+        f"increment_bucket: {user_id}:{chute_id} -> {bucket_key} "
+        f"amount={amount} count={count} it={input_tokens} ot={output_tokens} ct={compute_time:.2f}"
+    )
+
     pipeline = redis.pipeline()
-    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:amount", float(record.get("amount", 0)))
-    pipeline.hincrby(bucket_key, f"{field_prefix}:count", int(record.get("count", 1)))
-    pipeline.hincrby(bucket_key, f"{field_prefix}:input_tokens", int(record.get("input_tokens", 0)))
-    pipeline.hincrby(
-        bucket_key, f"{field_prefix}:output_tokens", int(record.get("output_tokens", 0))
-    )
-    pipeline.hincrbyfloat(
-        bucket_key, f"{field_prefix}:compute_time", float(record.get("compute_time", 0))
-    )
+    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:amount", amount)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:count", count)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:input_tokens", input_tokens)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:output_tokens", output_tokens)
+    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:compute_time", compute_time)
     await pipeline.execute()
 
 
@@ -194,6 +201,12 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
         return
 
     logger.info(f"Scanned {field_count} fields from {bucket_key} (processing as {processing_key})")
+    for (user_id, chute_id), metrics in aggregated.items():
+        logger.info(
+            f"  aggregated: {user_id}:{chute_id} -> "
+            f"amount={metrics['amount']} count={metrics['count']} "
+            f"it={metrics['input_tokens']} ot={metrics['output_tokens']} ct={metrics['compute_time']:.2f}"
+        )
 
     # Calculate user totals for balance deduction
     user_totals = defaultdict(float)
@@ -362,7 +375,7 @@ async def process_usage_queue():
     2. Continuously pop from queue and increment minute buckets
     3. When minute rolls over, process completed buckets to DB
     """
-    redis = settings.redis_client.client
+    redis = settings.billing_redis_client.client
     last_minute_ts = get_minute_ts()
 
     # On startup, we first drain the queue to ensure the timestamp buckets are complete.

@@ -164,7 +164,7 @@ async def update_usage_data(
             "timestamp": int(time.time()),
         }
     ).decode()
-    await settings.redis_client.rpush("usage_queue", record)
+    await settings.billing_redis_client.client.rpush("usage_queue", record)
 
 
 async def store_invocation(
