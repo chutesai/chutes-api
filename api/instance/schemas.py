@@ -60,9 +60,6 @@ class LaunchConfigArgs(BaseModel):
     netnanny_hash: Optional[str] = None
     run_path: Optional[str] = None
     py_dirs: Optional[list[str]] = None
-
-
-class GravalLaunchConfigArgs(LaunchConfigArgs):
     env: str
     code: Optional[str] = None
     run_code: Optional[str] = None
@@ -70,8 +67,7 @@ class GravalLaunchConfigArgs(LaunchConfigArgs):
 
 
 class TeeLaunchConfigArgs(LaunchConfigArgs):
-    gpu_evidence: list[dict]
-    inspecto: Optional[str] = None
+    deployment_id: str
 
 
 class Instance(Base):

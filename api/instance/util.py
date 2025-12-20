@@ -36,6 +36,10 @@ from sqlalchemy import text, func
 from sqlalchemy.orm import aliased, joinedload
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
+from api.server.client import TeeServerClient
+from api.server.schemas import Server
+from api.server.exceptions import GetEvidenceError
+from api.server.service import verify_quote, verify_gpu_evidence
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
@@ -639,16 +643,17 @@ def create_launch_jwt_v2(
 ) -> str:
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=2)
+    env_type = launch_config.env_type if launch_config.env_type else "graval"
     payload = {
         "exp": int(expires_at.timestamp()),
         "sub": launch_config.config_id,
         "chute_id": launch_config.chute_id,
         "iat": int(now.timestamp()),
-        "url": f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}",
+        "url": f"https://api.{settings.base_domain}/instances/launch_config/{env_type}/{launch_config.config_id}",
         "env_key": launch_config.env_key,
         "iss": "chutes",
         "egress": egress,
-        "env_type": launch_config.env_type if launch_config.env_type else "graval",
+        "env_type": env_type,
     }
     if launch_config.job_id:
         payload["job_id"] = launch_config.job_id
@@ -675,15 +680,16 @@ def create_launch_jwt(launch_config: LaunchConfig, disk_gb: int = None) -> str:
     """
     now = datetime.now(timezone.utc)
     expires_at = now + timedelta(hours=2)
+    env_type = launch_config.env_type if launch_config.env_type else "graval"
     payload = {
         "exp": int(expires_at.timestamp()),
         "sub": launch_config.config_id,
         "chute_id": launch_config.chute_id,
         "iat": int(now.timestamp()),
-        "url": f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}",
+        "url": f"https://api.{settings.base_domain}/instances/launch_config/{env_type}/{launch_config.config_id}",
         "env_key": launch_config.env_key,
         "iss": "chutes",
-        "env_type": launch_config.env_type if launch_config.env_type else "graval",
+        "env_type": env_type,
     }
     if launch_config.job_id:
         payload["job_id"] = launch_config.job_id
@@ -851,3 +857,65 @@ async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
 
     logger.success(f"Finished cleanup_expired_connections() loop, total_removed={total_removed}")
     return total_removed
+
+
+async def verify_tee_chute(
+    db,
+    instance,
+    launch_config,
+    deployment_id: str,
+    expected_nonce: str,
+):
+    """
+    Verify TEE chute by fetching evidence from the attestation proxy and validating it.
+    
+    Args:
+        db: Database session
+        instance: Instance object
+        launch_config: LaunchConfig object
+        deployment_id: Deployment ID for the chute
+        expected_nonce: Expected nonce for verification
+        
+    Raises:
+        HTTPException: If verification fails
+    """
+    try:
+        # Get the server from the database
+        server_query = select(Server).where(
+            Server.ip == instance.host,
+            Server.miner_hotkey == launch_config.miner_hotkey
+        )
+        server = (await db.execute(server_query)).scalar_one_or_none()
+        if not server:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Server not found for IP {instance.host} and miner {launch_config.miner_hotkey}",
+            )
+        
+        # Use the TeeServerClient to get evidence from the chute proxy
+        client = TeeServerClient(server)
+        
+        # Get quote, GPU evidence, and cert hash from the chute proxy
+        quote, gpu_evidence, expected_cert_hash = await client.get_chute_evidence(deployment_id)
+        
+        # Verify the quote against the expected nonce and cert hash
+        await verify_quote(quote, expected_nonce, expected_cert_hash)
+        
+        # Verify GPU attestation evidence with expected nonce
+        await verify_gpu_evidence(gpu_evidence, expected_nonce)
+        
+        logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
+    except GetEvidenceError as exc:
+        logger.error(f"Failed to get evidence from chute proxy for {instance.host}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to retrieve attestation evidence from chute proxy",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Unexpected error verifying chute evidence: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to verify chute attestation: {str(exc)}",
+        )
