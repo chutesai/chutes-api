@@ -113,7 +113,7 @@ async def _set_weights(
         wait_for_inclusion=True,
         wait_for_finalization=False,
     )
-    return receipt.is_success
+    return await receipt.is_success
 
 
 async def _get_weights_to_set(
