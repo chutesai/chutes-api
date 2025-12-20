@@ -186,8 +186,8 @@ async def _check_cascade_and_delete(
         cursor = 0
         pending_count = 0
         while True:
-            cursor, keys = await settings.redis_client.scan(
-                cursor, match="pending_deletion:*", count=100
+            cursor, keys = await settings.lite_redis_client.client.scan(
+                cursor, match="pending_deletion:*", count=1000
             )
             pending_count += len(keys)
             if cursor == 0:
@@ -252,7 +252,7 @@ async def disable_instance(
             # For network-related deletions (timeouts, disconnects), use cascade detection
             # Mark as pending deletion and schedule background check
             pending_key = f"pending_deletion:{instance_id}"
-            await settings.redis_client.set(pending_key, b"1", ex=CASCADE_PENDING_TTL)
+            await settings.lite_redis_client.set(pending_key, b"1", ex=CASCADE_PENDING_TTL)
             asyncio.create_task(
                 _check_cascade_and_delete(instance_id, chute_id, miner_hotkey, reason)
             )
@@ -833,7 +833,7 @@ async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
         pattern = "conn:*:*"
 
         while True:
-            cursor, keys = await redis_client.scan(cursor, match=pattern, count=100)
+            cursor, keys = await redis_client.client.scan(cursor, match=pattern, count=1000)
             if not keys:
                 if cursor == 0:
                     break

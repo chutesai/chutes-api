@@ -118,7 +118,7 @@ async def build_and_push_image(image, build_dir):
                 log_method(f"[build {short_tag}]: {decoded_line}")
                 with open("build.log", "a+") as outfile:
                     outfile.write(decoded_line.strip() + "\n")
-                await settings.redis_client.xadd(
+                await settings.redis_client.client.xadd(
                     f"forge:{image.image_id}:stream",
                     {"data": json.dumps({"log_type": name, "log": decoded_line}).decode()},
                 )
@@ -336,7 +336,7 @@ ENTRYPOINT []
                 f"Successfully built {full_image_tag} in {round(delta, 5)} seconds, pushing..."
             )
             logger.success(message)
-            await settings.redis_client.xadd(
+            await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
@@ -346,11 +346,11 @@ ENTRYPOINT []
     except asyncio.TimeoutError:
         message = f"Build of {full_image_tag} timed out after {settings.build_timeout} seconds."
         logger.error(message)
-        await settings.redis_client.xadd(
+        await settings.redis_client.client.xadd(
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        await settings.redis_client.client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
 
@@ -360,7 +360,7 @@ ENTRYPOINT []
     await trivy_image_scan(image, short_tag, _capture_logs)
 
     # Push
-    await settings.redis_client.xadd(
+    await settings.redis_client.client.xadd(
         f"forge:{image.image_id}:stream",
         {
             "data": json.dumps(
@@ -399,7 +399,7 @@ ENTRYPOINT []
                 "\N{HAMMER AND WRENCH} "
                 + f" finished pushing image {image.image_id} in {round(delta, 5)} seconds"
             )
-            await settings.redis_client.xadd(
+            await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
@@ -407,20 +407,22 @@ ENTRYPOINT []
         else:
             message = "Image push failed, check logs for more details!"
             logger.error(message)
-            await settings.redis_client.xadd(
+            await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
-            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            await settings.redis_client.client.xadd(
+                f"forge:{image.image_id}:stream", {"data": "DONE"}
+            )
             raise PushFailure(f"Push of {full_image_tag} failed!")
     except asyncio.TimeoutError:
         message = f"Push of {full_image_tag} timed out after {settings.push_timeout} seconds."
         logger.error(message)
-        await settings.redis_client.xadd(
+        await settings.redis_client.client.xadd(
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        await settings.redis_client.client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise PushTimeout(
@@ -436,17 +438,17 @@ ENTRYPOINT []
         "\N{HAMMER AND WRENCH} "
         + f" completed forging image {image.image_id} in {round(delta, 5)} seconds"
     )
-    await settings.redis_client.xadd(
+    await settings.redis_client.client.xadd(
         f"forge:{image.image_id}:stream",
         {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
     )
     logger.success(message)
-    await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+    await settings.redis_client.client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
     return short_tag
 
 
 async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, bool], None]):
-    await settings.redis_client.xadd(
+    await settings.redis_client.client.xadd(
         f"forge:{image.image_id}:stream",
         {
             "data": json.dumps(
@@ -473,14 +475,14 @@ async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, 
         )
         if process.returncode == 0:
             message = f"No HIGH|CRITICAL vulnerabilities detected in {short_tag}"
-            await settings.redis_client.xadd(
+            await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
             logger.success(message)
         else:
             message = f"Issues scanning {short_tag} with trivy!"
-            await settings.redis_client.xadd(
+            await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
@@ -489,11 +491,11 @@ async def trivy_image_scan(image, short_tag, _capture_logs: Callable[[Any, Any, 
     except asyncio.TimeoutError:
         message = f"Trivy scan of {short_tag} timed out after."
         logger.error(message)
-        await settings.redis_client.xadd(
+        await settings.redis_client.client.xadd(
             f"forge:{image.image_id}:stream",
             {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
         )
-        await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+        await settings.redis_client.client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
         process.kill()
         await process.communicate()
         raise BuildTimeout(message)
@@ -580,7 +582,7 @@ async def sign_image(
                     "\N{HAMMER AND WRENCH} "
                     + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
                 )
-                await settings.redis_client.xadd(
+                await settings.redis_client.client.xadd(
                     f"forge:{image.image_id}:stream",
                     {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
                 )
@@ -589,21 +591,25 @@ async def sign_image(
             message = "Image sign failed, check logs for more details!"
             logger.error(message)
             if stream:
-                await settings.redis_client.xadd(
+                await settings.redis_client.client.xadd(
                     f"forge:{image.image_id}:stream",
                     {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
                 )
-                await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+                await settings.redis_client.client.xadd(
+                    f"forge:{image.image_id}:stream", {"data": "DONE"}
+                )
             raise SignFailure(f"Sign of {image_tag} failed!")
     except asyncio.TimeoutError:
         message = f"Sign of {image_digest_tag} timed out after {settings.push_timeout} seconds."
         logger.error(message)
         if stream:
-            await settings.redis_client.xadd(
+            await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
-            await settings.redis_client.xadd(f"forge:{image.image_id}:stream", {"data": "DONE"})
+            await settings.redis_client.client.xadd(
+                f"forge:{image.image_id}:stream", {"data": "DONE"}
+            )
         process.kill()
         await process.communicate()
         raise SignTimeout(f"Sign of {image_tag} timed out after {settings.push_timeout} seconds.")
@@ -809,7 +815,7 @@ async def forge(image_id: str):
         await session.commit()
         await session.refresh(image)
 
-    await settings.redis_client.publish(
+    await settings.redis_client.client.publish(
         "miner_broadcast",
         json.dumps(
             {
@@ -1184,7 +1190,7 @@ ENTRYPOINT []
 
             # Notify miners of the update
             image_path = f"{image.user.username}/{image.name}:{image.tag}-{patch_version}"
-            await settings.redis_client.publish(
+            await settings.redis_client.client.publish(
                 "miner_broadcast",
                 json.dumps(
                     {

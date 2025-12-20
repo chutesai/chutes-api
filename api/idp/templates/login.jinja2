@@ -1,0 +1,138 @@
+{% extends "base.jinja2" %}
+
+{% block title %}Sign in - Chutes{% endblock %}
+
+{% block content %}
+<h1>Sign in to Chutes</h1>
+<p class="subtitle">{{ app_name or "Application" }} wants to access your account</p>
+
+{% if error %}
+<div class="error-message">{{ error }}</div>
+{% endif %}
+
+<div class="form-content">
+    <div class="tabs">
+        <button class="tab active" onclick="showTab('fingerprint')">Fingerprint</button>
+        <button class="tab" onclick="showTab('hotkey')">Hotkey</button>
+    </div>
+
+    <div id="fingerprint-form">
+        <form action="/idp/login" method="POST">
+            <input type="hidden" name="client_id" value="{{ client_id }}">
+            <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+            <input type="hidden" name="state" value="{{ state }}">
+            <input type="hidden" name="scope" value="{{ scope }}">
+            <input type="hidden" name="auth_method" value="fingerprint">
+            <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+            <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+            <div class="form-group">
+                <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M12 2C9.51472 2 7.5 4.01472 7.5 6.5C7.5 8.98528 9.51472 11 12 11C14.4853 11 16.5 8.98528 16.5 6.5C16.5 4.01472 14.4853 2 12 2Z" fill="currentColor"/>
+                        <path d="M12.0001 12C8.64237 12 5.96263 13.7661 4.55269 16.3886C3.92347 17.5589 4.16063 18.7737 4.85818 19.6414C5.53148 20.479 6.62375 21 7.79536 21H16.2049C17.3765 21 18.4687 20.479 19.142 19.6414C19.8396 18.7737 20.0768 17.5589 19.4475 16.3886C18.0376 13.7661 15.3578 12 12.0001 12Z" fill="currentColor"/>
+                    </svg>
+                    <input type="password" id="fingerprint" name="fingerprint"
+                           placeholder="Enter your fingerprint..." required>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary">
+                Sign In
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 4v7a4 4 0 0 1-4 4H4"/>
+                    <path d="m9 10-5 5 5 5"/>
+                </svg>
+            </button>
+        </form>
+    </div>
+
+    <div id="hotkey-form" class="hidden">
+        <form action="/idp/login" method="POST" id="hotkeyForm">
+            <input type="hidden" name="client_id" value="{{ client_id }}">
+            <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+            <input type="hidden" name="state" value="{{ state }}">
+            <input type="hidden" name="scope" value="{{ scope }}">
+            <input type="hidden" name="auth_method" value="hotkey">
+            <input type="hidden" name="nonce" value="{{ nonce }}">
+            <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+            <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+            <div class="nonce-display">
+                <label>Message to Sign (click to copy)</label>
+                <code id="nonceCode" onclick="copyNonce()">{{ nonce }}</code>
+            </div>
+
+            <div class="form-group">
+                <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M15 7H18C19.1046 7 20 7.89543 20 9V19C20 20.1046 19.1046 21 18 21H6C4.89543 21 4 20.1046 4 19V9C4 7.89543 4.89543 7 6 7H9M15 7V5C15 3.89543 14.1046 3 13 3H11C9.89543 3 9 3.89543 9 5V7M15 7H9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <input type="text" id="hotkey" name="hotkey"
+                           placeholder="Enter hotkey address (5...)" required>
+                </div>
+            </div>
+
+            <div class="form-group">
+                <div class="input-wrapper">
+                    <svg class="input-icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <path d="M15.5 3.5L19.5 7.5M3.5 20.5L4.5 16.5L16.5 4.5C17.0523 3.94772 17.9477 3.94772 18.5 4.5L19.5 5.5C20.0523 6.05228 20.0523 6.94772 19.5 7.5L7.5 19.5L3.5 20.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <input type="text" id="signature" name="signature"
+                           placeholder="Enter signature hex..." required>
+                </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary">
+                Sign In with Hotkey
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 4v7a4 4 0 0 1-4 4H4"/>
+                    <path d="m9 10-5 5 5 5"/>
+                </svg>
+            </button>
+        </form>
+    </div>
+
+    {% if login_url %}
+    <div class="divider">
+        <span>or</span>
+    </div>
+
+    <a href="{{ login_url }}" class="btn btn-secondary">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/>
+            <polyline points="10 17 15 12 10 7"/>
+            <line x1="15" y1="12" x2="3" y2="12"/>
+        </svg>
+        More login options
+    </a>
+    {% endif %}
+
+    {% if create_account_url %}
+    <div class="footer-link">
+        <a href="{{ create_account_url }}">Don't have an account?</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function showTab(tab) {
+        document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        document.querySelector(`[onclick="showTab('${tab}')"]`).classList.add('active');
+
+        document.getElementById('fingerprint-form').classList.toggle('hidden', tab !== 'fingerprint');
+        document.getElementById('hotkey-form').classList.toggle('hidden', tab !== 'hotkey');
+    }
+
+    function copyNonce() {
+        const nonce = document.getElementById('nonceCode').textContent;
+        navigator.clipboard.writeText(nonce);
+        document.getElementById('nonceCode').style.color = '#98cfb2';
+        setTimeout(() => {
+            document.getElementById('nonceCode').style.color = '#ffffff';
+        }, 1000);
+    }
+</script>
+{% endblock %}

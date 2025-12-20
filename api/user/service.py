@@ -63,15 +63,16 @@ def get_current_user(
             if authorization:
                 token = authorization.split(" ")[-1]
 
-                # JWT auth.
+                # JWT auth (standard JWTs, not OAuth access tokens).
                 if (
                     token
                     and authorization.lower().lstrip().startswith("bearer ")
                     and not token.strip().startswith("cpk_")
+                    and not token.strip().startswith("cak_")
                 ):
                     user = await get_user_from_token(token, request)
 
-                # API key auth.
+                # API key auth (supports both cpk_ API keys and cak_ OAuth tokens).
                 if not user and token:
                     api_key = await get_and_check_api_key(token, request)
                     if api_key:

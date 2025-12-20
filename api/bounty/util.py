@@ -40,7 +40,7 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
         "chute_id": chute_id,
     }
     try:
-        result = await settings.redis_client.eval(
+        result = await settings.lite_redis_client.eval(
             CREATE_BOUNTY_LUA,
             1,
             bounty_key,
@@ -59,7 +59,7 @@ async def claim_bounty(chute_id: str) -> Optional[int]:
     """
     bounty_key = f"bounty:{chute_id}"
     try:
-        bounty_data = await settings.redis_client.eval(
+        bounty_data = await settings.lite_redis_client.eval(
             CLAIM_BOUNTY_LUA,
             1,
             bounty_key,
@@ -82,7 +82,7 @@ async def check_bounty_exists(chute_id: str) -> bool:
     """
     bounty_key = f"bounty:{chute_id}"
     try:
-        exists = await settings.redis_client.exists(bounty_key)
+        exists = await settings.lite_redis_client.exists(bounty_key)
         return bool(exists)
     except Exception as exc:
         logger.warning(f"Failed to check bounty existence: {exc}")
@@ -95,7 +95,7 @@ async def get_bounty_amount(chute_id: str) -> int:
     """
     bounty_key = f"bounty:{chute_id}"
     try:
-        bounty_data = await settings.redis_client.get(bounty_key)
+        bounty_data = await settings.lite_redis_client.get(bounty_key)
         if not bounty_data:
             return None
         data = json.loads(bounty_data)
@@ -117,7 +117,7 @@ async def delete_bounty(chute_id: str) -> bool:
     """
     bounty_key = f"bounty:{chute_id}"
     try:
-        result = await settings.redis_client.delete(bounty_key)
+        result = await settings.lite_redis_client.delete(bounty_key)
         return bool(result)
     except Exception as exc:
         logger.warning(f"Failed to delete bounty: {exc}")
@@ -126,7 +126,7 @@ async def delete_bounty(chute_id: str) -> bool:
 
 async def send_bounty_notification(chute_id: str, bounty: int) -> None:
     try:
-        await settings.redis_client.publish(
+        await settings.lite_redis_client.publish(
             "miner_broadcast",
             json.dumps(
                 {
@@ -135,7 +135,7 @@ async def send_bounty_notification(chute_id: str, bounty: int) -> None:
                 }
             ),
         )
-        await settings.redis_client.publish(
+        await settings.lite_redis_client.publish(
             "events",
             json.dumps(
                 {
@@ -161,17 +161,19 @@ async def list_bounties() -> list[dict]:
         cursor = 0
         pattern = "bounty:*"
         while True:
-            cursor, keys = await settings.redis_client.scan(cursor, match=pattern, count=100)
+            cursor, keys = await settings.lite_redis_client.client.scan(
+                cursor, match=pattern, count=1000
+            )
             for key in keys:
                 try:
-                    bounty_data = await settings.redis_client.get(key)
+                    bounty_data = await settings.lite_redis_client.get(key)
                     if bounty_data:
                         data = json.loads(bounty_data)
                         chute_id = data.get("chute_id")
                         created_at = data.get("created_at")
                         seconds_elapsed = int(time.time() - created_at)
                         bounty_amount = min(3 * seconds_elapsed + 100, 86400)
-                        ttl = await settings.redis_client.ttl(key)
+                        ttl = await settings.lite_redis_client.ttl(key)
                         bounties.append(
                             {
                                 "chute_id": chute_id,

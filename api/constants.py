@@ -44,7 +44,7 @@ LLM_MIN_PRICE_OUT = 0.01
 DIFFUSION_PRICE_MULT_PER_STEP = 0.005
 
 # Minimum utilization of a chute before additional instances can be added.
-UTILIZATION_SCALE_UP = 0.6
+UTILIZATION_SCALE_UP = 0.65
 
 # Cap on number of instances for an underutilized chute.
 UNDERUTILIZED_CAP = 3
@@ -77,6 +77,13 @@ CASCADE_DETECTION_DELAY = 45
 
 # TTL for pending deletion markers (seconds).
 CASCADE_PENDING_TTL = 75
+
+# IDP/OAuth2 style login constants.
+MAX_REFRESH_TOKEN_LIFETIME_DAYS = 30
+DEFAULT_REFRESH_TOKEN_LIFETIME_DAYS = 30
+ACCESS_TOKEN_EXPIRY_SECONDS = 3600
+AUTH_CODE_EXPIRY_SECONDS = 600
+LOGIN_NONCE_EXPIRY_SECONDS = 300
 
 # Subnet integrations.
 INTEGRATED_SUBNETS = {

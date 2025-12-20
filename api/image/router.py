@@ -87,7 +87,7 @@ async def stream_build_logs(
         while True:
             stream_result = None
             try:
-                stream_result = await settings.redis_client.xrange(
+                stream_result = await settings.redis_client.client.xrange(
                     f"forge:{image_id}:stream", last_offset or "-", "+"
                 )
             except Exception as exc:
@@ -103,7 +103,7 @@ async def stream_build_logs(
                 parts = last_offset.split("-")
                 last_offset = parts[0] + "-" + str(int(parts[1]) + 1)
                 if data[b"data"] == b"DONE":
-                    await settings.redis_client.delete(f"forge:{image_id}:stream")
+                    await settings.redis_client.client.delete(f"forge:{image_id}:stream")
                     yield "DONE\n"
                     break
                 log_obj = json.loads(data[b"data"])

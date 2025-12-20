@@ -93,4 +93,4 @@ class TeeServerClient:
                     return quote, gpu_evidence, expected_cert_hash
         except Exception as exc:
             logger.error(f"Failed to get attestation evidence from {self._url}: {exc}")
-            raise GetEvidenceError()
+            raise GetEvidenceError(f"Failed to get evidence for attestation: {str(exc)}")

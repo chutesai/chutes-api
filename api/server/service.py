@@ -287,6 +287,7 @@ async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> 
         ServerRegistrationError: If registration fails
     """
     failure_reason = ""
+    quote = None
     try:
         client = TeeServerClient(server)
 

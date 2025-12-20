@@ -1,0 +1,29 @@
+{% extends "base.jinja2" %}
+
+{% block title %}Registration Token{% endblock %}
+
+{% block content %}
+<div class="label">Chutes CLI Registration Token</div>
+<div class="token" onclick="copyToken()">{{ token }}</div>
+<div class="copy-hint">Click token to select all</div>
+<div class="expires">Expires in 5 minutes</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    function copyToken() {
+        const token = document.querySelector('.token');
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(token);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        document.execCommand('copy');
+        const hint = document.querySelector('.copy-hint');
+        hint.textContent = 'Copied!';
+        setTimeout(() => {
+            hint.textContent = 'Click token to select all';
+        }, 2000);
+    }
+</script>
+{% endblock %}

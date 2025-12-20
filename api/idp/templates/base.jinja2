@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Chutes{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0a;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            color: #ffffff;
+        }
+
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 24px;
+            width: 100%;
+            max-width: 320px;
+        }
+
+        .logo {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0;
+        }
+
+        .logo svg {
+            width: 32px;
+            height: 32px;
+            color: #ffffff;
+        }
+
+        h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #ffffff;
+            text-align: center;
+            margin-top: 16px;
+            letter-spacing: -0.02em;
+        }
+
+        .subtitle {
+            color: #a3a3a3;
+            text-align: center;
+            font-size: 13px;
+            margin-top: 4px;
+        }
+
+        .app-info {
+            background: rgba(217, 217, 217, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 14px 16px;
+            text-align: center;
+            width: 100%;
+        }
+
+        .app-info .app-name {
+            font-size: 14px;
+            font-weight: 600;
+            color: #ffffff;
+            margin-bottom: 2px;
+        }
+
+        .app-info .app-desc {
+            font-size: 12px;
+            color: #a3a3a3;
+        }
+
+        .tabs {
+            display: flex;
+            gap: 8px;
+            width: 100%;
+        }
+
+        .tab {
+            flex: 1;
+            padding: 10px 14px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 9999px;
+            background: transparent;
+            color: #a3a3a3;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tab:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            color: #ffffff;
+        }
+
+        .tab.active {
+            background: #ffffff;
+            border-color: #ffffff;
+            color: #0a0a0a;
+        }
+
+        .form-group {
+            margin-bottom: 6px;
+            width: 100%;
+        }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: #a3a3a3;
+            margin-bottom: 6px;
+        }
+
+        .form-group .input-wrapper {
+            position: relative;
+        }
+
+        .form-group .input-icon {
+            position: absolute;
+            left: 12px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #737373;
+            width: 14px;
+            height: 14px;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 12px 14px;
+            padding-left: 36px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            background: rgba(217, 217, 217, 0.1);
+            color: #ffffff;
+            font-family: inherit;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.3);
+            background: rgba(217, 217, 217, 0.15);
+        }
+
+        .form-group input::placeholder {
+            color: #737373;
+        }
+
+        .form-hint {
+            font-size: 11px;
+            color: #737373;
+            margin-top: 6px;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 9999px;
+            font-family: inherit;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn-primary {
+            background: #ffffff;
+            color: #0a0a0a;
+        }
+
+        .btn-primary:hover {
+            background: #e5e5e5;
+        }
+
+        .btn-secondary {
+            background: transparent;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #ffffff;
+        }
+
+        .btn-secondary:hover {
+            border-color: rgba(255, 255, 255, 0.2);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .btn-danger {
+            background: transparent;
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #f87171;
+        }
+
+        .btn-danger:hover {
+            border-color: rgba(239, 68, 68, 0.5);
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .btn svg {
+            width: 14px;
+            height: 14px;
+        }
+
+        .nonce-display {
+            background: rgba(217, 217, 217, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px;
+            width: 100%;
+        }
+
+        .nonce-display label {
+            display: block;
+            font-size: 11px;
+            color: #737373;
+            margin-bottom: 6px;
+        }
+
+        .nonce-display code {
+            display: block;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 11px;
+            color: #ffffff;
+            word-break: break-all;
+            user-select: all;
+            cursor: pointer;
+        }
+
+        .error-message {
+            background: rgba(239, 68, 68, 0.1);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: #f87171;
+            font-size: 13px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .success-message {
+            background: rgba(34, 197, 94, 0.1);
+            border: 1px solid rgba(34, 197, 94, 0.2);
+            border-radius: 10px;
+            padding: 10px 14px;
+            color: #4ade80;
+            font-size: 13px;
+            width: 100%;
+            text-align: center;
+        }
+
+        .scopes-list {
+            background: rgba(217, 217, 217, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            padding: 12px 14px;
+            width: 100%;
+        }
+
+        .scopes-list h3 {
+            font-size: 12px;
+            font-weight: 500;
+            color: #737373;
+            margin-bottom: 8px;
+        }
+
+        .scope-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .scope-item:last-child {
+            border-bottom: none;
+            padding-bottom: 0;
+        }
+
+        .scope-item:first-child {
+            padding-top: 0;
+        }
+
+        .scope-item .icon {
+            color: #98cfb2;
+            width: 14px;
+            height: 14px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .scope-item .text {
+            font-size: 12px;
+            color: #e5e5e5;
+            line-height: 1.4;
+        }
+
+        .auth-actions {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+
+        .auth-actions .btn {
+            flex: 1;
+        }
+
+        .auth-info {
+            text-align: center;
+            font-size: 12px;
+            color: #a3a3a3;
+            width: 100%;
+            line-height: 1.5;
+        }
+
+        .auth-info .highlight {
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .divider {
+            position: relative;
+            width: 100%;
+            text-align: center;
+        }
+
+        .divider::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            width: 100%;
+            height: 1px;
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .divider span {
+            position: relative;
+            background: #0a0a0a;
+            padding: 0 10px;
+            color: #737373;
+            font-size: 11px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .footer-link {
+            text-align: center;
+            width: 100%;
+            padding-top: 12px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .footer-link a, .footer-link button {
+            color: #ffffff;
+            text-decoration: none;
+            font-size: 13px;
+            font-weight: 600;
+            background: none;
+            border: none;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .footer-link a:hover, .footer-link button:hover {
+            text-decoration: underline;
+        }
+
+        .form-content {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            width: 100%;
+        }
+    </style>
+    {% block extra_styles %}{% endblock %}
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <svg width="62" height="41" viewBox="0 0 62 41" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M38.01 39.6943C37.1263 41.1364 35.2525 41.4057 34.0442 40.2642L28.6738 35.1904C27.4656 34.049 27.4843 32.0273 28.7133 30.9115L34.1258 25.9979C40.1431 20.5352 48.069 18.406 55.6129 20.2255L59.6853 21.2078C59.8306 21.2428 59.9654 21.3165 60.0771 21.422C60.6663 21.9787 60.3364 23.0194 59.552 23.078L59.465 23.0845C52.0153 23.6409 45.1812 27.9913 40.9759 34.8542L38.01 39.6943Z" fill="currentColor"/>
+                <path d="M15.296 36.5912C14.1726 37.8368 12.2763 37.7221 11.2913 36.349L0.547139 21.3709C-0.432786 20.0048 -0.0547272 18.0273 1.34794 17.1822L22.7709 4.27482C29.6029 0.158495 37.7319 -0.277291 44.8086 3.0934L60.3492 10.4956C60.5897 10.6101 60.7997 10.7872 60.9599 11.0106C61.8149 12.2025 60.8991 13.9056 59.5058 13.7148L50.2478 12.4467C42.8554 11.4342 35.4143 14.2848 30.1165 20.1587L15.296 36.5912Z" fill="url(#paint0_linear)"/>
+                <defs>
+                    <linearGradient id="paint0_linear" x1="33.8526" y1="0.173618" x2="25.5505" y2="41.4493" gradientUnits="userSpaceOnUse">
+                        <stop stop-color="currentColor"/>
+                        <stop offset="1" stop-color="currentColor"/>
+                    </linearGradient>
+                </defs>
+            </svg>
+        </div>
+
+        {% block content %}{% endblock %}
+    </div>
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -4,6 +4,7 @@ Auto-scale chutes based on utilization.
 
 import gc
 import os
+import math
 import asyncio
 import argparse
 import random
@@ -47,26 +48,23 @@ from api.constants import (
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
 MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
-# Any manual overrides per chute...
-LIMIT_OVERRIDES = {
-    "1a0d9245-582a-5cde-8f5b-2da5b9542339": 10,
-}
+
+# Higher min instance counts for some chutes...
+LIMIT_OVERRIDES = {}
 FAILSAFE = {
-    "e75f8264-bd20-5a30-a577-29eb8a77e85a": 20,
-    "0d7184a2-32a3-53e0-9607-058c37edaab5": 20,
-    "579ca543-dda4-51d0-83ef-5667d1a5ed5f": 20,
-    "154ad01c-a431-5744-83c8-651215124360": 15,
+    "0d7184a2-32a3-53e0-9607-058c37edaab5": 26,
+    "14a91d88-d6d6-5046-aaf4-eb3ad96b7247": 15,
     "4fa0c7f5-82f7-59d1-8996-661bb778893d": 15,
-    "07cb1b3a-ec4d-594a-96c2-b547fddcadb0": 10,
-    "4bbc44e9-6bfc-5e21-a91d-129bff2fb6d4": 10,
-    "83ce50c4-6d3f-55a6-88a6-c5db187f2c70": 10,
-    "39d75699-957f-571f-8737-f2c72819d3e8": 10,
+    "579ca543-dda4-51d0-83ef-5667d1a5ed5f": 13,
+    "0df3133d-c477-56d2-b4db-f2093bb150a1": 12,
     "d711f181-5b21-5169-a011-ccb472a1604f": 10,
-    "3048cf8d-67de-5a6d-9fdd-18ac9c560c05": 10,
-    "4f82321e-3e58-55da-ba44-051686ddbfe5": 10,
-    "94ef7147-8f8e-58f8-ae57-77b6f863acae": 7,
+    "4f82321e-3e58-55da-ba44-051686ddbfe5": 8,
+    "8d008c10-60d3-51e8-9272-c428ed6ff576": 8,
+    "02636d63-c996-5779-a0a2-25712469a7ca": 8,
+    "b2b7a64c-b203-5a5f-8982-a9c5cc12058c": 8,
+    "8f3bb827-b9e6-5487-88bc-ee8f0c6f5810": 6,
+    "4bbc44e9-6bfc-5e21-a91d-129bff2fb6d4": 5,
     "ae3b9d04-28fa-543a-9276-290da772dc23": 5,
-    "8d008c10-60d3-51e8-9272-c428ed6ff576": 5,
     "aef797d4-f375-5beb-9986-3ad245947469": 5,
     "689d2caa-01c1-5de1-ba69-39c5398be0c6": 5,
 }
@@ -553,16 +551,28 @@ async def perform_autoscale(dry_run: bool = False):
                 removal_percentage = 0.1 + (0.1 * (1 - utilization_basis / threshold))
             removal_percentage = min(removal_percentage, 0.4)
             num_to_remove = max(1, int(excess_instances * removal_percentage))
+
+            # Ensure post-removal utilization stays well below scale-up threshold to prevent flapping
+            # Use threshold * 0.85 as target ceiling for better hysteresis
+            target_utilization = threshold * 0.85
             post_removal_count = info.instance_count - num_to_remove
             post_removal_utilization = (
                 utilization_basis * info.instance_count
             ) / post_removal_count
-            if post_removal_utilization > threshold * 0.9:
+            if post_removal_utilization > target_utilization:
                 safe_count = max(
                     UNDERUTILIZED_CAP,
-                    int((utilization_basis * info.instance_count) / (threshold * 0.9)),
+                    math.ceil((utilization_basis * info.instance_count) / target_utilization),
                 )
-                num_to_remove = info.instance_count - safe_count
+                num_to_remove = max(info.instance_count - safe_count, 0)
+
+            # Final validation - never scale down if it would trigger scale-up
+            if num_to_remove > 0:
+                final_utilization = (utilization_basis * info.instance_count) / (
+                    info.instance_count - num_to_remove
+                )
+                if final_utilization >= threshold:
+                    num_to_remove = 0  # Abort scale-down to prevent flapping
 
             # Check failsafe minimum
             failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)

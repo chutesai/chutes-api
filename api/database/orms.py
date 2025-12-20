@@ -15,3 +15,4 @@ import api.metasync  # noqa: F401
 import api.user.events  # noqa: F401
 import api.node.events  # noqa: F401
 import api.server.schemas  # noqa: F401
+import api.idp.schemas  # noqa: F401

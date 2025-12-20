@@ -7,7 +7,7 @@ all:
     user: billybob
     # The initial username to login with, for fresh nodes that may not have your username setup.
     ansible_user: ubuntu
-    # By default, no nodes are the primary (CPU node running all the apps, wireguard, etc.) Override this flag exactly once below.
+    # By default, no nodes are the primary (CPU node running all the apps, internal, etc.) Override this flag exactly once below.
     is_primary: false
     # We assume GPU is enabled on all nodes, but of course you need to disable this for the CPU nodes below.
     gpu_enabled: true
@@ -24,11 +24,11 @@ all:
     chutes-prod-0:
       ansible_host: 1.2.3.4
       external_ip: 1.2.3.4
-      wireguard_ip: 192.168.0.1
+      internal_ip: 192.168.0.1
       gpu_enabled: false
       is_primary: true
     chutes-prod-gpu-0:
       ansible_host: 4.5.6.7
       external_ip: 4.5.6.7
-      wireguard_ip: 192.168.0.2
+      internal_ip: 192.168.0.2
       gpu_enabled: true

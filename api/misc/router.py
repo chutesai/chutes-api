@@ -2,12 +2,19 @@
 Router for misc. stuff, e.g. score proxy.
 """
 
+import uuid
+import asyncio
 import aiohttp
+import orjson as json
 from loguru import logger
+from typing import Optional
+from huggingface_hub import HfApi
 from urllib.parse import urlparse
 from fastapi import APIRouter, Request, Response, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from typing import AsyncIterator
+from api.config import settings
+from api.chute.util import get_one
 
 router = APIRouter()
 
@@ -132,3 +139,77 @@ async def proxy(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Unhandled exception proxying request: {str(e)}",
         )
+
+
+def _fetch_repo_info_sync(repo_id: str, repo_type: str, revision: str, hf_token: Optional[str]):
+    """
+    Load huggingface repo info for cache validation.
+    """
+    api = HfApi(token=hf_token)
+    repo_files = api.list_repo_tree(
+        repo_id=repo_id,
+        revision=revision,
+        repo_type=repo_type,
+        recursive=True,
+    )
+    files = []
+    for item in repo_files:
+        if not hasattr(item, "size"):
+            continue
+        file_info = {
+            "path": item.path,
+            "size": getattr(item, "size", None),
+        }
+        if hasattr(item, "lfs") and item.lfs:
+            file_info["sha256"] = item.lfs.sha256
+            file_info["is_lfs"] = True
+        else:
+            file_info["blob_id"] = getattr(item, "blob_id", None)
+            file_info["is_lfs"] = False
+        files.append(file_info)
+
+    return {
+        "repo_id": repo_id,
+        "repo_type": repo_type,
+        "revision": revision,
+        "files": files,
+    }
+
+
+@router.get("/hf_repo_info")
+async def get_hf_repo_info(
+    repo_id: str = Query(...),
+    repo_type: str = Query("model"),
+    revision: str = Query("main"),
+    hf_token: Optional[str] = Query(None),
+):
+    """
+    Proxy endpoint for HF repo file info.
+    """
+    uid = str(uuid.uuid5(uuid.NAMESPACE_OID, f"{repo_id=},{repo_type=},{revision=},{hf_token=}"))
+    cache_key = f"hf_repo_info:{uid}"
+    cached = await settings.redis_client.get(cache_key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            await settings.redis_client.delete(cache_key)
+
+    # Chute exists?
+    chute = await get_one(repo_id)
+    if not chute:
+        chute = await get_one(f"{repo_id}-TEE")
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"No chute found for model {repo_id}"
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            _fetch_repo_info_sync, repo_id, repo_type, revision, hf_token
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+    await settings.redis_client.set(cache_key, json.dumps(result).decode())
+    return result

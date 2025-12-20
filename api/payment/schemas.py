@@ -14,6 +14,7 @@ from sqlalchemy import (
     Index,
     Numeric,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base, generate_uuid
 
 
@@ -68,6 +69,7 @@ class UsageData(Base):
     count = Column(BigInteger, nullable=False)
     input_tokens = Column(Numeric, nullable=True)
     output_tokens = Column(Numeric, nullable=True)
+    compute_time = Column(Double, nullable=True)
 
 
 class AdminBalanceChange(Base):
@@ -77,6 +79,8 @@ class AdminBalanceChange(Base):
     amount = Column(Double, nullable=False)
     reason = Column(String, nullable=False)
     timestamp = Column(DateTime)
+    created_by = Column(String)
+    raw_request = Column(JSONB)
 
 
 class BTTransferMonitorState(Base):

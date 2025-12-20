@@ -1,0 +1,22 @@
+{% extends "base.jinja2" %}
+
+{% block title %}Success - Chutes{% endblock %}
+
+{% block content %}
+<div class="success-message">
+    {{ message }}
+    {% if redirect_url %}
+    <p style="margin-top: 8px;">Redirecting...</p>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if redirect_url %}
+<script>
+    setTimeout(function() {
+        window.location.href = "{{ redirect_url }}";
+    }, 2000);
+</script>
+{% endif %}
+{% endblock %}

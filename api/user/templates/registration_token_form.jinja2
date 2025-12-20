@@ -1,0 +1,17 @@
+{% extends "base.jinja2" %}
+
+{% block title %}Registration Token Request{% endblock %}
+
+{% block extra_styles %}
+<script src="https://js.hcaptcha.com/1/api.js" async defer></script>
+{% endblock %}
+
+{% block content %}
+<div class="label">Chutes CLI Registration Token Request</div>
+<form action="/users/registration_token" method="POST">
+    <div class="h-captcha" data-sitekey="{{ hcaptcha_sitekey }}"></div>
+    <br />
+    <input type="submit" class="submit-btn" value="Get Token" />
+</form>
+<div class="info">Please complete the verification to receive your token</div>
+{% endblock %}

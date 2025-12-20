@@ -147,17 +147,28 @@ ON CONFLICT (invocation_id, started_at)
 
 
 async def update_usage_data(
-    user_id: str, chute_id: str, balance_used: float, metrics: dict
+    user_id: str, chute_id: str, balance_used: float, metrics: dict, compute_time: float = 0.0
 ) -> None:
-    pipeline = settings.redis_client.pipeline()
-    key = f"balance:{user_id}:{chute_id}"
-    pipeline.hincrbyfloat(key, "amount", balance_used)
-    pipeline.hincrby(key, "count", 1)
-    if metrics:
-        pipeline.hincrby(key, "input_tokens", metrics.get("it", 0))
-        pipeline.hincrby(key, "output_tokens", metrics.get("ot", 0))
-    pipeline.hset(key, "timestamp", int(time.time()))
-    await pipeline.execute()
+    """
+    Push usage data metrics to redis for async processing.
+
+    Uses compact format to minimize network/storage overhead:
+    - Short keys: u=user_id, c=chute_id, a=amount, i=input_tokens, o=output_tokens, t=compute_time, s=timestamp
+    - compute_time rounded to 4 decimal places (0.1ms precision)
+    - count omitted (always 1, handled by consumer)
+    """
+    record = json.dumps(
+        {
+            "u": user_id,
+            "c": chute_id,
+            "a": balance_used,
+            "i": metrics.get("it", 0) if metrics else 0,
+            "o": metrics.get("ot", 0) if metrics else 0,
+            "t": round(compute_time, 4),
+            "s": int(time.time()),
+        }
+    ).decode()
+    await settings.billing_redis_client.client.rpush("usage_queue", record)
 
 
 async def store_invocation(
@@ -498,10 +509,6 @@ async def _invoke_one(
         timeout = 900
     try:
         session = await get_miner_session(target, timeout=timeout)
-        if random.random() <= 0.05 or chute.name.endswith("-TEE"):
-            logger.info(
-                f"Setting timeout to {timeout} for {chute.name=} and {plain_path=} with {target.chutes_version=}"
-            )
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
         if iv:
             headers["X-Chutes-Serialized"] = "true"
@@ -584,7 +591,7 @@ async def _invoke_one(
 
                     # CLLMV check.
                     if (
-                        (random.random() <= 0.01 or chunk_idx <= 4)
+                        (random.random() <= 0.005 or chunk_idx <= 3)
                         and image_supports_cllmv(chute.image)
                         and target.version == chute.version
                         and not chute.tee
@@ -1211,6 +1218,7 @@ async def invoke(
                         chute.chute_id,
                         balance_used,
                         metrics if chute.standard_template == "vllm" else None,
+                        compute_time=duration,
                     )
                 )
 
@@ -1278,7 +1286,7 @@ async def invoke(
                     error_message = "INVALID_RESPONSE"
                     instant_delete = True
                 elif isinstance(exc, aiohttp.ClientResponseError) and exc.status >= 500:
-                    error_message = f"HTTP_{exc.status}"
+                    error_message = f"HTTP_{exc.status}: {error_message}"
                     # Server returned an error - connection worked, server is broken
                     skip_disable_loop = True
 
@@ -1567,6 +1575,7 @@ async def get_and_store_llm_details(chute_id: str):
                 model_info["id"] = chute.name
                 model_info["chute_id"] = chute.chute_id
                 model_info["price"] = price
+                model_info["confidential_compute"] = chute.tee
 
                 # OpenRouter format.
                 model_info["pricing"] = {

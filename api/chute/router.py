@@ -655,6 +655,11 @@ async def warm_up_chute(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
+    if not current_user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid authentication.",
+        )
     balance = (
         current_user.current_balance.effective_balance if current_user.current_balance else 0.0
     )
@@ -797,7 +802,23 @@ async def delete_chute(
     # Perform the deletion.
     chute_id = chute.chute_id
     version = chute.version
+
+    # Delete all of the instances first, and mark the deletions as valid so the miners aren't penalized.
+    result = await db.execute(
+        text("DELETE FROM instances WHERE chute_id = :chute_id RETURNING instance_id"),
+        {"chute_id": chute.chute_id},
+    )
+    instance_ids = result.scalars().all()
+    if instance_ids:
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET valid_termination = true, deletion_reason = 'chute deleted' WHERE instance_id = ANY(:instance_ids)"
+            ),
+            {"instance_ids": instance_ids},
+        )
+
     await db.delete(chute)
+
     await db.commit()
     await settings.redis_client.publish(
         "miner_broadcast",

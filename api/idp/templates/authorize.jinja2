@@ -1,0 +1,52 @@
+{% extends "base.jinja2" %}
+
+{% block title %}Authorize - Chutes{% endblock %}
+
+{% block content %}
+<h1>Authorize Access</h1>
+<p class="subtitle">Signed in as <strong style="color: #fff;">{{ user_name }}</strong></p>
+
+<div class="form-content">
+    <div class="app-info">
+        <div class="app-name">{{ app_name or "Application" }}</div>
+        <div class="app-desc">{{ app_description or "wants to access your account" }}</div>
+    </div>
+
+    <div class="scopes-list">
+        <h3>This application will be able to:</h3>
+        {% for scope_desc in scopes %}
+        <div class="scope-item">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M9 12L11 14L15 10M21 12C21 16.9706 16.9706 21 12 21C7.02944 21 3 16.9706 3 12C3 7.02944 7.02944 3 12 3C16.9706 3 21 7.02944 21 12Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span class="text">{{ scope_desc }}</span>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="auth-info">
+        <p>Authorization valid for <span class="highlight">{{ lifetime_text }}</span> of inactivity.</p>
+        <p style="margin-top: 4px;">You can revoke access anytime from your <a href="https://chutes.ai/settings/apps" style="color: #98cfb2;">account settings</a>.</p>
+    </div>
+
+    <form action="/idp/authorize/consent" method="POST">
+        <input type="hidden" name="client_id" value="{{ client_id }}">
+        <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+        <input type="hidden" name="state" value="{{ state }}">
+        <input type="hidden" name="scope" value="{{ scope }}">
+        <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+        <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+
+        <div class="auth-actions">
+            <button type="submit" name="action" value="deny" class="btn btn-secondary">Deny</button>
+            <button type="submit" name="action" value="allow" class="btn btn-primary">
+                Allow
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 4v7a4 4 0 0 1-4 4H4"/>
+                    <path d="m9 10-5 5 5 5"/>
+                </svg>
+            </button>
+        </div>
+    </form>
+</div>
+{% endblock %}
