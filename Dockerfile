@@ -150,7 +150,7 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/home/chutes/.local/bin:$PATH"
 
 ADD pyproject.toml /app/
-ADD uv.lock /app/
+ADD --chown=chutes uv.lock /app/
 ADD --chown=chutes README.md /app/
 RUN uv sync --extra dev
 

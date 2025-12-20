@@ -936,6 +936,7 @@ async def hostname_invocation(
             "deepseek-ai/DeepSeek-V3.2-Speciale",
             "deepseek-ai/DeepSeek-V3.2-Speciale-TEE",
             "deepseek-ai/DeepSeek-V3.2",
+            "deepseek-ai/DeepSeek-V3.2-TEE",
             "deepseek-ai/DeepSeek-V3.2-Exp",
         ):
             payload.pop("logprobs", None)
@@ -980,9 +981,8 @@ async def hostname_invocation(
                 payload["chat_template_kwargs"]["thinking"] = payload["chat_template_kwargs"][
                     "enable_thinking"
                 ]
-            if (
-                "thinking" not in payload["chat_template_kwargs"]
-                and model == "deepseek-ai/DeepSeek-V3.2-Speciale"
+            if "thinking" not in payload["chat_template_kwargs"] and model.startswith(
+                "deepseek-ai/DeepSeek-V3.2-Speciale"
             ):
                 payload["chat_template_kwargs"]["thinking"] = True
         elif model in (
