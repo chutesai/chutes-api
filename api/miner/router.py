@@ -16,6 +16,7 @@ from pydantic.fields import ComputedFieldInfo
 import api.database.orms  # noqa
 from api.user.schemas import User
 from api.chute.schemas import Chute, NodeSelector
+from api.chute.util import calculate_effective_compute_multiplier
 from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance
@@ -32,7 +33,7 @@ from metasync.shared import get_scoring_data
 router = APIRouter()
 
 
-def model_to_dict(obj):
+async def model_to_dict(obj):
     """
     Helper to convert object to dict.
     """
@@ -59,6 +60,13 @@ def model_to_dict(obj):
         if semcomp(obj.chutes_version or "0.0.0", "0.3.61") >= 0:
             data["code"] = "print('legacy placeholder')"
         data["preemptible"] = obj.preemptible
+
+        # Add effective compute multiplier and factors.
+        effective_data = await calculate_effective_compute_multiplier(obj)
+        data["effective_compute_multiplier"] = effective_data["effective_compute_multiplier"]
+        data["compute_multiplier_factors"] = effective_data["compute_multiplier_factors"]
+        data["bounty"] = effective_data["bounty"]
+
     if isinstance(obj, Image):
         data["username"] = obj.user.username.lower()
         data["name"] = obj.name.lower()
@@ -83,7 +91,8 @@ async def _stream_items(clazz: Any, selector: Any = None, explicit_null: bool = 
         result = await db.stream(query)
         any_found = False
         async for row in result.unique():
-            yield f"data: {json.dumps(model_to_dict(row[0])).decode()}\n\n"
+            data = await model_to_dict(row[0])
+            yield f"data: {json.dumps(data).decode()}\n\n"
             any_found = True
         if explicit_null and not any_found:
             yield "data: NO_ITEMS\n"

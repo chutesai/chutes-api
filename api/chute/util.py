@@ -33,7 +33,12 @@ from api.constants import (
     LLM_PRICE_MULT_PER_MILLION_IN,
     LLM_PRICE_MULT_PER_MILLION_OUT,
     DIFFUSION_PRICE_MULT_PER_STEP,
+    PRIVATE_INSTANCE_BONUS,
+    INTEGRATED_SUBNET_BONUS,
+    TEE_BONUS,
+    INTEGRATED_SUBNETS,
 )
+from api.bounty.util import get_bounty_boost, get_bounty_amount
 from api.database import get_session, get_inv_session
 from api.fmv.fetcher import get_fetcher
 from api.exceptions import (
@@ -245,6 +250,81 @@ async def selector_hourly_price(node_selector) -> float:
     )
     price = await node_selector.current_estimated_price()
     return price["usd"]["hour"]
+
+
+async def calculate_effective_compute_multiplier(chute: Chute, include_bounty: bool = True) -> dict:
+    """
+    Calculate the effective compute multiplier a miner would receive if they
+    deployed and activated an instance for this chute right now.
+
+    Args:
+        chute: The chute to calculate for
+        include_bounty: If True (default), includes the bounty boost.
+                       If False, returns the base multiplier without bounty
+                       (used by autoscaler for updating existing instances).
+
+    Returns a dict with:
+    - effective_compute_multiplier: total multiplier
+    - compute_multiplier_factors: breakdown of factors (only includes applicable bonuses)
+    - bounty: current bounty amount (only if include_bounty=True)
+
+    Includes all bonuses:
+    - Base compute_multiplier from node_selector (GPU type * count)
+    - Private instance bonus (2x) or Integrated subnet bonus (3x)
+    - Urgency boost from autoscaler (from chute.boost)
+    - Bounty boost (fixed 1.5x if bounty exists) - only if include_bounty=True
+    - TEE bonus (1.5x if tee=True)
+    """
+    node_selector = NodeSelector(**chute.node_selector)
+    base_multiplier = node_selector.compute_multiplier
+
+    factors = {"base": base_multiplier}
+    total = base_multiplier
+
+    # Private instance bonus or integrated subnet bonus.
+    if (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
+        integrated = False
+        for config in INTEGRATED_SUBNETS.values():
+            if config["model_substring"] in chute.name.lower():
+                integrated = True
+                break
+        if integrated:
+            factors["integrated_subnet"] = INTEGRATED_SUBNET_BONUS
+            total *= INTEGRATED_SUBNET_BONUS
+        else:
+            factors["private"] = PRIVATE_INSTANCE_BONUS
+            total *= PRIVATE_INSTANCE_BONUS
+
+    # Urgency boost from autoscaler.
+    if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
+        factors["urgency_boost"] = chute.boost
+        total *= chute.boost
+
+    # Bounty boost (only if requested).
+    if include_bounty:
+        bounty_boost = await get_bounty_boost(chute.chute_id)
+        if bounty_boost > 1.0:
+            factors["bounty_boost"] = bounty_boost
+            total *= bounty_boost
+
+    # TEE bonus.
+    if chute.tee:
+        factors["tee"] = TEE_BONUS
+        total *= TEE_BONUS
+
+    result = {
+        "effective_compute_multiplier": total,
+        "compute_multiplier_factors": factors,
+    }
+
+    if include_bounty:
+        result["bounty"] = await get_bounty_amount(chute.chute_id)
+
+    return result
 
 
 async def get_chute_by_id_or_name(chute_id_or_name, db, current_user, load_instances: bool = False):

@@ -4,6 +4,7 @@ from loguru import logger
 from datetime import datetime, timezone
 from typing import Optional
 from api.config import settings
+from metasync.constants import BOUNTY_BOOST_INITIAL
 
 
 CLAIM_BOUNTY_LUA = """
@@ -53,9 +54,9 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
     return False
 
 
-async def claim_bounty(chute_id: str) -> Optional[int]:
+async def claim_bounty(chute_id: str) -> Optional[dict]:
     """
-    Atomically claim a bounty.
+    Atomically claim a bounty. Returns dict with bounty info including age for boost calculation.
     """
     bounty_key = f"bounty:{chute_id}"
     try:
@@ -70,10 +71,37 @@ async def claim_bounty(chute_id: str) -> Optional[int]:
         created_at = data["created_at"]
         seconds_elapsed = int(time.time() - created_at)
         bounty_amount = min(3 * seconds_elapsed + 100, 86400)
-        return bounty_amount
+        return {
+            "amount": bounty_amount,
+            "created_at": created_at,
+            "age_seconds": seconds_elapsed,
+        }
     except Exception as exc:
         logger.warning(f"Failed to claim bounty: {exc}")
     return None
+
+
+def calculate_bounty_boost(age_seconds: int) -> float:
+    """
+    Calculate compute multiplier boost based on bounty age.
+    Returns BOUNTY_BOOST_INITIAL (1.5) for display purposes.
+    The actual decay happens over time after instance activation.
+    """
+    return BOUNTY_BOOST_INITIAL
+
+
+async def get_bounty_boost(chute_id: str) -> float:
+    """
+    Get the bounty boost for a chute without claiming it.
+    Returns BOUNTY_BOOST_INITIAL if a bounty exists, 1.0 otherwise.
+    """
+    bounty_key = f"bounty:{chute_id}"
+    try:
+        exists = await settings.lite_redis_client.exists(bounty_key)
+        return BOUNTY_BOOST_INITIAL if exists else 1.0
+    except Exception as exc:
+        logger.warning(f"Failed to get bounty boost: {exc}")
+    return 1.0
 
 
 async def check_bounty_exists(chute_id: str) -> bool:

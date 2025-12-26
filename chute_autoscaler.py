@@ -24,12 +24,7 @@ import api.database.orms  # noqa
 from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
-from api.bounty.util import (
-    check_bounty_exists,
-    create_bounty_if_not_exists,
-    get_bounty_amount,
-    send_bounty_notification,
-)
+from api.bounty.util import check_bounty_exists
 from api.user.service import chutes_user_id
 from api.util import has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
@@ -136,6 +131,8 @@ class AutoScaleContext:
         self.downscale_amount = 0
         self.upscale_amount = 0
         self.preferred_downscale_gpus = set()
+        self.boost = 1.0  # Compute multiplier boost (1.0 - 4.0)
+        self.locked_for_priority = False  # True if locked to let higher-urgency chutes scale
 
 
 async def instance_cleanup():
@@ -185,6 +182,89 @@ async def instance_cleanup():
             total += 1
         if total:
             logger.success(f"Purged {total} total unverified+old instances.")
+
+
+async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
+    """
+    Refresh compute_multiplier for active instances based on current chute state.
+
+    For each chute, we calculate the base multiplier (without bounty), then update instances:
+    - Instances without bounty: compute_multiplier = base_multiplier
+    - Instances with bounty: compute_multiplier = base_multiplier * decaying_bounty_boost
+
+    The bounty boost decays from BOUNTY_BOOST_INITIAL to 1.0 over BOUNTY_BOOST_DECAY_HOURS.
+    """
+    from api.chute.util import calculate_effective_compute_multiplier
+    from metasync.constants import BOUNTY_BOOST_INITIAL, BOUNTY_BOOST_DECAY_HOURS
+
+    logger.info("Refreshing compute multipliers for active instances...")
+
+    async with get_session() as session:
+        # Load chutes (optionally filtered)
+        query = select(Chute)
+        if chute_ids:
+            query = query.where(Chute.chute_id.in_(chute_ids))
+        result = await session.execute(query)
+        chutes = result.scalars().all()
+
+        instances_updated = 0
+        for chute in chutes:
+            # Get base multiplier without bounty
+            effective_data = await calculate_effective_compute_multiplier(
+                chute, include_bounty=False
+            )
+            base_multiplier = effective_data["effective_compute_multiplier"]
+
+            # Update instances without bounty: just use base_multiplier
+            result = await session.execute(
+                text("""
+                    UPDATE instances
+                    SET compute_multiplier = :base_multiplier
+                    WHERE chute_id = :chute_id
+                      AND (bounty IS NULL OR bounty = false)
+                      AND active = true
+                      AND verified = true
+                      AND (compute_multiplier IS NULL OR ABS(compute_multiplier - :base_multiplier) > 0.001)
+                    RETURNING instance_id
+                """),
+                {"chute_id": chute.chute_id, "base_multiplier": base_multiplier},
+            )
+            instances_updated += len(result.fetchall())
+
+            # Update instances with bounty: base_multiplier * decaying bounty boost
+            result = await session.execute(
+                text("""
+                    UPDATE instances
+                    SET compute_multiplier = :base_multiplier * GREATEST(
+                        1.0,
+                        :initial_boost - (
+                            LEAST(
+                                EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0,
+                                :decay_hours
+                            ) / :decay_hours * (:initial_boost - 1.0)
+                        )
+                    )
+                    WHERE chute_id = :chute_id
+                      AND bounty = true
+                      AND active = true
+                      AND verified = true
+                      AND activated_at IS NOT NULL
+                    RETURNING instance_id
+                """),
+                {
+                    "chute_id": chute.chute_id,
+                    "base_multiplier": base_multiplier,
+                    "initial_boost": BOUNTY_BOOST_INITIAL,
+                    "decay_hours": BOUNTY_BOOST_DECAY_HOURS,
+                },
+            )
+            instances_updated += len(result.fetchall())
+
+        if instances_updated:
+            await session.commit()
+            logger.success(f"Updated compute_multiplier for {instances_updated} instances")
+        else:
+            logger.info("No compute_multiplier updates needed")
 
 
 async def query_prometheus_batch(
@@ -315,6 +395,24 @@ async def get_all_chute_metrics() -> Dict[str, Dict]:
         )
 
     return chute_metrics
+
+
+async def update_chute_boosts(chute_boosts: Dict[str, float]):
+    """
+    Update the boost column for all chutes based on urgency-calculated values.
+    """
+    if not chute_boosts:
+        return
+
+    async with get_session() as session:
+        # Batch update all boosts
+        for chute_id, boost in chute_boosts.items():
+            await session.execute(
+                text("UPDATE chutes SET boost = :boost WHERE chute_id = :chute_id"),
+                {"chute_id": chute_id, "boost": boost},
+            )
+        await session.commit()
+        logger.info(f"Updated boost values for {len(chute_boosts)} chutes")
 
 
 async def log_capacity_metrics(
@@ -496,10 +594,23 @@ async def perform_autoscale(dry_run: bool = False):
         await calculate_local_decision(ctx)
 
     # 3. Global Arbitration (The Real World Matchmaking)
+    # Force multiple donors per starving chute based on need, up to a cap
+    MAX_FORCED_DONATIONS_PER_CHUTE = 5
+    MAX_FORCED_DONATIONS_TOTAL = 20
+
+    total_forced = 0
     if starving_chutes:
         starving_chutes.sort(key=lambda x: x.urgency_score, reverse=True)
 
         for hungry_ctx in starving_chutes:
+            if total_forced >= MAX_FORCED_DONATIONS_TOTAL:
+                break
+
+            # How many instances does this chute need?
+            instances_needed = hungry_ctx.upscale_amount
+            if instances_needed <= 0:
+                continue
+
             # Match strictly by TEE status and actual available hardware
             needed_gpus = hungry_ctx.supported_gpus
 
@@ -516,31 +627,117 @@ async def perform_autoscale(dry_run: bool = False):
                 # Donor must have established instances (1+ hour old) to donate
                 if donor.established_instance_count == 0:
                     continue
-                # Donor must not already be tagged for downscale and have capacity above minimum
-                if donor.downscale_amount > 0 or donor.current_count <= UNDERUTILIZED_CAP:
+                # Donor must have capacity above minimum after any pending downscales
+                remaining_capacity = donor.current_count - donor.downscale_amount
+                if remaining_capacity <= UNDERUTILIZED_CAP:
                     continue
 
                 # Check if donor actually has hardware the starving chute can use
                 available_matching_gpus = set(donor.hardware_map.keys()) & needed_gpus
                 if available_matching_gpus:
-                    eligible_donors.append((donor, available_matching_gpus))
+                    # Calculate how many this donor can give (stay above UNDERUTILIZED_CAP)
+                    can_give = remaining_capacity - UNDERUTILIZED_CAP
+                    eligible_donors.append((donor, available_matching_gpus, can_give))
 
-            # Randomly select one donor from eligible candidates
-            if eligible_donors:
-                donor, available_matching_gpus = random.choice(eligible_donors)
+            if not eligible_donors:
+                continue
+
+            # Shuffle for fairness, then take from donors until we have enough
+            random.shuffle(eligible_donors)
+            donations_for_this_chute = 0
+            max_for_this_chute = min(
+                instances_needed,
+                MAX_FORCED_DONATIONS_PER_CHUTE,
+                MAX_FORCED_DONATIONS_TOTAL - total_forced,
+            )
+
+            for donor, available_matching_gpus, can_give in eligible_donors:
+                if donations_for_this_chute >= max_for_this_chute:
+                    break
+
+                # Take up to what this donor can give, but not more than we need
+                take_from_donor = min(
+                    can_give,
+                    max_for_this_chute - donations_for_this_chute,
+                )
+                if take_from_donor <= 0:
+                    continue
+
                 chosen_gpu = random.choice(list(available_matching_gpus))
-                donor.downscale_amount = 1
-                donor.target_count = donor.current_count - 1
+                donor.downscale_amount += take_from_donor
+                donor.target_count = donor.current_count - donor.downscale_amount
                 donor.action = "forced_downscale"
                 donor.preferred_downscale_gpus.add(chosen_gpu)
+
+                donations_for_this_chute += take_from_donor
+                total_forced += take_from_donor
+
                 logger.info(
-                    f"Arbitration: {donor.chute_id} giving up {chosen_gpu} for {hungry_ctx.chute_id} "
-                    f"(Urgency={hungry_ctx.urgency_score:.1f}, eligible_donors={len(eligible_donors)})"
+                    f"Arbitration: {donor.chute_id} giving up {take_from_donor}x {chosen_gpu} "
+                    f"for {hungry_ctx.chute_id} (Urgency={hungry_ctx.urgency_score:.1f})"
                 )
+
+            if donations_for_this_chute > 0:
+                logger.info(
+                    f"Arbitration summary: {hungry_ctx.chute_id} received {donations_for_this_chute} "
+                    f"forced donations (needed {instances_needed})"
+                )
+
+    # 3b. Priority Locking & Boost Calculation
+    # High-urgency chutes that still need scaling get priority:
+    # - They get a boost multiplier (1.0 - 2.5) based on urgency
+    # - Compatible lower-priority chutes get locked from scaling up
+    URGENCY_LOCK_THRESHOLD = 100  # Urgency score above which we lock competitors
+    URGENCY_MAX_FOR_BOOST = 500  # Urgency score that maps to max boost (2.5)
+    URGENCY_BOOST_MIN = 1.0
+    URGENCY_BOOST_MAX = 2.5
+
+    high_urgency_chutes = [
+        ctx
+        for ctx in starving_chutes
+        if ctx.urgency_score >= URGENCY_LOCK_THRESHOLD and ctx.upscale_amount > 0
+    ]
+
+    for ctx in contexts.values():
+        if ctx.is_starving and ctx.upscale_amount > 0:
+            # Calculate boost based on urgency (linear scale from 1.0 to 2.5)
+            # urgency 0 -> 1.0, urgency >= URGENCY_MAX_FOR_BOOST -> 2.5
+            normalized_urgency = min(ctx.urgency_score / URGENCY_MAX_FOR_BOOST, 1.0)
+            ctx.boost = URGENCY_BOOST_MIN + (
+                normalized_urgency * (URGENCY_BOOST_MAX - URGENCY_BOOST_MIN)
+            )
+        else:
+            ctx.boost = 1.0
+
+    # Lock compatible chutes that are trying to scale up but aren't as urgent
+    for hungry_ctx in high_urgency_chutes:
+        for ctx in contexts.values():
+            if ctx.chute_id == hungry_ctx.chute_id:
+                continue
+            if ctx.action != "scale_up_candidate":
+                continue
+            if ctx.urgency_score >= hungry_ctx.urgency_score:
+                continue  # Don't lock equally or more urgent chutes
+            if ctx.tee != hungry_ctx.tee:
+                continue  # Different TEE mode, not competing
+            if not (ctx.supported_gpus & hungry_ctx.supported_gpus):
+                continue  # Different hardware, not competing
+
+            # This chute is competing for same hardware with lower priority - lock it
+            ctx.target_count = ctx.current_count
+            ctx.upscale_amount = 0
+            ctx.action = "locked_for_priority"
+            ctx.locked_for_priority = True
+            ctx.boost = 1.0  # No boost for locked chutes
+            logger.info(
+                f"Priority lock: {ctx.chute_id} locked (urgency={ctx.urgency_score:.0f}) "
+                f"to prioritize {hungry_ctx.chute_id} (urgency={hungry_ctx.urgency_score:.0f})"
+            )
 
     # 4. Finalize Actions
     chute_actions = {}
     chute_target_counts = {}
+    chute_boosts = {}
     to_downsize: List[Tuple[str, int, Set[str]]] = []
 
     for ctx in contexts.values():
@@ -548,11 +745,18 @@ async def perform_autoscale(dry_run: bool = False):
 
         chute_actions[ctx.chute_id] = ctx.action
         chute_target_counts[ctx.chute_id] = ctx.target_count
+        chute_boosts[ctx.chute_id] = ctx.boost
 
         await settings.redis_client.set(f"scale:{ctx.chute_id}", ctx.target_count, ex=3700)
 
         if ctx.downscale_amount > 0:
             to_downsize.append((ctx.chute_id, ctx.downscale_amount, ctx.preferred_downscale_gpus))
+
+    # Update boost values in database
+    await update_chute_boosts(chute_boosts)
+
+    # Refresh instance compute_multipliers based on current chute state and bounty decay
+    await refresh_instance_compute_multipliers()
 
     # Include filtered chutes in capacity logging with their actual targets
     for chute_id, target in filtered_chutes.items():
@@ -661,17 +865,13 @@ async def calculate_local_decision(ctx: AutoScaleContext):
                 ctx.target_count = ctx.current_count + 1
                 ctx.action = "scale_up_candidate"
                 logger.info(f"Private chute {ctx.chute_id=} high util, adding capacity")
-                if await create_bounty_if_not_exists(ctx.chute_id, lifetime=3600):
-                    logger.success(f"Created additional bounty for private chute {ctx.chute_id=}")
-                amount = await get_bounty_amount(ctx.chute_id)
-                if amount:
-                    await send_bounty_notification(ctx.chute_id, amount)
             elif ctx.utilization_basis < private_threshold and ctx.current_count > 1:
                 ctx.downscale_amount = 1
                 ctx.target_count = ctx.current_count - 1
                 ctx.action = "scaled_down"
                 logger.info(f"Private chute {ctx.chute_id=} low util, removing instance")
         elif await check_bounty_exists(ctx.chute_id):
+            # Bounty was created via user request (invocation or warmup) - scale up
             ctx.upscale_amount = 1
             ctx.target_count = 1
             ctx.action = "scale_up_candidate"
@@ -679,7 +879,7 @@ async def calculate_local_decision(ctx: AutoScaleContext):
         else:
             ctx.target_count = 0
             ctx.action = "no_action"
-            logger.info(f"Private chute {ctx.chute_id=} has no bounty, not scalable.")
+            logger.info(f"Private chute {ctx.chute_id=} has no bounty, waiting for user request.")
         return
 
     failsafe_min = FAILSAFE.get(ctx.chute_id, UNDERUTILIZED_CAP)
@@ -715,7 +915,9 @@ async def calculate_local_decision(ctx: AutoScaleContext):
             ctx.target_count = max(failsafe_min, ctx.current_count + 1)
             ctx.action = "scale_up_candidate"
             clamp_to_max_instances(ctx)
-            logger.info(f"Scale up: {ctx.chute_id} - rolling update buffer, adding {ctx.upscale_amount} instance(s)")
+            logger.info(
+                f"Scale up: {ctx.chute_id} - rolling update buffer, adding {ctx.upscale_amount} instance(s)"
+            )
         return
 
     if ctx.is_starving:

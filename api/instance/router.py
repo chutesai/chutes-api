@@ -41,6 +41,8 @@ from api.payment.util import decrypt_secret
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import is_shared
+from api.bounty.util import claim_bounty
+from metasync.constants import BOUNTY_BOOST_INITIAL
 from api.secret.schemas import Secret
 from api.image.schemas import Image  # noqa
 from api.instance.schemas import (
@@ -80,7 +82,7 @@ from api.util import (
     load_shared_object,
     has_legacy_private_billing,
 )
-from api.bounty.util import check_bounty_exists, delete_bounty, claim_bounty
+from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command
@@ -685,9 +687,24 @@ async def _validate_launch_config_instance(
         )
         instance.billed_to = chute.user_id
 
-    # Add chute boost.
+    # Add chute boost (urgency boost from autoscaler).
     if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
         instance.compute_multiplier *= chute.boost
+        logger.info(
+            f"Adding chute boost {chute.boost=} to {instance.instance_id} "
+            f"for total {instance.compute_multiplier=} for {chute.name=} {chute.chute_id=}"
+        )
+
+    # Add bounty boost (claim bounty atomically and apply fixed multiplier).
+    # The bounty boost decays over 8 hours via the autoscaler's periodic refresh.
+    bounty_info = await claim_bounty(chute.chute_id)
+    if bounty_info:
+        instance.bounty = True
+        instance.compute_multiplier *= BOUNTY_BOOST_INITIAL
+        logger.info(
+            f"Claimed bounty for {chute.chute_id}: "
+            f"bounty_boost={BOUNTY_BOOST_INITIAL}, total compute_multiplier={instance.compute_multiplier}"
+        )
 
     # Add TEE boost.
     if chute.tee:
@@ -1583,31 +1600,56 @@ async def delete_instance(
         job.miner_terminated = True
         job.finished_at = func.now()
 
-    # Bounties are negated if an instance of a public chute is deleted with no other active instanes.
+    # Bounties are negated if an instance of a public chute is deleted with no other active instances.
+    # Additionally, heavily penalize the compute_multiplier:
+    # - Public chutes: divide by 10
+    # - Private chutes: zero entirely
     negate_bounty = False
-    if not instance.billed_to:
-        active_count = (
-            await db.execute(
-                select(func.count())
-                .select_from(Instance)
-                .where(
-                    Instance.chute_id == instance.chute_id,
-                    Instance.instance_id != instance.instance_id,
-                    Instance.active.is_(True),
-                )
+    compute_multiplier_penalty = 1.0
+
+    # Check if this is the last active instance
+    active_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(Instance)
+            .where(
+                Instance.chute_id == instance.chute_id,
+                Instance.instance_id != instance.instance_id,
+                Instance.active.is_(True),
             )
-        ).scalar_one()
-        if active_count == 0:
-            logger.warning(
-                f"Instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, negating bounty!"
-            )
+        )
+    ).scalar_one()
+
+    if active_count == 0:
+        # This is the last instance - apply penalties
+        if not instance.billed_to:
+            # Public chute: negate bounty and apply 10x penalty
             negate_bounty = True
+            compute_multiplier_penalty = 0.1
+            logger.warning(
+                f"Instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, "
+                f"negating bounty and applying 10x compute_multiplier penalty!"
+            )
+        else:
+            # Private chute: zero out compute_multiplier entirely
+            compute_multiplier_penalty = 0.0
+            logger.warning(
+                f"Private instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, "
+                f"zeroing compute_multiplier!"
+            )
 
     await db.delete(instance)
 
     # Update instance audit table.
-    params = {"instance_id": instance_id}
-    sql = "UPDATE instance_audit SET deletion_reason = 'miner initialized'"
+    params = {"instance_id": instance_id, "penalty": compute_multiplier_penalty}
+    sql = """
+        UPDATE instance_audit
+        SET deletion_reason = 'miner initialized',
+            compute_multiplier = CASE
+                WHEN :penalty < 1.0 THEN compute_multiplier * :penalty
+                ELSE compute_multiplier
+            END
+    """
     if negate_bounty:
         sql += ", bounty = :bounty"
         params["bounty"] = False

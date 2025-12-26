@@ -45,6 +45,7 @@ from api.chute.util import (
     get_one,
     is_shared,
     get_mtoken_price,
+    calculate_effective_compute_multiplier,
 )
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager
@@ -139,6 +140,16 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
             "supported_gpus": node_selector.supported_gpus,
         }
     )
+
+
+async def _inject_effective_compute_multiplier(chute: Chute, response: ChuteResponse):
+    """
+    Inject the effective compute multiplier and factors into a ChuteResponse.
+    """
+    result = await calculate_effective_compute_multiplier(chute)
+    response.effective_compute_multiplier = result["effective_compute_multiplier"]
+    response.compute_multiplier_factors = result["compute_multiplier_factors"]
+    response.bounty = result["bounty"]
 
 
 @router.post("/share")
@@ -426,6 +437,7 @@ async def list_chutes(
         chute_response.cord_ref_id = cord_ref_id
         responses.append(chute_response)
         await _inject_current_estimated_price(item, responses[-1])
+        await _inject_effective_compute_multiplier(item, responses[-1])
     result = {
         "total": total,
         "page": page,
@@ -755,6 +767,7 @@ async def get_chute(
         )
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
+    await _inject_effective_compute_multiplier(chute, response)
     return response
 
 

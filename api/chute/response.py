@@ -61,6 +61,9 @@ class ChuteResponse(BaseModel):
     preemptible: bool
     allow_external_egress: Optional[bool] = True
     tee: Optional[bool] = False
+    effective_compute_multiplier: Optional[float] = None
+    compute_multiplier_factors: Optional[Dict[str, float]] = None
+    bounty: Optional[int] = None
 
     class Config:
         from_attributes = True
