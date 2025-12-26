@@ -442,6 +442,8 @@ async def perform_autoscale(dry_run: bool = False):
     # 1. Initialize Contexts and Calculate Urgency
     contexts: Dict[str, AutoScaleContext] = {}
     starving_chutes: List[AutoScaleContext] = []
+    # Track filtered chutes for accurate capacity logging
+    filtered_chutes: Dict[str, int] = {}
 
     for chute_id, metrics in chute_metrics.items():
         info = chute_info_map.get(chute_id)
@@ -450,6 +452,7 @@ async def perform_autoscale(dry_run: bool = False):
             # Use current instance count from instances_by_chute, or 0 if none
             current_instances = len(instances_by_chute.get(chute_id, []))
             await settings.redis_client.set(f"scale:{chute_id}", current_instances, ex=3700)
+            filtered_chutes[chute_id] = current_instances
             continue
 
         # Parse node selector to understand hardware needs
@@ -551,6 +554,11 @@ async def perform_autoscale(dry_run: bool = False):
         if ctx.downscale_amount > 0:
             to_downsize.append((ctx.chute_id, ctx.downscale_amount, ctx.preferred_downscale_gpus))
 
+    # Include filtered chutes in capacity logging with their actual targets
+    for chute_id, target in filtered_chutes.items():
+        chute_actions[chute_id] = "filtered"
+        chute_target_counts[chute_id] = target
+
     await log_capacity_metrics(chute_metrics, chute_actions, chute_target_counts)
 
     # 5. Execute Downsizing
@@ -645,11 +653,10 @@ async def calculate_local_decision(ctx: AutoScaleContext):
 
         # Private chutes use a higher default threshold (0.75) than public (0.6)
         private_threshold = ctx.info.scaling_threshold or 0.75
+        # For private chutes, max_instances defaults to 1 if not set
+        private_max = ctx.info.max_instances if ctx.info.max_instances else 1
         if ctx.current_count:
-            if (
-                ctx.utilization_basis >= private_threshold
-                and ctx.current_count < ctx.info.max_instances
-            ):
+            if ctx.utilization_basis >= private_threshold and ctx.current_count < private_max:
                 ctx.upscale_amount = 1
                 ctx.target_count = ctx.current_count + 1
                 ctx.action = "scale_up_candidate"
