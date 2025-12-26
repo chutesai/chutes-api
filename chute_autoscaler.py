@@ -122,6 +122,9 @@ class AutoScaleContext:
         if not self.threshold:
             self.threshold = UTILIZATION_SCALE_UP
         self.has_rolling_update = info.has_rolling_update if info else False
+        # max_instances: None means unbounded, use a large number for comparisons
+        self.max_instances = info.max_instances if (info and info.max_instances) else 10000
+        self.public = info.public if info else True
 
         # Decision outputs
         self.target_count = self.current_count
@@ -404,7 +407,7 @@ async def perform_autoscale(dry_run: bool = False):
                     c.node_selector,
                     c.tee,
                     MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
-                    COALESCE(c.max_instances, 1) AS max_instances,
+                    c.max_instances,
                     c.scaling_threshold,
                     NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
                     COUNT(DISTINCT CASE WHEN i.active = true AND i.verified = true THEN i.instance_id END) AS instance_count,
@@ -443,6 +446,10 @@ async def perform_autoscale(dry_run: bool = False):
     for chute_id, metrics in chute_metrics.items():
         info = chute_info_map.get(chute_id)
         if not info:
+            # Chute filtered out by query (e.g., has jobs) - write safe target to avoid stale Redis
+            # Use current instance count from instances_by_chute, or 0 if none
+            current_instances = len(instances_by_chute.get(chute_id, []))
+            await settings.redis_client.set(f"scale:{chute_id}", current_instances, ex=3700)
             continue
 
         # Parse node selector to understand hardware needs
@@ -575,8 +582,15 @@ def calculate_demand_based_instances(ctx: AutoScaleContext) -> int:
     completed = ctx.completed_5m if ctx.completed_5m > 0 else ctx.completed_15m
     rate_limited = ctx.rate_limited_count_5m if ctx.completed_5m > 0 else ctx.rate_limited_count_15m
 
-    if completed == 0 or rate_limited == 0:
+    if rate_limited == 0:
         return 0
+
+    # Edge case: everything is being rate-limited (completed=0, rate_limited>0)
+    # This means we have demand but zero capacity is getting through
+    if completed == 0:
+        # Conservative: add 1 instance to start getting some throughput data
+        # Can't estimate demand without knowing per-instance throughput
+        return 1
 
     # Throughput per instance
     throughput_per_instance = completed / ctx.current_count
@@ -598,6 +612,18 @@ def calculate_demand_based_instances(ctx: AutoScaleContext) -> int:
     additional_needed = min(additional_needed, max_addition)
 
     return additional_needed
+
+
+def clamp_to_max_instances(ctx: AutoScaleContext):
+    """
+    Ensure target_count never exceeds the chute's configured max_instances.
+    """
+    if ctx.target_count > ctx.max_instances:
+        ctx.target_count = ctx.max_instances
+        # Recalculate upscale_amount based on clamped target
+        ctx.upscale_amount = max(0, ctx.target_count - ctx.current_count)
+        if ctx.upscale_amount == 0 and ctx.action == "scale_up_candidate":
+            ctx.action = "no_action"
 
 
 async def calculate_local_decision(ctx: AutoScaleContext):
@@ -671,16 +697,18 @@ async def calculate_local_decision(ctx: AutoScaleContext):
             ctx.upscale_amount = num_to_add
             ctx.target_count = max(failsafe_min, ctx.current_count + num_to_add)
             ctx.action = "scale_up_candidate"
+            clamp_to_max_instances(ctx)
             logger.info(
                 f"Scale up: {ctx.chute_id} - rolling update with high demand, "
-                f"util={ctx.utilization_basis:.1%}, adding {num_to_add} instances"
+                f"util={ctx.utilization_basis:.1%}, adding {ctx.upscale_amount} instances"
             )
         else:
             # Rolling update without high demand - still allow +1 for buffer
             ctx.upscale_amount = 1
             ctx.target_count = max(failsafe_min, ctx.current_count + 1)
             ctx.action = "scale_up_candidate"
-            logger.info(f"Scale up: {ctx.chute_id} - rolling update buffer, adding 1 instance")
+            clamp_to_max_instances(ctx)
+            logger.info(f"Scale up: {ctx.chute_id} - rolling update buffer, adding {ctx.upscale_amount} instance(s)")
         return
 
     if ctx.is_starving:
@@ -715,11 +743,12 @@ async def calculate_local_decision(ctx: AutoScaleContext):
         ctx.upscale_amount = num_to_add
         ctx.target_count = max(failsafe_min, ctx.current_count + num_to_add)
         ctx.action = "scale_up_candidate"
+        clamp_to_max_instances(ctx)
         logger.info(
             f"Scale up: {ctx.chute_id} - high demand, util={ctx.utilization_basis:.1%}, "
             f"rate_limit(5m={ctx.rate_limit_5m:.1%}, 15m={ctx.rate_limit_15m:.1%}, 1h={ctx.rate_limit_1h:.1%}), "
             f"completed_5m={ctx.completed_5m:.0f}, rate_limited_5m={ctx.rate_limited_count_5m:.0f}, "
-            f"demand_based_add={demand_based_add}, adding {num_to_add} instances, target={ctx.target_count}"
+            f"demand_based_add={demand_based_add}, adding {ctx.upscale_amount} instances, target={ctx.target_count}"
         )
         return
 
@@ -748,9 +777,14 @@ async def calculate_local_decision(ctx: AutoScaleContext):
             return
 
     # Default/Stable
+    # Public chutes get failsafe_min as their floor (FAILSAFE[id] or UNDERUTILIZED_CAP)
+    # Scaling down happens through critical donor logic when underutilized
     ctx.target_count = max(failsafe_min, ctx.current_count)
+
     if ctx.info.new_chute:
-        ctx.target_count = max(10, ctx.target_count)
+        # New chutes get a boost, but still respect max_instances
+        target_for_new = min(10, ctx.max_instances)
+        ctx.target_count = max(target_for_new, ctx.target_count)
         if ctx.target_count > ctx.current_count:
             ctx.upscale_amount = ctx.target_count - ctx.current_count
             ctx.action = "scale_up_candidate"
@@ -759,24 +793,31 @@ async def calculate_local_decision(ctx: AutoScaleContext):
                 f"adding {ctx.upscale_amount} instances, target={ctx.target_count}"
             )
 
+    # Always clamp to max_instances at the end
+    clamp_to_max_instances(ctx)
+
 
 def apply_overrides(ctx: AutoScaleContext):
     """
     Apply failsafe minimums and other overrides to the scaling decision.
     This should cap decisions, not override them with potentially more aggressive values.
+
+    Only applies to public chutes - private chutes handle their own minimums.
     """
+    # Private chutes are not subject to UNDERUTILIZED_CAP failsafe
+    if not ctx.public:
+        return
+
+    # For public chutes, ensure we don't go below failsafe minimum
     failsafe_min = FAILSAFE.get(ctx.chute_id, UNDERUTILIZED_CAP)
     if ctx.target_count < failsafe_min:
-        if ctx.target_count > 0 or (ctx.info and ctx.info.public):
-            # Cap target_count at failsafe minimum
-            ctx.target_count = failsafe_min
-            # Cap downscale_amount to not go below failsafe
-            # Only reduce downscale_amount if needed, never increase it
-            max_allowed_downscale = max(0, ctx.current_count - failsafe_min)
-            if ctx.downscale_amount > max_allowed_downscale:
-                ctx.downscale_amount = max_allowed_downscale
-                if max_allowed_downscale == 0:
-                    ctx.action = "no_action"
+        ctx.target_count = failsafe_min
+        # Cap downscale_amount to not go below failsafe
+        max_allowed_downscale = max(0, ctx.current_count - failsafe_min)
+        if ctx.downscale_amount > max_allowed_downscale:
+            ctx.downscale_amount = max_allowed_downscale
+            if max_allowed_downscale == 0:
+                ctx.action = "no_action"
 
 
 async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_now: datetime):
