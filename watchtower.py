@@ -216,7 +216,7 @@ async def load_chute_instances(chute_id):
         return instances
 
 
-async def purge(target, reason="miner failed watchtower probes"):
+async def purge(target, reason="miner failed watchtower probes", valid_termination=False):
     """
     Purge an instance.
     """
@@ -227,9 +227,13 @@ async def purge(target, reason="miner failed watchtower probes"):
         )
         await session.execute(
             text(
-                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                "UPDATE instance_audit SET deletion_reason = :reason, valid_termination = :valid_termination WHERE instance_id = :instance_id"
             ),
-            {"instance_id": target.instance_id, "reason": reason},
+            {
+                "instance_id": target.instance_id,
+                "reason": reason,
+                "valid_termination": valid_termination,
+            },
         )
 
         # Fail associated jobs.
@@ -248,11 +252,13 @@ async def purge(target, reason="miner failed watchtower probes"):
         await session.commit()
 
 
-async def purge_and_notify(target, reason="miner failed watchtower probes"):
+async def purge_and_notify(
+    target, reason="miner failed watchtower probes", valid_termination=False
+):
     """
     Purge an instance and send a notification with the reason.
     """
-    await purge(target, reason=reason)
+    await purge(target, reason=reason, valid_termination=valid_termination)
     await notify_deleted(
         target,
         message=f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",

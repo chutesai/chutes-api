@@ -8,9 +8,10 @@ import math
 import asyncio
 import argparse
 import random
+from collections import defaultdict
 from loguru import logger
 from datetime import timedelta, datetime, timezone
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, List, Tuple
 import aiohttp
 from sqlalchemy import (
     text,
@@ -23,7 +24,6 @@ import api.database.orms  # noqa
 from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
-from api.gpu import SUPPORTED_GPUS
 from api.bounty.util import (
     check_bounty_exists,
     create_bounty_if_not_exists,
@@ -31,7 +31,7 @@ from api.bounty.util import (
     send_bounty_notification,
 )
 from api.user.service import chutes_user_id
-from api.util import notify_deleted, has_legacy_private_billing
+from api.util import has_legacy_private_billing
 from api.chute.schemas import Chute, NodeSelector
 from api.instance.schemas import Instance, LaunchConfig
 from api.instance.util import invalidate_instance_cache, cleanup_expired_connections
@@ -69,6 +69,70 @@ FAILSAFE = {
     "aef797d4-f375-5beb-9986-3ad245947469": 5,
     "689d2caa-01c1-5de1-ba69-39c5398be0c6": 5,
 }
+
+
+class AutoScaleContext:
+    def __init__(
+        self, chute_id, metrics, info, supported_gpus, instances: List[Instance], db_now: datetime
+    ):
+        self.chute_id = chute_id
+        self.metrics = metrics
+        self.info = info
+        self.supported_gpus = supported_gpus
+        self.tee = info.tee if info else False
+        self.instances = instances
+        self.db_now = db_now
+
+        # Map actual hardware to specific instance objects
+        # Only include established instances (active for 1+ hour) for donor consideration
+        self.hardware_map = defaultdict(list)
+        self.established_instance_count = 0
+        for inst in instances:
+            if inst.nodes:
+                is_established = db_now.replace(tzinfo=None) - inst.activated_at.replace(
+                    tzinfo=None
+                ) >= timedelta(minutes=63)
+                if is_established:
+                    gpu_id = inst.nodes[0].gpu_identifier
+                    self.hardware_map[gpu_id].append(inst)
+                    self.established_instance_count += 1
+
+        # Computed metrics
+        self.utilization_basis = max(
+            metrics["utilization"].get("5m", 0), metrics["utilization"].get("15m", 0)
+        )
+        # Track all rate limit windows
+        self.rate_limit_5m = metrics["rate_limit_ratio"].get("5m", 0)
+        self.rate_limit_15m = metrics["rate_limit_ratio"].get("15m", 0)
+        self.rate_limit_1h = metrics["rate_limit_ratio"].get("1h", 0)
+        # For scale-up decisions, use the most recent rate limit values
+        self.rate_limit_basis = max(self.rate_limit_5m, self.rate_limit_15m)
+        # For scale-down prevention, ANY rate limiting in any window blocks it
+        self.any_rate_limiting = (
+            self.rate_limit_5m > 0 or self.rate_limit_15m > 0 or self.rate_limit_1h > 0
+        )
+
+        # Request volume for demand-based scaling
+        self.completed_5m = metrics["completed_requests"].get("5m", 0)
+        self.completed_15m = metrics["completed_requests"].get("15m", 0)
+        self.rate_limited_count_5m = metrics["rate_limited_requests"].get("5m", 0)
+        self.rate_limited_count_15m = metrics["rate_limited_requests"].get("15m", 0)
+        self.current_count = info.instance_count if info else 0
+        self.threshold = info.scaling_threshold if info else UTILIZATION_SCALE_UP
+        if not self.threshold:
+            self.threshold = UTILIZATION_SCALE_UP
+        self.has_rolling_update = info.has_rolling_update if info else False
+
+        # Decision outputs
+        self.target_count = self.current_count
+        self.action = "no_action"
+        self.urgency_score = 0.0
+        self.is_starving = False
+        self.is_donor = False
+        self.is_critical_donor = False
+        self.downscale_amount = 0
+        self.upscale_amount = 0
+        self.preferred_downscale_gpus = set()
 
 
 async def instance_cleanup():
@@ -326,14 +390,9 @@ async def perform_autoscale(dry_run: bool = False):
         return
     logger.info(f"Processing metrics for {len(chute_metrics)} chutes")
 
-    to_downsize = []
-    scale_up_candidates = []
-    chute_actions = {}
-    chute_target_counts = {}
-
-    # Also need to check which chutes are being updated.
+    # Fetch detailed chute info and ALL active instances (with nodes)
     async with get_session() as session:
-        result = await session.execute(
+        chute_result = await session.execute(
             text("""
                 SELECT
                     c.chute_id,
@@ -342,6 +401,8 @@ async def perform_autoscale(dry_run: bool = False):
                     c.user_id,
                     c.created_at,
                     c.concurrency,
+                    c.node_selector,
+                    c.tee,
                     MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
                     COALESCE(c.max_instances, 1) AS max_instances,
                     c.scaling_threshold,
@@ -358,436 +419,440 @@ async def perform_autoscale(dry_run: bool = False):
                 GROUP BY c.chute_id
             """)
         )
-        chute_info = {row.chute_id: row for row in result}
+        chute_info_map = {row.chute_id: row for row in chute_result}
         db_now = (
-            next(iter(chute_info.values())).db_now if chute_info else datetime.now(timezone.utc)
+            next(iter(chute_info_map.values())).db_now
+            if chute_info_map
+            else datetime.now(timezone.utc)
         )
 
-    # Analyze each chute.
+        instance_result = await session.execute(
+            select(Instance)
+            .where(Instance.active.is_(True), Instance.verified.is_(True))
+            .options(selectinload(Instance.nodes))
+        )
+        all_active_instances = instance_result.scalars().all()
+        instances_by_chute = defaultdict(list)
+        for inst in all_active_instances:
+            instances_by_chute[inst.chute_id].append(inst)
+
+    # 1. Initialize Contexts and Calculate Urgency
+    contexts: Dict[str, AutoScaleContext] = {}
+    starving_chutes: List[AutoScaleContext] = []
+
     for chute_id, metrics in chute_metrics.items():
-        info = chute_info.get(chute_id)
+        info = chute_info_map.get(chute_id)
         if not info:
-            logger.warning(f"Chute {chute_id} found in metrics but not in chute_info query")
-            # Set default target count for chutes not found in query
-            chute_target_counts[chute_id] = UNDERUTILIZED_CAP
             continue
 
-        # Private chute handling, quite different...
-        if (
-            info
-            and not info.public
-            and not has_legacy_private_billing(info)
-            and info.user_id != await chutes_user_id()
-        ):
-            # User has no balance, can't scale up of course.
-            if info.user_balance <= 0:
-                await settings.redis_client.set(f"scale:{chute_id}", 0)
-                chute_target_counts[chute_id] = 0
-                chute_actions[chute_id] = "no_action"
-                logger.info(f"Private chute {chute_id=} has no balance, unable to scale.")
-                continue
+        # Parse node selector to understand hardware needs
+        try:
+            ns = NodeSelector(**info.node_selector)
+            supported_gpus = set(ns.supported_gpus)
+        except Exception:
+            logger.warning(f"Failed to parse node selector for {chute_id}")
+            supported_gpus = set()
 
-            # Private chutes that do already have instances.
-            if info.instance_count:
-                utilization_5m = metrics["utilization"].get("5m", 0)
-                utilization_15m = metrics["utilization"].get("15m", 0)
-                utilization_basis = max(utilization_5m, utilization_15m)
+        ctx = AutoScaleContext(
+            chute_id, metrics, info, supported_gpus, instances_by_chute[chute_id], db_now
+        )
+        contexts[chute_id] = ctx
 
-                # Need to scale up?
-                threshold = info.scaling_threshold or 0.75
-                if utilization_basis >= threshold and info.instance_count < info.max_instances:
-                    await settings.redis_client.set(f"scale:{chute_id}", info.instance_count + 1)
-                    chute_target_counts[chute_id] = info.instance_count + 1
-                    chute_actions[chute_id] = "scale_up_candidate"
-                    logger.info(
-                        f"Private chute {chute_id=} has reached {utilization_basis=} with {info.max_instances=}, adding capacity"
-                    )
-                    if await create_bounty_if_not_exists(chute_id, lifetime=3600):
-                        logger.success(
-                            f"Successfully created additional bounty for private chute {chute_id=}"
-                        )
-                    amount = await get_bounty_amount(chute_id)
-                    if amount:
-                        logger.info(f"Bounty for {chute_id=} is now {amount}")
-                        await send_bounty_notification(chute_id, amount)
+        # Calculate Urgency Score
+        # Formula: (RateLimitRatio * 5000) + (Utilization * 100)
+        # Prioritizes error-reduction over pure utilization.
+        util_score = min(100, ctx.utilization_basis * 100)
+        rl_score = ctx.rate_limit_basis * 5000
+        ctx.urgency_score = util_score + rl_score
+
+        # Identify Starving Chutes (High Demand)
+        if ctx.utilization_basis >= ctx.threshold or ctx.rate_limit_basis >= RATE_LIMIT_SCALE_UP:
+            ctx.is_starving = True
+            starving_chutes.append(ctx)
+
+        # Identify Potential Donors (Low Utilization)
+        # ANY rate limiting in any time window prevents being a donor
+        if not ctx.any_rate_limiting and ctx.current_count > 0:
+            # Critical Donor: Absolute waste, always downscale.
+            if ctx.utilization_basis < ctx.threshold * 0.2:
+                ctx.is_critical_donor = True
+                ctx.is_donor = True
+            # Optional Donor: Buffer, only downscale to help others.
+            elif ctx.utilization_basis < ctx.threshold * 0.6:
+                ctx.is_donor = True
+
+    # 2. Local Decision Making (Ideal World)
+    for ctx in contexts.values():
+        await calculate_local_decision(ctx)
+
+    # 3. Global Arbitration (The Real World Matchmaking)
+    if starving_chutes:
+        starving_chutes.sort(key=lambda x: x.urgency_score, reverse=True)
+
+        for hungry_ctx in starving_chutes:
+            # Match strictly by TEE status and actual available hardware
+            needed_gpus = hungry_ctx.supported_gpus
+
+            # Build list of all eligible donors with matching hardware
+            eligible_donors = []
+            for donor in contexts.values():
+                # Skip ineligible donors
+                if (
+                    donor.chute_id == hungry_ctx.chute_id
+                    or not donor.is_donor
+                    or donor.tee != hungry_ctx.tee
+                ):
+                    continue
+                # Donor must have established instances (1+ hour old) to donate
+                if donor.established_instance_count == 0:
+                    continue
+                # Donor must not already be tagged for downscale and have capacity above minimum
+                if donor.downscale_amount > 0 or donor.current_count <= UNDERUTILIZED_CAP:
                     continue
 
-                # Need to scale down?
-                elif utilization_basis < threshold and info.instance_count > 1:
-                    await settings.redis_client.set(f"scale:{chute_id}", info.instance_count - 1)
-                    chute_target_counts[chute_id] = info.instance_count - 1
-                    chute_actions[chute_id] = "scaled_down"
-                    logger.info(
-                        f"Private chute {chute_id=} has fallen to {utilization_basis=} with {info.max_instances=}, removing instance"
-                    )
-                    to_downsize.append((chute_id, 1))
-                    continue
+                # Check if donor actually has hardware the starving chute can use
+                available_matching_gpus = set(donor.hardware_map.keys()) & needed_gpus
+                if available_matching_gpus:
+                    eligible_donors.append((donor, available_matching_gpus))
 
-            # No instances, but a bounty exists so we allow one instance.
-            elif await check_bounty_exists(chute_id):
-                await settings.redis_client.set(f"scale:{chute_id}", 1)
-                chute_target_counts[chute_id] = 1
-                chute_actions[chute_id] = "scale_up_candidate"
-                logger.info(f"Private chute {chute_id=} has an active bounty, adding capacity")
-                continue
-
-            # No bounty, no usage, disallow.
-            else:
-                await settings.redis_client.set(f"scale:{chute_id}", 0)
-                chute_target_counts[chute_id] = 0
-                chute_actions[chute_id] = "no_action"
-                logger.info(f"Private chute {chute_id=} has no bounty, not scalable.")
-                continue
-
-            # Default, do nothing.
-            await settings.redis_client.set(f"scale:{chute_id}", info.instance_count)
-            chute_target_counts[chute_id] = info.instance_count
-            chute_actions[chute_id] = "no_action"
-            logger.info(f"Private chute {chute_id=} has expected capacity, no-op.")
-            continue
-
-        if not info or not info.instance_count:
-            # Check if there's a failsafe minimum for this chute
-            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
-            target_count = max(UNDERUTILIZED_CAP, failsafe_min)
-            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-            chute_actions[chute_id] = "scale_up_candidate"
-            chute_target_counts[chute_id] = target_count
-            scale_up_candidates.append((chute_id, target_count))
-            logger.info(
-                f"Scale up candidate: {chute_id} - no instances for past hour! Target: {target_count}"
-            )
-            continue
-
-        # XXX Manual configurations, just in case, e.g. here kimi-k2-tools on vllm with b200s.
-        if chute_id in LIMIT_OVERRIDES or (
-            info.public and info.max_instances and info.max_instances > 1
-        ):
-            limit = LIMIT_OVERRIDES.get(chute_id, info.max_instances)
-            logger.warning(f"Setting manual override value to {chute_id=}: {limit=}")
-            await settings.redis_client.set(f"scale:{chute_id}", limit, ex=3700)
-            chute_target_counts[chute_id] = limit
-            if info.instance_count < limit:
-                scale_up_candidates.append((chute_id, limit - info.instance_count))
-                chute_actions[chute_id] = "scale_up_candidate"
-                continue
-            elif info.instance_count > limit:
-                num_to_remove = info.instance_count - limit
-                to_downsize.append((chute_id, num_to_remove))
-                chute_actions[chute_id] = "scaled_down"
-                chute_target_counts[chute_id] = limit
+            # Randomly select one donor from eligible candidates
+            if eligible_donors:
+                donor, available_matching_gpus = random.choice(eligible_donors)
+                chosen_gpu = random.choice(list(available_matching_gpus))
+                donor.downscale_amount = 1
+                donor.target_count = donor.current_count - 1
+                donor.action = "forced_downscale"
+                donor.preferred_downscale_gpus.add(chosen_gpu)
                 logger.info(
-                    f"Scale down candidate: {chute_id} - manual limit override, "
-                    f"instances: {info.instance_count} - target: {limit}"
+                    f"Arbitration: {donor.chute_id} giving up {chosen_gpu} for {hungry_ctx.chute_id} "
+                    f"(Urgency={hungry_ctx.urgency_score:.1f}, eligible_donors={len(eligible_donors)})"
                 )
-                continue
 
-        # Check scale up conditions
-        rate_limit_5m = metrics["rate_limit_ratio"].get("5m", 0)
-        rate_limit_15m = metrics["rate_limit_ratio"].get("15m", 0)
-        rate_limit_1h = metrics["rate_limit_ratio"].get("1h", 0)
-        utilization_15m = metrics["utilization"].get("15m", 0)
-        utilization_5m = metrics["utilization"].get("5m", 0)
-        rate_limit_basis = max(rate_limit_15m, rate_limit_5m)
-        utilization_basis = max(utilization_15m, utilization_5m)
+    # 4. Finalize Actions
+    chute_actions = {}
+    chute_target_counts = {}
+    to_downsize: List[Tuple[str, int, Set[str]]] = []
 
-        # Scale up candidate: high utilization
-        threshold = info.scaling_threshold or UTILIZATION_SCALE_UP
-        if utilization_basis >= threshold:
-            num_to_add = 1
-            if utilization_basis >= 0.85:
-                num_to_add = max(5, int(info.instance_count * 0.8))
-            elif utilization_basis >= threshold * 1.5:
-                num_to_add = max(3, int(info.instance_count * 0.5))
-            elif utilization_basis >= threshold * 1.25:
-                num_to_add = max(2, int(info.instance_count * 0.25))
-            target_count = max(FAILSAFE.get(chute_id, 0), info.instance_count + num_to_add)
-            scale_up_candidates.append((chute_id, num_to_add))
-            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-            chute_actions[chute_id] = "scale_up_candidate"
-            chute_target_counts[chute_id] = target_count
-            logger.info(
-                f"Scale up candidate: {chute_id} - high utilization: {utilization_basis:.1%} "
-                f"- allowing {num_to_add} additional instances, {target_count=}"
-            )
-        # Scale up candidate: increasing rate limiting and significant rate limiting
-        elif rate_limit_basis >= RATE_LIMIT_SCALE_UP:
-            num_to_add = 1
-            if rate_limit_basis >= 0.2:
-                num_to_add = max(3, int(info.instance_count * 0.3))
-            elif rate_limit_basis >= 0.1:
-                num_to_add = max(2, int(info.instance_count * 0.15))
-            else:
-                num_to_add = max(1, int(info.instance_count * 0.05))
-            target_count = max(FAILSAFE.get(chute_id, 0), info.instance_count + num_to_add)
-            scale_up_candidates.append((chute_id, num_to_add))
-            chute_actions[chute_id] = "scale_up_candidate"
-            chute_target_counts[chute_id] = target_count
-            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-            logger.info(
-                f"Scale up candidate: {chute_id} - rate limiting increasing: "
-                f"5m={rate_limit_5m:.1%}, 15m={rate_limit_15m:.1%}, 1h={rate_limit_1h:.1%} "
-                f"- allowing {num_to_add} additional instances, {target_count=}"
-            )
+    for ctx in contexts.values():
+        apply_overrides(ctx)
 
-        # Scale down candidate: low utilization, no rate limiting, and has enough instances
-        elif (
-            info.instance_count >= UNDERUTILIZED_CAP
-            and utilization_basis < threshold
-            and rate_limit_5m == 0
-            and rate_limit_15m == 0
-            and rate_limit_1h == 0
-            and not info.new_chute
-            and chute_id not in LIMIT_OVERRIDES
-        ):
-            num_to_remove = 1
-            # Calculate the number of instances to remove, based on how far away the
-            # current utilization is from the scale-up threshold.
-            excess_instances = info.instance_count - UNDERUTILIZED_CAP
-            if utilization_basis < threshold * 0.25:
-                removal_percentage = 0.3 + (0.1 * (1 - utilization_basis / (threshold * 0.25)))
-            elif utilization_basis < threshold * 0.5:
-                removal_percentage = 0.2 + (0.1 * (1 - utilization_basis / (threshold * 0.5)))
-            else:
-                removal_percentage = 0.1 + (0.1 * (1 - utilization_basis / threshold))
-            removal_percentage = min(removal_percentage, 0.4)
-            num_to_remove = max(1, int(excess_instances * removal_percentage))
+        chute_actions[ctx.chute_id] = ctx.action
+        chute_target_counts[ctx.chute_id] = ctx.target_count
 
-            # Ensure post-removal utilization stays well below scale-up threshold to prevent flapping
-            # Use threshold * 0.85 as target ceiling for better hysteresis
-            target_utilization = threshold * 0.85
-            post_removal_count = info.instance_count - num_to_remove
-            post_removal_utilization = (
-                utilization_basis * info.instance_count
-            ) / post_removal_count
-            if post_removal_utilization > target_utilization:
-                safe_count = max(
-                    UNDERUTILIZED_CAP,
-                    math.ceil((utilization_basis * info.instance_count) / target_utilization),
-                )
-                num_to_remove = max(info.instance_count - safe_count, 0)
+        await settings.redis_client.set(f"scale:{ctx.chute_id}", ctx.target_count, ex=3700)
 
-            # Final validation - never scale down if it would trigger scale-up
-            if num_to_remove > 0:
-                final_utilization = (utilization_basis * info.instance_count) / (
-                    info.instance_count - num_to_remove
-                )
-                if final_utilization >= threshold:
-                    num_to_remove = 0  # Abort scale-down to prevent flapping
+        if ctx.downscale_amount > 0:
+            to_downsize.append((ctx.chute_id, ctx.downscale_amount, ctx.preferred_downscale_gpus))
 
-            # Check failsafe minimum
-            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
-            target_count = info.instance_count - num_to_remove
-
-            # Ensure we don't go below failsafe minimum
-            if target_count < failsafe_min:
-                if info.instance_count > failsafe_min:
-                    # Scale down to failsafe minimum only
-                    num_to_remove = info.instance_count - failsafe_min
-                    target_count = failsafe_min
-                    logger.info(f"Scaling down {chute_id} to failsafe minimum: {failsafe_min}")
-                else:
-                    # Already at or below failsafe, don't scale down
-                    num_to_remove = 0
-                    target_count = info.instance_count
-                    logger.info(
-                        f"Chute {chute_id} already at/below failsafe minimum: {failsafe_min}"
-                    )
-
-            if num_to_remove > 0:
-                await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-                to_downsize.append((chute_id, num_to_remove))
-                chute_actions[chute_id] = "scaled_down"
-                chute_target_counts[chute_id] = target_count
-                logger.info(
-                    f"Scale down candidate: {chute_id} - low utilization: {utilization_basis:.1%}, "
-                    f"instances: {info.instance_count} - removing {num_to_remove} instances, target: {target_count}"
-                )
-            else:
-                chute_actions[chute_id] = "no_action"
-                target_count = max(failsafe_min, info.instance_count)
-                chute_target_counts[chute_id] = target_count
-                await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-        elif info.new_chute:
-            # Allow scaling new chutes, to a point.
-            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
-            # For new chutes, target is the max of 10, current count, or failsafe
-            target_count = failsafe_min
-            if "affine" not in info.name.lower():
-                target_count = max(10, failsafe_min)
-            num_to_add = max(0, target_count - info.instance_count)
-            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-            chute_target_counts[chute_id] = target_count
-            if num_to_add >= 1:
-                scale_up_candidates.append((chute_id, num_to_add))
-                chute_actions[chute_id] = "scale_up_candidate"
-            elif info.instance_count > target_count:
-                num_to_remove = info.instance_count - target_count
-                to_downsize.append((chute_id, num_to_remove))
-                chute_actions[chute_id] = "scaled_down"
-                logger.info(
-                    f"Scale down candidate: {chute_id} - new chute override "
-                    f"instances: {info.instance_count} - removing {num_to_remove} instances to target: {target_count}"
-                )
-            else:
-                chute_actions[chute_id] = "no_action"
-        else:
-            # Nothing to do.
-            failsafe_min = FAILSAFE.get(chute_id, UNDERUTILIZED_CAP)
-            target_count = max(failsafe_min, info.instance_count)
-            await settings.redis_client.set(f"scale:{chute_id}", target_count, ex=3700)
-            chute_actions[chute_id] = "no_action"
-            chute_target_counts[chute_id] = target_count
-
-    # Log all metrics and actions
     await log_capacity_metrics(chute_metrics, chute_actions, chute_target_counts)
 
-    logger.success(
-        f"Found {len(scale_up_candidates)} scale up candidates and {len(to_downsize)} scale down candidates"
-    )
-
-    # Don't do any actual downscaling in dry-run mode.
+    # 5. Execute Downsizing
     if dry_run and to_downsize:
         logger.warning("DRY RUN MODE: Skipping actual instance removal")
-        total_instances_to_remove = sum(num for _, num in to_downsize)
-        logger.info(
-            f"Would remove {total_instances_to_remove} instances across {len(to_downsize)} chutes:"
-        )
-        for chute_id, num_to_remove in to_downsize:
-            logger.info(f"  - Chute {chute_id}: would remove {num_to_remove} instances")
+        for cid, amt, pref in to_downsize:
+            logger.info(f"Would remove {amt} from {cid} (Preferred GPUs: {pref or 'any'})")
+        return
+
+    await execute_downsizing(to_downsize, db_now)
+
+
+def calculate_demand_based_instances(ctx: AutoScaleContext) -> int:
+    """
+    Calculate how many additional instances are needed based on request volume.
+
+    The idea: if we're rate limiting, we have unmet demand. We estimate how many
+    additional instances would be needed to handle that demand.
+
+    Assumptions:
+    - Each instance handles roughly (completed_requests / current_instances) requests
+    - Not all rate-limited requests are unique (many are retries)
+    - We estimate ~40% of rate-limited requests are unique demand (conservative)
+    """
+    if ctx.current_count == 0:
+        return 1
+
+    # Use 5m window for most responsive scaling, fall back to 15m if 5m has no data
+    completed = ctx.completed_5m if ctx.completed_5m > 0 else ctx.completed_15m
+    rate_limited = ctx.rate_limited_count_5m if ctx.completed_5m > 0 else ctx.rate_limited_count_15m
+
+    if completed == 0 or rate_limited == 0:
         return 0
 
-    # Perform the actual scale downs
+    # Throughput per instance
+    throughput_per_instance = completed / ctx.current_count
+    if throughput_per_instance <= 0:
+        return 1
+
+    # Estimate unique rate-limited requests (exclude retries)
+    # Conservative estimate: 40% are unique, 60% are retries.
+    # In reality, it's probably orders of magnitude more retries.
+    RETRY_FACTOR = 0.4
+    estimated_unique_unmet = rate_limited * RETRY_FACTOR
+
+    # How many additional instances needed to handle the unmet demand?
+    additional_needed = math.ceil(estimated_unique_unmet / throughput_per_instance)
+
+    # Cap the addition to prevent runaway scaling, don't more
+    # than double the current count in one cycle
+    max_addition = max(ctx.current_count, 5)
+    additional_needed = min(additional_needed, max_addition)
+
+    return additional_needed
+
+
+async def calculate_local_decision(ctx: AutoScaleContext):
+    """
+    Determine what a chute WANTS to do based purely on its own metrics.
+    """
+    # Private Chutes logic
+    if (
+        ctx.info
+        and not ctx.info.public
+        and not has_legacy_private_billing(ctx.info)
+        and ctx.info.user_id != await chutes_user_id()
+    ):
+        if ctx.info.user_balance <= 0:
+            ctx.target_count = 0
+            ctx.action = "no_action"
+            logger.info(f"User for private chute {ctx.chute_id=} has no balance, unable to scale.")
+            return
+
+        # Private chutes use a higher default threshold (0.75) than public (0.6)
+        private_threshold = ctx.info.scaling_threshold or 0.75
+        if ctx.current_count:
+            if (
+                ctx.utilization_basis >= private_threshold
+                and ctx.current_count < ctx.info.max_instances
+            ):
+                ctx.upscale_amount = 1
+                ctx.target_count = ctx.current_count + 1
+                ctx.action = "scale_up_candidate"
+                logger.info(f"Private chute {ctx.chute_id=} high util, adding capacity")
+                if await create_bounty_if_not_exists(ctx.chute_id, lifetime=3600):
+                    logger.success(f"Created additional bounty for private chute {ctx.chute_id=}")
+                amount = await get_bounty_amount(ctx.chute_id)
+                if amount:
+                    await send_bounty_notification(ctx.chute_id, amount)
+            elif ctx.utilization_basis < private_threshold and ctx.current_count > 1:
+                ctx.downscale_amount = 1
+                ctx.target_count = ctx.current_count - 1
+                ctx.action = "scaled_down"
+                logger.info(f"Private chute {ctx.chute_id=} low util, removing instance")
+        elif await check_bounty_exists(ctx.chute_id):
+            ctx.upscale_amount = 1
+            ctx.target_count = 1
+            ctx.action = "scale_up_candidate"
+            logger.info(f"Private chute {ctx.chute_id=} has active bounty, adding initial capacity")
+        else:
+            ctx.target_count = 0
+            ctx.action = "no_action"
+            logger.info(f"Private chute {ctx.chute_id=} has no bounty, not scalable.")
+        return
+
+    failsafe_min = FAILSAFE.get(ctx.chute_id, UNDERUTILIZED_CAP)
+    if ctx.chute_id in LIMIT_OVERRIDES:
+        limit = LIMIT_OVERRIDES[ctx.chute_id]
+        ctx.target_count = limit
+        if ctx.current_count > limit:
+            ctx.downscale_amount = ctx.current_count - limit
+            ctx.action = "scaled_down"
+            logger.info(f"Chute {ctx.chute_id}: limit override, scaling down to {limit}")
+        elif ctx.current_count < limit:
+            ctx.upscale_amount = limit - ctx.current_count
+            ctx.action = "scale_up_candidate"
+            logger.info(f"Chute {ctx.chute_id}: limit override, scaling up to {limit}")
+        return
+
+    # Rolling updates: allow scaling up to ensure smooth transition
+    if ctx.has_rolling_update:
+        if ctx.is_starving:
+            # High demand during rolling update - scale up aggressively
+            num_to_add = max(2, int(ctx.current_count * 0.2))
+            ctx.upscale_amount = num_to_add
+            ctx.target_count = max(failsafe_min, ctx.current_count + num_to_add)
+            ctx.action = "scale_up_candidate"
+            logger.info(
+                f"Scale up: {ctx.chute_id} - rolling update with high demand, "
+                f"util={ctx.utilization_basis:.1%}, adding {num_to_add} instances"
+            )
+        else:
+            # Rolling update without high demand - still allow +1 for buffer
+            ctx.upscale_amount = 1
+            ctx.target_count = max(failsafe_min, ctx.current_count + 1)
+            ctx.action = "scale_up_candidate"
+            logger.info(f"Scale up: {ctx.chute_id} - rolling update buffer, adding 1 instance")
+        return
+
+    if ctx.is_starving:
+        num_to_add = 1
+
+        # Calculate demand-based scaling if we have rate limiting
+        demand_based_add = 0
+        if ctx.rate_limit_basis > 0:
+            demand_based_add = calculate_demand_based_instances(ctx)
+
+        # Very high utilization - aggressive scale up
+        if ctx.utilization_basis >= 0.85:
+            num_to_add = max(5, int(ctx.current_count * 0.8))
+        elif ctx.utilization_basis >= ctx.threshold * 1.5:
+            num_to_add = max(3, int(ctx.current_count * 0.5))
+        # Rate limiting - use demand-based calculation
+        elif demand_based_add > 0:
+            # Use the demand-based calculation, but ensure minimum based on ratio severity
+            # Only apply ratio-based minimums if we have significant volume (>50 rate-limited requests)
+            # to avoid over-scaling for low-volume spikes
+            significant_volume = ctx.rate_limited_count_5m >= 50 or ctx.rate_limited_count_15m >= 50
+            if ctx.rate_limit_basis >= 0.2 and significant_volume:
+                num_to_add = max(demand_based_add, 3)
+            elif ctx.rate_limit_basis >= 0.1 and significant_volume:
+                num_to_add = max(demand_based_add, 2)
+            else:
+                num_to_add = max(demand_based_add, 1)
+        # Only historical rate limiting (1h only) - minimal scale up
+        elif ctx.rate_limit_1h > 0 and ctx.rate_limit_basis < RATE_LIMIT_SCALE_UP:
+            num_to_add = 1
+
+        ctx.upscale_amount = num_to_add
+        ctx.target_count = max(failsafe_min, ctx.current_count + num_to_add)
+        ctx.action = "scale_up_candidate"
+        logger.info(
+            f"Scale up: {ctx.chute_id} - high demand, util={ctx.utilization_basis:.1%}, "
+            f"rate_limit(5m={ctx.rate_limit_5m:.1%}, 15m={ctx.rate_limit_15m:.1%}, 1h={ctx.rate_limit_1h:.1%}), "
+            f"completed_5m={ctx.completed_5m:.0f}, rate_limited_5m={ctx.rate_limited_count_5m:.0f}, "
+            f"demand_based_add={demand_based_add}, adding {num_to_add} instances, target={ctx.target_count}"
+        )
+        return
+
+    # Critical Donors always scale down locally.
+    # Optional Donors stay 'no_action' until forced by Arbitration.
+    # ANY rate limiting prevents scale-down (checked via is_critical_donor which requires !any_rate_limiting)
+    if ctx.is_critical_donor and ctx.current_count > failsafe_min:
+        # Calculate safe ceiling using 85% of threshold to prevent flapping
+        target_ceil_util = ctx.threshold * 0.85
+        safe_count = (
+            math.ceil((ctx.utilization_basis * ctx.current_count) / target_ceil_util)
+            if target_ceil_util > 0
+            else failsafe_min
+        )
+        safe_count = max(safe_count, failsafe_min)
+
+        actual_remove = min(ctx.current_count - safe_count, max(1, int(ctx.current_count * 0.2)))
+        if actual_remove > 0:
+            ctx.downscale_amount = actual_remove
+            ctx.target_count = ctx.current_count - actual_remove
+            ctx.action = "scaled_down"
+            logger.info(
+                f"Scale down: {ctx.chute_id} - critical donor, util={ctx.utilization_basis:.1%}, "
+                f"removing {actual_remove} instances, target={ctx.target_count}"
+            )
+            return
+
+    # Default/Stable
+    ctx.target_count = max(failsafe_min, ctx.current_count)
+    if ctx.info.new_chute:
+        ctx.target_count = max(10, ctx.target_count)
+        if ctx.target_count > ctx.current_count:
+            ctx.upscale_amount = ctx.target_count - ctx.current_count
+            ctx.action = "scale_up_candidate"
+            logger.info(
+                f"Scale up: {ctx.chute_id} - new chute, "
+                f"adding {ctx.upscale_amount} instances, target={ctx.target_count}"
+            )
+
+
+def apply_overrides(ctx: AutoScaleContext):
+    """
+    Apply failsafe minimums and other overrides to the scaling decision.
+    This should cap decisions, not override them with potentially more aggressive values.
+    """
+    failsafe_min = FAILSAFE.get(ctx.chute_id, UNDERUTILIZED_CAP)
+    if ctx.target_count < failsafe_min:
+        if ctx.target_count > 0 or (ctx.info and ctx.info.public):
+            # Cap target_count at failsafe minimum
+            ctx.target_count = failsafe_min
+            # Cap downscale_amount to not go below failsafe
+            # Only reduce downscale_amount if needed, never increase it
+            max_allowed_downscale = max(0, ctx.current_count - failsafe_min)
+            if ctx.downscale_amount > max_allowed_downscale:
+                ctx.downscale_amount = max_allowed_downscale
+                if max_allowed_downscale == 0:
+                    ctx.action = "no_action"
+
+
+async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_now: datetime):
+    """
+    Perform the actual removal of instances.
+    """
     instances_removed = 0
     gpus_removed = 0
-    for chute_id, num_to_remove in to_downsize:
+
+    for chute_id, num_to_remove, preferred_gpus in to_downsize:
+        if num_to_remove <= 0:
+            continue
+
         async with get_session() as session:
-            chute = (
-                (
-                    await session.execute(
-                        select(Chute)
-                        .where(Chute.chute_id == chute_id)
-                        .options(selectinload(Chute.instances).selectinload(Instance.nodes))
-                    )
-                )
-                .unique()
-                .scalar_one_or_none()
+            chute_q = await session.execute(
+                select(Chute)
+                .where(Chute.chute_id == chute_id)
+                .options(selectinload(Chute.instances).selectinload(Instance.nodes))
             )
+            chute = chute_q.unique().scalar_one_or_none()
             if not chute:
-                logger.warning(f"Chute not found: {chute_id=}")
                 continue
 
-            active = [
+            active_instances = [
                 inst
                 for inst in chute.instances
-                if inst.verified and inst.active and not inst.config.job_id
+                if inst.verified and inst.active and (not inst.config or not inst.config.job_id)
             ]
-            instances = []
-            for instance in active:
-                if len(instance.nodes) != chute.node_selector.get("gpu_count"):
-                    logger.warning(f"Bad instance? {instance.instance_id=} {instance.verified=}")
-                    reason = "instance node count does not match node selector"
-                    await purge(instance, reason=reason)
-                    await notify_deleted(instance, message=reason)
-                    await invalidate_instance_cache(
-                        instance.chute_id, instance_id=instance.instance_id
-                    )
+
+            # Prefer removing broken or unestablished instances first
+            valid_candidates = []
+            for inst in active_instances:
+                if len(inst.nodes) != (chute.node_selector.get("gpu_count") or 1):
+                    await purge_and_notify(inst, "Instance node count mismatch")
                     num_to_remove -= 1
                     instances_removed += 1
-                    gpus_removed += len(instance.nodes)
-                else:
-                    instances.append(instance)
+                elif db_now.replace(tzinfo=None) - inst.activated_at.replace(
+                    tzinfo=None
+                ) >= timedelta(minutes=63):
+                    valid_candidates.append(inst)
 
-            # Sanity check.
-            if len(instances) < UNDERUTILIZED_CAP or num_to_remove <= 0:
-                logger.warning(
-                    f"Instance count for {chute_id=} is now below underutilized cap, skipping..."
-                )
+            if num_to_remove <= 0 or not valid_candidates:
                 continue
 
-            # Calculate compatible_chute_ids once per chute (before the removal loop)
-            # Get minimum GPU price for current chute
-            current_chute_min_rate = float("inf")
-            current_node_selector = NodeSelector(**chute.node_selector)
-            current_chute_gpus = set(current_node_selector.supported_gpus)
-            for gpu in current_node_selector.supported_gpus:
-                if gpu in SUPPORTED_GPUS:
-                    current_chute_min_rate = min(
-                        current_chute_min_rate, SUPPORTED_GPUS[gpu]["hourly_rate"]
+            # Target instances matching the preferred hardware identified in arbitration
+            for _ in range(num_to_remove):
+                if not valid_candidates:
+                    break
+
+                match_found = False
+                if preferred_gpus:
+                    for i, inst in enumerate(valid_candidates):
+                        if inst.nodes and inst.nodes[0].gpu_identifier in preferred_gpus:
+                            targeted_instance = valid_candidates.pop(i)
+                            match_found = True
+                            break
+
+                if not match_found:
+                    targeted_instance = valid_candidates.pop(
+                        random.randrange(len(valid_candidates))
                     )
 
-            # Get all chutes and their hardware requirements
-            chutes_query = text("""
-                SELECT c.chute_id, c.node_selector
-                FROM chutes c
-            """)
-            chutes_result = await session.execute(chutes_query)
-
-            # Find chutes that the instance's nodes could run
-            compatible_chute_ids = set()
-            for row in chutes_result:
-                node_selector = NodeSelector(**row.node_selector)
-                supported_gpus = set(node_selector.supported_gpus)
-                if current_chute_gpus & supported_gpus:
-                    chute_min_rate = float("inf")
-                    for gpu in supported_gpus:
-                        if gpu in SUPPORTED_GPUS:
-                            chute_min_rate = min(chute_min_rate, SUPPORTED_GPUS[gpu]["hourly_rate"])
-                    # Only compatible if this chute's min price is at least threshold of current chute's min price
-                    if chute_min_rate >= (current_chute_min_rate * PRICE_COMPATIBILITY_THRESHOLD):
-                        compatible_chute_ids.add(row.chute_id)
-            compatible_chute_ids.add(chute_id)  # Always include current chute
-
-            logger.info(
-                f"Downsizing chute {chute_id}, current count = {len(instances)}, removing {num_to_remove} unlucky instances"
-            )
-            kicked = set()
-
-            for idx in range(num_to_remove):
-                unlucky_instance = None
-                unlucky_reason = None
-                instances = [i for i in instances if i.instance_id not in kicked]
-
-                # Filter to only established instances (online for at least 1 hour)
-                established_instances = [
-                    instance
-                    for instance in instances
-                    if instance.active
-                    and db_now.replace(tzinfo=None) - instance.activated_at.replace(tzinfo=None)
-                    >= timedelta(minutes=63)
-                ]
-                if not established_instances:
-                    logger.warning(
-                        f"No established instances (>1 hour) available to remove for {chute_id=}, "
-                        f"skipping removal {idx + 1} of {num_to_remove}"
-                    )
-                    continue
-                instances = established_instances
-
-                # Completely random instance selection to purge.
-                unlucky_instance = random.choice(instances)
-                unlucky_reason = (
-                    f"Selected an unlucky instance at random: {chute.chute_id=} "
-                    f"{unlucky_instance.instance_id=} {unlucky_instance.miner_hotkey=} "
-                    f"{idx + 1} of {num_to_remove}"
+                logger.info(
+                    f"Downscaling {chute_id}: removing {targeted_instance.instance_id} ({targeted_instance.nodes[0].gpu_identifier if targeted_instance.nodes else 'unknown'})"
                 )
-                logger.info(unlucky_reason)
-
-                # Purge the unlucky one
-                kicked.add(unlucky_instance.instance_id)
-                await purge(unlucky_instance, reason=unlucky_reason)
-                await notify_deleted(unlucky_instance, message=unlucky_reason)
-                await invalidate_instance_cache(
-                    unlucky_instance.chute_id, instance_id=unlucky_instance.instance_id
+                await purge_and_notify(
+                    targeted_instance, "Autoscaler adjustment", valid_termination=True
                 )
-
+                await invalidate_instance_cache(chute_id, targeted_instance.instance_id)
                 instances_removed += 1
-                gpus_removed += len(unlucky_instance.nodes)
+                gpus_removed += len(targeted_instance.nodes)
 
     if instances_removed:
-        logger.success(f"Scaled down, {instances_removed=} and {gpus_removed=}")
-
-    return instances_removed
+        logger.success(
+            f"Scaled down total: {instances_removed} instances, {gpus_removed} GPUs freed."
+        )
 
 
 if __name__ == "__main__":
