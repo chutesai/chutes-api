@@ -8,6 +8,7 @@ import math
 import asyncio
 import argparse
 import random
+from functools import wraps
 from collections import defaultdict
 from loguru import logger
 from datetime import timedelta, datetime, timezone
@@ -20,6 +21,7 @@ from sqlalchemy import (
     and_,
     or_,
 )
+from sqlalchemy.exc import OperationalError
 import api.database.orms  # noqa
 from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
@@ -37,6 +39,33 @@ from api.constants import (
     UTILIZATION_SCALE_UP,
     RATE_LIMIT_SCALE_UP,
 )
+
+
+def retry_on_db_failure(max_retries=3, delay=1.0):
+    """
+    Decorator to retry async DB operations on OperationalError (timeouts/deadlocks).
+    """
+
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except OperationalError as e:
+                    last_error = e
+                    logger.warning(
+                        f"Database operation {func.__name__} failed (attempt {attempt + 1}/{max_retries}): {e}. "
+                        f"Retrying in {delay}s..."
+                    )
+                    await asyncio.sleep(delay)
+            logger.error(f"Database operation {func.__name__} failed after {max_retries} attempts.")
+            raise last_error
+
+        return wrapper
+
+    return decorator
 
 
 # Constants
@@ -184,6 +213,7 @@ async def instance_cleanup():
             logger.success(f"Purged {total} total unverified+old instances.")
 
 
+@retry_on_db_failure()
 async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     """
     Refresh compute_multiplier for active instances based on current chute state.
@@ -200,6 +230,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     logger.info("Refreshing compute multipliers for active instances...")
 
     async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '5s'"))
         # Load chutes (optionally filtered)
         query = select(Chute)
         if chute_ids:
@@ -397,6 +428,7 @@ async def get_all_chute_metrics() -> Dict[str, Dict]:
     return chute_metrics
 
 
+@retry_on_db_failure()
 async def update_chute_boosts(chute_boosts: Dict[str, float]):
     """
     Update the boost column for all chutes based on urgency-calculated values.
@@ -405,6 +437,7 @@ async def update_chute_boosts(chute_boosts: Dict[str, float]):
         return
 
     async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '5s'"))
         # Batch update all boosts
         for chute_id, boost in chute_boosts.items():
             await session.execute(
@@ -415,6 +448,7 @@ async def update_chute_boosts(chute_boosts: Dict[str, float]):
         logger.info(f"Updated boost values for {len(chute_boosts)} chutes")
 
 
+@retry_on_db_failure()
 async def log_capacity_metrics(
     chute_metrics: Dict[str, Dict],
     chute_actions: Dict[str, str],
@@ -424,6 +458,7 @@ async def log_capacity_metrics(
     Log all chute metrics to the capacity_log table.
     """
     async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '5s'"))
         instance_counts = {}
         result = await session.execute(
             text("""
@@ -492,50 +527,64 @@ async def perform_autoscale(dry_run: bool = False):
     logger.info(f"Processing metrics for {len(chute_metrics)} chutes")
 
     # Fetch detailed chute info and ALL active instances (with nodes)
-    async with get_session() as session:
-        chute_result = await session.execute(
-            text("""
-                SELECT
-                    c.chute_id,
-                    c.public,
-                    c.name,
-                    c.user_id,
-                    c.created_at,
-                    c.concurrency,
-                    c.node_selector,
-                    c.tee,
-                    MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
-                    c.max_instances,
-                    c.scaling_threshold,
-                    NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
-                    COUNT(DISTINCT CASE WHEN i.active = true AND i.verified = true THEN i.instance_id END) AS instance_count,
-                    EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
-                    NOW() AS db_now
-                FROM chutes c
-                LEFT JOIN instances i ON c.chute_id = i.chute_id AND i.verified = true AND i.active = true
-                LEFT JOIN user_current_balance ucb on ucb.user_id = c.user_id
-                WHERE c.jobs IS NULL
-                      OR c.jobs = '[]'::jsonb
-                      OR c.jobs = '{}'::jsonb
-                GROUP BY c.chute_id
-            """)
-        )
-        chute_info_map = {row.chute_id: row for row in chute_result}
-        db_now = (
-            next(iter(chute_info_map.values())).db_now
-            if chute_info_map
-            else datetime.now(timezone.utc)
-        )
+    chute_info_map = {}
+    all_active_instances = []
+    db_now = datetime.now(timezone.utc)
 
-        instance_result = await session.execute(
-            select(Instance)
-            .where(Instance.active.is_(True), Instance.verified.is_(True))
-            .options(selectinload(Instance.nodes))
-        )
-        all_active_instances = instance_result.scalars().all()
-        instances_by_chute = defaultdict(list)
-        for inst in all_active_instances:
-            instances_by_chute[inst.chute_id].append(inst)
+    for attempt in range(3):
+        try:
+            async with get_session() as session:
+                await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+                chute_result = await session.execute(
+                    text("""
+                        SELECT
+                            c.chute_id,
+                            c.public,
+                            c.name,
+                            c.user_id,
+                            c.created_at,
+                            c.concurrency,
+                            c.node_selector,
+                            c.tee,
+                            MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
+                            c.max_instances,
+                            c.scaling_threshold,
+                            NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
+                            COUNT(DISTINCT CASE WHEN i.active = true AND i.verified = true THEN i.instance_id END) AS instance_count,
+                            EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
+                            NOW() AS db_now
+                        FROM chutes c
+                        LEFT JOIN instances i ON c.chute_id = i.chute_id AND i.verified = true AND i.active = true
+                        LEFT JOIN user_current_balance ucb on ucb.user_id = c.user_id
+                        WHERE c.jobs IS NULL
+                              OR c.jobs = '[]'::jsonb
+                              OR c.jobs = '{}'::jsonb
+                        GROUP BY c.chute_id
+                    """)
+                )
+                chute_info_map = {row.chute_id: row for row in chute_result}
+                if chute_info_map:
+                    db_now = next(iter(chute_info_map.values())).db_now
+
+                instance_result = await session.execute(
+                    select(Instance)
+                    .where(Instance.active.is_(True), Instance.verified.is_(True))
+                    .options(selectinload(Instance.nodes))
+                )
+                all_active_instances = instance_result.scalars().all()
+                break
+        except OperationalError as e:
+            if attempt == 2:
+                logger.error(f"Failed to fetch system state after 3 attempts: {e}")
+                raise
+            logger.warning(
+                f"Failed to fetch system state (attempt {attempt + 1}/3): {e}. Retrying..."
+            )
+            await asyncio.sleep(1)
+
+    instances_by_chute = defaultdict(list)
+    for inst in all_active_instances:
+        instances_by_chute[inst.chute_id].append(inst)
 
     # 1. Initialize Contexts and Calculate Urgency
     contexts: Dict[str, AutoScaleContext] = {}
@@ -1032,6 +1081,7 @@ def apply_overrides(ctx: AutoScaleContext):
                 ctx.action = "no_action"
 
 
+@retry_on_db_failure()
 async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_now: datetime):
     """
     Perform the actual removal of instances.
@@ -1044,6 +1094,7 @@ async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_no
             continue
 
         async with get_session() as session:
+            await session.execute(text("SET LOCAL statement_timeout = '5s'"))
             chute_q = await session.execute(
                 select(Chute)
                 .where(Chute.chute_id == chute_id)
