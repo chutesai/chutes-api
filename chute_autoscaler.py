@@ -28,8 +28,8 @@ from api.database import get_session
 from api.config import settings
 from api.bounty.util import check_bounty_exists
 from api.user.service import chutes_user_id
-from api.util import has_legacy_private_billing
-from api.chute.schemas import Chute, NodeSelector
+from api.util import has_legacy_private_billing, notify_deleted
+from api.chute.schemas import Chute, NodeSelector, RollingUpdate
 from api.instance.schemas import Instance, LaunchConfig
 from api.instance.util import invalidate_instance_cache, cleanup_expired_connections
 from api.capacity_log.schemas import CapacityLog
@@ -104,6 +104,7 @@ class AutoScaleContext:
         self.info = info
         self.supported_gpus = supported_gpus
         self.tee = info.tee if info else False
+        self.current_version = info.version if info else None
         self.instances = instances
         self.db_now = db_now
 
@@ -111,6 +112,7 @@ class AutoScaleContext:
         # Only include established instances (active for 1+ hour) for donor consideration
         self.hardware_map = defaultdict(list)
         self.established_instance_count = 0
+        self.old_instance_count = 0
         for inst in instances:
             if inst.nodes:
                 is_established = db_now.replace(tzinfo=None) - inst.activated_at.replace(
@@ -120,6 +122,8 @@ class AutoScaleContext:
                     gpu_id = inst.nodes[0].gpu_identifier
                     self.hardware_map[gpu_id].append(inst)
                     self.established_instance_count += 1
+            if self.current_version and inst.version != self.current_version:
+                self.old_instance_count += 1
 
         # Computed metrics
         self.utilization_basis = max(
@@ -296,6 +300,126 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             logger.success(f"Updated compute_multiplier for {instances_updated} instances")
         else:
             logger.info("No compute_multiplier updates needed")
+
+
+@retry_on_db_failure()
+async def manage_rolling_updates(
+    db_now: datetime,
+    chute_target_counts: Dict[str, int] | None = None,
+    chute_rate_limiting: Dict[str, bool] | None = None,
+):
+    """
+    Manage rolling updates by replacing old-version instances with new-version capacity.
+    Enforces a hard 3-hour cap; after that, all remaining old instances are deleted.
+    """
+    max_duration = timedelta(hours=3)
+    async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+        result = await session.execute(select(RollingUpdate))
+        rolling_updates = result.scalars().all()
+
+        for rolling_update in rolling_updates:
+            started_at = rolling_update.started_at or db_now
+            elapsed = db_now.replace(tzinfo=None) - started_at.replace(tzinfo=None)
+
+            chute = (
+                (
+                    await session.execute(
+                        select(Chute).where(Chute.chute_id == rolling_update.chute_id)
+                    )
+                )
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not chute:
+                await session.delete(rolling_update)
+                await session.commit()
+                continue
+
+            current_version = chute.version
+            old_instances = (
+                (
+                    await session.execute(
+                        select(Instance)
+                        .where(
+                            Instance.chute_id == rolling_update.chute_id,
+                            Instance.version != current_version,
+                            Instance.active.is_(True),
+                            Instance.verified.is_(True),
+                        )
+                        .order_by(Instance.activated_at.asc().nullsfirst())
+                    )
+                )
+                .unique()
+                .scalars()
+                .all()
+            )
+
+            if not old_instances:
+                await session.delete(rolling_update)
+                await session.commit()
+                continue
+
+            to_delete = []
+            if elapsed >= max_duration:
+                to_delete = old_instances
+                logger.warning(
+                    f"Rolling update exceeded 3h cap for {rolling_update.chute_id=}, forcing cleanup"
+                )
+            else:
+                total_active = (
+                    await session.execute(
+                        select(func.count())
+                        .select_from(Instance)
+                        .where(
+                            Instance.chute_id == rolling_update.chute_id,
+                            Instance.active.is_(True),
+                            Instance.verified.is_(True),
+                        )
+                    )
+                ).scalar_one()
+                target = None
+                if chute_target_counts is not None:
+                    target = chute_target_counts.get(rolling_update.chute_id)
+                if target is not None:
+                    remaining_seconds = max(0, int((max_duration - elapsed).total_seconds()))
+                    autoscaler_interval = 30 * 60
+                    remaining_cycles = max(1, math.ceil(remaining_seconds / autoscaler_interval))
+                    deletions_needed = math.ceil(len(old_instances) / remaining_cycles)
+
+                    is_rate_limited = False
+                    if chute_rate_limiting is not None:
+                        is_rate_limited = chute_rate_limiting.get(rolling_update.chute_id, False)
+
+                    deletable = 0
+                    if total_active > target:
+                        deletable = max(total_active - target, deletions_needed)
+                    elif not is_rate_limited:
+                        deletable = deletions_needed
+
+                    deletable = min(deletable, len(old_instances))
+                    if deletable > 0:
+                        to_delete = old_instances[:deletable]
+
+            if not to_delete:
+                continue
+
+            for instance in to_delete:
+                await session.delete(instance)
+
+            if len(old_instances) <= len(to_delete):
+                await session.delete(rolling_update)
+
+            await session.commit()
+
+            reason = (
+                "Rolling update timeout (3h cap)"
+                if elapsed >= max_duration
+                else "Rolling update replacement"
+            )
+            for instance in to_delete:
+                await notify_deleted(instance, message=reason)
+                await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
 
 
 async def query_prometheus_batch(
@@ -546,6 +670,7 @@ async def perform_autoscale(dry_run: bool = False):
                             c.concurrency,
                             c.node_selector,
                             c.tee,
+                            c.version,
                             MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
                             c.max_instances,
                             c.scaling_threshold,
@@ -628,8 +753,15 @@ async def perform_autoscale(dry_run: bool = False):
             starving_chutes.append(ctx)
 
         # Identify Potential Donors (Low Utilization)
-        # ANY rate limiting in any time window prevents being a donor
-        if not ctx.any_rate_limiting and ctx.current_count > 0:
+        # Private chutes are not donors unless they belong to chutes_user_id (semi-private).
+        # Chutes in LIMIT_OVERRIDES should never be preempted.
+        allow_donor = ctx.public or (ctx.info and ctx.info.user_id == await chutes_user_id())
+        if (
+            not ctx.any_rate_limiting
+            and ctx.current_count > 0
+            and allow_donor
+            and ctx.chute_id not in LIMIT_OVERRIDES
+        ):
             # Critical Donor: Absolute waste, always downscale.
             if ctx.utilization_basis < ctx.threshold * 0.2:
                 ctx.is_critical_donor = True
@@ -786,6 +918,7 @@ async def perform_autoscale(dry_run: bool = False):
     # 4. Finalize Actions
     chute_actions = {}
     chute_target_counts = {}
+    chute_rate_limiting = {}
     chute_boosts = {}
     to_downsize: List[Tuple[str, int, Set[str]]] = []
 
@@ -794,6 +927,7 @@ async def perform_autoscale(dry_run: bool = False):
 
         chute_actions[ctx.chute_id] = ctx.action
         chute_target_counts[ctx.chute_id] = ctx.target_count
+        chute_rate_limiting[ctx.chute_id] = ctx.any_rate_limiting
         chute_boosts[ctx.chute_id] = ctx.boost
 
         await settings.redis_client.set(f"scale:{ctx.chute_id}", ctx.target_count, ex=3700)
@@ -809,6 +943,9 @@ async def perform_autoscale(dry_run: bool = False):
 
         # Refresh instance compute_multipliers based on current chute state and bounty decay
         await refresh_instance_compute_multipliers()
+
+        # Manage rolling updates (replacement + hard cap enforcement)
+        await manage_rolling_updates(db_now, chute_target_counts, chute_rate_limiting)
 
     # Include filtered chutes in capacity logging with their actual targets
     for chute_id, target in filtered_chutes.items():
@@ -882,8 +1019,11 @@ def clamp_to_max_instances(ctx: AutoScaleContext):
     """
     Ensure target_count never exceeds the chute's configured max_instances.
     """
-    if ctx.target_count > ctx.max_instances:
-        ctx.target_count = ctx.max_instances
+    effective_max = ctx.max_instances
+    if ctx.has_rolling_update and ctx.old_instance_count:
+        effective_max = ctx.max_instances + ctx.old_instance_count
+    if ctx.target_count > effective_max:
+        ctx.target_count = effective_max
         # Recalculate upscale_amount based on clamped target
         ctx.upscale_amount = max(0, ctx.target_count - ctx.current_count)
         if ctx.upscale_amount == 0 and ctx.action == "scale_up_candidate":

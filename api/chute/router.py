@@ -53,6 +53,7 @@ from api.instance.util import get_chute_target_manager
 from api.user.schemas import User, PriceOverride
 from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
 from api.image.schemas import Image
+from api.graval_worker import handle_rolling_update
 from api.image.util import get_image_by_id_or_name
 from api.permissions import Permissioning
 
@@ -76,7 +77,6 @@ from api.util import (
 )
 from api.affine import check_affine_code
 from api.guesser import guesser
-from api.graval_worker import handle_rolling_update
 
 router = APIRouter()
 

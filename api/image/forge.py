@@ -28,11 +28,11 @@ from api.exceptions import (
 )
 from api.image.schemas import Image
 from api.chute.schemas import Chute, RollingUpdate
+from api.graval_worker import handle_rolling_update
 from sqlalchemy import func, text, update
 from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
 from api.database import orms  # noqa
-from api.graval_worker import handle_rolling_update
 
 CFSV_PATH = os.path.join(os.path.dirname(chutes.__file__), "cfsv")
 
@@ -1145,6 +1145,7 @@ ENTRYPOINT []
                     logger.warning(
                         f"Need to trigger rolling update for {chute.chute_id=} to use new image",
                     )
+                    old_version = chute.version
                     for instance in chute.instances:
                         logger.warning(
                             f"Need to update {instance.instance_id=} {instance.miner_hotkey=} for {instance.chute_id=} to use new image"
@@ -1172,7 +1173,7 @@ ENTRYPOINT []
                         session.add(
                             RollingUpdate(
                                 chute_id=chute.chute_id,
-                                old_version=chute.version,
+                                old_version=old_version,
                                 new_version=chute.version,
                                 permitted=permitted,
                             )
@@ -1181,7 +1182,7 @@ ENTRYPOINT []
                 # Commit the chute updates
                 await session.commit()
 
-            # Trigger the rolling update tasks
+            # Trigger the rolling update tasks.
             for chute in chutes:
                 logger.warning(f"Triggering rolling update task: {chute.chute_id=}")
                 await handle_rolling_update.kiq(

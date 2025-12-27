@@ -31,17 +31,14 @@ from api.util import (
     use_encrypted_path,
     get_resolved_ips,
     generate_ip_token,
-    notify_deleted,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.database import get_session
 from api.node.schemas import Node
-from api.chute.schemas import Chute, RollingUpdate
+from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from api.instance.schemas import Instance
-from api.instance.util import invalidate_instance_cache
 from sqlalchemy import update, func
 from sqlalchemy.future import select
-from sqlalchemy.orm import selectinload
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from watchtower import get_expected_command, verify_expected_command, is_kubernetes_env, get_dump
 import api.miner_client as miner_client
@@ -592,129 +589,10 @@ async def handle_rolling_update(chute_id: str, version: str, reason: str = "code
     Handle a rolling update event.
     """
     logger.info(f"Received rolling update task for {chute_id=}")
-    async with get_session() as session:
-        chute = (
-            (
-                await session.execute(
-                    select(Chute)
-                    .where(Chute.chute_id == chute_id)
-                    .options(selectinload(Chute.instances))
-                )
-            )
-            .unique()
-            .scalar_one_or_none()
-        )
-        if not chute:
-            logger.warning(f"Chute no longer found? {chute_id=}")
-            return
-        if not chute.instances:
-            logger.info(f"No instances to update? {chute_id=}")
-            return
-
-    # Calculate sleep per instance so we finish within 3 hours.
-    max_duration = 60 * 60 * 3
-    sleep_per_instance = int(max_duration / len(chute.instances))
-    if not sleep_per_instance:
-        sleep_per_instance = 1
-
-    # Cap sleep time per instance to 45 minutes per instance.
-    sleep_per_instance = min(45 * 60, sleep_per_instance)
-
-    # Iterate through instances slowly to avoid crashing the entire chute.
-    logger.info(
-        f"Triggering update for {len(chute.instances)} instances of {chute.chute_id=} {chute.name=}"
-    )
-    for inst in chute.instances:
-        # Make sure this rolling update is still valid, and the instance still exists.
-        async with get_session() as session:
-            instance = (
-                (
-                    await session.execute(
-                        select(Instance).where(Instance.instance_id == inst.instance_id)
-                    )
-                )
-                .unique()
-                .scalar_one_or_none()
-            )
-            rolling_update = (
-                (
-                    await session.execute(
-                        select(RollingUpdate).where(RollingUpdate.chute_id == chute_id)
-                    )
-                )
-                .unique()
-                .scalar_one_or_none()
-            )
-            if not instance:
-                logger.warning(
-                    f"Instance {inst.instance_id} no longer exists, skipping rolling update of {chute_id=} {version=}"
-                )
-                continue
-            if not rolling_update or rolling_update.new_version != version:
-                logger.warning(f"Rolling update is now defunct {chute_id=} {version=}")
-                return
-
-        # Send the event.
-        try:
-            event_data = {
-                "reason": "rolling_update",
-                "data": {
-                    "chute_id": chute_id,
-                    "instance_id": instance.instance_id,
-                    "miner_hotkey": instance.miner_hotkey,
-                    "old_version": rolling_update.old_version,
-                    "new_version": rolling_update.new_version,
-                    "reason": reason,
-                },
-                "filter_recipients": [instance.miner_hotkey],
-            }
-            await settings.redis_client.publish("miner_broadcast", json.dumps(event_data).decode())
-            logger.success(
-                f"Sent a notification to instance {instance.instance_id} of miner {instance.miner_hotkey}"
-            )
-        except Exception:
-            # Allow exceptions here since the miner can also check.
-            logger.warning(
-                f"Error notifying miner {instance.miner_hotkey} about rolling update of {instance.instance_id=} for {chute.name=}"
-            )
-
-        # Wait before notifying the next miner.
-        await asyncio.sleep(sleep_per_instance)
-
-    # Once finished, clean up all instances still bound to the old version.
-    async with get_session() as session:
-        rolling_update = (
-            (await session.execute(select(RollingUpdate).where(RollingUpdate.chute_id == chute_id)))
-            .unique()
-            .scalar_one_or_none()
-        )
-        if not rolling_update or rolling_update.new_version != version:
-            return
-        chute = (
-            (
-                await session.execute(
-                    select(Chute)
-                    .where(Chute.chute_id == chute_id)
-                    .options(selectinload(Chute.instances))
-                )
-            )
-            .unique()
-            .scalar_one_or_none()
-        )
-        if not chute:
-            return
-        for instance in chute.instances:
-            if instance.version != version:
-                await session.delete(instance)
-                await notify_deleted(
-                    instance,
-                    message=f"Instance {instance.instance_id} of miner {instance.miner_hotkey} still bound to old version, deleting...",
-                )
-                await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
-                logger.warning(
-                    f"Instance did not respond to rolling update event: {instance.instance_id} of miner {instance.miner_hotkey}"
-                )
-        await session.delete(rolling_update)
+    if await create_bounty_if_not_exists(chute_id):
+        bounty_amount = await get_bounty_amount(chute_id)
+        if bounty_amount:
+            await send_bounty_notification(chute_id, bounty_amount)
 
 
 @broker.task
