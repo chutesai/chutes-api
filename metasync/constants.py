@@ -150,6 +150,7 @@ WITH billed_instances AS (
         ia.miner_hotkey,
         ia.instance_id,
         ia.chute_id,
+        ia.created_at,
         ia.activated_at,
         ia.deleted_at,
         ia.stop_billing_at,
@@ -227,7 +228,17 @@ miner_compute_units AS (
         COUNT(*) AS total_instances,
         COALESCE(mbe.bounty_score, 0.0) AS bounty_score,
         SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start))) AS compute_seconds,
-        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * bi.compute_multiplier) AS compute_units
+        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0))
+        + SUM(
+            CASE
+                WHEN bi.activated_at >= now() - interval '{interval}' THEN
+                    LEAST(
+                        GREATEST(EXTRACT(EPOCH FROM (bi.activated_at - bi.created_at)), 0),
+                        5400
+                    ) * COALESCE(bi.compute_multiplier, 1.0) * 0.3
+                ELSE 0
+            END
+        ) AS compute_units
     FROM billed_instances bi
     LEFT JOIN miner_bounty_effective mbe
            ON mbe.miner_hotkey = bi.miner_hotkey

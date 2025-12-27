@@ -695,17 +695,6 @@ async def _validate_launch_config_instance(
             f"for total {instance.compute_multiplier=} for {chute.name=} {chute.chute_id=}"
         )
 
-    # Add bounty boost (claim bounty atomically and apply fixed multiplier).
-    # The bounty boost decays over 8 hours via the autoscaler's periodic refresh.
-    bounty_info = await claim_bounty(chute.chute_id)
-    if bounty_info:
-        instance.bounty = True
-        instance.compute_multiplier *= BOUNTY_BOOST_INITIAL
-        logger.info(
-            f"Claimed bounty for {chute.chute_id}: "
-            f"bounty_boost={BOUNTY_BOOST_INITIAL}, total compute_multiplier={instance.compute_multiplier}"
-        )
-
     # Add TEE boost.
     if chute.tee:
         instance.compute_multiplier *= TEE_BONUS
@@ -1127,12 +1116,15 @@ async def activate_launch_config_instance(
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
-        # If a bounty exists for this chute, claim it.
+        # If a bounty exists for this chute, claim it and apply boost on activation.
         bounty = await claim_bounty(instance.chute_id)
-        if bounty is None:
-            bounty = 0
         if bounty:
             instance.bounty = True
+            instance.compute_multiplier *= BOUNTY_BOOST_INITIAL
+            logger.info(
+                f"Claimed bounty for {instance.chute_id}: "
+                f"bounty_boost={BOUNTY_BOOST_INITIAL}, total compute_multiplier={instance.compute_multiplier}"
+            )
 
         # Verify egress.
         # net_success = True

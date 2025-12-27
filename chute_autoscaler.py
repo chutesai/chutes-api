@@ -752,11 +752,14 @@ async def perform_autoscale(dry_run: bool = False):
         if ctx.downscale_amount > 0:
             to_downsize.append((ctx.chute_id, ctx.downscale_amount, ctx.preferred_downscale_gpus))
 
-    # Update boost values in database
-    await update_chute_boosts(chute_boosts)
+    if dry_run:
+        logger.warning("DRY RUN MODE: Skipping boost updates and compute_multiplier refresh")
+    else:
+        # Update boost values in database
+        await update_chute_boosts(chute_boosts)
 
-    # Refresh instance compute_multipliers based on current chute state and bounty decay
-    await refresh_instance_compute_multipliers()
+        # Refresh instance compute_multipliers based on current chute state and bounty decay
+        await refresh_instance_compute_multipliers()
 
     # Include filtered chutes in capacity logging with their actual targets
     for chute_id, target in filtered_chutes.items():

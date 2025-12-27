@@ -139,6 +139,36 @@ async def get_bounty_amount(chute_id: str) -> int:
         return None
 
 
+async def get_bounty_amounts(chute_ids: list[str]) -> dict[str, int]:
+    """
+    Fetch bounty amounts for multiple chutes in a single Redis round-trip.
+    """
+    if not chute_ids:
+        return {}
+
+    keys = [f"bounty:{chute_id}" for chute_id in chute_ids]
+    results: dict[str, int] = {}
+    try:
+        values = await settings.lite_redis_client.mget(*keys)
+        for chute_id, bounty_data in zip(chute_ids, values):
+            if not bounty_data:
+                continue
+            try:
+                data = json.loads(bounty_data)
+                created_at = data.get("created_at")
+                if not created_at:
+                    continue
+                seconds_elapsed = int(time.time() - created_at)
+                bounty_amount = min(3 * seconds_elapsed + 100, 86400)
+                results[chute_id] = bounty_amount
+            except (json.JSONDecodeError, KeyError) as exc:
+                logger.warning(f"Failed to parse bounty data for key bounty:{chute_id}: {exc}")
+                continue
+    except Exception as exc:
+        logger.warning(f"Failed to get bounty info for chutes: {exc}")
+    return results
+
+
 async def delete_bounty(chute_id: str) -> bool:
     """
     Manually delete a bounty.

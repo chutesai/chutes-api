@@ -256,7 +256,7 @@ async def get_chute(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"{chute_id=} not found",
             )
-        return model_to_dict(chute)
+        return await model_to_dict(chute)
 
 
 @router.get("/stats")

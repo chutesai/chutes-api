@@ -39,6 +39,7 @@ from api.constants import (
     INTEGRATED_SUBNETS,
 )
 from api.bounty.util import get_bounty_boost, get_bounty_amount
+from metasync.constants import BOUNTY_BOOST_INITIAL
 from api.database import get_session, get_inv_session
 from api.fmv.fetcher import get_fetcher
 from api.exceptions import (
@@ -252,7 +253,11 @@ async def selector_hourly_price(node_selector) -> float:
     return price["usd"]["hour"]
 
 
-async def calculate_effective_compute_multiplier(chute: Chute, include_bounty: bool = True) -> dict:
+async def calculate_effective_compute_multiplier(
+    chute: Chute,
+    include_bounty: bool = True,
+    bounty_amount: Optional[int] = None,
+) -> dict:
     """
     Calculate the effective compute multiplier a miner would receive if they
     deployed and activated an instance for this chute right now.
@@ -262,6 +267,7 @@ async def calculate_effective_compute_multiplier(chute: Chute, include_bounty: b
         include_bounty: If True (default), includes the bounty boost.
                        If False, returns the base multiplier without bounty
                        (used by autoscaler for updating existing instances).
+        bounty_amount: Optional pre-fetched bounty amount to avoid Redis lookups.
 
     Returns a dict with:
     - effective_compute_multiplier: total multiplier
@@ -306,10 +312,15 @@ async def calculate_effective_compute_multiplier(chute: Chute, include_bounty: b
 
     # Bounty boost (only if requested).
     if include_bounty:
-        bounty_boost = await get_bounty_boost(chute.chute_id)
-        if bounty_boost > 1.0:
-            factors["bounty_boost"] = bounty_boost
-            total *= bounty_boost
+        if bounty_amount is not None:
+            if bounty_amount > 0:
+                factors["bounty_boost"] = BOUNTY_BOOST_INITIAL
+                total *= BOUNTY_BOOST_INITIAL
+        else:
+            bounty_boost = await get_bounty_boost(chute.chute_id)
+            if bounty_boost > 1.0:
+                factors["bounty_boost"] = bounty_boost
+                total *= bounty_boost
 
     # TEE bonus.
     if chute.tee:
@@ -322,7 +333,10 @@ async def calculate_effective_compute_multiplier(chute: Chute, include_bounty: b
     }
 
     if include_bounty:
-        result["bounty"] = await get_bounty_amount(chute.chute_id)
+        if bounty_amount is not None:
+            result["bounty"] = bounty_amount
+        else:
+            result["bounty"] = await get_bounty_amount(chute.chute_id)
 
     return result
 
