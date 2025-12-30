@@ -32,12 +32,15 @@ class BootAttestationArgs(BaseModel):
     """Request model for boot attestation."""
 
     quote: str = Field(..., description="Base64 encoded TDX quote")
+    miner_hotkey: str = Field(..., description="Miner hotkey that owns this VM")
+    vm_name: str = Field(..., description="VM name/identifier")
 
 
 class BootAttestationResponse(BaseModel):
     """Response model for successful boot attestation."""
 
     key: str
+    boot_token: str
 
 
 class RuntimeAttestationArgs(BaseModel):
@@ -52,6 +55,12 @@ class RuntimeAttestationResponse(BaseModel):
     attestation_id: str
     verified_at: str
     status: str
+
+
+class CacheLuksPassphraseResponse(BaseModel):
+    """Response model for cache LUKS passphrase."""
+
+    passphrase: str
 
 
 class GpuAttestationArgs(BaseModel):
@@ -138,4 +147,22 @@ class ServerAttestation(Base):
         Index("idx_attestation_server", "server_id"),
         Index("idx_attestation_created", "created_at"),
         Index("idx_attestation_verified", "verified_at"),
+    )
+
+
+class VmCacheConfig(Base):
+    """Track cache volume encryption passphrases by VM configuration."""
+
+    __tablename__ = "vm_cache_configs"
+
+    miner_hotkey = Column(String, primary_key=True)
+    vm_name = Column(String, primary_key=True)
+    encrypted_passphrase = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    last_boot_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_vm_cache_miner", "miner_hotkey"),
+        Index("idx_vm_cache_last_boot", "last_boot_at"),
     )

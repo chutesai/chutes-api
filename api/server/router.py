@@ -21,6 +21,7 @@ from api.server.schemas import (
     NonceResponse,
     BootAttestationResponse,
     RuntimeAttestationResponse,
+    CacheLuksPassphraseResponse,
 )
 from api.server.service import (
     create_nonce,
@@ -32,6 +33,8 @@ from api.server.service import (
     list_servers,
     delete_server,
     validate_request_nonce,
+    get_cache_passphrase_with_token,
+    create_cache_passphrase_with_token,
 )
 from api.server.util import extract_client_cert_hash, get_luks_passphrase
 from api.server.exceptions import (
@@ -85,9 +88,9 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = extract_ip(request)
-        await process_boot_attestation(db, server_ip, args, nonce, expected_cert_hash)
+        boot_token = await process_boot_attestation(db, server_ip, args, nonce, expected_cert_hash)
 
-        return BootAttestationResponse(key=get_luks_passphrase())
+        return BootAttestationResponse(key=get_luks_passphrase(), boot_token=boot_token)
     except NonceError as e:
         logger.warning(f"Boot attestation nonce error: {str(e)}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -98,6 +101,95 @@ async def verify_boot_attestation(
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Boot attestation failed"
+        )
+
+
+@router.get("/{vm_name}/luks", response_model=CacheLuksPassphraseResponse)
+async def get_cache_luks_passphrase(
+    vm_name: str,
+    hotkey: str,
+    db: AsyncSession = Depends(get_db_session),
+    boot_token: str | None = Header(None, alias="X-Boot-Token"),
+):
+    """
+    Retrieve existing LUKS passphrase for cache volume encryption.
+
+    This endpoint is called when the initramfs detects that the cache volume
+    is already encrypted. It retrieves the passphrase that was previously
+    generated for this VM configuration (miner_hotkey + vm_name).
+
+    The hotkey must be provided as a query parameter.
+    The boot token must be provided in the X-Boot-Token header.
+    """
+    try:
+        if not boot_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Boot token is required (X-Boot-Token header)"
+            )
+        if not hotkey:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Hotkey is required"
+            )
+
+        passphrase = await get_cache_passphrase_with_token(db, boot_token, hotkey, vm_name)
+
+        return CacheLuksPassphraseResponse(passphrase=passphrase)
+    except NonceError as e:
+        logger.warning(f"Boot token validation error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+    except ValueError as e:
+        logger.error(f"Cache passphrase not found: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No cache passphrase found for this VM. This shouldn't happen for encrypted volumes.",
+        )
+    except Exception as e:
+        logger.error(f"Unexpected error retrieving cache passphrase: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve cache passphrase",
+        )
+
+
+@router.put("/{vm_name}/luks", response_model=CacheLuksPassphraseResponse)
+async def create_cache_luks_passphrase(
+    vm_name: str,
+    hotkey: str,
+    db: AsyncSession = Depends(get_db_session),
+    boot_token: str | None = Header(None, alias="X-Boot-Token"),
+):
+    """
+    Create or override LUKS passphrase for cache volume encryption.
+
+    This endpoint is called when the initramfs detects that the cache volume
+    is unencrypted (new or wiped). It generates a new passphrase and stores it,
+    overriding any existing passphrase for this VM configuration.
+
+    The hotkey must be provided as a query parameter.
+    The boot token must be provided in the X-Boot-Token header.
+    Returns the newly created passphrase.
+    """
+    try:
+        if not boot_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Boot token is required (X-Boot-Token header)"
+            )
+        if not hotkey:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Hotkey is required"
+            )
+
+        passphrase = await create_cache_passphrase_with_token(db, boot_token, hotkey, vm_name)
+
+        return CacheLuksPassphraseResponse(passphrase=passphrase)
+    except NonceError as e:
+        logger.warning(f"Boot token validation error: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error creating cache passphrase: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to create cache passphrase",
         )
 
 

@@ -2,11 +2,15 @@
 TDX quote parsing, crypto operations, and server helper functions.
 """
 
+import base64
 import secrets
 from typing import Dict
+from sqlalchemy import select
+from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
+from cryptography.fernet import Fernet
 from fastapi import Request, status
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
@@ -25,7 +29,7 @@ from api.server.exceptions import (
 from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
 
-from api.server.schemas import Server
+from api.server.schemas import Server, VmCacheConfig
 
 
 def generate_nonce() -> str:
@@ -264,6 +268,145 @@ def get_luks_passphrase() -> str:
     if not passphrase:
         logger.error("No LUKS passphrase configured")
         raise InvalidTdxConfiguration("Missing LUKS phassphrase configuration")
+
+    return passphrase
+
+
+def generate_cache_passphrase() -> str:
+    """
+    Generate a new cryptographically secure passphrase for cache volume encryption.
+
+    Returns:
+        128-character hex passphrase
+    """
+    return secrets.token_hex(64)
+
+
+def _get_fernet() -> Fernet:
+    """Get Fernet cipher for encrypting/decrypting cache passphrases.
+
+    Returns:
+        Fernet cipher instance
+
+    Raises:
+        InvalidTdxConfiguration: If encryption key is not configured
+    """
+    fernet = settings.fernet_key
+    if not fernet:
+        logger.error("No cache passphrase encryption key configured")
+        raise InvalidTdxConfiguration(
+            "CACHE_PASSPHRASE_KEY environment variable must be set. "
+            "Generate a valid key with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
+        )
+    return fernet
+
+
+def encrypt_passphrase(passphrase: str) -> str:
+    """Encrypt a cache passphrase for storage.
+
+    Args:
+        passphrase: Plain text passphrase
+
+    Returns:
+        Encrypted passphrase (base64 encoded)
+    """
+    fernet = _get_fernet()
+    encrypted = fernet.encrypt(passphrase.encode())
+    return encrypted.decode()
+
+
+def decrypt_passphrase(encrypted_passphrase: str) -> str:
+    """Decrypt a stored cache passphrase.
+
+    Args:
+        encrypted_passphrase: Encrypted passphrase (base64 encoded)
+
+    Returns:
+        Plain text passphrase
+    """
+    fernet = _get_fernet()
+    decrypted = fernet.decrypt(encrypted_passphrase.encode())
+    return decrypted.decode()
+
+
+async def get_cache_passphrase(
+    db: AsyncSession, miner_hotkey: str, vm_name: str
+) -> str:
+    """
+    Get existing cache passphrase for a VM configuration.
+
+    Args:
+        db: Database session
+        miner_hotkey: Miner hotkey that owns the VM
+        vm_name: VM name/identifier
+
+    Returns:
+        Cache volume passphrase (decrypted)
+
+    Raises:
+        ValueError: If no passphrase exists for this VM configuration
+    """
+    # Look up VM cache config
+    result = await db.execute(
+        select(VmCacheConfig).where(
+            VmCacheConfig.miner_hotkey == miner_hotkey,
+            VmCacheConfig.vm_name == vm_name,
+        )
+    )
+    vm_config = result.scalar_one_or_none()
+
+    if not vm_config:
+        raise ValueError(f"No cache passphrase found for VM {vm_name} (miner: {miner_hotkey})")
+
+    logger.info(f"Retrieved existing cache passphrase for VM {vm_name} (miner: {miner_hotkey})")
+    return decrypt_passphrase(vm_config.encrypted_passphrase)
+
+
+async def create_or_update_cache_passphrase(
+    db: AsyncSession, miner_hotkey: str, vm_name: str
+) -> str:
+    """
+    Create a new cache passphrase or override existing one for a VM configuration.
+
+    Args:
+        db: Database session
+        miner_hotkey: Miner hotkey that owns the VM
+        vm_name: VM name/identifier
+
+    Returns:
+        Cache volume passphrase (decrypted)
+    """
+    # Generate new passphrase
+    passphrase = generate_cache_passphrase()
+    encrypted = encrypt_passphrase(passphrase)
+
+    # Check if config already exists
+    result = await db.execute(
+        select(VmCacheConfig).where(
+            VmCacheConfig.miner_hotkey == miner_hotkey,
+            VmCacheConfig.vm_name == vm_name,
+        )
+    )
+    vm_config = result.scalar_one_or_none()
+
+    if vm_config:
+        # Update existing config
+        logger.info(f"Overriding cache passphrase for VM {vm_name} (miner: {miner_hotkey})")
+        vm_config.encrypted_passphrase = encrypted
+        vm_config.last_boot_at = func.now()
+    else:
+        # Create new config
+        logger.info(f"Creating new cache passphrase for VM {vm_name} (miner: {miner_hotkey})")
+        vm_config = VmCacheConfig(
+            miner_hotkey=miner_hotkey,
+            vm_name=vm_name,
+            encrypted_passphrase=encrypted,
+            last_boot_at=func.now(),
+        )
+        db.add(vm_config)
+
+    await db.commit()
+    await db.refresh(vm_config)
 
     return passphrase
 

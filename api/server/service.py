@@ -48,6 +48,8 @@ from api.server.util import (
     get_nonce_expiry_seconds,
     verify_quote_signature,
     verify_result,
+    get_cache_passphrase,
+    create_or_update_cache_passphrase,
 )
 from api.util import extract_ip
 
@@ -188,24 +190,33 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
 
 
 async def process_boot_attestation(
-    db: AsyncSession, server_ip: str, args: BootAttestationArgs, nonce: str, expected_cert_hash: str
-) -> None:
+    db: AsyncSession,
+    server_ip: str,
+    args: BootAttestationArgs,
+    nonce: str,
+    expected_cert_hash: str,
+) -> str:
     """
     Process a boot attestation request.
 
     Args:
         db: Database session
-        args: Boot attestation arguments
+        server_ip: Server IP address
+        args: Boot attestation arguments (includes miner_hotkey and vm_name)
+        nonce: Validated nonce
+        expected_cert_hash: Expected certificate hash
 
     Returns:
-        Dictionary containing LUKS passphrase and attestation info
+        Boot token for subsequent cache passphrase retrieval
 
     Raises:
         NonceError: If nonce validation fails
         InvalidQuoteError: If quote is invalid
         MeasurementMismatchError: If measurements don't match
     """
-    logger.info(f"Processing boot attestation for server:: {server_ip}")
+    logger.info(
+        f"Processing boot attestation for VM {args.vm_name} (miner: {args.miner_hotkey}, IP: {server_ip})"
+    )
 
     # Parse and verify quote
     try:  # Verify quote signature
@@ -225,6 +236,16 @@ async def process_boot_attestation(
         await db.refresh(boot_attestation)
 
         logger.success(f"Boot attestation successful: {boot_attestation.attestation_id}")
+
+        # Generate boot token for this verified VM
+        boot_token = generate_nonce()
+        redis_key = f"boot_token:{boot_token}"
+        # Store boot token with miner_hotkey:vm_name (10 minute TTL)
+        boot_token_value = f"{args.miner_hotkey}:{args.vm_name}"
+        await settings.redis_client.setex(redis_key, 10 * 60, boot_token_value)
+        logger.info(f"Generated boot token for VM {args.vm_name} (miner: {args.miner_hotkey})")
+
+        return boot_token
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record
@@ -543,10 +564,124 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     """
     server = await check_server_ownership(db, server_id, miner_hotkey)
 
-    # NOTE: Do we want to do a soft delete to keep attestation history?
     await db.delete(server)
-
     await db.commit()
 
-    logger.info(f"Deleted server: {server_id} [{server.ip}]")
+    logger.info(f"Deleted server: {server_id}")
     return True
+
+
+async def validate_boot_token_and_get_vm_identity(boot_token: str) -> tuple[str, str]:
+    """
+    Validate boot token and return the VM identity (miner_hotkey, vm_name).
+
+    Args:
+        boot_token: Boot token from initial attestation
+
+    Returns:
+        Tuple of (miner_hotkey, vm_name)
+
+    Raises:
+        NonceError: If boot token is invalid or expired
+    """
+    # Validate boot token
+    redis_key = f"boot_token:{boot_token}"
+    redis_value = await settings.redis_client.get(redis_key)
+
+    if not redis_value:
+        raise NonceError("Boot token not found or expired")
+
+    # Parse miner_hotkey:vm_name from the stored value
+    try:
+        boot_token_value = redis_value.decode()
+        miner_hotkey, vm_name = boot_token_value.split(":", 1)
+    except (ValueError, AttributeError) as e:
+        logger.error(f"Failed to parse boot token value: {e}")
+        raise NonceError("Invalid boot token format")
+
+    logger.info(f"Validated boot token for VM {vm_name} (miner: {miner_hotkey})")
+
+    return miner_hotkey, vm_name
+
+
+async def get_cache_passphrase_with_token(
+    db: AsyncSession, boot_token: str, hotkey: str, vm_name: str
+) -> str:
+    """
+    Validate boot token and retrieve existing cache passphrase.
+    
+    This is called when the cache volume is already encrypted and needs the passphrase.
+
+    Args:
+        db: Database session
+        boot_token: Boot token from initial attestation
+        hotkey: Miner hotkey (must match boot token)
+        vm_name: VM name (must match boot token)
+
+    Returns:
+        Cache volume passphrase (decrypted)
+
+    Raises:
+        NonceError: If boot token is invalid or expired, or if hotkey/vm_name don't match
+        ValueError: If no passphrase exists (shouldn't happen for encrypted volumes)
+    """
+    # Validate token and get VM identity from boot token
+    token_hotkey, token_vm_name = await validate_boot_token_and_get_vm_identity(boot_token)
+
+    # Verify that the provided hotkey and vm_name match what's in the boot token
+    if token_hotkey != hotkey:
+        logger.warning(f"Hotkey mismatch: expected {token_hotkey}, got {hotkey}")
+        raise NonceError("Hotkey does not match boot token")
+    if token_vm_name != vm_name:
+        logger.warning(f"VM name mismatch: expected {token_vm_name}, got {vm_name}")
+        raise NonceError("VM name does not match boot token")
+
+    # Get existing passphrase
+    passphrase = await get_cache_passphrase(db, hotkey, vm_name)
+
+    # Consume the boot token after successful retrieval
+    redis_key = f"boot_token:{boot_token}"
+    await settings.redis_client.delete(redis_key)
+
+    return passphrase
+
+
+async def create_cache_passphrase_with_token(
+    db: AsyncSession, boot_token: str, hotkey: str, vm_name: str
+) -> str:
+    """
+    Validate boot token and create/override cache passphrase.
+    
+    This is called when the cache volume is unencrypted (new or wiped).
+
+    Args:
+        db: Database session
+        boot_token: Boot token from initial attestation
+        hotkey: Miner hotkey (must match boot token)
+        vm_name: VM name (must match boot token)
+
+    Returns:
+        Cache volume passphrase (decrypted)
+
+    Raises:
+        NonceError: If boot token is invalid or expired, or if hotkey/vm_name don't match
+    """
+    # Validate token and get VM identity from boot token
+    token_hotkey, token_vm_name = await validate_boot_token_and_get_vm_identity(boot_token)
+
+    # Verify that the provided hotkey and vm_name match what's in the boot token
+    if token_hotkey != hotkey:
+        logger.warning(f"Hotkey mismatch: expected {token_hotkey}, got {hotkey}")
+        raise NonceError("Hotkey does not match boot token")
+    if token_vm_name != vm_name:
+        logger.warning(f"VM name mismatch: expected {token_vm_name}, got {vm_name}")
+        raise NonceError("VM name does not match boot token")
+
+    # Create or override passphrase
+    passphrase = await create_or_update_cache_passphrase(db, hotkey, vm_name)
+
+    # Consume the boot token after successful creation
+    redis_key = f"boot_token:{boot_token}"
+    await settings.redis_client.delete(redis_key)
+
+    return passphrase
