@@ -37,7 +37,10 @@ from watchtower import purge, purge_and_notify  # noqa
 from api.constants import (
     UNDERUTILIZED_CAP,
     UTILIZATION_SCALE_UP,
+    UTILIZATION_SCALE_DOWN,
     RATE_LIMIT_SCALE_UP,
+    SCALE_DOWN_LOOKBACK_MINUTES,
+    SCALE_DOWN_MAX_DROP_RATIO,
 )
 
 
@@ -66,6 +69,62 @@ def retry_on_db_failure(max_retries=3, delay=1.0):
         return wrapper
 
     return decorator
+
+
+@retry_on_db_failure()
+async def get_scale_down_permission(
+    chute_id: str, current_count: int, proposed_target: int
+) -> Tuple[bool, str]:
+    """
+    Check if scale-down is permitted based on historical capacity_log trends.
+
+    Returns (permitted, reason) tuple.
+
+    Scale-down is permitted if:
+    1. We have enough historical data (at least 3 samples)
+    2. Proposed target isn't drastically below recent average (within SCALE_DOWN_MAX_DROP_RATIO)
+    3. No significant rate limiting occurred in the lookback window
+
+    This prevents thrashing and respects bursty traffic patterns.
+    """
+    async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '5s'"))
+        result = await session.execute(
+            text("""
+                SELECT
+                    AVG(target_count) as avg_target,
+                    MAX(target_count) as max_target,
+                    AVG(utilization_15m) as avg_util,
+                    MAX(GREATEST(
+                        COALESCE(rate_limit_ratio_5m, 0),
+                        COALESCE(rate_limit_ratio_15m, 0),
+                        COALESCE(rate_limit_ratio_1h, 0)
+                    )) as max_rate_limit,
+                    COUNT(*) as sample_count
+                FROM capacity_log
+                WHERE chute_id = :chute_id
+                  AND timestamp >= NOW() - INTERVAL :lookback
+            """),
+            {"chute_id": chute_id, "lookback": f"{SCALE_DOWN_LOOKBACK_MINUTES} minutes"},
+        )
+        row = result.fetchone()
+
+        if not row or row.sample_count < 3:
+            return False, "insufficient_history"
+
+        # Check for rate limiting in the lookback window
+        if row.max_rate_limit and row.max_rate_limit >= 0.01:
+            return False, f"rate_limiting_in_window ({row.max_rate_limit:.1%})"
+
+        # Check if proposed target is within acceptable range of rolling average
+        min_allowed_target = max(1, int(row.avg_target * SCALE_DOWN_MAX_DROP_RATIO))
+        if proposed_target < min_allowed_target:
+            return (
+                False,
+                f"below_moving_avg (proposed={proposed_target}, avg={row.avg_target:.1f}, min_allowed={min_allowed_target})",
+            )
+
+        return True, "permitted"
 
 
 # Constants
@@ -150,6 +209,9 @@ class AutoScaleContext:
         self.threshold = info.scaling_threshold if info else UTILIZATION_SCALE_UP
         if not self.threshold:
             self.threshold = UTILIZATION_SCALE_UP
+        # Scale-down threshold is proportionally lower than scale-up threshold
+        # Default: 0.35/0.6 = 0.583 ratio
+        self.scale_down_threshold = self.threshold * (UTILIZATION_SCALE_DOWN / UTILIZATION_SCALE_UP)
         self.has_rolling_update = info.has_rolling_update if info else False
         # max_instances: None means unbounded, use a large number for comparisons
         self.max_instances = info.max_instances if (info and info.max_instances) else 10000
@@ -218,16 +280,29 @@ async def instance_cleanup():
             logger.success(f"Purged {total} total unverified+old instances.")
 
 
+# Compute multiplier adjustment timing constants
+# No adjustment for the first N hours after activation (miners keep their original boost)
+COMPUTE_MULTIPLIER_HOLD_HOURS = 2.0
+# Total hours until fully adjusted to target (includes hold period)
+COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS = 8.0
+# Ramp duration (after hold period)
+COMPUTE_MULTIPLIER_RAMP_HOURS = COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS - COMPUTE_MULTIPLIER_HOLD_HOURS
+
+
 @retry_on_db_failure()
 async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     """
     Refresh compute_multiplier for active instances based on current chute state.
 
-    For each chute, we calculate the base multiplier (without bounty), then update instances:
-    - Instances without bounty: compute_multiplier = base_multiplier
-    - Instances with bounty: compute_multiplier = base_multiplier * decaying_bounty_boost
+    Uses a gradual adjustment curve to prevent "rug pull" scenarios where miners
+    deploy based on a high boost that immediately drops:
 
-    The bounty boost decays from BOUNTY_BOOST_INITIAL to 1.0 over BOUNTY_BOOST_DECAY_HOURS.
+    - 0-2 hours after activation: No change (instance keeps original multiplier)
+    - 2-8 hours: Ease-in blend toward target (slow at first, accelerates)
+      Uses t² curve where t is normalized time in the ramp window
+    - 8+ hours: Clamp to target value
+
+    For bounty instances, the target includes the decaying bounty boost.
     """
     from api.chute.util import calculate_effective_compute_multiplier
     from metasync.constants import BOUNTY_BOOST_INITIAL, BOUNTY_BOOST_DECAY_HOURS
@@ -235,7 +310,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     logger.info("Refreshing compute multipliers for active instances...")
 
     async with get_session() as session:
-        await session.execute(text("SET LOCAL statement_timeout = '5s'"))
+        await session.execute(text("SET LOCAL statement_timeout = '10s'"))
         # Load chutes (optionally filtered)
         query = select(Chute)
         if chute_ids:
@@ -251,47 +326,121 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             )
             base_multiplier = effective_data["effective_compute_multiplier"]
 
-            # Update instances without bounty: just use base_multiplier
+            # Update instances without bounty
+            # Blend formula with ease-in curve:
+            #   hours = time since activation in hours
+            #   if hours <= hold_hours: no change
+            #   elif hours >= full_adjust_hours: clamp to target
+            #   else: t = (hours - hold) / ramp; blend = t²; result = original*(1-blend) + target*blend
             result = await session.execute(
                 text("""
                     UPDATE instances
-                    SET compute_multiplier = :base_multiplier
+                    SET compute_multiplier = CASE
+                        -- Before hold period ends: don't touch (but initialize if NULL)
+                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 <= :hold_hours
+                            THEN COALESCE(compute_multiplier, :target)
+                        -- After full adjustment period: clamp to target
+                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 >= :full_hours
+                            THEN :target
+                        -- During ramp: ease-in blend (t² curve)
+                        ELSE (
+                            SELECT
+                                compute_multiplier * (1 - blend) + :target * blend
+                            FROM (
+                                SELECT POWER(
+                                    (EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 - :hold_hours)
+                                    / :ramp_hours,
+                                    2
+                                ) AS blend
+                            ) AS b
+                        )
+                    END
                     WHERE chute_id = :chute_id
                       AND (bounty IS NULL OR bounty = false)
                       AND active = true
                       AND verified = true
-                      AND (compute_multiplier IS NULL OR ABS(compute_multiplier - :base_multiplier) > 0.001)
+                      AND activated_at IS NOT NULL
+                      AND (
+                          compute_multiplier IS NULL
+                          OR (
+                              EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 > :hold_hours
+                              AND ABS(compute_multiplier - :target) > 0.001
+                          )
+                      )
                     RETURNING instance_id
                 """),
-                {"chute_id": chute.chute_id, "base_multiplier": base_multiplier},
+                {
+                    "chute_id": chute.chute_id,
+                    "target": base_multiplier,
+                    "hold_hours": COMPUTE_MULTIPLIER_HOLD_HOURS,
+                    "full_hours": COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS,
+                    "ramp_hours": COMPUTE_MULTIPLIER_RAMP_HOURS,
+                },
             )
             instances_updated += len(result.fetchall())
 
-            # Update instances with bounty: base_multiplier * decaying bounty boost
+            # Update instances with bounty: target includes decaying bounty boost
+            # Same ease-in blend logic, but target is base_multiplier * bounty_decay
             result = await session.execute(
                 text("""
                     UPDATE instances
-                    SET compute_multiplier = :base_multiplier * GREATEST(
-                        1.0,
-                        :initial_boost - (
-                            LEAST(
-                                EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0,
-                                :decay_hours
-                            ) / :decay_hours * (:initial_boost - 1.0)
+                    SET compute_multiplier = CASE
+                        -- Before hold period ends: don't touch (but initialize if NULL)
+                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 <= :hold_hours
+                            THEN COALESCE(compute_multiplier, target_mult)
+                        -- After full adjustment period: clamp to target
+                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 >= :full_hours
+                            THEN target_mult
+                        -- During ramp: ease-in blend (t² curve)
+                        ELSE (
+                            compute_multiplier * (1 - POWER(
+                                (EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 - :hold_hours)
+                                / :ramp_hours,
+                                2
+                            )) + target_mult * POWER(
+                                (EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 - :hold_hours)
+                                / :ramp_hours,
+                                2
+                            )
                         )
-                    )
-                    WHERE chute_id = :chute_id
-                      AND bounty = true
-                      AND active = true
-                      AND verified = true
-                      AND activated_at IS NOT NULL
-                    RETURNING instance_id
+                    END
+                    FROM (
+                        SELECT
+                            instance_id,
+                            :base_multiplier * GREATEST(
+                                1.0,
+                                :initial_boost - (
+                                    LEAST(
+                                        EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0,
+                                        :decay_hours
+                                    ) / :decay_hours * (:initial_boost - 1.0)
+                                )
+                            ) AS target_mult
+                        FROM instances
+                        WHERE chute_id = :chute_id
+                          AND bounty = true
+                          AND active = true
+                          AND verified = true
+                          AND activated_at IS NOT NULL
+                    ) AS targets
+                    WHERE instances.instance_id = targets.instance_id
+                      AND (
+                          instances.compute_multiplier IS NULL
+                          OR (
+                              EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 > :hold_hours
+                              AND ABS(instances.compute_multiplier - targets.target_mult) > 0.001
+                          )
+                      )
+                    RETURNING instances.instance_id
                 """),
                 {
                     "chute_id": chute.chute_id,
                     "base_multiplier": base_multiplier,
                     "initial_boost": BOUNTY_BOOST_INITIAL,
                     "decay_hours": BOUNTY_BOOST_DECAY_HOURS,
+                    "hold_hours": COMPUTE_MULTIPLIER_HOLD_HOURS,
+                    "full_hours": COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS,
+                    "ramp_hours": COMPUTE_MULTIPLIER_RAMP_HOURS,
                 },
             )
             instances_updated += len(result.fetchall())
@@ -630,17 +779,29 @@ async def log_capacity_metrics(
             logger.info(f"Logged capacity metrics for {logged_count} chutes")
 
 
-async def perform_autoscale(dry_run: bool = False):
+async def perform_autoscale(dry_run: bool = False, soft_mode: bool = False):
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
+
+    Modes:
+    - dry_run: Logging only. No Redis writes, no DB writes, no instance changes.
+    - soft_mode: Updates Redis targets, compute multipliers, boosts, rolling updates,
+                 and logs to capacity_log, but skips all scale-downs.
+    - (default): Full mode - does everything including scale-downs.
     """
-    logger.info("Performing instance cleanup...")
-    await instance_cleanup()
+    if dry_run and soft_mode:
+        logger.warning("Both --dry-run and --soft specified; --dry-run takes precedence")
+        soft_mode = False
 
-    # Cleanup the connections while we are at it...
-    await cleanup_expired_connections()
+    mode_str = "DRY-RUN" if dry_run else ("SOFT" if soft_mode else "FULL")
+    logger.info(f"Starting autoscaler in {mode_str} mode...")
 
-    logger.info(f"Fetching metrics from Prometheus and database... (dry_run={dry_run})")
+    if not dry_run:
+        logger.info("Performing instance cleanup...")
+        await instance_cleanup()
+        await cleanup_expired_connections()
+
+    logger.info("Fetching metrics from Prometheus and database...")
     chute_metrics = await get_all_chute_metrics()
 
     # Safety check - ensure we have enough data
@@ -724,7 +885,8 @@ async def perform_autoscale(dry_run: bool = False):
             # Chute filtered out by query (e.g., has jobs) - write safe target to avoid stale Redis
             # Use current instance count from instances_by_chute, or 0 if none
             current_instances = len(instances_by_chute.get(chute_id, []))
-            await settings.redis_client.set(f"scale:{chute_id}", current_instances, ex=3700)
+            if not dry_run:
+                await settings.redis_client.set(f"scale:{chute_id}", current_instances, ex=3700)
             filtered_chutes[chute_id] = current_instances
             continue
 
@@ -753,7 +915,7 @@ async def perform_autoscale(dry_run: bool = False):
             ctx.is_starving = True
             starving_chutes.append(ctx)
 
-        # Identify Potential Donors (Low Utilization)
+        # Identify Potential Donors (for forced donations during arbitration)
         # Private chutes are not donors unless they belong to chutes_user_id (semi-private).
         # Chutes in LIMIT_OVERRIDES should never be preempted.
         allow_donor = ctx.public or (ctx.info and ctx.info.user_id == await chutes_user_id())
@@ -763,12 +925,14 @@ async def perform_autoscale(dry_run: bool = False):
             and allow_donor
             and ctx.chute_id not in LIMIT_OVERRIDES
         ):
-            # Critical Donor: Absolute waste, always downscale.
-            if ctx.utilization_basis < ctx.threshold * 0.2:
+            # Voluntary scale-down candidate: below scale_down_threshold
+            # These will scale down on their own (gated by moving average)
+            if ctx.utilization_basis < ctx.scale_down_threshold:
                 ctx.is_critical_donor = True
                 ctx.is_donor = True
-            # Optional Donor: Buffer, only downscale to help others.
-            elif ctx.utilization_basis < ctx.threshold * 0.6:
+            # Forced donation candidate: in stable zone (below threshold but above scale_down_threshold)
+            # These won't scale down voluntarily but can be forced to donate when others are starving
+            elif ctx.utilization_basis < ctx.threshold:
                 ctx.is_donor = True
 
     # 2. Local Decision Making (Ideal World)
@@ -926,18 +1090,55 @@ async def perform_autoscale(dry_run: bool = False):
     for ctx in contexts.values():
         apply_overrides(ctx)
 
+        # For voluntary scale-downs (not forced donations), check moving average permission
+        # Skip this check in soft_mode since we won't execute scale-downs anyway
+        if ctx.action == "scale_down_candidate" and ctx.downscale_amount > 0 and not soft_mode:
+            permitted, reason = await get_scale_down_permission(
+                ctx.chute_id, ctx.current_count, ctx.target_count
+            )
+            if not permitted:
+                # Moving average check blocked voluntary scale-down
+                logger.info(
+                    f"Scale down blocked: {ctx.chute_id} - {reason}, "
+                    f"keeping at {ctx.current_count} instances"
+                )
+                ctx.target_count = ctx.current_count
+                ctx.downscale_amount = 0
+                ctx.action = "scale_down_blocked"
+
+        # In soft_mode, clear all scale-down decisions (we still track them for logging)
+        if soft_mode and ctx.downscale_amount > 0:
+            original_action = ctx.action
+            ctx.action = f"{original_action}_skipped"
+            ctx.downscale_amount = 0
+            # Keep target_count at current to avoid Redis showing lower targets
+            ctx.target_count = ctx.current_count
+
         chute_actions[ctx.chute_id] = ctx.action
         chute_target_counts[ctx.chute_id] = ctx.target_count
         chute_rate_limiting[ctx.chute_id] = ctx.any_rate_limiting
         chute_boosts[ctx.chute_id] = ctx.boost
 
-        await settings.redis_client.set(f"scale:{ctx.chute_id}", ctx.target_count, ex=3700)
+        # In dry_run, skip Redis writes entirely
+        if not dry_run:
+            await settings.redis_client.set(f"scale:{ctx.chute_id}", ctx.target_count, ex=3700)
 
         if ctx.downscale_amount > 0:
             to_downsize.append((ctx.chute_id, ctx.downscale_amount, ctx.preferred_downscale_gpus))
 
     if dry_run:
-        logger.warning("DRY RUN MODE: Skipping boost updates and compute_multiplier refresh")
+        logger.warning("DRY RUN MODE: Skipping all writes (Redis, DB, instance changes)")
+        # Log what would have happened
+        scale_ups = [c for c in contexts.values() if "scale_up" in c.action]
+        scale_downs = [
+            c
+            for c in contexts.values()
+            if "scale_down" in c.action or "forced_downscale" in c.action
+        ]
+        logger.info(
+            f"Would scale up: {len(scale_ups)} chutes, Would scale down: {len(scale_downs)} chutes"
+        )
+        return
     else:
         # Update boost values in database
         await update_chute_boosts(chute_boosts)
@@ -946,6 +1147,7 @@ async def perform_autoscale(dry_run: bool = False):
         await refresh_instance_compute_multipliers()
 
         # Manage rolling updates (replacement + hard cap enforcement)
+        # In soft_mode, still manage rolling updates (they're not scale-downs, they're version transitions)
         await manage_rolling_updates(db_now, chute_target_counts, chute_rate_limiting)
 
     # Include filtered chutes in capacity logging with their actual targets
@@ -955,11 +1157,10 @@ async def perform_autoscale(dry_run: bool = False):
 
     await log_capacity_metrics(chute_metrics, chute_actions, chute_target_counts)
 
-    # 5. Execute Downsizing
-    if dry_run and to_downsize:
-        logger.warning("DRY RUN MODE: Skipping actual instance removal")
-        for cid, amt, pref in to_downsize:
-            logger.info(f"Would remove {amt} from {cid} (Preferred GPUs: {pref or 'any'})")
+    # 5. Execute Downsizing (skip in soft_mode)
+    if soft_mode:
+        if to_downsize:
+            logger.info(f"SOFT MODE: Skipping {len(to_downsize)} scale-down operations")
         return
 
     await execute_downsizing(to_downsize, db_now)
@@ -1154,33 +1355,34 @@ async def calculate_local_decision(ctx: AutoScaleContext):
         )
         return
 
-    # Critical Donors always scale down locally.
-    # Optional Donors stay 'no_action' until forced by Arbitration.
-    # ANY rate limiting prevents scale-down (checked via is_critical_donor which requires !any_rate_limiting)
-    if ctx.is_critical_donor and ctx.current_count > failsafe_min:
-        # Calculate safe ceiling using 85% of threshold to prevent flapping
-        target_ceil_util = ctx.threshold * 0.85
-        safe_count = (
-            math.ceil((ctx.utilization_basis * ctx.current_count) / target_ceil_util)
-            if target_ceil_util > 0
-            else failsafe_min
-        )
-        safe_count = max(safe_count, failsafe_min)
+    # Voluntary Scale-Down: if utilization is below scale_down_threshold
+    # This is conservative - gated by moving average check during execution
+    # Separate from forced donations which happen in arbitration phase
+    if (
+        ctx.utilization_basis < ctx.scale_down_threshold
+        and ctx.current_count > failsafe_min
+        and not ctx.any_rate_limiting
+    ):
+        # Calculate what utilization would be after removing one instance
+        if ctx.current_count > 1:
+            projected_util = (ctx.utilization_basis * ctx.current_count) / (ctx.current_count - 1)
+        else:
+            projected_util = 1.0
 
-        actual_remove = min(ctx.current_count - safe_count, max(1, int(ctx.current_count * 0.2)))
-        if actual_remove > 0:
-            ctx.downscale_amount = actual_remove
-            ctx.target_count = ctx.current_count - actual_remove
-            ctx.action = "scaled_down"
+        # Only scale down if projected utilization stays below scale-up threshold
+        if projected_util < ctx.threshold:
+            ctx.downscale_amount = 1
+            ctx.target_count = ctx.current_count - 1
+            ctx.action = "scale_down_candidate"
             logger.info(
-                f"Scale down: {ctx.chute_id} - critical donor, util={ctx.utilization_basis:.1%}, "
-                f"removing {actual_remove} instances, target={ctx.target_count}"
+                f"Scale down candidate: {ctx.chute_id} - util={ctx.utilization_basis:.1%} < {ctx.scale_down_threshold:.1%}, "
+                f"projected_util={projected_util:.1%}, target={ctx.target_count}"
             )
             return
 
-    # Default/Stable
-    # Public chutes get failsafe_min as their floor (FAILSAFE[id] or UNDERUTILIZED_CAP)
-    # Scaling down happens through critical donor logic when underutilized
+    # Default/Stable - maintain current count (respecting failsafe minimum)
+    # Chutes in stable zone (between scale_down_threshold and threshold) can still
+    # be forced to donate capacity during arbitration if others are starving
     ctx.target_count = max(failsafe_min, ctx.current_count)
 
     if ctx.info.new_chute:
@@ -1306,7 +1508,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Run without actually removing instances (simulation mode)",
+        help="Logging only - no Redis writes, no DB writes, no instance changes",
+    )
+    parser.add_argument(
+        "--soft",
+        action="store_true",
+        help="Soft mode - updates Redis targets, compute multipliers, boosts, rolling updates, "
+        "and logs to capacity_log, but skips all scale-downs (both voluntary and forced)",
     )
     args = parser.parse_args()
-    asyncio.run(perform_autoscale(dry_run=args.dry_run))
+    asyncio.run(perform_autoscale(dry_run=args.dry_run, soft_mode=args.soft))

@@ -46,11 +46,21 @@ DIFFUSION_PRICE_MULT_PER_STEP = 0.005
 # Minimum utilization of a chute before additional instances can be added.
 UTILIZATION_SCALE_UP = 0.6
 
+# Utilization threshold below which scale-down is considered.
+# Gap between SCALE_DOWN (0.35) and SCALE_UP (0.6) creates a "stable zone".
+UTILIZATION_SCALE_DOWN = 0.35
+
 # Cap on number of instances for an underutilized public chute.
 UNDERUTILIZED_CAP = 2
 
 # Percentage of requests being rate limited to allow scaling up.
 RATE_LIMIT_SCALE_UP = 0.03
+
+# Scale-down moving average parameters.
+# How far back to look in capacity_log for trend analysis.
+SCALE_DOWN_LOOKBACK_MINUTES = 90
+# Can't drop more than this ratio below the rolling average target count.
+SCALE_DOWN_MAX_DROP_RATIO = 0.8
 
 # Maximum size of VLM asset (video/image).
 VLM_MAX_SIZE = 100 * 1024 * 1024
