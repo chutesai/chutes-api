@@ -4,8 +4,14 @@ SCORING_INTERVAL = "7 days"
 BOUNTY_DECAY = 0.8
 BOUNTY_RHO = 0.5
 
-# Fixed bounty boost applied at instance activation - decays to 1.0 over BOUNTY_BOOST_DECAY_HOURS
-BOUNTY_BOOST_INITIAL = 1.5
+# Dynamic bounty boost based on bounty age at claim time (maxes out at one hour)
+BOUNTY_BOOST_MIN = 1.5
+BOUNTY_BOOST_MAX = 4.0
+BOUNTY_BOOST_RAMP_MINUTES = 60
+
+# After claiming, instance compute_multiplier gradually adjusts toward
+# the current chute target (base * urgency * TEE, etc.) over this many hours.
+# The bounty boost component decays to 1.0, but other factors remain.
 BOUNTY_BOOST_DECAY_HOURS = 8
 
 # Query to fetch raw request counts and compute units per chute (to calculate 'demand' bonus).

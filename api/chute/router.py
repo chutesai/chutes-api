@@ -143,13 +143,11 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     )
 
 
-async def _inject_effective_compute_multiplier(
-    chute: Chute, response: ChuteResponse, bounty_amount: Optional[int] = None
-):
+async def _inject_effective_compute_multiplier(chute: Chute, response: ChuteResponse):
     """
     Inject the effective compute multiplier and factors into a ChuteResponse.
     """
-    result = await calculate_effective_compute_multiplier(chute, bounty_amount=bounty_amount)
+    result = await calculate_effective_compute_multiplier(chute)
     response.effective_compute_multiplier = result["effective_compute_multiplier"]
     response.compute_multiplier_factors = result["compute_multiplier_factors"]
     response.bounty = result["bounty"]

@@ -38,8 +38,7 @@ from api.constants import (
     TEE_BONUS,
     INTEGRATED_SUBNETS,
 )
-from api.bounty.util import get_bounty_boost, get_bounty_amount
-from metasync.constants import BOUNTY_BOOST_INITIAL
+from api.bounty.util import get_bounty_info
 from api.database import get_session, get_inv_session
 from api.fmv.fetcher import get_fetcher
 from api.exceptions import (
@@ -256,7 +255,6 @@ async def selector_hourly_price(node_selector) -> float:
 async def calculate_effective_compute_multiplier(
     chute: Chute,
     include_bounty: bool = True,
-    bounty_amount: Optional[int] = None,
 ) -> dict:
     """
     Calculate the effective compute multiplier a miner would receive if they
@@ -267,18 +265,17 @@ async def calculate_effective_compute_multiplier(
         include_bounty: If True (default), includes the bounty boost.
                        If False, returns the base multiplier without bounty
                        (used by autoscaler for updating existing instances).
-        bounty_amount: Optional pre-fetched bounty amount to avoid Redis lookups.
 
     Returns a dict with:
     - effective_compute_multiplier: total multiplier
     - compute_multiplier_factors: breakdown of factors (only includes applicable bonuses)
-    - bounty: current bounty amount (only if include_bounty=True)
+    - bounty: current bounty info (amount + boost) if include_bounty=True
 
     Includes all bonuses:
     - Base compute_multiplier from node_selector (GPU type * count)
     - Private instance bonus (2x) or Integrated subnet bonus (3x)
     - Urgency boost from autoscaler (from chute.boost)
-    - Bounty boost (fixed 1.5x if bounty exists) - only if include_bounty=True
+    - Bounty boost (dynamic 1.5x-4x based on bounty age) - only if include_bounty=True
     - TEE bonus (1.5x if tee=True)
     """
     node_selector = NodeSelector(**chute.node_selector)
@@ -311,16 +308,13 @@ async def calculate_effective_compute_multiplier(
         total *= chute.boost
 
     # Bounty boost (only if requested).
+    # Uses dynamic boost based on bounty age (1.5x at 0min → 4x at 60min+)
+    bounty_info = None
     if include_bounty:
-        if bounty_amount is not None:
-            if bounty_amount > 0:
-                factors["bounty_boost"] = BOUNTY_BOOST_INITIAL
-                total *= BOUNTY_BOOST_INITIAL
-        else:
-            bounty_boost = await get_bounty_boost(chute.chute_id)
-            if bounty_boost > 1.0:
-                factors["bounty_boost"] = bounty_boost
-                total *= bounty_boost
+        bounty_info = await get_bounty_info(chute.chute_id)
+        if bounty_info and bounty_info["boost"] > 1.0:
+            factors["bounty_boost"] = bounty_info["boost"]
+            total *= bounty_info["boost"]
 
     # TEE bonus.
     if chute.tee:
@@ -333,10 +327,9 @@ async def calculate_effective_compute_multiplier(
     }
 
     if include_bounty:
-        if bounty_amount is not None:
-            result["bounty"] = bounty_amount
-        else:
-            result["bounty"] = await get_bounty_amount(chute.chute_id)
+        # Include full bounty info (amount, boost, age) if bounty exists
+        result["bounty"] = bounty_info.get("amount") if bounty_info else None
+        result["bounty_info"] = bounty_info
 
     return result
 

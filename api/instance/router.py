@@ -41,8 +41,7 @@ from api.payment.util import decrypt_secret
 from api.node.util import get_node_by_id
 from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import is_shared
-from api.bounty.util import claim_bounty
-from metasync.constants import BOUNTY_BOOST_INITIAL
+from api.bounty.util import claim_bounty, calculate_bounty_boost
 from api.secret.schemas import Secret
 from api.image.schemas import Image  # noqa
 from api.instance.schemas import (
@@ -1116,14 +1115,16 @@ async def activate_launch_config_instance(
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
-        # If a bounty exists for this chute, claim it and apply boost on activation.
+        # If a bounty exists for this chute, claim it and apply dynamic boost based on age.
+        # Older bounties = higher boost (1.5x at 0min → 4x at 60min+)
         bounty = await claim_bounty(instance.chute_id)
         if bounty:
             instance.bounty = True
-            instance.compute_multiplier *= BOUNTY_BOOST_INITIAL
+            bounty_boost = calculate_bounty_boost(bounty["age_seconds"])
+            instance.compute_multiplier *= bounty_boost
             logger.info(
-                f"Claimed bounty for {instance.chute_id}: "
-                f"bounty_boost={BOUNTY_BOOST_INITIAL}, total compute_multiplier={instance.compute_multiplier}"
+                f"Claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
+                f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
             )
 
         # Verify egress.

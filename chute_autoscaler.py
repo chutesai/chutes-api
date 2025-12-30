@@ -26,7 +26,11 @@ import api.database.orms  # noqa
 from sqlalchemy.orm import selectinload, joinedload
 from api.database import get_session
 from api.config import settings
-from api.bounty.util import check_bounty_exists
+from api.bounty.util import (
+    check_bounty_exists,
+    get_bounty_info,
+    send_bounty_notification,
+)
 from api.user.service import chutes_user_id
 from api.util import has_legacy_private_billing, notify_deleted
 from api.chute.schemas import Chute, NodeSelector, RollingUpdate
@@ -103,9 +107,9 @@ async def get_scale_down_permission(
                     COUNT(*) as sample_count
                 FROM capacity_log
                 WHERE chute_id = :chute_id
-                  AND timestamp >= NOW() - INTERVAL :lookback
+                  AND timestamp >= NOW() - make_interval(mins => :lookback_minutes)
             """),
-            {"chute_id": chute_id, "lookback": f"{SCALE_DOWN_LOOKBACK_MINUTES} minutes"},
+            {"chute_id": chute_id, "lookback_minutes": SCALE_DOWN_LOOKBACK_MINUTES},
         )
         row = result.fetchone()
 
@@ -1078,6 +1082,55 @@ async def perform_autoscale(dry_run: bool = False, soft_mode: bool = False):
             logger.info(
                 f"Priority lock: {ctx.chute_id} locked (urgency={ctx.urgency_score:.0f}) "
                 f"to prioritize {hungry_ctx.chute_id} (urgency={hungry_ctx.urgency_score:.0f})"
+            )
+
+    # Kinda hacky, because it's not actually creating bounties, but we'll
+    # send bounty notifications for miners to have instant feedback when
+    # there are urgent scaling needs.
+    URGENCY_THRESHOLD_FOR_NOTIFICATION = 100
+    if not dry_run:
+        from api.chute.util import calculate_effective_compute_multiplier
+
+        for ctx in starving_chutes:
+            # Only public chutes or semi-private (chutes user) get notifications
+            if not ctx.public and (not ctx.info or ctx.info.user_id != await chutes_user_id()):
+                continue
+
+            # Only notify if urgency is high enough and we actually need instances
+            if ctx.urgency_score < URGENCY_THRESHOLD_FOR_NOTIFICATION or ctx.upscale_amount <= 0:
+                continue
+
+            # Determine urgency level
+            if ctx.current_count == 0:
+                urgency = "cold"
+            elif ctx.rate_limit_basis >= 0.1:
+                urgency = "critical"
+            else:
+                urgency = "scaling"
+
+            # Calculate effective multiplier (without bounty since there may not be one)
+            effective_data = await calculate_effective_compute_multiplier(
+                ctx.info, include_bounty=False
+            )
+            effective_mult = effective_data["effective_compute_multiplier"]
+
+            # Check if there's an existing bounty to include its boost
+            bounty_info = await get_bounty_info(ctx.chute_id)
+            bounty_amount = bounty_info["amount"] if bounty_info else 0
+            bounty_boost = bounty_info["boost"] if bounty_info else None
+            if bounty_boost:
+                effective_mult *= bounty_boost
+
+            await send_bounty_notification(
+                chute_id=ctx.chute_id,
+                bounty=bounty_amount,
+                effective_multiplier=effective_mult,
+                bounty_boost=bounty_boost,
+                urgency=urgency,
+            )
+            logger.info(
+                f"Sent scaling notification for {ctx.chute_id}: urgency={urgency}, "
+                f"effective_mult={effective_mult:.1f}x, upscale_amount={ctx.upscale_amount}"
             )
 
     # 4. Finalize Actions

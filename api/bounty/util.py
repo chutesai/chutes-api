@@ -4,7 +4,11 @@ from loguru import logger
 from datetime import datetime, timezone
 from typing import Optional
 from api.config import settings
-from metasync.constants import BOUNTY_BOOST_INITIAL
+from metasync.constants import (
+    BOUNTY_BOOST_MIN,
+    BOUNTY_BOOST_MAX,
+    BOUNTY_BOOST_RAMP_MINUTES,
+)
 
 
 CLAIM_BOUNTY_LUA = """
@@ -84,24 +88,65 @@ async def claim_bounty(chute_id: str) -> Optional[dict]:
 def calculate_bounty_boost(age_seconds: int) -> float:
     """
     Calculate compute multiplier boost based on bounty age.
-    Returns BOUNTY_BOOST_INITIAL (1.5) for display purposes.
-    The actual decay happens over time after instance activation.
+
+    The boost ramps up from BOUNTY_BOOST_MIN (1.5x) to BOUNTY_BOOST_MAX (4x)
+    over BOUNTY_BOOST_RAMP_MINUTES (60 minutes).
+
+    This incentivizes miners to respond to older/more urgent bounties.
     """
-    return BOUNTY_BOOST_INITIAL
+    age_minutes = age_seconds / 60.0
+
+    if age_minutes <= 0:
+        return BOUNTY_BOOST_MIN
+    elif age_minutes >= BOUNTY_BOOST_RAMP_MINUTES:
+        return BOUNTY_BOOST_MAX
+    else:
+        # Linear ramp from min to max
+        t = age_minutes / BOUNTY_BOOST_RAMP_MINUTES
+        return BOUNTY_BOOST_MIN + t * (BOUNTY_BOOST_MAX - BOUNTY_BOOST_MIN)
+
+
+async def get_bounty_info(chute_id: str) -> Optional[dict]:
+    """
+    Get full bounty info for a chute without claiming it.
+
+    Returns dict with:
+    - amount: bounty amount (based on age)
+    - boost: dynamic boost multiplier (1.5x at 0min → 4x at 60min+)
+    - age_seconds: how old the bounty is
+    - created_at: timestamp when bounty was created
+
+    Returns None if no bounty exists.
+    """
+    bounty_key = f"bounty:{chute_id}"
+    try:
+        bounty_data = await settings.lite_redis_client.get(bounty_key)
+        if not bounty_data:
+            return None
+        data = json.loads(bounty_data)
+        created_at = data.get("created_at")
+        if not created_at:
+            return None
+        age_seconds = int(time.time() - created_at)
+        bounty_amount = min(3 * age_seconds + 100, 86400)
+        return {
+            "amount": bounty_amount,
+            "boost": calculate_bounty_boost(age_seconds),
+            "age_seconds": age_seconds,
+            "created_at": created_at,
+        }
+    except Exception as exc:
+        logger.warning(f"Failed to get bounty info: {exc}")
+    return None
 
 
 async def get_bounty_boost(chute_id: str) -> float:
     """
-    Get the bounty boost for a chute without claiming it.
-    Returns BOUNTY_BOOST_INITIAL if a bounty exists, 1.0 otherwise.
+    Get the current bounty boost for a chute without claiming it.
+    Returns the dynamic boost based on bounty age, or 1.0 if no bounty exists.
     """
-    bounty_key = f"bounty:{chute_id}"
-    try:
-        exists = await settings.lite_redis_client.exists(bounty_key)
-        return BOUNTY_BOOST_INITIAL if exists else 1.0
-    except Exception as exc:
-        logger.warning(f"Failed to get bounty boost: {exc}")
-    return 1.0
+    info = await get_bounty_info(chute_id)
+    return info["boost"] if info else 1.0
 
 
 async def check_bounty_exists(chute_id: str) -> bool:
@@ -182,27 +227,48 @@ async def delete_bounty(chute_id: str) -> bool:
     return False
 
 
-async def send_bounty_notification(chute_id: str, bounty: int) -> None:
+async def send_bounty_notification(
+    chute_id: str,
+    bounty: int,
+    effective_multiplier: Optional[float] = None,
+    bounty_boost: Optional[float] = None,
+    urgency: Optional[str] = None,
+) -> None:
+    """
+    Send bounty notification to miners.
+
+    Args:
+        chute_id: The chute ID
+        bounty: Bounty amount
+        effective_multiplier: Total effective compute multiplier for this chute
+        bounty_boost: Current dynamic bounty boost (1.5x-4x based on age)
+        urgency: Optional urgency level ("cold", "scaling", "critical")
+    """
     try:
+        data = {
+            "chute_id": chute_id,
+            "bounty": bounty,
+        }
+        if effective_multiplier is not None:
+            data["effective_multiplier"] = effective_multiplier
+        if bounty_boost is not None:
+            data["bounty_boost"] = bounty_boost
+        if urgency is not None:
+            data["urgency"] = urgency
+
         await settings.lite_redis_client.publish(
             "miner_broadcast",
-            json.dumps(
-                {
-                    "reason": "bounty_change",
-                    "data": {"chute_id": chute_id, "bounty": bounty},
-                }
-            ),
+            json.dumps({"reason": "bounty_change", "data": data}),
         )
+
+        urgency_str = f" ({urgency})" if urgency else ""
         await settings.lite_redis_client.publish(
             "events",
             json.dumps(
                 {
                     "reason": "bounty_change",
-                    "message": f"Chute {chute_id} bounty has been set to {bounty} compute units.",
-                    "data": {
-                        "chute_id": chute_id,
-                        "bounty": bounty,
-                    },
+                    "message": f"Chute {chute_id} bounty{urgency_str}: {bounty} compute units, {effective_multiplier:.1f}x multiplier",
+                    "data": data,
                 }
             ),
         )
