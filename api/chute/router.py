@@ -47,7 +47,7 @@ from api.chute.util import (
     get_mtoken_price,
     calculate_effective_compute_multiplier,
 )
-from api.bounty.util import get_bounty_amounts
+from api.bounty.util import get_bounty_info, get_bounty_infos
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager
 from api.user.schemas import User, PriceOverride
@@ -143,11 +143,13 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     )
 
 
-async def _inject_effective_compute_multiplier(chute: Chute, response: ChuteResponse):
+async def _inject_effective_compute_multiplier(
+    chute: Chute, response: ChuteResponse, bounty_info: Optional[dict] = None
+):
     """
     Inject the effective compute multiplier and factors into a ChuteResponse.
     """
-    result = await calculate_effective_compute_multiplier(chute)
+    result = await calculate_effective_compute_multiplier(chute, bounty_info=bounty_info)
     response.effective_compute_multiplier = result["effective_compute_multiplier"]
     response.compute_multiplier_factors = result["compute_multiplier_factors"]
     response.bounty = result["bounty"]
@@ -420,7 +422,7 @@ async def list_chutes(
     query = query.order_by(Chute.invocation_count.desc()).offset(offset).limit(limit)
     result = await db.execute(query)
     items = result.unique().scalars().all()
-    bounty_amounts = await get_bounty_amounts([item.chute_id for item in items])
+    bounty_infos = await get_bounty_infos([item.chute_id for item in items])
     responses = []
     cord_refs = {}
     for item in items:
@@ -441,7 +443,7 @@ async def list_chutes(
         responses.append(chute_response)
         await _inject_current_estimated_price(item, responses[-1])
         await _inject_effective_compute_multiplier(
-            item, responses[-1], bounty_amount=bounty_amounts.get(item.chute_id)
+            item, responses[-1], bounty_info=bounty_infos.get(item.chute_id)
         )
     result = {
         "total": total,
@@ -784,10 +786,8 @@ async def get_chute(
         )
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
-    bounty_amounts = await get_bounty_amounts([chute.chute_id])
-    await _inject_effective_compute_multiplier(
-        chute, response, bounty_amount=bounty_amounts.get(chute.chute_id)
-    )
+    bounty_info = await get_bounty_info(chute.chute_id)
+    await _inject_effective_compute_multiplier(chute, response, bounty_info=bounty_info)
     return response
 
 

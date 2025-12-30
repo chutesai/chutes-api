@@ -306,10 +306,9 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
       Uses t² curve where t is normalized time in the ramp window
     - 8+ hours: Clamp to target value
 
-    For bounty instances, the target includes the decaying bounty boost.
+    For bounty instances, the target excludes bounty boost (decays to baseline).
     """
     from api.chute.util import calculate_effective_compute_multiplier
-    from metasync.constants import BOUNTY_BOOST_INITIAL, BOUNTY_BOOST_DECAY_HOURS
 
     logger.info("Refreshing compute multipliers for active instances...")
 
@@ -349,7 +348,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
                         -- During ramp: ease-in blend (t² curve)
                         ELSE (
                             SELECT
-                                compute_multiplier * (1 - blend) + :target * blend
+                                COALESCE(compute_multiplier, :target) * (1 - blend) + :target * blend
                             FROM (
                                 SELECT POWER(
                                     (EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 - :hold_hours)
@@ -383,65 +382,47 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             )
             instances_updated += len(result.fetchall())
 
-            # Update instances with bounty: target includes decaying bounty boost
-            # Same ease-in blend logic, but target is base_multiplier * bounty_decay
+            # Update instances with bounty: ease-in blend toward target (base multiplier without bounty)
             result = await session.execute(
                 text("""
                     UPDATE instances
                     SET compute_multiplier = CASE
                         -- Before hold period ends: don't touch (but initialize if NULL)
                         WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 <= :hold_hours
-                            THEN COALESCE(compute_multiplier, target_mult)
+                            THEN COALESCE(compute_multiplier, :target)
                         -- After full adjustment period: clamp to target
                         WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 >= :full_hours
-                            THEN target_mult
+                            THEN :target
                         -- During ramp: ease-in blend (t² curve)
                         ELSE (
-                            compute_multiplier * (1 - POWER(
+                            COALESCE(compute_multiplier, :target) * (1 - POWER(
                                 (EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 - :hold_hours)
                                 / :ramp_hours,
                                 2
-                            )) + target_mult * POWER(
+                            )) + :target * POWER(
                                 (EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 - :hold_hours)
                                 / :ramp_hours,
                                 2
                             )
                         )
                     END
-                    FROM (
-                        SELECT
-                            instance_id,
-                            :base_multiplier * GREATEST(
-                                1.0,
-                                :initial_boost - (
-                                    LEAST(
-                                        EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0,
-                                        :decay_hours
-                                    ) / :decay_hours * (:initial_boost - 1.0)
-                                )
-                            ) AS target_mult
-                        FROM instances
-                        WHERE chute_id = :chute_id
-                          AND bounty = true
-                          AND active = true
-                          AND verified = true
-                          AND activated_at IS NOT NULL
-                    ) AS targets
-                    WHERE instances.instance_id = targets.instance_id
+                    WHERE chute_id = :chute_id
+                      AND bounty = true
+                      AND active = true
+                      AND verified = true
+                      AND activated_at IS NOT NULL
                       AND (
-                          instances.compute_multiplier IS NULL
+                          compute_multiplier IS NULL
                           OR (
-                              EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 > :hold_hours
-                              AND ABS(instances.compute_multiplier - targets.target_mult) > 0.001
+                              EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 > :hold_hours
+                              AND ABS(compute_multiplier - :target) > 0.001
                           )
                       )
-                    RETURNING instances.instance_id
+                    RETURNING instance_id
                 """),
                 {
                     "chute_id": chute.chute_id,
-                    "base_multiplier": base_multiplier,
-                    "initial_boost": BOUNTY_BOOST_INITIAL,
-                    "decay_hours": BOUNTY_BOOST_DECAY_HOURS,
+                    "target": base_multiplier,
                     "hold_hours": COMPUTE_MULTIPLIER_HOLD_HOURS,
                     "full_hours": COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS,
                     "ramp_hours": COMPUTE_MULTIPLIER_RAMP_HOURS,

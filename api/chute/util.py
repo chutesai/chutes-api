@@ -255,6 +255,7 @@ async def selector_hourly_price(node_selector) -> float:
 async def calculate_effective_compute_multiplier(
     chute: Chute,
     include_bounty: bool = True,
+    bounty_info: Optional[dict] = None,
 ) -> dict:
     """
     Calculate the effective compute multiplier a miner would receive if they
@@ -309,10 +310,10 @@ async def calculate_effective_compute_multiplier(
 
     # Bounty boost (only if requested).
     # Uses dynamic boost based on bounty age (1.5x at 0min → 4x at 60min+)
-    bounty_info = None
     if include_bounty:
-        bounty_info = await get_bounty_info(chute.chute_id)
-        if bounty_info and bounty_info["boost"] > 1.0:
+        if bounty_info is None:
+            bounty_info = await get_bounty_info(chute.chute_id)
+        if bounty_info and bounty_info.get("boost", 1.0) > 1.0:
             factors["bounty_boost"] = bounty_info["boost"]
             total *= bounty_info["boost"]
 
