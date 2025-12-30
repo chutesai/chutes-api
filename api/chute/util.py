@@ -1806,7 +1806,7 @@ async def get_llms(refresh: bool = False):
             )
             .order_by(Chute.invocation_count.desc())
         )
-        model_details = [row[0] for row in result if row[0] is not None]
+        model_details = [row[0] for row in result if row[0]]
         return_value = {"object": "list", "data": model_details}
         await settings.redis_client.set("all_llms", json.dumps(return_value), ex=300)
         return return_value

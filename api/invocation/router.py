@@ -892,6 +892,14 @@ async def hostname_invocation(
             payload["model"] = "moonshotai/Kimi-K2-Thinking-TEE"
         elif model == "deepseek-ai/DeepSeek-R1-0528":
             payload["model"] = "deepseek-ai/DeepSeek-R1-0528-TEE"
+        elif model == "deepseek-ai/DeepSeek-R1":
+            payload["model"] = "deepseek-ai/DeepSeek-R1-TEE"
+        elif model == "Qwen/Qwen3-235B-A22B-Instruct-2507":
+            payload["model"] = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+        elif model == "NousResearch/Hermes-4-405B-FP8":
+            payload["model"] = "NousResearch/Hermes-4-405B-FP8-TEE"
+        elif model == "Qwen/Qwen2.5-VL-72B-Instruct":
+            payload["model"] = "Qwen/Qwen2.5-VL-72B-Instruct-TEE"
 
         # No file support currently.
         if isinstance(payload.get("messages"), list):
