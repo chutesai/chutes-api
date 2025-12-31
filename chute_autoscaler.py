@@ -8,6 +8,8 @@ import math
 import asyncio
 import argparse
 import random
+import uuid
+from contextlib import asynccontextmanager
 from functools import wraps
 from collections import defaultdict
 from loguru import logger
@@ -46,6 +48,55 @@ from api.constants import (
     SCALE_DOWN_LOOKBACK_MINUTES,
     SCALE_DOWN_MAX_DROP_RATIO,
 )
+
+
+# Distributed lock to prevent concurrent autoscaler runs
+AUTOSCALER_LOCK_KEY = "autoscaler:lock"
+AUTOSCALER_LOCK_TTL = 180  # 3 minutes max (should complete in <1 min normally)
+
+
+class LockNotAcquired(Exception):
+    """Raised when the autoscaler lock cannot be acquired."""
+
+    pass
+
+
+@asynccontextmanager
+async def autoscaler_lock(soft_mode: bool = False):
+    """
+    Distributed lock using Redis to prevent concurrent autoscaler runs.
+
+    Uses SET NX with expiry to atomically acquire lock.
+    Releases lock on exit (or lets it expire if process crashes).
+
+    If soft_mode=True and lock is held, exits quietly instead of raising.
+    Full mode always raises if lock is held.
+    """
+    lock_id = str(uuid.uuid4())
+    acquired = False
+
+    try:
+        acquired = await settings.redis_client.set(
+            AUTOSCALER_LOCK_KEY,
+            lock_id,
+            nx=True,
+            ex=AUTOSCALER_LOCK_TTL,
+        )
+        if not acquired:
+            ttl = await settings.redis_client.ttl(AUTOSCALER_LOCK_KEY)
+            if soft_mode:
+                logger.info(f"Lock held (TTL: {ttl}s), skipping soft mode run")
+                raise LockNotAcquired()
+            else:
+                raise RuntimeError(f"Another autoscaler is running (lock TTL: {ttl}s). Aborting.")
+        logger.info(f"Acquired autoscaler lock: {lock_id}")
+        yield
+    finally:
+        if acquired:
+            current = await settings.redis_client.get(AUTOSCALER_LOCK_KEY)
+            if current and current.decode() == lock_id:
+                await settings.redis_client.delete(AUTOSCALER_LOCK_KEY)
+                logger.info(f"Released autoscaler lock: {lock_id}")
 
 
 def retry_on_db_failure(max_retries=3, delay=1.0):
@@ -232,7 +283,6 @@ class AutoScaleContext:
         self.upscale_amount = 0
         self.preferred_downscale_gpus = set()
         self.boost = 1.0  # Compute multiplier boost (1.0 - 4.0)
-        self.locked_for_priority = False  # True if locked to let higher-urgency chutes scale
 
 
 async def instance_cleanup():
@@ -293,6 +343,31 @@ COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS = 8.0
 COMPUTE_MULTIPLIER_RAMP_HOURS = COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS - COMPUTE_MULTIPLIER_HOLD_HOURS
 
 
+def _calculate_blended_multiplier(
+    current: float | None,
+    target: float,
+    hours_since_activation: float,
+) -> float | None:
+    """
+    Calculate the blended compute_multiplier based on time since activation.
+
+    Returns None if no update needed (still in hold period with existing value).
+    """
+    if hours_since_activation <= COMPUTE_MULTIPLIER_HOLD_HOURS:
+        # In hold period - only set if NULL
+        return target if current is None else None
+
+    if hours_since_activation >= COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS:
+        # Past full adjustment - clamp to target
+        return target
+
+    # In ramp period - ease-in blend (t² curve)
+    current_val = current if current is not None else target
+    t = (hours_since_activation - COMPUTE_MULTIPLIER_HOLD_HOURS) / COMPUTE_MULTIPLIER_RAMP_HOURS
+    blend = t * t
+    return current_val * (1 - blend) + target * blend
+
+
 @retry_on_db_failure()
 async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     """
@@ -306,7 +381,8 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
       Uses t² curve where t is normalized time in the ramp window
     - 8+ hours: Clamp to target value
 
-    For bounty instances, the target excludes bounty boost (decays to baseline).
+    Pre-loads all instance values first, calculates new values in Python,
+    then issues static UPDATE statements to avoid read-modify-write locks.
     """
     from api.chute.util import calculate_effective_compute_multiplier
 
@@ -314,125 +390,75 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
 
     async with get_session() as session:
         await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+
         # Load chutes (optionally filtered)
         query = select(Chute)
         if chute_ids:
             query = query.where(Chute.chute_id.in_(chute_ids))
         result = await session.execute(query)
-        chutes = result.scalars().all()
+        chutes = {c.chute_id: c for c in result.scalars().all()}
 
-        instances_updated = 0
-        for chute in chutes:
-            # Get base multiplier without bounty
+        if not chutes:
+            logger.info("No chutes to process")
+            return
+
+        # Pre-load all active instances for these chutes
+        instance_query = select(Instance).where(
+            Instance.chute_id.in_(chutes.keys()),
+            Instance.active.is_(True),
+            Instance.verified.is_(True),
+            Instance.activated_at.isnot(None),
+        )
+        instance_result = await session.execute(instance_query)
+        instances = instance_result.scalars().all()
+
+        if not instances:
+            logger.info("No active instances to update")
+            return
+
+        # Calculate target multipliers for each chute (without bounty)
+        chute_targets = {}
+        for chute_id, chute in chutes.items():
             effective_data = await calculate_effective_compute_multiplier(
                 chute, include_bounty=False
             )
-            base_multiplier = effective_data["effective_compute_multiplier"]
+            chute_targets[chute_id] = effective_data["effective_compute_multiplier"]
 
-            # Update instances without bounty
-            # Blend formula with ease-in curve:
-            #   hours = time since activation in hours
-            #   if hours <= hold_hours: no change
-            #   elif hours >= full_adjust_hours: clamp to target
-            #   else: t = (hours - hold) / ramp; blend = t²; result = original*(1-blend) + target*blend
-            result = await session.execute(
-                text("""
-                    UPDATE instances
-                    SET compute_multiplier = CASE
-                        -- Before hold period ends: don't touch (but initialize if NULL)
-                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 <= :hold_hours
-                            THEN COALESCE(compute_multiplier, :target)
-                        -- After full adjustment period: clamp to target
-                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 >= :full_hours
-                            THEN :target
-                        -- During ramp: ease-in blend (t² curve)
-                        ELSE (
-                            SELECT
-                                COALESCE(compute_multiplier, :target) * (1 - blend) + :target * blend
-                            FROM (
-                                SELECT POWER(
-                                    (EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 - :hold_hours)
-                                    / :ramp_hours,
-                                    2
-                                ) AS blend
-                            ) AS b
-                        )
-                    END
-                    WHERE chute_id = :chute_id
-                      AND (bounty IS NULL OR bounty = false)
-                      AND active = true
-                      AND verified = true
-                      AND activated_at IS NOT NULL
-                      AND (
-                          compute_multiplier IS NULL
-                          OR (
-                              EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 > :hold_hours
-                              AND ABS(compute_multiplier - :target) > 0.001
-                          )
-                      )
-                    RETURNING instance_id
-                """),
-                {
-                    "chute_id": chute.chute_id,
-                    "target": base_multiplier,
-                    "hold_hours": COMPUTE_MULTIPLIER_HOLD_HOURS,
-                    "full_hours": COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS,
-                    "ramp_hours": COMPUTE_MULTIPLIER_RAMP_HOURS,
-                },
-            )
-            instances_updated += len(result.fetchall())
+        # Calculate new values in Python
+        now = datetime.now()
+        updates = []  # List of (instance_id, new_multiplier)
 
-            # Update instances with bounty: ease-in blend toward target (base multiplier without bounty)
-            result = await session.execute(
-                text("""
-                    UPDATE instances
-                    SET compute_multiplier = CASE
-                        -- Before hold period ends: don't touch (but initialize if NULL)
-                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 <= :hold_hours
-                            THEN COALESCE(compute_multiplier, :target)
-                        -- After full adjustment period: clamp to target
-                        WHEN EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 >= :full_hours
-                            THEN :target
-                        -- During ramp: ease-in blend (t² curve)
-                        ELSE (
-                            COALESCE(compute_multiplier, :target) * (1 - POWER(
-                                (EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 - :hold_hours)
-                                / :ramp_hours,
-                                2
-                            )) + :target * POWER(
-                                (EXTRACT(EPOCH FROM (NOW() - instances.activated_at)) / 3600.0 - :hold_hours)
-                                / :ramp_hours,
-                                2
-                            )
-                        )
-                    END
-                    WHERE chute_id = :chute_id
-                      AND bounty = true
-                      AND active = true
-                      AND verified = true
-                      AND activated_at IS NOT NULL
-                      AND (
-                          compute_multiplier IS NULL
-                          OR (
-                              EXTRACT(EPOCH FROM (NOW() - activated_at)) / 3600.0 > :hold_hours
-                              AND ABS(compute_multiplier - :target) > 0.001
-                          )
-                      )
-                    RETURNING instance_id
-                """),
-                {
-                    "chute_id": chute.chute_id,
-                    "target": base_multiplier,
-                    "hold_hours": COMPUTE_MULTIPLIER_HOLD_HOURS,
-                    "full_hours": COMPUTE_MULTIPLIER_FULL_ADJUST_HOURS,
-                    "ramp_hours": COMPUTE_MULTIPLIER_RAMP_HOURS,
-                },
-            )
-            instances_updated += len(result.fetchall())
+        for inst in instances:
+            target = chute_targets.get(inst.chute_id)
+            if target is None:
+                continue
 
-        if instances_updated:
+            hours_since = (now - inst.activated_at.replace(tzinfo=None)).total_seconds() / 3600.0
+            current = inst.compute_multiplier
+
+            new_value = _calculate_blended_multiplier(current, target, hours_since)
+
+            # Skip if no update needed or value unchanged
+            if new_value is None:
+                continue
+            if current is not None and abs(current - new_value) < 0.001:
+                continue
+
+            updates.append((inst.instance_id, new_value))
+
+        # Batch update with static values (no read-modify-write)
+        if updates:
+            for instance_id, new_multiplier in updates:
+                await session.execute(
+                    text("""
+                        UPDATE instances
+                        SET compute_multiplier = :multiplier
+                        WHERE instance_id = :instance_id
+                    """),
+                    {"instance_id": instance_id, "multiplier": new_multiplier},
+                )
             await session.commit()
-            logger.success(f"Updated compute_multiplier for {instances_updated} instances")
+            logger.success(f"Updated compute_multiplier for {len(updates)} instances")
         else:
             logger.info("No compute_multiplier updates needed")
 
@@ -764,7 +790,12 @@ async def log_capacity_metrics(
             logger.info(f"Logged capacity metrics for {logged_count} chutes")
 
 
-async def perform_autoscale(dry_run: bool = False, soft_mode: bool = False):
+async def perform_autoscale(
+    dry_run: bool = False,
+    soft_mode: bool = False,
+    dry_run_csv: str = None,
+    refresh_multipliers: bool = False,
+):
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
 
@@ -772,8 +803,30 @@ async def perform_autoscale(dry_run: bool = False, soft_mode: bool = False):
     - dry_run: Logging only. No Redis writes, no DB writes, no instance changes.
     - soft_mode: Updates Redis targets, compute multipliers, boosts, rolling updates,
                  and logs to capacity_log, but skips all scale-downs.
+                 Exits quietly if another autoscaler is running.
     - (default): Full mode - does everything including scale-downs.
+
+    Args:
+        dry_run_csv: Path to export CSV with all chute data (only in dry-run mode)
+        refresh_multipliers: If True, refresh instance compute_multipliers. Should be
+                             run hourly (before :05 when validators snapshot) rather
+                             than every autoscaler run.
     """
+    try:
+        async with autoscaler_lock(soft_mode=soft_mode):
+            await _perform_autoscale_impl(dry_run, soft_mode, dry_run_csv, refresh_multipliers)
+    except LockNotAcquired:
+        # Soft mode couldn't acquire lock, exit quietly
+        return
+
+
+async def _perform_autoscale_impl(
+    dry_run: bool = False,
+    soft_mode: bool = False,
+    dry_run_csv: str = None,
+    refresh_multipliers: bool = False,
+):
+    """Internal implementation of autoscale logic (called within lock)."""
     if dry_run and soft_mode:
         logger.warning("Both --dry-run and --soft specified; --dry-run takes precedence")
         soft_mode = False
@@ -1015,55 +1068,48 @@ async def perform_autoscale(dry_run: bool = False, soft_mode: bool = False):
                 )
 
     # 3b. Priority Locking & Boost Calculation
-    # High-urgency chutes that still need scaling get priority:
-    # - They get a boost multiplier (1.0 - 2.5) based on urgency
-    # - Compatible lower-priority chutes get locked from scaling up
-    URGENCY_LOCK_THRESHOLD = 100  # Urgency score above which we lock competitors
-    URGENCY_MAX_FOR_BOOST = 500  # Urgency score that maps to max boost (2.5)
+    # Boost multipliers for chutes wanting to scale up.
+    # Base boost is calculated from individual urgency (0-500 -> 1.0-2.5x).
+    # Then adjusted slightly based on relative urgency across all scaling chutes,
+    # so miners are incentivized toward the most urgent work without hard blocking.
+    URGENCY_MAX_FOR_BOOST = 500
     URGENCY_BOOST_MIN = 1.0
     URGENCY_BOOST_MAX = 2.5
+    RELATIVE_ADJUSTMENT_MAX = 0.2  # ±20% adjustment based on relative urgency
 
-    high_urgency_chutes = [
-        ctx
-        for ctx in starving_chutes
-        if ctx.urgency_score >= URGENCY_LOCK_THRESHOLD and ctx.upscale_amount > 0
-    ]
+    # Collect urgency scores for chutes wanting to scale up
+    scaling_chutes = [ctx for ctx in contexts.values() if ctx.upscale_amount > 0]
+    if scaling_chutes:
+        urgency_scores = [ctx.urgency_score for ctx in scaling_chutes]
+        avg_urgency = sum(urgency_scores) / len(urgency_scores)
+        max_urgency = max(urgency_scores)
+    else:
+        avg_urgency = 0
+        max_urgency = 0
 
     for ctx in contexts.values():
-        if ctx.is_starving and ctx.upscale_amount > 0:
-            # Calculate boost based on urgency (linear scale from 1.0 to 2.5)
-            # urgency 0 -> 1.0, urgency >= URGENCY_MAX_FOR_BOOST -> 2.5
+        if ctx.upscale_amount > 0:
+            # Base boost from individual urgency
             normalized_urgency = min(ctx.urgency_score / URGENCY_MAX_FOR_BOOST, 1.0)
-            ctx.boost = URGENCY_BOOST_MIN + (
+            base_boost = URGENCY_BOOST_MIN + (
                 normalized_urgency * (URGENCY_BOOST_MAX - URGENCY_BOOST_MIN)
             )
+
+            # Relative adjustment based on position vs other scaling chutes.
+            # Above average: bonus up to +20%
+            # Below average: reduction up to -20%, but final boost never below 1.0
+            if max_urgency > 0:
+                # Normalize to [-1, 1] range
+                spread = max(max_urgency, 1)
+                relative_position = (ctx.urgency_score - avg_urgency) / spread
+                relative_position = max(-1.0, min(1.0, relative_position))
+                relative_factor = 1.0 + (relative_position * RELATIVE_ADJUSTMENT_MAX)
+            else:
+                relative_factor = 1.0
+
+            ctx.boost = max(1.0, base_boost * relative_factor)
         else:
             ctx.boost = 1.0
-
-    # Lock compatible chutes that are trying to scale up but aren't as urgent
-    for hungry_ctx in high_urgency_chutes:
-        for ctx in contexts.values():
-            if ctx.chute_id == hungry_ctx.chute_id:
-                continue
-            if ctx.action != "scale_up_candidate":
-                continue
-            if ctx.urgency_score >= hungry_ctx.urgency_score:
-                continue  # Don't lock equally or more urgent chutes
-            if ctx.tee != hungry_ctx.tee:
-                continue  # Different TEE mode, not competing
-            if not (ctx.supported_gpus & hungry_ctx.supported_gpus):
-                continue  # Different hardware, not competing
-
-            # This chute is competing for same hardware with lower priority - lock it
-            ctx.target_count = ctx.current_count
-            ctx.upscale_amount = 0
-            ctx.action = "locked_for_priority"
-            ctx.locked_for_priority = True
-            ctx.boost = 1.0  # No boost for locked chutes
-            logger.info(
-                f"Priority lock: {ctx.chute_id} locked (urgency={ctx.urgency_score:.0f}) "
-                f"to prioritize {hungry_ctx.chute_id} (urgency={hungry_ctx.urgency_score:.0f})"
-            )
 
     # Kinda hacky, because it's not actually creating bounties, but we'll
     # send bounty notifications for miners to have instant feedback when
@@ -1162,23 +1208,111 @@ async def perform_autoscale(dry_run: bool = False, soft_mode: bool = False):
 
     if dry_run:
         logger.warning("DRY RUN MODE: Skipping all writes (Redis, DB, instance changes)")
-        # Log what would have happened
+
+        # Categorize actions
         scale_ups = [c for c in contexts.values() if "scale_up" in c.action]
         scale_downs = [
             c
             for c in contexts.values()
             if "scale_down" in c.action or "forced_downscale" in c.action
         ]
+        no_actions = [c for c in contexts.values() if c.action == "no_action"]
+
+        logger.info("=== DRY RUN SUMMARY ===")
         logger.info(
-            f"Would scale up: {len(scale_ups)} chutes, Would scale down: {len(scale_downs)} chutes"
+            f"Scale ups: {len(scale_ups)}, Scale downs: {len(scale_downs)}, No action: {len(no_actions)}"
         )
+
+        # Log scale-up details (soft mode would do these)
+        if scale_ups:
+            logger.info("--- SCALE UPS (soft mode would execute) ---")
+            for ctx in sorted(scale_ups, key=lambda x: x.urgency_score, reverse=True):
+                logger.info(
+                    f"  {ctx.chute_id} | {ctx.current_count} -> {ctx.target_count} (+{ctx.upscale_amount}) | "
+                    f"util={ctx.utilization_basis:.2f} rl={ctx.rate_limit_basis:.3f} | "
+                    f"urgency={ctx.urgency_score:.0f} boost={ctx.boost:.2f}"
+                )
+
+        # Log scale-down details (only full mode would execute)
+        if scale_downs:
+            logger.info("--- SCALE DOWNS (only full mode would execute) ---")
+            for ctx in sorted(scale_downs, key=lambda x: x.downscale_amount, reverse=True):
+                logger.info(
+                    f"  {ctx.chute_id} | {ctx.current_count} -> {ctx.target_count} (-{ctx.downscale_amount}) | "
+                    f"util={ctx.utilization_basis:.2f} | action={ctx.action}"
+                )
+
+        # Log no-action chutes
+        if no_actions:
+            logger.info("--- NO ACTION ---")
+            for ctx in no_actions:
+                logger.info(
+                    f"  {ctx.chute_id} | count={ctx.current_count} | "
+                    f"util={ctx.utilization_basis:.2f} rl={ctx.rate_limit_basis:.3f}"
+                )
+
+        # Log boost distribution
+        if chute_boosts:
+            boosts = list(chute_boosts.values())
+            logger.info(
+                f"--- BOOST STATS --- min={min(boosts):.2f} max={max(boosts):.2f} "
+                f"avg={sum(boosts) / len(boosts):.2f}"
+            )
+
+        # Export CSV if requested
+        if dry_run_csv:
+            import csv
+
+            with open(dry_run_csv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "chute_id",
+                        "action",
+                        "current_count",
+                        "target_count",
+                        "upscale_amount",
+                        "downscale_amount",
+                        "utilization_basis",
+                        "rate_limit_basis",
+                        "urgency_score",
+                        "boost",
+                        "public",
+                        "threshold",
+                        "scale_down_threshold",
+                        "is_starving",
+                    ]
+                )
+                for ctx in contexts.values():
+                    writer.writerow(
+                        [
+                            ctx.chute_id,
+                            ctx.action,
+                            ctx.current_count,
+                            ctx.target_count,
+                            ctx.upscale_amount,
+                            ctx.downscale_amount,
+                            ctx.utilization_basis,
+                            ctx.rate_limit_basis,
+                            ctx.urgency_score,
+                            ctx.boost,
+                            ctx.public,
+                            ctx.threshold,
+                            ctx.scale_down_threshold,
+                            ctx.is_starving,
+                        ]
+                    )
+            logger.info(f"Exported dry run data to {dry_run_csv}")
+
+        logger.info("=== END DRY RUN ===")
         return
     else:
         # Update boost values in database
         await update_chute_boosts(chute_boosts)
 
-        # Refresh instance compute_multipliers based on current chute state and bounty decay
-        await refresh_instance_compute_multipliers()
+        # Refresh instance compute_multipliers (only if requested - should run hourly, not every run)
+        if refresh_multipliers:
+            await refresh_instance_compute_multipliers()
 
         # Manage rolling updates (replacement + hard cap enforcement)
         # In soft_mode, still manage rolling updates (they're not scale-downs, they're version transitions)
@@ -1547,8 +1681,28 @@ if __name__ == "__main__":
     parser.add_argument(
         "--soft",
         action="store_true",
-        help="Soft mode - updates Redis targets, compute multipliers, boosts, rolling updates, "
+        help="Soft mode - updates Redis targets, boosts, rolling updates, "
         "and logs to capacity_log, but skips all scale-downs (both voluntary and forced)",
     )
+    parser.add_argument(
+        "--csv",
+        type=str,
+        metavar="FILE",
+        help="Export dry run results to CSV file (only works with --dry-run)",
+    )
+    parser.add_argument(
+        "--refresh-multipliers",
+        action="store_true",
+        help="Refresh instance compute_multipliers (should run hourly before :05, not every run)",
+    )
     args = parser.parse_args()
-    asyncio.run(perform_autoscale(dry_run=args.dry_run, soft_mode=args.soft))
+    if args.csv and not args.dry_run:
+        parser.error("--csv requires --dry-run")
+    asyncio.run(
+        perform_autoscale(
+            dry_run=args.dry_run,
+            soft_mode=args.soft,
+            dry_run_csv=args.csv,
+            refresh_multipliers=args.refresh_multipliers,
+        )
+    )

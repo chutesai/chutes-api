@@ -4,10 +4,10 @@ SCORING_INTERVAL = "7 days"
 BOUNTY_DECAY = 0.8
 BOUNTY_RHO = 0.5
 
-# Dynamic bounty boost based on bounty age at claim time (maxes out at one hour)
+# Dynamic bounty boost based on bounty age at claim time (maxes out at 3 hours)
 BOUNTY_BOOST_MIN = 1.5
 BOUNTY_BOOST_MAX = 4.0
-BOUNTY_BOOST_RAMP_MINUTES = 60
+BOUNTY_BOOST_RAMP_MINUTES = 180
 
 # After claiming, instance compute_multiplier gradually adjusts toward
 # the current chute target (base * urgency * TEE, etc.) over this many hours.
