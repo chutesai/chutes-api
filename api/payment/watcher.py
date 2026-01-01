@@ -13,7 +13,6 @@ from sqlalchemy import (
     func,
 )
 from sqlalchemy.exc import IntegrityError
-from async_substrate_interface import AsyncSubstrateInterface
 from async_substrate_interface.sync_substrate import SubstrateInterface
 from async_substrate_interface.types import ss58_encode
 import asyncio
@@ -172,19 +171,6 @@ class PaymentMonitor:
                 self._payment_addresses.add(payment_address)
                 self._user_refresh_timestamp = updated_at
 
-    async def _get_alpha_price_at_block(self, fetcher, netuid: int, block_hash: str) -> float:
-        """
-        Get alpha price for a specific subnet at a specific block.
-        Uses async substrate to fetch the price at the exact block.
-        """
-        try:
-            async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
-                return await fetcher.fetch_subnet_price_at_block(substrate, netuid, block_hash)
-        except Exception as e:
-            logger.error(f"Error fetching alpha price at block: {e}")
-            # Fall back to cached price if available
-            return await fetcher.get_subnet_alpha_price(netuid)
-
     async def _handle_payment(
         self,
         to_address: str,
@@ -258,16 +244,18 @@ class PaymentMonitor:
         origin_coldkey: str,
         hotkey_address: str,
         netuid: int,
-        alpha_amount: int,
+        tao_amount: int,
         block: int,
         block_hash: str,
-        alpha_price_in_tao: float,
         tao_fmv: float,
         extrinsic_idx: int,
     ):
         """
         Process an incoming stake transfer payment (alpha tokens transferred to user's coldkey).
         Uses market value only - no bonus.
+
+        Note: tao_amount is the TAO equivalent from the StakeTransferred event.
+        The actual alpha amount is queried from chain by the autostaker.
         """
         async with get_session() as session:
             user = (
@@ -279,17 +267,17 @@ class PaymentMonitor:
                 logger.warning(f"Failed to find user with payment address {destination_coldkey}")
                 return
 
-            # Calculate USD value: alpha_amount * alpha_price_in_tao * tao_fmv / 1e9
-            usd_value = alpha_amount * alpha_price_in_tao * tao_fmv / 1e9
+            # Calculate USD value directly from TAO amount
+            usd_value = tao_amount * tao_fmv / 1e9
 
             payment_id = str(
                 uuid.uuid5(
                     uuid.NAMESPACE_OID,
-                    f"{block}:{destination_coldkey}:{hotkey_address}:{netuid}:{alpha_amount}",
+                    f"{block}:{destination_coldkey}:{hotkey_address}:{netuid}:{tao_amount}",
                 )
             )
 
-            if alpha_amount < 7000000:
+            if tao_amount < 7000000:
                 logger.warning("Dust stake transfer was sent, ignoring...")
                 return
 
@@ -298,9 +286,9 @@ class PaymentMonitor:
                 user_id=user.user_id,
                 source_address=origin_coldkey,
                 block=block,
-                rao_amount=alpha_amount,
+                rao_amount=tao_amount,  # Store TAO equivalent
                 usd_amount=usd_value,
-                fmv=alpha_price_in_tao * tao_fmv,
+                fmv=tao_fmv,
                 transaction_hash=block_hash,
                 extrinsic_idx=extrinsic_idx,
             )
@@ -321,16 +309,17 @@ class PaymentMonitor:
 
             logger.success(
                 f"Received alpha stake transfer [user_id={user.user_id} username={user.username}]: "
-                f"{alpha_amount / 1e9:.9f} alpha on netuid {netuid} @ ${alpha_price_in_tao * tao_fmv:.4f} FMV = "
-                f"${usd_value:.2f}, updated balance: ${user.balance:.2f}"
+                f"{tao_amount / 1e9:.9f} TAO equivalent on netuid {netuid} @ ${tao_fmv:.2f} FMV = "
+                f"${usd_value:.4f}, updated balance: ${user.balance:.2f}"
             )
 
-            # Queue for stake move and burn (alpha payment = netuid > 0, with source hotkey)
+            # Queue for stake move and burn
+            # Note: We pass tao_amount here but the autostaker will query actual alpha from chain
             await upsert_pending_stake(
                 user_id=user.user_id,
                 wallet_address=user.payment_address,
                 netuid=netuid,
-                amount_rao=alpha_amount,
+                amount_rao=tao_amount,  # This is TAO equivalent; autostaker reconciles with chain
                 source_hotkey=hotkey_address,
             )
 
@@ -450,8 +439,9 @@ class PaymentMonitor:
                                 payments += 1
 
                         # Handle alpha stake transfers (SubtensorModule.StakeTransferred)
-                        # Event params: origin_coldkey, destination_coldkey, hotkey, origin_netuid, destination_netuid, alpha_amount
-                        # This is emitted when someone transfers their staked alpha to another coldkey
+                        # Event params: origin_coldkey, destination_coldkey, hotkey, origin_netuid, destination_netuid, tao_amount
+                        # Note: The 6th param is TAO equivalent, NOT alpha. We use this for USD calculation.
+                        # The actual alpha amount will be queried from chain when processing the stake move.
                         elif (
                             module_id == "SubtensorModule"
                             and event_id == "StakeTransferred"
@@ -463,8 +453,8 @@ class PaymentMonitor:
                                 destination_coldkey = attributes[1]
                                 hotkey = attributes[2]
                                 origin_netuid = attributes[3]
-                                # destination_netuid = attributes[4]  # Should be same as origin for transfers
-                                alpha_amount = attributes[5]
+                                # destination_netuid = attributes[4]
+                                tao_amount = attributes[5]  # This is TAO equivalent, not alpha
                             else:
                                 origin_coldkey = attributes.get("origin_coldkey") or attributes.get(
                                     "0"
@@ -476,7 +466,7 @@ class PaymentMonitor:
                                 origin_netuid = attributes.get("origin_netuid") or attributes.get(
                                     "3"
                                 )
-                                alpha_amount = attributes.get("alpha_amount") or attributes.get("5")
+                                tao_amount = attributes.get("tao_amount") or attributes.get("5")
 
                             # Convert addresses if needed
                             if isinstance(origin_coldkey, (list, tuple)):
@@ -491,26 +481,15 @@ class PaymentMonitor:
                                 hotkey = ss58_encode(bytes(hotkey[0]).hex(), ss58_format=42)
 
                             # Check if this stake was transferred to one of our user's coldkeys
-                            if destination_coldkey in self._payment_addresses and alpha_amount > 0:
-                                # Fetch alpha price at this exact block for accuracy
-                                alpha_price = await self._get_alpha_price_at_block(
-                                    fetcher, origin_netuid, current_block_hash
-                                )
-                                if alpha_price is None:
-                                    logger.warning(
-                                        f"No alpha price for netuid {origin_netuid}, skipping stake transfer"
-                                    )
-                                    continue
-
+                            if destination_coldkey in self._payment_addresses and tao_amount > 0:
                                 await self._handle_stake_transfer_payment(
                                     destination_coldkey,
                                     origin_coldkey,
                                     hotkey,
                                     origin_netuid,
-                                    alpha_amount,
+                                    tao_amount,  # Pass TAO amount for USD calculation
                                     current_block_number,
                                     current_block_hash,
-                                    alpha_price,
                                     fmv,
                                     raw_event.get("extrinsic_idx"),
                                 )

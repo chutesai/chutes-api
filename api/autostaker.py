@@ -1,7 +1,7 @@
 """
 Cronjob-based autostaker for processing pending stakes.
 
-Runs every minute and:
+Runs every N minute(s) and:
 1. Fetches wallets with pending_balance > 0 from pending_stakes table
 2. Reconciles local balance with on-chain data
 3. Performs stake operations in random chunks to avoid MEV pattern detection
@@ -34,12 +34,10 @@ import api.database.orms  # noqa
 ONE_TAO_RAO = 10**9  # 1 TAO = 1e9 rao
 MAX_STAKE_PER_ITERATION_TAO = 25  # Max TAO worth to stake per iteration
 MIN_STAKE_TAO = 0.1  # Minimum stake amount
+MAX_SLIPPAGE_PERCENT = 0.003  # 0.3% max slippage before chunking
 
 
 class InsufficientBalance(Exception): ...
-
-
-# --- MEV Shield Functions (matching reference script) ---
 
 
 async def get_mev_shield_next_key(substrate: AsyncSubstrateInterface) -> Optional[bytes]:
@@ -246,9 +244,6 @@ async def submit_extrinsic_with_mev(
     return await wait_for_mev_extrinsic(substrate, inner_hash, shield_id, submit_block)
 
 
-# --- Balance Query Functions ---
-
-
 async def get_free_balance(
     substrate: AsyncSubstrateInterface, address: str, block_hash: str
 ) -> int:
@@ -298,12 +293,12 @@ async def get_alpha_stake(
     return 0
 
 
-async def get_subnet_alpha_price(
+async def get_subnet_dynamic_info(
     substrate: AsyncSubstrateInterface, netuid: int, block_hash: str
-) -> float:
+) -> dict | None:
     """
-    Get alpha price (in TAO) for a subnet.
-    Returns the ratio tao_in / alpha_in from the subnet's dynamic info.
+    Get dynamic info for a subnet including tao_in and alpha_in reserves.
+    Returns dict with tao_in, alpha_in, etc. or None on error.
     """
     try:
         result = await substrate.runtime_call(
@@ -313,17 +308,79 @@ async def get_subnet_alpha_price(
             block_hash=block_hash,
         )
         info_data = result if isinstance(result, dict) else (result.value if result else None)
-        if info_data:
-            tao_in = info_data.get("tao_in", 0)
-            alpha_in = info_data.get("alpha_in", 0)
-            if alpha_in > 0:
-                return tao_in / alpha_in
+        return info_data
     except Exception as e:
-        logger.warning(f"Could not get alpha price for netuid {netuid}: {e}")
+        logger.warning(f"Could not get dynamic info for netuid {netuid}: {e}")
+    return None
+
+
+async def get_subnet_alpha_price(
+    substrate: AsyncSubstrateInterface, netuid: int, block_hash: str
+) -> float:
+    """
+    Get alpha price (in TAO) for a subnet.
+    Returns the ratio tao_in / alpha_in from the subnet's dynamic info.
+    """
+    info_data = await get_subnet_dynamic_info(substrate, netuid, block_hash)
+    if info_data:
+        tao_in = info_data.get("tao_in", 0)
+        alpha_in = info_data.get("alpha_in", 0)
+        if alpha_in > 0:
+            return tao_in / alpha_in
     return 1.0  # Default to 1:1 if we can't get the price
 
 
-# --- Stake Operations ---
+def calculate_slippage_for_alpha_sell(
+    alpha_amount: int, tao_in: int, alpha_in: int
+) -> tuple[int, float]:
+    """
+    Calculate the TAO received and slippage for selling alpha_amount.
+
+    Uses constant product formula: (tao_in - tao_out) * (alpha_in + alpha_amount) = tao_in * alpha_in
+    Solving for tao_out: tao_out = tao_in * alpha_amount / (alpha_in + alpha_amount)
+
+    Slippage is the difference between spot price and effective price.
+
+    Returns (tao_received, slippage_percent)
+    """
+    if alpha_in == 0 or tao_in == 0:
+        return 0, 1.0  # 100% slippage if no liquidity
+
+    # Spot price (what you'd get with infinitesimal trade)
+    spot_price = tao_in / alpha_in
+    ideal_tao = int(alpha_amount * spot_price)
+
+    # Actual TAO received using constant product AMM formula
+    # tao_out = tao_in * alpha_amount / (alpha_in + alpha_amount)
+    tao_received = (tao_in * alpha_amount) // (alpha_in + alpha_amount)
+
+    if ideal_tao == 0:
+        return tao_received, 0.0
+
+    slippage = (ideal_tao - tao_received) / ideal_tao
+    return tao_received, slippage
+
+
+def calculate_max_alpha_for_slippage(tao_in: int, alpha_in: int, max_slippage: float) -> int:
+    """
+    Calculate the maximum alpha that can be sold while staying under max_slippage.
+
+    From the slippage formula:
+    slippage = 1 - (alpha_in / (alpha_in + alpha_amount))
+
+    Solving for alpha_amount:
+    alpha_amount = alpha_in * slippage / (1 - slippage)
+
+    Returns max alpha amount in rao.
+    """
+    if max_slippage >= 1.0:
+        return alpha_in  # Can sell everything
+    if max_slippage <= 0:
+        return 0
+
+    # alpha_amount = alpha_in * slippage / (1 - slippage)
+    max_alpha = int(alpha_in * max_slippage / (1 - max_slippage))
+    return max_alpha
 
 
 async def add_stake(
@@ -485,9 +542,6 @@ async def burn_alpha(
         return False
 
 
-# --- Main Processing Logic ---
-
-
 def calculate_stake_amount(balance_rao: int, alpha_price: float) -> int:
     """
     Calculate how much to stake this iteration to avoid MEV pattern detection.
@@ -591,9 +645,46 @@ async def reconcile_and_process_stake(
         # Use the actual chain stake as the source of truth
         actual_pending = chain_stake
 
-        # Get alpha price to calculate TAO equivalent
-        alpha_price = await get_subnet_alpha_price(substrate, pending_stake.netuid, block_hash)
-        stake_amount = calculate_stake_amount(actual_pending, alpha_price)
+        # Get subnet dynamic info to calculate slippage
+        origin_info = await get_subnet_dynamic_info(substrate, pending_stake.netuid, block_hash)
+
+        if origin_info:
+            origin_tao_in = origin_info.get("tao_in", 0)
+            origin_alpha_in = origin_info.get("alpha_in", 0)
+
+            # Calculate slippage if we moved the full amount
+            _, full_slippage = calculate_slippage_for_alpha_sell(
+                actual_pending, origin_tao_in, origin_alpha_in
+            )
+
+            logger.info(
+                f"Slippage analysis: {actual_pending / ONE_TAO_RAO:.9f} alpha, "
+                f"pool: {origin_tao_in / ONE_TAO_RAO:.2f} TAO / {origin_alpha_in / ONE_TAO_RAO:.2f} alpha, "
+                f"full slippage: {full_slippage * 100:.3f}%"
+            )
+
+            # If slippage > 0.3%, chunk based on max slippage
+            if full_slippage > MAX_SLIPPAGE_PERCENT:
+                max_chunk = calculate_max_alpha_for_slippage(
+                    origin_tao_in, origin_alpha_in, MAX_SLIPPAGE_PERCENT
+                )
+                # Also apply MEV protection chunking
+                alpha_price = origin_tao_in / origin_alpha_in if origin_alpha_in > 0 else 1.0
+                mev_chunk = calculate_stake_amount(actual_pending, alpha_price)
+                # Use the smaller of slippage-limited or MEV-limited chunk
+                stake_amount = min(max_chunk, mev_chunk, actual_pending)
+                logger.info(
+                    f"Chunking for slippage: max {max_chunk / ONE_TAO_RAO:.9f} alpha "
+                    f"(MEV limit: {mev_chunk / ONE_TAO_RAO:.9f}), using {stake_amount / ONE_TAO_RAO:.9f}"
+                )
+            else:
+                # Slippage is acceptable, just apply MEV protection chunking
+                alpha_price = origin_tao_in / origin_alpha_in if origin_alpha_in > 0 else 1.0
+                stake_amount = calculate_stake_amount(actual_pending, alpha_price)
+        else:
+            # Fallback if we can't get pool info
+            alpha_price = await get_subnet_alpha_price(substrate, pending_stake.netuid, block_hash)
+            stake_amount = calculate_stake_amount(actual_pending, alpha_price)
 
         success, amount_moved = await move_stake(
             substrate,
