@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from api.config import settings
+from api.permissions import Permissioning
 from api.constants import (
     LLM_MIN_PRICE_IN,
     LLM_MIN_PRICE_OUT,
@@ -984,7 +985,6 @@ async def invoke(
     metrics: dict = {},
     request: Request = None,
     prefixes: list = None,
-    reroll: bool = False,
 ):
     """
     Helper to actual perform function invocations, retrying when a target fails.
@@ -1192,6 +1192,47 @@ async def invoke(
                                 )
                                 balance_used = default_balance_used
 
+                # Check for re-rolls, which are cheaper/consume fewer quota units.
+                #
+                # A "reroll" is defined as: a (single, real) user sending identical request bodies
+                # within 15 minutes, to the same model and endpoint, up to 15 times. After 15 duplicates
+                # the reroll discount ceases. Each time a duplicate arrives, the TTL on the reroll tracking
+                # is pushed back another 15 minutes, so really you can get up to 15 rerolls, each within
+                # 14 minutes 59 seconds of each other (almost 4 hours); they don't all need to fit in the
+                # same 15 minute window.
+                #
+                # Invoiced users are generally inference partners, e.g. openrouter, and
+                # don't provide ways to differentiate who the actual end user is, so we can't
+                # even attempt to properly distinguish a reroll from two users performing
+                # the same requests, so reroll is always false for invoice users.
+                #
+                # We've already calculated the request body sha256 in the main API middleware, so we'll
+                # re-use that for the reroll identification instead of creating yet another dump/hash.
+                #
+                # This exact sha256 of request body makes it very sensitive to any changes, such as using
+                # a new seed, sampling params, or even changing the ordering of the request body, so be
+                # sure, if you want to make use of the reroll discount, your requests are indeed dupes.
+                reroll = False
+                if not user.has_role(Permissioning.invoice_billing) and request.state.body_sha256:
+                    prompt_key = str(
+                        uuid.uuid5(
+                            uuid.NAMESPACE_OID,
+                            f"{user.user_id}:{request.state.body_sha256}:{chute.chute_id}",
+                        )
+                    )
+                    reroll_key = f"userreq:{prompt_key}"
+                    prompt_count = await settings.redis_client.incr(reroll_key)
+                    if prompt_count:
+                        if 1 < prompt_count <= 15:
+                            reroll = True
+                            logger.info(f"Reroll: {user.username=} {chute.name=} {prompt_key=}")
+                        elif prompt_count > 15:
+                            logger.warning(
+                                f"User seems to be spamming: {user.user_id=} {user.username=} {chute.chute_id=} "
+                                f"{chute.name=} removing reroll flag for excessive use"
+                            )
+                    await settings.redis_client.expire(reroll_key, 15 * 60)
+
                 # Increment values in redis, which will be asynchronously processed to deduct from the actual balance.
                 if balance_used and reroll and not override_applied:
                     # Also apply fractional balance to reroll.
@@ -1288,7 +1329,7 @@ async def invoke(
                 elif isinstance(exc, aiohttp.ClientResponseError) and exc.status >= 500:
                     error_message = f"HTTP_{exc.status}: {error_message}"
                     # Server returned an error - connection worked, server is broken
-                    skip_disable_loop = True
+                    # skip_disable_loop = True
 
                 # Store complete record in new invocations database, async.
                 duration = time.time() - started_at
@@ -1671,7 +1712,7 @@ async def get_llms(refresh: bool = False):
             )
             .order_by(Chute.invocation_count.desc())
         )
-        model_details = [row[0] for row in result if row[0] is not None]
+        model_details = [row[0] for row in result if row[0]]
         return_value = {"object": "list", "data": model_details}
         await settings.redis_client.set("all_llms", json.dumps(return_value), ex=300)
         return return_value

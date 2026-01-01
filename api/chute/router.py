@@ -38,7 +38,7 @@ from api.chute.templates import (
     build_vllm_code,
     build_diffusion_code,
 )
-from api.gpu import ALLOW_INCLUDE, SUPPORTED_GPUS
+from api.gpu import ALLOW_INCLUDE, SUPPORTED_GPUS, MAX_GPU_PRICE_DELTA
 from api.chute.response import ChuteResponse
 from api.chute.util import (
     selector_hourly_price,
@@ -634,12 +634,24 @@ async def get_chute_code(
 @router.get("/warmup/{chute_id_or_name:path}")
 async def warm_up_chute(
     chute_id_or_name: str,
-    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
     Warm up a chute.
     """
-    chute = await get_one(chute_id_or_name)
+    chute = (
+        (
+            await db.execute(
+                select(Chute)
+                .where(or_(Chute.name.ilike(chute_id_or_name), Chute.chute_id == chute_id_or_name))
+                .order_by((Chute.user_id == current_user.user_id).desc())
+                .limit(1)
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -927,6 +939,23 @@ async def _deploy_chute(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You are not allowed to require consumer GPUs exclusively.",
+        )
+
+    # Prevent people from paying for a 3090 when they actually want (hope for?) a b200.
+    prices = {gpu: SUPPORTED_GPUS[gpu]["hourly_rate"] for gpu in allowed_gpus}
+    min_price = min(prices.values())
+    max_price = max(prices.values())
+    if chute_args.node_selector.include and max_price > min_price * MAX_GPU_PRICE_DELTA:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Your node selector's supported GPU price range is too large, currently "
+                f"ranging from ${min_price} to ${max_price} based on supported GPUs. The maximum "
+                f"allowed spread is {MAX_GPU_PRICE_DELTA} times min supported GPU price, i.e. "
+                f"{round(min_price * MAX_GPU_PRICE_DELTA, 2)}. "
+                "Please update your node selector to either only use count and VRAM, or "
+                "update your include directive to be more specific. See https://api.chutes.ai/pricing"
+            ),
         )
 
     # Fee estimate, as an error, if the user hasn't used the confirmed param.
@@ -1285,6 +1314,38 @@ async def deploy_chute(
         and not subnet_role_accessible(chute_args, current_user, admin=True)
         and current_user.username.lower() not in ("affine", "affine2", "unconst", "nonaffine")
     ):
+        # XXX - this disabled code will prevent model copying, at least by existing HF model name, but
+        # when asked for approval to implement the affine team declined for the time-being.
+        ## Already exists?
+        # existing_other = (
+        #    await db.execute(
+        #        select(Chute)
+        #        .where(Chute.name.ilike(chute_args.name), Chute.user_id != current_user.user_id)
+        #        .limit(1)
+        #    )
+        # ).scalar_one_or_none()
+        # existing_owner = (
+        #    await db.execute(
+        #        select(Chute)
+        #        .where(Chute.name.ilike(chute_args.name), Chute.user_id == current_user.user_id)
+        #        .limit(1)
+        #    )
+        # ).scalar_one_or_none()
+        # if (existing_other and not existing_owner) or (
+        #    existing_other
+        #    and existing_owner
+        #    and existing_owner.created_at > existing_other.created_at
+        # ):
+        #    detail = (
+        #        f"Affine model {chute_args.name} already deployed by another user: "
+        #        f"{existing_other.chute_id} created {existing_other.created_at}"
+        #    )
+        #    logger.warning(detail)
+        #    raise HTTPException(
+        #        status_code=status.HTTP_400_BAD_REQUEST,
+        #        detail=detail,
+        #    )
+
         # Special affine code validator.
         valid, message = check_affine_code(chute_args.code)
         if not valid:

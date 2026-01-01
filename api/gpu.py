@@ -412,7 +412,7 @@ SUPPORTED_GPUS = {
         "processors": 78,
         "clock_rate": {"base": 1590, "boost": 1980},
         "max_threads_per_processor": 1024,
-        "hourly_rate": 0.6,
+        "hourly_rate": 1.2,
         "graval": {
             "iterations": 1,
             "estimate": 300,
@@ -495,3 +495,8 @@ def normalize_scores(gpu_dict):
 COMPUTE_MULTIPLIER = normalize_scores(SUPPORTED_GPUS)
 COMPUTE_MIN = min([score for score in COMPUTE_MULTIPLIER.values()])
 COMPUTE_UNIT_PRICE_BASIS = max([info["hourly_rate"] for info in SUPPORTED_GPUS.values()])
+
+# If a chute defines a fairly generic node selector, e.g. min_vram_gb_per_gpu=24, we use
+# price multiplier to filter out some of the GPUs from being able to run the chute.
+# There is no justification to use a b200 for a chute that can run on a 3090 for example.
+MAX_GPU_PRICE_DELTA = 2.5

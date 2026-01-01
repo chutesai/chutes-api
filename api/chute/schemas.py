@@ -18,7 +18,12 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from api.database import Base
-from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER, COMPUTE_UNIT_PRICE_BASIS
+from api.gpu import (
+    SUPPORTED_GPUS,
+    COMPUTE_MULTIPLIER,
+    COMPUTE_UNIT_PRICE_BASIS,
+    MAX_GPU_PRICE_DELTA,
+)
 from api.fmv.fetcher import get_fetcher
 from pydantic import BaseModel, Field, computed_field, validator, constr, field_validator
 from typing import List, Optional, Dict, Any
@@ -156,12 +161,27 @@ class NodeSelector(BaseModel):
             allowed_gpus -= set(self.exclude)
         if self.min_vram_gb_per_gpu:
             allowed_gpus = set(
-                [
-                    gpu
-                    for gpu in allowed_gpus
-                    if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
-                ]
+                gpu
+                for gpu in allowed_gpus
+                if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
             )
+
+        # Cap price spread to avoid mixing wildly different GPU classes
+        # (e.g., RTX 3090 support should automatically exclude B200)
+        if not self.include and allowed_gpus:
+            prices = {gpu: SUPPORTED_GPUS[gpu]["hourly_rate"] for gpu in allowed_gpus}
+            min_price = min(prices.values())
+            allowed_gpus = {
+                gpu
+                for gpu, price in prices.items()
+                if price <= min_price * MAX_GPU_PRICE_DELTA or gpu == "pro_6000"
+            }
+
+        # Can't currently mix AMD and NVidia images.
+        if allowed_gpus:
+            if "mi300x" in allowed_gpus and len(allowed_gpus) > 1:
+                allowed_gpus.remove("mi300x")
+
         return list(allowed_gpus)
 
 

@@ -11,7 +11,6 @@ import orjson as json
 import csv
 import uuid
 import time
-import random
 import decimal
 import traceback
 from loguru import logger
@@ -601,48 +600,6 @@ async def _invoke(
     include_trace = request.headers.get("X-Chutes-Trace", "").lower() == "true"
     parent_invocation_id = str(uuid.uuid4())
 
-    # Track unique requests.
-    body_target = request_body
-    if (
-        chute.standard_template in ("vllm", "tei")
-        or selected_cord.get("passthrough", False)
-        and "json" in request_body
-    ):
-        body_target = request_body["json"]
-
-    # Check for re-rolls, which are cheaper/consume fewer quota units.
-    reroll = False
-    try:
-        prompt_dump = None
-        if "messages" in body_target:
-            try:
-                prompt_dump = "::".join([json.dumps(m).decode() for m in body_target["messages"]])
-            except Exception as exc:
-                logger.warning(f"Error generating prompt key for dupe tracking: {exc}")
-        elif "prompt" in body_target and isinstance(body_target, str):
-            prompt_dump = body_target["prompt"]
-        if prompt_dump:
-            prompt_hash_str = "::".join(
-                [
-                    chute.name,
-                    request.url.path,
-                    prompt_dump,
-                ]
-            ).encode()
-            prompt_hash = str(uuid.uuid5(uuid.NAMESPACE_OID, prompt_hash_str)).replace("-", "")
-            prompt_key = f"userreq:{current_user.user_id}{prompt_hash}"
-            prompt_count = await settings.redis_client.incr(prompt_key)
-            if prompt_count:
-                if 1 < prompt_count <= 15:
-                    reroll = True
-                elif prompt_count > 15:
-                    logger.warning(
-                        f"User seems to be spamming: {current_user.user_id=} {current_user.username=} {chute.chute_id=} {chute.name=} -- removing reroll flag for excessive use"
-                    )
-
-    except Exception as exc:
-        logger.warning(f"Error updating request hash tracking: {exc}")
-
     # Handle streaming responses, either because the user asked for X-Chutes-Trace,
     # or in the case of LLMs with stream: true in request.
     if stream or include_trace:
@@ -667,7 +624,6 @@ async def _invoke(
                     metrics=metrics,
                     request=request,
                     prefixes=prefix_hashes,
-                    reroll=reroll,
                 ):
                     if include_trace:
                         if not first_chunk_processed:
@@ -924,12 +880,52 @@ async def hostname_invocation(
             payload["model"] = "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8-TEE"
         elif model == "deepseek-ai/DeepSeek-V3.2":
             payload["model"] = "deepseek-ai/DeepSeek-V3.2-TEE"
-        elif model == "deepseek-ai/DeepSeek-R1-0528" and random.random() <= 0.35:
-            payload["model"] = "deepseek-ai/DeepSeek-R1-0528-TEE"
         elif model == "deepseek-ai/DeepSeek-V3.1":
             payload["model"] = "deepseek-ai/DeepSeek-V3.1-TEE"
         elif model == "deepseek-ai/DeepSeek-V3.1-Terminus":
             payload["model"] = "deepseek-ai/DeepSeek-V3.1-Terminus-TEE"
+        elif model == "zai-org/GLM-4.7":
+            payload["model"] = "zai-org/GLM-4.7-TEE"
+        elif model == "zai-org/GLM-4.5":
+            payload["model"] = "zai-org/GLM-4.5-TEE"
+        elif model == "moonshotai/Kimi-K2-Thinking":
+            payload["model"] = "moonshotai/Kimi-K2-Thinking-TEE"
+        elif model == "deepseek-ai/DeepSeek-R1-0528":
+            payload["model"] = "deepseek-ai/DeepSeek-R1-0528-TEE"
+        elif model == "deepseek-ai/DeepSeek-R1":
+            payload["model"] = "deepseek-ai/DeepSeek-R1-TEE"
+        elif model == "Qwen/Qwen3-235B-A22B-Instruct-2507":
+            payload["model"] = "Qwen/Qwen3-235B-A22B-Instruct-2507-TEE"
+        elif model == "NousResearch/Hermes-4-405B-FP8":
+            payload["model"] = "NousResearch/Hermes-4-405B-FP8-TEE"
+        elif model == "Qwen/Qwen2.5-VL-72B-Instruct":
+            payload["model"] = "Qwen/Qwen2.5-VL-72B-Instruct-TEE"
+        elif model == "OpenGVLab/InternVL3-78B":
+            payload["model"] = "OpenGVLab/InternVL3-78B-TEE"
+
+        # No file support currently.
+        if isinstance(payload.get("messages"), list):
+            for message in payload["messages"]:
+                if isinstance(message, dict) and isinstance(message.get("content"), list):
+                    for content_item in message["content"]:
+                        if (
+                            isinstance(content_item, dict)
+                            and "file" in content_item
+                            or "file_url" in content_item
+                        ):
+                            raise HTTPException(
+                                status_code=status.HTTP_400_BAD_REQUEST,
+                                detail="File content not currently supported",
+                            )
+
+        # Fix continue_final_message <=> add_generation_prompt incompatibility.
+        if payload.get("continue_final_message") and payload.get("add_generation_prompt", True):
+            messages = payload.get("messages", [])
+            if isinstance(messages, list) and messages and messages[-1].get("role") == "assistant":
+                payload["add_generation_prompt"] = False
+            else:
+                payload["continue_final_message"] = False
+            logger.warning("Resolved continue_final_message/add_generation_prompt conflict")
 
         # Disable logprobs for now on 3.2* models.
         if model in (
@@ -982,14 +978,20 @@ async def hostname_invocation(
                     "enable_thinking"
                 ]
             if "thinking" not in payload["chat_template_kwargs"] and model.startswith(
-                "deepseek-ai/DeepSeek-V3.2-Speciale"
+                (
+                    "deepseek-ai/DeepSeek-V3.2-Speciale",
+                    "zai-org/GLM-4.7",
+                )
             ):
                 payload["chat_template_kwargs"]["thinking"] = True
+                payload["chat_template_kwargs"]["enable_thinking"] = True
         elif model in (
             "deepseek-ai/DeepSeek-V3.2-Speciale",
             "deepseek-ai/DeepSeek-V3.2-Speciale-TEE",
+            "zai-org/GLM-4.7",
+            "zai-org/GLM-4.7-TEE",
         ):
-            payload["chat_template_kwargs"] = {"thinking": True}
+            payload["chat_template_kwargs"] = {"thinking": True, "enable_thinking": True}
 
         # Auto tool choice default.
         if payload.get("tools") and "tool_choice" not in payload:
