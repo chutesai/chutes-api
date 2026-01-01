@@ -195,6 +195,7 @@ LIMIT_OVERRIDES = {
 }
 FAILSAFE = {
     "722df757-203b-58df-b54b-22130fd1fc53": 20,
+    "398651e1-5f85-5e50-a513-7c5324e8e839": 20,
     "4fa0c7f5-82f7-59d1-8996-661bb778893d": 15,
     "d711f181-5b21-5169-a011-ccb472a1604f": 10,
     "08a7a60f-6956-5a9e-9983-5603c3ac5a38": 10,
@@ -205,7 +206,6 @@ FAILSAFE = {
     "b2b7a64c-b203-5a5f-8982-a9c5cc12058c": 6,
     "4bbc44e9-6bfc-5e21-a91d-129bff2fb6d4": 5,
     "ae3b9d04-28fa-543a-9276-290da772dc23": 5,
-    "aef797d4-f375-5beb-9986-3ad245947469": 5,
     "689d2caa-01c1-5de1-ba69-39c5398be0c6": 5,
 }
 
@@ -300,11 +300,11 @@ async def instance_cleanup():
                         or_(
                             and_(
                                 Instance.config_id.isnot(None),
-                                Instance.created_at <= func.now() - timedelta(hours=1, minutes=30),
+                                Instance.created_at <= func.now() - timedelta(hours=2, minutes=0),
                             ),
                             and_(
                                 Instance.config_id.is_(None),
-                                Instance.created_at <= func.now() - timedelta(hours=1, minutes=30),
+                                Instance.created_at <= func.now() - timedelta(hours=2, minutes=0),
                             ),
                         ),
                     ),
@@ -312,7 +312,7 @@ async def instance_cleanup():
                         Instance.verified.is_(True),
                         Instance.active.is_(False),
                         Instance.config_id.isnot(None),
-                        LaunchConfig.verified_at <= func.now() - timedelta(hours=1, minutes=30),
+                        LaunchConfig.verified_at <= func.now() - timedelta(hours=2, minutes=0),
                     ),
                 )
             )
