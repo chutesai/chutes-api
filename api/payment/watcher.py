@@ -11,7 +11,6 @@ from sqlalchemy import (
     and_,
     or_,
     func,
-    text,
 )
 from sqlalchemy.exc import IntegrityError
 from async_substrate_interface import AsyncSubstrateInterface
@@ -27,10 +26,7 @@ from api.user.schemas import User
 from api.payment.schemas import Payment, PaymentMonitorState
 from api.config import settings
 from api.database import get_session, engine, Base
-from api.autostaker import stake, process_alpha_payment
-
-# Bonus multiplier for alpha token payments (10% bonus)
-ALPHA_PAYMENT_BONUS = 1.10
+from api.autostaker import upsert_pending_stake
 
 
 class PaymentMonitor:
@@ -234,13 +230,6 @@ class PaymentMonitor:
             # Increase user balance: fair market value * amount of rao / 1e9
             user.balance += delta
 
-            # Track new balance for the payment_address.
-            await session.execute(
-                text(
-                    "INSERT INTO wallet_balances (wallet_id, balance) VALUES (:wallet_id, :balance) ON CONFLICT (wallet_id) DO UPDATE SET balance = wallet_balances.balance + EXCLUDED.balance"
-                ),
-                {"wallet_id": user.payment_address, "balance": amount},
-            )
             try:
                 await session.commit()
             except IntegrityError as exc:
@@ -254,12 +243,19 @@ class PaymentMonitor:
                 f"Received payment [user_id={user.user_id} username={user.username}]: {amount} rao @ ${fmv} FMV = ${delta} balance increase, updated balance: ${user.balance}"
             )
 
-            # Autostake the payment TAO to chutes.
-            await stake.kiq(user.user_id)
+            # Queue for autostaking (TAO = netuid 0, no source hotkey)
+            await upsert_pending_stake(
+                user_id=user.user_id,
+                wallet_address=user.payment_address,
+                netuid=0,
+                amount_rao=amount,
+                source_hotkey="",
+            )
 
-    async def _handle_stake_payment(
+    async def _handle_stake_transfer_payment(
         self,
-        coldkey_address: str,
+        destination_coldkey: str,
+        origin_coldkey: str,
         hotkey_address: str,
         netuid: int,
         alpha_amount: int,
@@ -270,33 +266,37 @@ class PaymentMonitor:
         extrinsic_idx: int,
     ):
         """
-        Process an incoming stake payment (alpha tokens staked to user's coldkey).
-        Applies a 10% bonus for alpha payments.
+        Process an incoming stake transfer payment (alpha tokens transferred to user's coldkey).
+        Uses market value only - no bonus.
         """
         async with get_session() as session:
             user = (
-                await session.execute(select(User).where(User.payment_address == coldkey_address))
+                await session.execute(
+                    select(User).where(User.payment_address == destination_coldkey)
+                )
             ).scalar_one_or_none()
             if not user:
-                logger.warning(f"Failed to find user with payment address {coldkey_address}")
+                logger.warning(f"Failed to find user with payment address {destination_coldkey}")
                 return
 
             # Calculate USD value: alpha_amount * alpha_price_in_tao * tao_fmv / 1e9
             usd_value = alpha_amount * alpha_price_in_tao * tao_fmv / 1e9
 
-            # Store the payment record with the real USD value (no bonus in record)
             payment_id = str(
-                uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{coldkey_address}:{hotkey_address}:{netuid}:{alpha_amount}")
+                uuid.uuid5(
+                    uuid.NAMESPACE_OID,
+                    f"{block}:{destination_coldkey}:{hotkey_address}:{netuid}:{alpha_amount}",
+                )
             )
 
             if alpha_amount < 7000000:
-                logger.warning("Dust stake was sent, ignoring...")
+                logger.warning("Dust stake transfer was sent, ignoring...")
                 return
 
             payment = Payment(
                 payment_id=payment_id,
                 user_id=user.user_id,
-                source_address=hotkey_address,
+                source_address=origin_coldkey,
                 block=block,
                 rao_amount=alpha_amount,
                 usd_amount=usd_value,
@@ -306,34 +306,33 @@ class PaymentMonitor:
             )
             session.add(payment)
 
-            # Apply 10% bonus to the balance increase
-            balance_increase = usd_value * ALPHA_PAYMENT_BONUS
-            user.balance += balance_increase
+            # No bonus - just market value
+            user.balance += usd_value
 
-            # Track wallet balance (in alpha amount, not TAO)
-            await session.execute(
-                text(
-                    "INSERT INTO wallet_balances (wallet_id, balance) VALUES (:wallet_id, :balance) ON CONFLICT (wallet_id) DO UPDATE SET balance = wallet_balances.balance + EXCLUDED.balance"
-                ),
-                {"wallet_id": user.payment_address, "balance": alpha_amount},
-            )
             try:
                 await session.commit()
             except IntegrityError as exc:
                 if "UniqueViolationError" in str(exc):
-                    logger.warning(f"Skipping (apparent) duplicate stake transaction: {payment_id=}")
+                    logger.warning(f"Skipping (apparent) duplicate stake transfer: {payment_id=}")
                     await session.rollback()
                     return
                 else:
                     raise
+
             logger.success(
-                f"Received alpha stake payment [user_id={user.user_id} username={user.username}]: "
-                f"{alpha_amount} alpha on netuid {netuid} @ ${alpha_price_in_tao * tao_fmv:.4f} FMV = "
-                f"${usd_value:.2f} (with 10% bonus: ${balance_increase:.2f}), updated balance: ${user.balance:.2f}"
+                f"Received alpha stake transfer [user_id={user.user_id} username={user.username}]: "
+                f"{alpha_amount / 1e9:.9f} alpha on netuid {netuid} @ ${alpha_price_in_tao * tao_fmv:.4f} FMV = "
+                f"${usd_value:.2f}, updated balance: ${user.balance:.2f}"
             )
 
-            # Process the alpha payment (move to our subnet and burn)
-            await process_alpha_payment.kiq(user.user_id, hotkey_address, netuid, alpha_amount)
+            # Queue for stake move and burn (alpha payment = netuid > 0, with source hotkey)
+            await upsert_pending_stake(
+                user_id=user.user_id,
+                wallet_address=user.payment_address,
+                netuid=netuid,
+                amount_rao=alpha_amount,
+                source_hotkey=hotkey_address,
+            )
 
     async def _get_state(self) -> Tuple[int, str]:
         """
@@ -433,7 +432,9 @@ class PaymentMonitor:
                             from_address = attributes["from"]
                             to_address = attributes["to"]
                             if isinstance(from_address, (list, tuple)):
-                                from_address = ss58_encode(bytes(from_address[0]).hex(), ss58_format=42)
+                                from_address = ss58_encode(
+                                    bytes(from_address[0]).hex(), ss58_format=42
+                                )
                                 to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
                             amount = attributes["amount"]
                             if to_address in self._payment_addresses:
@@ -448,48 +449,64 @@ class PaymentMonitor:
                                 )
                                 payments += 1
 
-                        # Handle stake payments (SubtensorModule.StakeAdded)
-                        # Event params: coldkey, hotkey, TaoCurrency, AlphaCurrency, NetUid, u64
+                        # Handle alpha stake transfers (SubtensorModule.StakeTransferred)
+                        # Event params: origin_coldkey, destination_coldkey, hotkey, origin_netuid, destination_netuid, alpha_amount
+                        # This is emitted when someone transfers their staked alpha to another coldkey
                         elif (
                             module_id == "SubtensorModule"
-                            and event_id == "StakeAdded"
+                            and event_id == "StakeTransferred"
                             and attributes
                         ):
                             # Extract attributes - may be positional list or dict
                             if isinstance(attributes, (list, tuple)):
-                                coldkey = attributes[0]
-                                hotkey = attributes[1]
-                                # tao_amount = attributes[2]  # Not used for alpha payments
-                                alpha_amount = attributes[3]
-                                netuid = attributes[4]
+                                origin_coldkey = attributes[0]
+                                destination_coldkey = attributes[1]
+                                hotkey = attributes[2]
+                                origin_netuid = attributes[3]
+                                # destination_netuid = attributes[4]  # Should be same as origin for transfers
+                                alpha_amount = attributes[5]
                             else:
-                                coldkey = attributes.get("coldkey") or attributes.get("0")
-                                hotkey = attributes.get("hotkey") or attributes.get("1")
-                                alpha_amount = attributes.get("alpha_amount") or attributes.get("3")
-                                netuid = attributes.get("netuid") or attributes.get("4")
+                                origin_coldkey = attributes.get("origin_coldkey") or attributes.get(
+                                    "0"
+                                )
+                                destination_coldkey = attributes.get(
+                                    "destination_coldkey"
+                                ) or attributes.get("1")
+                                hotkey = attributes.get("hotkey") or attributes.get("2")
+                                origin_netuid = attributes.get("origin_netuid") or attributes.get(
+                                    "3"
+                                )
+                                alpha_amount = attributes.get("alpha_amount") or attributes.get("5")
 
                             # Convert addresses if needed
-                            if isinstance(coldkey, (list, tuple)):
-                                coldkey = ss58_encode(bytes(coldkey[0]).hex(), ss58_format=42)
+                            if isinstance(origin_coldkey, (list, tuple)):
+                                origin_coldkey = ss58_encode(
+                                    bytes(origin_coldkey[0]).hex(), ss58_format=42
+                                )
+                            if isinstance(destination_coldkey, (list, tuple)):
+                                destination_coldkey = ss58_encode(
+                                    bytes(destination_coldkey[0]).hex(), ss58_format=42
+                                )
                             if isinstance(hotkey, (list, tuple)):
                                 hotkey = ss58_encode(bytes(hotkey[0]).hex(), ss58_format=42)
 
-                            # Check if this stake was sent to one of our user's coldkeys
-                            if coldkey in self._payment_addresses and alpha_amount > 0:
+                            # Check if this stake was transferred to one of our user's coldkeys
+                            if destination_coldkey in self._payment_addresses and alpha_amount > 0:
                                 # Fetch alpha price at this exact block for accuracy
                                 alpha_price = await self._get_alpha_price_at_block(
-                                    fetcher, netuid, current_block_hash
+                                    fetcher, origin_netuid, current_block_hash
                                 )
                                 if alpha_price is None:
                                     logger.warning(
-                                        f"No alpha price for netuid {netuid}, skipping stake payment"
+                                        f"No alpha price for netuid {origin_netuid}, skipping stake transfer"
                                     )
                                     continue
 
-                                await self._handle_stake_payment(
-                                    coldkey,
+                                await self._handle_stake_transfer_payment(
+                                    destination_coldkey,
+                                    origin_coldkey,
                                     hotkey,
-                                    netuid,
+                                    origin_netuid,
                                     alpha_amount,
                                     current_block_number,
                                     current_block_hash,

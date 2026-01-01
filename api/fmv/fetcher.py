@@ -250,12 +250,18 @@ class FMVFetcher:
                     method="get_all_dynamic_info",
                     params=[],
                 )
-                dynamic_infos = result if isinstance(result, list) else (result.value if result else [])
+                dynamic_infos = (
+                    result if isinstance(result, list) else (result.value if result else [])
+                )
 
                 for info in dynamic_infos:
                     if info is None:
                         continue
-                    info_data = info if isinstance(info, dict) else (info.value if hasattr(info, "value") else None)
+                    info_data = (
+                        info
+                        if isinstance(info, dict)
+                        else (info.value if hasattr(info, "value") else None)
+                    )
                     if not info_data:
                         continue
 

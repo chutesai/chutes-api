@@ -43,23 +43,25 @@ async def get_nodes_for_netuid(substrate: AsyncSubstrateInterface, netuid: int) 
     nodes = []
     for uid in range(len(metagraph["hotkeys"])):
         axon = metagraph["axons"][uid]
-        nodes.append({
-            "hotkey": _ss58_encode(metagraph["hotkeys"][uid]),
-            "coldkey": _ss58_encode(metagraph["coldkeys"][uid]),
-            "node_id": uid,
-            "netuid": metagraph["netuid"],
-            "incentive": metagraph["incentives"][uid],
-            "alpha_stake": metagraph["alpha_stake"][uid] * 10**-9,
-            "tao_stake": metagraph["tao_stake"][uid] * 10**-9,
-            "stake": metagraph["total_stake"][uid] * 10**-9,
-            "trust": 0,  # XXX metagraph["trust"][uid], removed https://github.com/opentensor/subtensor/pull/2158
-            "vtrust": metagraph["consensus"][uid],
-            "last_updated": float(metagraph["last_update"][uid]),
-            "ip": str(axon["ip"]),
-            "ip_type": axon["ip_type"],
-            "port": axon["port"],
-            "protocol": axon["protocol"],
-        })
+        nodes.append(
+            {
+                "hotkey": _ss58_encode(metagraph["hotkeys"][uid]),
+                "coldkey": _ss58_encode(metagraph["coldkeys"][uid]),
+                "node_id": uid,
+                "netuid": metagraph["netuid"],
+                "incentive": metagraph["incentives"][uid],
+                "alpha_stake": metagraph["alpha_stake"][uid] * 10**-9,
+                "tao_stake": metagraph["tao_stake"][uid] * 10**-9,
+                "stake": metagraph["total_stake"][uid] * 10**-9,
+                "trust": 0,  # XXX metagraph["trust"][uid], removed https://github.com/opentensor/subtensor/pull/2158
+                "vtrust": metagraph["consensus"][uid],
+                "last_updated": float(metagraph["last_update"][uid]),
+                "ip": str(axon["ip"]),
+                "ip_type": axon["ip_type"],
+                "port": axon["port"],
+                "protocol": axon["protocol"],
+            }
+        )
     return nodes
 
 

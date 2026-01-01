@@ -56,9 +56,7 @@ async def _get_validator_uid(
     return int(result.value) if hasattr(result, "value") else int(result)
 
 
-async def _get_last_update(
-    substrate: AsyncSubstrateInterface, netuid: int
-) -> dict[int, int]:
+async def _get_last_update(substrate: AsyncSubstrateInterface, netuid: int) -> dict[int, int]:
     """Get the last update block for all UIDs on a netuid."""
     result = await substrate.query(
         module="SubtensorModule",
@@ -148,9 +146,7 @@ async def _get_weights_to_set(
 
 async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
     """Get weights from scoring data and set them on chain."""
-    validator_uid = await _get_validator_uid(
-        substrate, settings.netuid, settings.validator_ss58
-    )
+    validator_uid = await _get_validator_uid(substrate, settings.netuid, settings.validator_ss58)
 
     if validator_uid is None:
         raise ValueError(
