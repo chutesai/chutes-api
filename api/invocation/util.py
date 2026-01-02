@@ -78,7 +78,7 @@ async def gather_metrics(interval: str = "1 hour"):
     Generate chute metrics from Prometheus (utilization, request counts, rate limits).
     Falls back to cached data if Prometheus is unavailable.
     """
-    cached = await settings.redis_client.get("miner_metrics_stream")
+    cached = await settings.redis_client.get("gather_metrics")
     if cached:
         rows = json.loads(cached)
         for item in rows:
@@ -165,7 +165,7 @@ async def gather_metrics(interval: str = "1 hour"):
         yield item
 
     if items:
-        await settings.redis_client.set("miner_metrics_stream", json.dumps(items), ex=600)
+        await settings.redis_client.set("gather_metrics", json.dumps(items))
 
 
 def get_prompt_prefix_hashes(payload: dict) -> list:
