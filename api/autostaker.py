@@ -12,14 +12,14 @@ import asyncio
 import hashlib
 import random
 import traceback
-from datetime import datetime, timezone
+
 from typing import Optional
 
 from async_substrate_interface import AsyncSubstrateInterface
 from bittensor_drand import encrypt_mlkem768
 from bittensor_wallet.keypair import Keypair
 from loguru import logger
-from sqlalchemy import select, update, and_
+from sqlalchemy import select, update, and_, func, case
 from sqlalchemy.dialects.postgresql import insert
 
 from api.config import settings
@@ -663,13 +663,28 @@ async def reconcile_and_process_stake(
                 f"full slippage: {full_slippage * 100:.3f}%"
             )
 
+            # Check for zero liquidity edge case
+            if origin_tao_in == 0 or origin_alpha_in == 0:
+                logger.warning(
+                    f"Zero liquidity for netuid {pending_stake.netuid}: "
+                    f"tao_in={origin_tao_in}, alpha_in={origin_alpha_in}. Skipping."
+                )
+                return False, 0, False, "Zero liquidity in pool, cannot process"
+
             # If slippage > 0.3%, chunk based on max slippage
             if full_slippage > MAX_SLIPPAGE_PERCENT:
                 max_chunk = calculate_max_alpha_for_slippage(
                     origin_tao_in, origin_alpha_in, MAX_SLIPPAGE_PERCENT
                 )
+                # Safety check: if max_chunk is 0, pool is unusable
+                if max_chunk == 0:
+                    logger.warning(
+                        f"Cannot calculate chunk size for netuid {pending_stake.netuid}. Skipping."
+                    )
+                    return False, 0, False, "Cannot calculate safe chunk size"
+
                 # Also apply MEV protection chunking
-                alpha_price = origin_tao_in / origin_alpha_in if origin_alpha_in > 0 else 1.0
+                alpha_price = origin_tao_in / origin_alpha_in
                 mev_chunk = calculate_stake_amount(actual_pending, alpha_price)
                 # Use the smaller of slippage-limited or MEV-limited chunk
                 stake_amount = min(max_chunk, mev_chunk, actual_pending)
@@ -679,7 +694,7 @@ async def reconcile_and_process_stake(
                 )
             else:
                 # Slippage is acceptable, just apply MEV protection chunking
-                alpha_price = origin_tao_in / origin_alpha_in if origin_alpha_in > 0 else 1.0
+                alpha_price = origin_tao_in / origin_alpha_in
                 stake_amount = calculate_stake_amount(actual_pending, alpha_price)
         else:
             # Fallback if we can't get pool info
@@ -713,8 +728,8 @@ async def process_pending_stakes():
     """
     logger.info("Starting pending stakes processing...")
 
+    # Single cronjob process - just select pending rows, no locking needed
     async with get_session() as session:
-        # Fetch all pending stakes with balance > 0
         result = await session.execute(
             select(PendingStake)
             .where(
@@ -724,7 +739,7 @@ async def process_pending_stakes():
                 )
             )
             .order_by(PendingStake.created_at.asc())
-            .limit(50)  # Process up to 50 at a time
+            .limit(50)
         )
         pending_stakes = result.scalars().all()
 
@@ -772,7 +787,7 @@ async def process_pending_stakes():
                         )
                     )
                     .values(
-                        last_attempt_at=datetime.now(timezone.utc),
+                        last_attempt_at=func.now(),
                         attempt_count=pending_stake.attempt_count + 1,
                         status="processing",
                     )
@@ -790,10 +805,19 @@ async def process_pending_stakes():
                 async with get_session() as session:
                     if is_complete:
                         # Staking complete (chain exhausted), burn alpha if applicable
-                        if pending_stake.netuid == 0 or pending_stake.netuid == settings.netuid:
-                            # Burn alpha on our subnet
+                        # For alpha payments (any netuid != 0), stake moves to settings.netuid
+                        # so we always burn on settings.netuid after move_stake completes
+                        if pending_stake.netuid != 0:
+                            # Burn alpha on our subnet (settings.netuid)
                             await burn_alpha(substrate, keypair)
 
+                        # Atomically decrement by original amount (not set to 0) to handle
+                        # concurrent upserts that may have added to pending_balance.
+                        # Set status to "pending" if balance > 0 after decrement, else "completed"
+                        original_balance = pending_stake.pending_balance
+                        new_balance_expr = func.greatest(
+                            0, PendingStake.pending_balance - original_balance
+                        )
                         await session.execute(
                             update(PendingStake)
                             .where(
@@ -804,9 +828,12 @@ async def process_pending_stakes():
                                 )
                             )
                             .values(
-                                pending_balance=0,
-                                status="completed",
-                                last_processed_at=datetime.now(timezone.utc),
+                                pending_balance=new_balance_expr,
+                                status=case(
+                                    (new_balance_expr > 0, "pending"),
+                                    else_="completed",
+                                ),
+                                last_processed_at=func.now(),
                                 error_message=None,
                             )
                         )
@@ -815,8 +842,8 @@ async def process_pending_stakes():
                             f"netuid={pending_stake.netuid}"
                         )
                     else:
-                        # More to stake, update balance and continue
-                        new_balance = max(0, pending_stake.pending_balance - amount_processed)
+                        # More to stake - just update timestamp, don't decrement pending_balance
+                        # (we use chain state as truth, pending_balance just flags "needs processing")
                         await session.execute(
                             update(PendingStake)
                             .where(
@@ -827,15 +854,13 @@ async def process_pending_stakes():
                                 )
                             )
                             .values(
-                                pending_balance=new_balance,
                                 status="pending",
-                                last_processed_at=datetime.now(timezone.utc),
+                                last_processed_at=func.now(),
                                 error_message=error_msg,
                             )
                         )
                         logger.info(
-                            f"Processed {amount_processed / ONE_TAO_RAO:.9f}, "
-                            f"remaining: {new_balance / ONE_TAO_RAO:.9f}"
+                            f"Processed {amount_processed / ONE_TAO_RAO:.9f}, more remaining on chain"
                         )
 
                     await session.commit()
@@ -896,7 +921,7 @@ async def upsert_pending_stake(
             set_={
                 "pending_balance": PendingStake.pending_balance + amount_rao,
                 "status": "pending",
-                "updated_at": datetime.now(timezone.utc),
+                "updated_at": func.now(),
             },
         )
         await session.execute(stmt)

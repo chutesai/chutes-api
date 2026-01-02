@@ -244,7 +244,7 @@ class FMVFetcher:
         """
         prices = {}
         try:
-            async with AsyncSubstrateInterface(url=settings.subtensor_address) as substrate:
+            async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
                 result = await substrate.runtime_call(
                     api="SubnetInfoRuntimeApi",
                     method="get_all_dynamic_info",
