@@ -9,6 +9,7 @@ from datetime import timedelta
 from sqlalchemy import select, func
 from loguru import logger
 from typing import Dict, Optional
+from async_substrate_interface import AsyncSubstrateInterface
 from api.config import settings
 from api.database import get_session
 from api.fmv.schemas import FMV
@@ -151,3 +152,159 @@ class FMVFetcher:
         tasks = [self.get_price(ticker) for ticker in tickers]
         results = await asyncio.gather(*tasks)
         return dict(zip(tickers, results))
+
+    def _alpha_ticker(self, netuid: int) -> str:
+        """Get the ticker string for a subnet's alpha token."""
+        return f"alpha_{netuid}"
+
+    async def get_subnet_alpha_price(self, netuid: int) -> Optional[float]:
+        """
+        Get the alpha price (in TAO) for a subnet.
+        Returns the amount of TAO required to purchase one unit of Alpha.
+        Uses cache -> database fallback like TAO price.
+        """
+        ticker = self._alpha_ticker(netuid)
+
+        # Try cache first
+        try:
+            cached = await settings.redis_client.get(f"price:{ticker}")
+            if cached:
+                return float(cached.decode())
+        except Exception as e:
+            logger.error(f"Error reading subnet alpha price from cache: {e}")
+
+        # Try database (not older than 1 hour)
+        db_price = await self.get_last_stored_price(ticker, not_older_than=3600)
+        if db_price is not None:
+            await self.set_cached_price(ticker, db_price, 60)
+            return db_price
+
+        return None
+
+    async def get_all_subnet_alpha_prices(self) -> Dict[int, float]:
+        """
+        Get all subnet alpha prices from cache.
+        Returns dict mapping netuid -> alpha_price_in_tao.
+        """
+        prices = {}
+        try:
+            keys = await settings.redis_client.keys("price:alpha_*")
+            if keys:
+                values = await settings.redis_client.mget(keys)
+                for key, value in zip(keys, values):
+                    if value:
+                        # Extract netuid from key like "price:alpha_64"
+                        netuid = int(key.decode().split("_")[-1])
+                        prices[netuid] = float(value.decode())
+        except Exception as e:
+            logger.error(f"Error reading subnet alpha prices from cache: {e}")
+        return prices
+
+    async def fetch_subnet_price_at_block(
+        self, substrate, netuid: int, block_hash: str
+    ) -> Optional[float]:
+        """
+        Fetch alpha price for a specific subnet at a specific block.
+        Returns alpha_price_in_tao.
+        """
+        try:
+            result = await substrate.runtime_call(
+                api="SubnetInfoRuntimeApi",
+                method="get_dynamic_info",
+                params=[netuid],
+                block_hash=block_hash,
+            )
+            info_data = result if isinstance(result, dict) else (result.value if result else None)
+            if not info_data:
+                return None
+
+            tao_in = info_data.get("tao_in", 0)
+            alpha_in = info_data.get("alpha_in", 0)
+
+            if alpha_in > 0:
+                alpha_price = tao_in / alpha_in
+            else:
+                alpha_price = 1.0
+
+            # Store in database and cache for lazy lookups
+            ticker = self._alpha_ticker(netuid)
+            await self.store_price(ticker, alpha_price)
+            await self.set_cached_price(ticker, alpha_price, 300)
+
+            return alpha_price
+        except Exception as e:
+            logger.error(f"Error fetching subnet {netuid} price at block {block_hash}: {e}")
+            return None
+
+    async def fetch_and_cache_subnet_prices(self) -> Dict[int, float]:
+        """
+        Fetch all subnet alpha prices from substrate and cache them in redis + database.
+        Returns dict mapping netuid -> alpha_price_in_tao.
+        Used for lazy background refresh when there are no payment events.
+        """
+        prices = {}
+        try:
+            async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
+                result = await substrate.runtime_call(
+                    api="SubnetInfoRuntimeApi",
+                    method="get_all_dynamic_info",
+                    params=[],
+                )
+                dynamic_infos = (
+                    result if isinstance(result, list) else (result.value if result else [])
+                )
+
+                for info in dynamic_infos:
+                    if info is None:
+                        continue
+                    info_data = (
+                        info
+                        if isinstance(info, dict)
+                        else (info.value if hasattr(info, "value") else None)
+                    )
+                    if not info_data:
+                        continue
+
+                    netuid = info_data.get("netuid")
+                    if netuid is None:
+                        continue
+
+                    # tao_in and alpha_in are in rao (10^-9), price = tao_in / alpha_in
+                    tao_in = info_data.get("tao_in", 0)
+                    alpha_in = info_data.get("alpha_in", 0)
+
+                    if alpha_in > 0:
+                        alpha_price = tao_in / alpha_in
+                    else:
+                        alpha_price = 1.0  # Default to 1:1 if no liquidity
+
+                    prices[netuid] = alpha_price
+                    ticker = self._alpha_ticker(netuid)
+
+                    # Store in database
+                    await self.store_price(ticker, alpha_price)
+
+                    # Cache with 5 minute TTL
+                    await self.set_cached_price(ticker, alpha_price, 300)
+
+                logger.info(f"Cached alpha prices for {len(prices)} subnets")
+
+        except Exception as e:
+            logger.error(f"Error fetching subnet prices from substrate: {e}")
+
+        return prices
+
+    async def get_alpha_price_in_usd(self, netuid: int) -> Optional[float]:
+        """
+        Get the USD price for a subnet's alpha token.
+        Calculates: alpha_price_in_tao * tao_price_in_usd
+        """
+        alpha_price_in_tao = await self.get_subnet_alpha_price(netuid)
+        if alpha_price_in_tao is None:
+            return None
+
+        tao_price_in_usd = await self.get_price("tao")
+        if tao_price_in_usd is None:
+            return None
+
+        return alpha_price_in_tao * tao_price_in_usd

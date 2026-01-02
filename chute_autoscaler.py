@@ -172,7 +172,7 @@ async def get_scale_down_permission(
             return False, f"rate_limiting_in_window ({row.max_rate_limit:.1%})"
 
         # Check if proposed target is within acceptable range of rolling average
-        min_allowed_target = max(1, int(row.avg_target * SCALE_DOWN_MAX_DROP_RATIO))
+        min_allowed_target = max(1, int(float(row.avg_target) * SCALE_DOWN_MAX_DROP_RATIO))
         if proposed_target < min_allowed_target:
             return (
                 False,

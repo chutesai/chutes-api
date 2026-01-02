@@ -309,7 +309,7 @@ async def calculate_effective_compute_multiplier(
         total *= chute.boost
 
     # Bounty boost (only if requested).
-    # Uses dynamic boost based on bounty age (1.5x at 0min → 4x at 60min+)
+    # Uses dynamic boost based on bounty age (1.5x at 0min → 4x at 180min+)
     if include_bounty:
         if bounty_info is None:
             bounty_info = await get_bounty_info(chute.chute_id)
