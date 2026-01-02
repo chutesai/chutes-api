@@ -14,48 +14,6 @@ BOUNTY_BOOST_RAMP_MINUTES = 180
 # The bounty boost component decays to 1.0, but other factors remain.
 BOUNTY_BOOST_DECAY_HOURS = 8
 
-# Query to fetch raw request counts and compute units per chute (to calculate 'demand' bonus).
-NORMALIZED_COMPUTE_QUERY = """
-SELECT
-    i.miner_hotkey,
-    COUNT(CASE WHEN i.error_message IS NULL THEN 1 END) AS successful_count,
-    SUM(
-        i.compute_multiplier *
-        CASE
-            -- For token-based computations (nc = normalized compute, handles prompt & completion tokens).
-            WHEN i.metrics->>'nc' IS NOT NULL
-                AND (i.metrics->>'nc')::float > 0
-            THEN (i.metrics->>'nc')::float
-
-            -- For step-based computations
-            WHEN i.metrics->>'steps' IS NOT NULL
-                AND (i.metrics->>'steps')::float > 0
-                AND i.metrics->>'masps' IS NOT NULL
-            THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
-
-            -- Legacy token-based calculation if 'nc' not available.
-            WHEN i.metrics->>'it' IS NOT NULL
-                AND i.metrics->>'ot' IS NOT NULL
-                AND (i.metrics->>'it')::float > 0
-                AND (i.metrics->>'ot')::float > 0
-                AND i.metrics->>'maspt' IS NOT NULL
-            THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
-
-            -- Fallback to actual elapsed time
-            ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
-        END
-    ) AS compute_units
-FROM invocations i
-WHERE i.started_at > NOW() - INTERVAL '{interval}'
-AND NOT EXISTS (
-    SELECT 1
-    FROM reports
-    WHERE invocation_id = i.parent_invocation_id
-    AND confirmed_at IS NOT NULL
-)
-GROUP BY i.miner_hotkey ORDER BY compute_units desc
-"""
-
 # GPU inventory (and unique chute GPU).
 INVENTORY_HISTORY_QUERY = """
 WITH time_series AS (
@@ -135,19 +93,6 @@ LEFT JOIN metrics_per_timepoint mpt
   AND mts.miner_hotkey = mpt.miner_hotkey
 ORDER BY mts.miner_hotkey, mts.time_point
 """
-INVENTORY_QUERY = (
-    """
-SELECT
-  miner_hotkey,
-  AVG(unique_chute_gpus)::integer AS avg_unique_chute_gpus,
-  AVG(total_active_gpus)::integer AS avg_total_active_gpus
-FROM ("""
-    + INVENTORY_HISTORY_QUERY
-    + """) AS history_data
-GROUP BY miner_hotkey
-ORDER BY avg_unique_chute_gpus DESC
-"""
-)
 
 # Instances lifetime/compute units queries - this is the entire basis for scoring!
 INSTANCES_QUERY = """

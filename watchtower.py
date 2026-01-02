@@ -56,65 +56,6 @@ TCP_STATES = {
     "0C": "NEW_SYN_RECV",
 }
 
-PAST_DAY_METRICS_QUERY = """
-UPDATE chutes
-SET invocation_count = (
-    SELECT COUNT(distinct(parent_invocation_id))
-    FROM invocations
-    WHERE invocations.chute_id = chutes.chute_id and started_at >= now() - interval '1 days'
-);
-"""
-
-UNDEPLOYABLE_CHUTE_QUERY = """
-SELECT * FROM (
-    WITH chute_stats AS (
-        SELECT
-            chute_id,
-            count(distinct(parent_invocation_id)) as invocation_count,
-            count(distinct(miner_hotkey)) as successful_miner_count
-        FROM
-            invocations i
-        WHERE
-            started_at >= now() - interval '7 days'
-            AND error_message IS NULL
-            AND completed_at IS NOT NULL
-            AND chute_user_id != 'dff3e6bb-3a6b-5a2b-9c48-da3abcd5ca5f'
-            AND NOT EXISTS(
-                SELECT 1 FROM reports r
-                WHERE r.invocation_id = i.parent_invocation_id
-            )
-        GROUP BY
-            chute_id
-        HAVING
-            COUNT(DISTINCT(miner_hotkey)) <= 2
-    ),
-    audit_stats AS (
-        SELECT
-            cs.chute_id,
-            cs.invocation_count,
-            cs.successful_miner_count,
-            COUNT(DISTINCT ia.miner_hotkey) AS audit_miner_count,
-            MIN(ia.verified_at) AS first_verified_at
-        FROM
-            chute_stats cs
-        LEFT JOIN
-            instance_audit ia ON cs.chute_id = ia.chute_id
-        GROUP BY
-            cs.chute_id, cs.invocation_count, cs.successful_miner_count
-    )
-    SELECT * FROM audit_stats
-    WHERE invocation_count > 10
-    AND (
-        (successful_miner_count = 1 AND audit_miner_count >= 3)
-        OR
-        (successful_miner_count::float / audit_miner_count::float <= 0.1)
-    )
-    AND first_verified_at <= now() - interval '1 hour'
-    ORDER BY
-        audit_miner_count ASC
-) t;
-"""
-
 # Short lived chutes (probably just to get bounties).
 SHORT_LIVED_CHUTES = """
 SELECT instance_audit.chute_id AS chute_id, EXTRACT(EPOCH FROM MAX(instance_audit.deleted_at) - MIN(instance_audit.created_at)) AS lifetime
@@ -124,62 +65,6 @@ WHERE chutes.name IS NULL
 AND deleted_at >= now() - interval '7 days'
 GROUP BY instance_audit.chute_id
 HAVING EXTRACT(EPOCH FROM MAX(instance_audit.deleted_at) - MIN(instance_audit.created_at)) <= 86400
-"""
-
-# Disproportionate invocations on new chutes.
-DISPROPORTIONATE_CHUTES = """
-WITH new_chutes AS (
-    SELECT chute_id
-    FROM chutes
-    WHERE created_at >= NOW() - INTERVAL '2 days'
-      AND created_at <= NOW() - INTERVAL '6 hours'
-),
-stats AS (
-    SELECT
-        i.chute_id,
-        i.miner_hotkey,
-        COUNT(*) AS total_count
-    FROM invocations i
-    INNER JOIN new_chutes nc ON i.chute_id = nc.chute_id
-    WHERE i.started_at >= NOW() - INTERVAL '1 day'
-    AND i.completed_at IS NOT NULL
-    AND i.error_message IS NULL
-    GROUP BY i.chute_id, i.miner_hotkey
-),
-chute_totals AS (
-    SELECT
-        chute_id,
-        SUM(total_count) AS total_invocations_per_chute,
-        COUNT(DISTINCT miner_hotkey) AS unique_hotkeys
-    FROM stats
-    GROUP BY chute_id
-),
-chute_ratios AS (
-    SELECT
-        s.chute_id,
-        s.miner_hotkey,
-        s.total_count,
-        c.total_invocations_per_chute,
-        c.unique_hotkeys,
-        CASE
-            WHEN c.total_invocations_per_chute = 0 THEN 0
-            ELSE s.total_count::FLOAT / c.total_invocations_per_chute
-        END AS invocation_ratio
-    FROM stats s
-    INNER JOIN chute_totals c ON s.chute_id = c.chute_id
-    WHERE s.total_count > 10
-)
-SELECT
-    cr.chute_id,
-    cr.miner_hotkey,
-    cr.total_count,
-    cr.total_invocations_per_chute,
-    cr.unique_hotkeys,
-    cr.invocation_ratio
-FROM chute_ratios cr
-WHERE cr.total_count >= 100
-AND cr.invocation_ratio >= 0.7
-ORDER BY cr.invocation_ratio DESC;
 """
 
 
@@ -1074,56 +959,6 @@ async def generate_confirmed_reports(chute_id, reason):
         await session.commit()
 
 
-async def remove_undeployable_chutes():
-    """
-    Remove chutes that only one miner (or tiny subnset of miners) can deploy,
-    because it's almost certainly someone trying to cheat.
-    """
-
-    query = text(UNDEPLOYABLE_CHUTE_QUERY)
-    bad_chutes = []
-    async with get_session() as session:
-        result = await session.execute(query)
-        rows = result.fetchall()
-        for row in rows:
-            chute_id = row.chute_id
-            invocation_count = row.invocation_count
-            successful_miner_count = row.successful_miner_count
-            audit_miner_count = row.audit_miner_count
-            bad_chutes.append(
-                (
-                    chute_id,
-                    f"chute is not broadly deployable by miners: {invocation_count=} {successful_miner_count=} {audit_miner_count=}",
-                )
-            )
-            logger.warning(
-                f"Detected undeployable chute {chute_id} with {invocation_count} invocations, "
-                f"{successful_miner_count} successful miners out of {audit_miner_count} total miners"
-            )
-            chute = (
-                (await session.execute(select(Chute).where(Chute.chute_id == chute_id)))
-                .unique()
-                .scalar_one_or_none()
-            )
-            if chute:
-                version = chute.version
-                await session.delete(chute)
-                await settings.redis_client.publish(
-                    "miner_broadcast",
-                    json.dumps(
-                        {
-                            "reason": "chute_deleted",
-                            "data": {"chute_id": chute_id, "version": version},
-                        }
-                    ).decode(),
-                )
-        await session.commit()
-
-    # Generate the reports in separate sessions so we don't have massive transactions.
-    for chute_id, reason in bad_chutes:
-        await generate_confirmed_reports(chute_id, reason)
-
-
 async def report_short_lived_chutes():
     """
     Generate reports for chutes that only existed for a short time, likely from scummy miners to get bounties.
@@ -1257,56 +1092,6 @@ async def rolling_update_cleanup():
             logger.error(f"Error cleaning up rolling updates: {exc}")
 
         await asyncio.sleep(60)
-
-
-async def remove_disproportionate_new_chutes():
-    """
-    Remove chutes that are new and have disproportionate requests to one miner.
-    """
-    query = text(DISPROPORTIONATE_CHUTES)
-    bad_chutes = []
-    async with get_session() as session:
-        result = await session.execute(query)
-        rows = result.fetchall()
-        for row in rows:
-            chute_id = row.chute_id
-            miner_hotkey = row.miner_hotkey
-            miner_count = row.total_count
-            total_count = row.total_invocations_per_chute
-            unique_hotkeys = row.unique_hotkeys
-            invocation_ratio = row.invocation_ratio
-            bad_chutes.append(
-                (
-                    chute_id,
-                    f"chute is new and has disproportionate requests to a single miner: {miner_hotkey=} {miner_count=} {total_count=} {unique_hotkeys=} {invocation_ratio=}",
-                )
-            )
-            logger.warning(
-                f"Detected disproportionate invocations on chute {chute_id} going to single miner: "
-                f"{miner_hotkey=} {miner_count=} {total_count=} {unique_hotkeys=} {invocation_ratio=}"
-            )
-            chute = (
-                (await session.execute(select(Chute).where(Chute.chute_id == chute_id)))
-                .unique()
-                .scalar_one_or_none()
-            )
-            if chute:
-                version = chute.version
-                await session.delete(chute)
-                await settings.redis_client.publish(
-                    "miner_broadcast",
-                    json.dumps(
-                        {
-                            "reason": "chute_deleted",
-                            "data": {"chute_id": chute_id, "version": version},
-                        }
-                    ).decode(),
-                )
-        await session.commit()
-
-    # Generate the reports in separate sessions so we don't have massive transactions.
-    for chute_id, reason in bad_chutes:
-        await generate_confirmed_reports(chute_id, reason)
 
 
 async def procs_check():
@@ -1664,17 +1449,9 @@ async def main():
     # Secondary process check.
     asyncio.create_task(procs_check())
 
-    index = 0
     while True:
-        ### Only enabled in clean-up mode.
-        # await remove_bad_chutes()
-        # if index % 10 == 0:
-        #     await remove_undeployable_chutes()
-        #     await report_short_lived_chutes()
         await check_all_chutes()
         await asyncio.sleep(30)
-
-        index += 1
 
 
 if __name__ == "__main__":

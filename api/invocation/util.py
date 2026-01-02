@@ -2,8 +2,13 @@
 Helpers for invocations.
 """
 
+import os
 import hashlib
+import aiohttp
 import orjson as json
+from datetime import datetime, timezone
+from typing import Dict
+from loguru import logger
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.config import settings
 from api.database import get_session
@@ -21,10 +26,57 @@ SELECT * FROM get_diffusion_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date
 ORDER BY date DESC, name;
 """
 
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
+
+
+async def query_prometheus(
+    queries: Dict[str, str], prometheus_url: str = PROMETHEUS_URL
+) -> Dict[str, Dict[str, float]]:
+    """
+    Execute multiple Prometheus queries concurrently and return results keyed by chute_id.
+    """
+    results = {}
+
+    async def query_single(session: aiohttp.ClientSession, name: str, query: str) -> tuple:
+        try:
+            async with session.get(
+                f"{prometheus_url}/api/v1/query",
+                params={"query": query},
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                response.raise_for_status()
+                data = await response.json()
+                if data["status"] == "success" and data["data"]["result"]:
+                    chute_results = {}
+                    for result in data["data"]["result"]:
+                        chute_id = result["metric"].get("chute_id")
+                        value = float(result["value"][1])
+                        if chute_id:
+                            chute_results[chute_id] = value
+                    return (name, chute_results)
+                return (name, {})
+        except Exception as e:
+            logger.warning(f"Error querying Prometheus for {name}: {e}")
+            return (name, {})
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            import asyncio
+
+            tasks = [query_single(session, name, query) for name, query in queries.items()]
+            query_results = await asyncio.gather(*tasks)
+            for name, result in query_results:
+                results[name] = result
+    except Exception as e:
+        logger.error(f"Failed to query Prometheus: {e}")
+
+    return results
+
 
 async def gather_metrics(interval: str = "1 hour"):
     """
-    Generate invocation metrics for the last (interval).
+    Generate chute metrics from Prometheus (utilization, request counts, rate limits).
+    Falls back to cached data if Prometheus is unavailable.
     """
     cached = await settings.redis_client.get("miner_metrics_stream")
     if cached:
@@ -33,64 +85,87 @@ async def gather_metrics(interval: str = "1 hour"):
             yield item
         return
 
-    query = text(
-        f"""
-SELECT
-    i.chute_id,
-    current_timestamp AS end_date,
-    current_timestamp - INTERVAL '{interval}' AS start_date,
-    AVG(i.compute_multiplier) AS compute_multiplier,
-    COUNT(DISTINCT CASE WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN i.parent_invocation_id END) as total_invocations,
-    SUM(
-        CASE
-            WHEN i.error_message IS NULL AND i.completed_at IS NOT NULL THEN
-                CASE
-                    WHEN i.metrics->>'nc' IS NOT NULL
-                        AND (i.metrics->>'nc')::float > 0
-                    THEN (i.metrics->>'nc')::float
+    # Map interval string to Prometheus duration
+    interval_map = {"1 hour": "1h", "1 day": "1d", "1 week": "7d"}
+    prom_interval = interval_map.get(interval, "1h")
 
-                    WHEN i.metrics->>'steps' IS NOT NULL
-                        AND (i.metrics->>'steps')::float > 0
-                        AND i.metrics->>'masps' IS NOT NULL
-                    THEN (i.metrics->>'steps')::float * (i.metrics->>'masps')::float
+    # Query Prometheus for metrics matching what autoscaler uses
+    queries = {
+        "utilization": f"avg by (chute_id) (avg_over_time(utilization[{prom_interval}]))",
+        "completed": f"sum by (chute_id) (increase(requests_completed_total[{prom_interval}]))",
+        "rate_limited": f"sum by (chute_id) (increase(requests_rate_limited_total[{prom_interval}]))",
+    }
 
-                    WHEN i.metrics->>'it' IS NOT NULL
-                        AND i.metrics->>'ot' IS NOT NULL
-                        AND (i.metrics->>'it')::float > 0
-                        AND (i.metrics->>'ot')::float > 0
-                        AND i.metrics->>'maspt' IS NOT NULL
-                    THEN ((i.metrics->>'it')::float + (i.metrics->>'ot')::float) * (i.metrics->>'maspt')::float
+    prom_results = await query_prometheus(queries)
 
-                    ELSE EXTRACT(EPOCH FROM (i.completed_at - i.started_at))
-                END
-            ELSE NULL
-        END
-    ) AS total_compute_time,
-    COUNT(CASE WHEN i.error_message IS NOT NULL THEN 1 END) AS error_count,
-    COUNT(CASE WHEN i.error_message = 'RATE_LIMIT' THEN 1 END) AS rate_limit_count,
-    COUNT(DISTINCT CASE WHEN inst.active AND inst.verified THEN i.instance_id END) AS instance_count
-FROM invocations i
-LEFT JOIN instances inst ON i.instance_id = inst.instance_id
-INNER JOIN chutes c ON i.chute_id = c.chute_id
-WHERE i.started_at > NOW() - INTERVAL '{interval}'
-AND i.completed_at IS NOT NULL
-GROUP BY i.chute_id"""
-    )
-    items = []
+    # Get all chute IDs and their compute multipliers from DB
+    chute_data = {}
     async with get_session() as session:
-        result = await session.stream(query)
-        async for row in result:
-            item = dict(row._mapping)
-            item["per_second_price_usd"] = (
-                float(item["compute_multiplier"]) * COMPUTE_UNIT_PRICE_BASIS / 3600
+        result = await session.execute(
+            text(
+                """
+                SELECT c.chute_id, c.name, COALESCE((c.node_selector->>'compute_multiplier')::float, 1.0) as compute_multiplier
+                FROM chutes c
+                """
             )
-            item["total_compute_time"] = (
-                float(item["total_compute_time"]) if item.get("total_compute_time") else 0
+        )
+        for row in result:
+            chute_data[row.chute_id] = {
+                "name": row.name,
+                "compute_multiplier": float(row.compute_multiplier),
+            }
+
+    # Get active instance counts per chute
+    instance_counts = {}
+    async with get_session() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT chute_id, COUNT(*) as instance_count
+                FROM instances
+                WHERE active = true AND verified = true
+                GROUP BY chute_id
+                """
             )
-            item["total_usage_usd"] = item["per_second_price_usd"] * item["total_compute_time"]
-            items.append(item)
-            yield item
-    await settings.redis_client.set("miner_metrics_stream", json.dumps(items), ex=600)
+        )
+        for row in result:
+            instance_counts[row.chute_id] = int(row.instance_count)
+
+    # Build metrics for each chute
+    items = []
+    all_chute_ids = set(chute_data.keys())
+    for chute_id in prom_results.get("completed", {}).keys():
+        all_chute_ids.add(chute_id)
+
+    now = datetime.now(timezone.utc)
+    for chute_id in all_chute_ids:
+        if chute_id not in chute_data:
+            continue
+
+        compute_multiplier = chute_data[chute_id]["compute_multiplier"]
+        completed = prom_results.get("completed", {}).get(chute_id, 0)
+        rate_limited = prom_results.get("rate_limited", {}).get(chute_id, 0)
+        utilization = prom_results.get("utilization", {}).get(chute_id, 0)
+
+        item = {
+            "chute_id": chute_id,
+            "end_date": now.isoformat(),
+            "start_date": now.isoformat(),  # Approximate, Prometheus handles the range
+            "compute_multiplier": compute_multiplier,
+            "total_invocations": int(completed),
+            "total_compute_time": 0,  # Not directly available from Prometheus
+            "error_count": 0,  # Could add error metric if available
+            "rate_limit_count": int(rate_limited),
+            "instance_count": instance_counts.get(chute_id, 0),
+            "utilization": utilization,
+            "per_second_price_usd": compute_multiplier * COMPUTE_UNIT_PRICE_BASIS / 3600,
+            "total_usage_usd": 0,  # Would need compute_time to calculate
+        }
+        items.append(item)
+        yield item
+
+    if items:
+        await settings.redis_client.set("miner_metrics_stream", json.dumps(items), ex=600)
 
 
 def get_prompt_prefix_hashes(payload: dict) -> list:
