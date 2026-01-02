@@ -1116,7 +1116,7 @@ async def activate_launch_config_instance(
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
         # If a bounty exists for this chute, claim it and apply dynamic boost based on age.
-        # Older bounties = higher boost (1.5x at 0min → 4x at 60min+)
+        # Older bounties = higher boost (1.5x at 0min → 4x at 180min+)
         bounty = await claim_bounty(instance.chute_id)
         if bounty:
             instance.bounty = True

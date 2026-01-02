@@ -17,6 +17,7 @@ import api.database.orms  # noqa
 from api.user.schemas import User
 from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import calculate_effective_compute_multiplier
+from api.bounty.util import get_bounty_infos
 from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance
@@ -33,7 +34,7 @@ from metasync.shared import get_scoring_data
 router = APIRouter()
 
 
-async def model_to_dict(obj):
+async def model_to_dict(obj, bounty_info: Optional[dict] = None):
     """
     Helper to convert object to dict.
     """
@@ -62,7 +63,7 @@ async def model_to_dict(obj):
         data["preemptible"] = obj.preemptible
 
         # Add effective compute multiplier and factors.
-        effective_data = await calculate_effective_compute_multiplier(obj)
+        effective_data = await calculate_effective_compute_multiplier(obj, bounty_info=bounty_info)
         data["effective_compute_multiplier"] = effective_data["effective_compute_multiplier"]
         data["compute_multiplier_factors"] = effective_data["compute_multiplier_factors"]
         data["bounty"] = effective_data["bounty"]
@@ -88,6 +89,20 @@ async def _stream_items(clazz: Any, selector: Any = None, explicit_null: bool = 
     """
     async with get_session() as db:
         query = selector if selector is not None else select(clazz)
+        if clazz is Chute:
+            result = await db.execute(query)
+            items = result.unique().scalars().all()
+            any_found = False
+            if items:
+                bounty_infos = await get_bounty_infos([item.chute_id for item in items])
+                for item in items:
+                    data = await model_to_dict(item, bounty_info=bounty_infos.get(item.chute_id))
+                    yield f"data: {json.dumps(data).decode()}\n\n"
+                    any_found = True
+            if explicit_null and not any_found:
+                yield "data: NO_ITEMS\n"
+            return
+
         result = await db.stream(query)
         any_found = False
         async for row in result.unique():

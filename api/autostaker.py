@@ -13,13 +13,14 @@ import hashlib
 import random
 import traceback
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from async_substrate_interface import AsyncSubstrateInterface
 from bittensor_drand import encrypt_mlkem768
 from bittensor_wallet.keypair import Keypair
 from loguru import logger
-from sqlalchemy import select, update, and_, func, case
+from sqlalchemy import select, update, and_, or_, func, case
 from sqlalchemy.dialects.postgresql import insert
 
 from api.config import settings
@@ -35,6 +36,10 @@ ONE_TAO_RAO = 10**9  # 1 TAO = 1e9 rao
 MAX_STAKE_PER_ITERATION_TAO = 25  # Max TAO worth to stake per iteration
 MIN_STAKE_TAO = 0.1  # Minimum stake amount
 MAX_SLIPPAGE_PERCENT = 0.003  # 0.3% max slippage before chunking
+AUTOSTAKER_CONCURRENCY = 24  # Max number of wallets processed concurrently
+STALE_BASE_MINUTES = 15  # Default stale threshold for "processing" rows
+STALE_MAX_MINUTES = 60  # Upper bound for adaptive stale threshold
+EXPECTED_SECONDS_PER_WALLET = 45  # Heuristic for adaptive stale calculation
 
 
 class InsufficientBalance(Exception): ...
@@ -728,18 +733,54 @@ async def process_pending_stakes():
     """
     logger.info("Starting pending stakes processing...")
 
+    # Adaptive stale threshold based on queue size and concurrency.
+    def _stale_minutes(pending_count: int) -> int:
+        if pending_count <= 0:
+            return STALE_BASE_MINUTES
+        estimated_minutes = int(
+            (pending_count / max(1, AUTOSTAKER_CONCURRENCY)) * EXPECTED_SECONDS_PER_WALLET / 60.0
+        )
+        return min(STALE_MAX_MINUTES, max(STALE_BASE_MINUTES, estimated_minutes * 2))
+
     # Single cronjob process - just select pending rows, no locking needed
     async with get_session() as session:
+        pending_count = await session.execute(
+            select(func.count())
+            .select_from(PendingStake)
+            .where(
+                and_(
+                    PendingStake.pending_balance > 0,
+                    or_(
+                        PendingStake.status == "pending",
+                        PendingStake.status == "processing",
+                    ),
+                )
+            )
+        )
+        total_pending = int(pending_count.scalar_one() or 0)
+        stale_minutes = _stale_minutes(total_pending)
+        stale_cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+
         result = await session.execute(
             select(PendingStake)
             .where(
-                and_(
-                    PendingStake.status == "pending",
-                    PendingStake.pending_balance > 0,
+                or_(
+                    and_(
+                        PendingStake.status == "pending",
+                        PendingStake.pending_balance > 0,
+                    ),
+                    and_(
+                        PendingStake.status == "processing",
+                        PendingStake.pending_balance > 0,
+                        or_(
+                            PendingStake.last_attempt_at.is_(None),
+                            PendingStake.last_attempt_at < stale_cutoff,
+                        ),
+                    ),
                 )
             )
             .order_by(PendingStake.created_at.asc())
-            .limit(50)
+            .limit(250)
         )
         pending_stakes = result.scalars().all()
 
@@ -747,133 +788,72 @@ async def process_pending_stakes():
         logger.info("No pending stakes to process")
         return
 
-    logger.info(f"Found {len(pending_stakes)} pending stakes to process")
+    logger.info(
+        f"Found {len(pending_stakes)} pending stakes to process "
+        f"(stale_threshold={stale_minutes}m, concurrency={AUTOSTAKER_CONCURRENCY})"
+    )
+
+    # Metrics tracking
+    metrics = {
+        "total": len(pending_stakes),
+        "succeeded": 0,
+        "failed": 0,
+        "completed": 0,
+        "partial": 0,
+    }
 
     async with AsyncSubstrateInterface(url=settings.subtensor) as substrate:
-        head = await substrate.get_chain_head()
-        block_hash = await substrate.get_block_hash(await substrate.get_block_number(head))
+        # Block hash with periodic refresh
+        block_hash_lock = asyncio.Lock()
+        block_hash_state = {"hash": None, "refreshed_at": 0, "refresh_count": 0}
 
-        for pending_stake in pending_stakes:
-            logger.info(
-                f"Processing stake for {pending_stake.wallet_address}: "
-                f"netuid={pending_stake.netuid}, balance={pending_stake.pending_balance / ONE_TAO_RAO:.9f}"
-            )
-
-            # Load user and keypair
-            async with get_session() as session:
-                user = (
-                    await session.execute(select(User).where(User.user_id == pending_stake.user_id))
-                ).scalar_one_or_none()
-
-                if not user:
-                    logger.warning(f"User {pending_stake.user_id} not found, skipping")
-                    continue
-
-            try:
-                keypair = Keypair.create_from_mnemonic(await decrypt_secret(user.wallet_secret))
-            except Exception as e:
-                logger.error(f"Failed to load keypair for {pending_stake.user_id}: {e}")
-                continue
-
-            # Update last attempt timestamp
-            async with get_session() as session:
-                await session.execute(
-                    update(PendingStake)
-                    .where(
-                        and_(
-                            PendingStake.wallet_address == pending_stake.wallet_address,
-                            PendingStake.netuid == pending_stake.netuid,
-                            PendingStake.source_hotkey == pending_stake.source_hotkey,
-                        )
+        async def get_fresh_block_hash() -> str:
+            """Get block hash, refreshing every 60 seconds."""
+            async with block_hash_lock:
+                now = asyncio.get_event_loop().time()
+                if block_hash_state["hash"] is None or now - block_hash_state["refreshed_at"] > 60:
+                    head = await substrate.get_chain_head()
+                    block_hash_state["hash"] = await substrate.get_block_hash(
+                        await substrate.get_block_number(head)
                     )
-                    .values(
-                        last_attempt_at=func.now(),
-                        attempt_count=pending_stake.attempt_count + 1,
-                        status="processing",
-                    )
+                    block_hash_state["refreshed_at"] = now
+                    block_hash_state["refresh_count"] += 1
+                return block_hash_state["hash"]
+
+        # Initialize block hash
+        await get_fresh_block_hash()
+
+        semaphore = asyncio.Semaphore(AUTOSTAKER_CONCURRENCY)
+
+        async def _process_one(pending_stake: PendingStake) -> None:
+            async with semaphore:
+                # Small jitter to avoid thundering herd
+                await asyncio.sleep(random.uniform(0.2, 1.0))
+                logger.info(
+                    f"Processing stake for {pending_stake.wallet_address}: "
+                    f"netuid={pending_stake.netuid}, balance={pending_stake.pending_balance / ONE_TAO_RAO:.9f}"
                 )
-                await session.commit()
 
-            try:
-                (
-                    success,
-                    amount_processed,
-                    is_complete,
-                    error_msg,
-                ) = await reconcile_and_process_stake(substrate, pending_stake, keypair, block_hash)
-
+                # Load user and keypair
                 async with get_session() as session:
-                    if is_complete:
-                        # Staking complete (chain exhausted), burn alpha if applicable
-                        # For alpha payments (any netuid != 0), stake moves to settings.netuid
-                        # so we always burn on settings.netuid after move_stake completes
-                        if pending_stake.netuid != 0:
-                            # Burn alpha on our subnet (settings.netuid)
-                            await burn_alpha(substrate, keypair)
-
-                        # Atomically decrement by original amount (not set to 0) to handle
-                        # concurrent upserts that may have added to pending_balance.
-                        # Set status to "pending" if balance > 0 after decrement, else "completed"
-                        original_balance = pending_stake.pending_balance
-                        new_balance_expr = func.greatest(
-                            0, PendingStake.pending_balance - original_balance
-                        )
+                    user = (
                         await session.execute(
-                            update(PendingStake)
-                            .where(
-                                and_(
-                                    PendingStake.wallet_address == pending_stake.wallet_address,
-                                    PendingStake.netuid == pending_stake.netuid,
-                                    PendingStake.source_hotkey == pending_stake.source_hotkey,
-                                )
-                            )
-                            .values(
-                                pending_balance=new_balance_expr,
-                                status=case(
-                                    (new_balance_expr > 0, "pending"),
-                                    else_="completed",
-                                ),
-                                last_processed_at=func.now(),
-                                error_message=None,
-                            )
+                            select(User).where(User.user_id == pending_stake.user_id)
                         )
-                        logger.success(
-                            f"✅ Completed staking for {pending_stake.wallet_address} "
-                            f"netuid={pending_stake.netuid}"
-                        )
-                    else:
-                        # More to stake - just update timestamp, don't decrement pending_balance
-                        # (we use chain state as truth, pending_balance just flags "needs processing")
-                        await session.execute(
-                            update(PendingStake)
-                            .where(
-                                and_(
-                                    PendingStake.wallet_address == pending_stake.wallet_address,
-                                    PendingStake.netuid == pending_stake.netuid,
-                                    PendingStake.source_hotkey == pending_stake.source_hotkey,
-                                )
-                            )
-                            .values(
-                                status="pending",
-                                last_processed_at=func.now(),
-                                error_message=error_msg,
-                            )
-                        )
-                        logger.info(
-                            f"Processed {amount_processed / ONE_TAO_RAO:.9f}, more remaining on chain"
-                        )
+                    ).scalar_one_or_none()
 
-                    await session.commit()
+                    if not user:
+                        logger.warning(f"User {pending_stake.user_id} not found, skipping")
+                        return
 
-            except Exception as e:
-                error_msg = f"Error processing stake: {e}"
-                logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                try:
+                    keypair = Keypair.create_from_mnemonic(await decrypt_secret(user.wallet_secret))
+                except Exception as e:
+                    logger.error(f"Failed to load keypair for {pending_stake.user_id}: {e}")
+                    return
 
+                # Update last attempt timestamp
                 async with get_session() as session:
-                    # Mark as pending with error, will retry next run
-                    new_attempt_count = pending_stake.attempt_count + 1
-                    new_status = "failed" if new_attempt_count >= 15 else "pending"
-
                     await session.execute(
                         update(PendingStake)
                         .where(
@@ -884,16 +864,151 @@ async def process_pending_stakes():
                             )
                         )
                         .values(
-                            status=new_status,
-                            error_message=error_msg[:500],
+                            last_attempt_at=func.now(),
+                            attempt_count=pending_stake.attempt_count + 1,
+                            status="processing",
                         )
                     )
                     await session.commit()
 
-            # Small delay between processing different wallets
-            await asyncio.sleep(2)
+                try:
+                    # Get fresh block hash (refreshes every 60s)
+                    current_block_hash = await get_fresh_block_hash()
 
-    logger.info("Finished processing pending stakes")
+                    (
+                        success,
+                        amount_processed,
+                        is_complete,
+                        error_msg,
+                    ) = await reconcile_and_process_stake(
+                        substrate, pending_stake, keypair, current_block_hash
+                    )
+
+                    async with get_session() as session:
+                        if is_complete:
+                            # Staking complete (chain exhausted), burn alpha if applicable
+                            # For alpha payments (any netuid != 0), stake moves to settings.netuid
+                            # so we always burn on settings.netuid after move_stake completes
+                            if pending_stake.netuid != 0:
+                                # Burn alpha on our subnet (settings.netuid)
+                                burn_success = await burn_alpha(substrate, keypair)
+                                if not burn_success:
+                                    await session.execute(
+                                        update(PendingStake)
+                                        .where(
+                                            and_(
+                                                PendingStake.wallet_address
+                                                == pending_stake.wallet_address,
+                                                PendingStake.netuid == pending_stake.netuid,
+                                                PendingStake.source_hotkey
+                                                == pending_stake.source_hotkey,
+                                            )
+                                        )
+                                        .values(
+                                            status="pending",
+                                            last_processed_at=func.now(),
+                                            error_message="Alpha burn failed, will retry",
+                                        )
+                                    )
+                                    await session.commit()
+                                    return
+
+                            # Atomically decrement by original amount (not set to 0) to handle
+                            # concurrent upserts that may have added to pending_balance.
+                            # Set status to "pending" if balance > 0 after decrement, else "completed"
+                            original_balance = pending_stake.pending_balance
+                            new_balance_expr = func.greatest(
+                                0, PendingStake.pending_balance - original_balance
+                            )
+                            await session.execute(
+                                update(PendingStake)
+                                .where(
+                                    and_(
+                                        PendingStake.wallet_address == pending_stake.wallet_address,
+                                        PendingStake.netuid == pending_stake.netuid,
+                                        PendingStake.source_hotkey == pending_stake.source_hotkey,
+                                    )
+                                )
+                                .values(
+                                    pending_balance=new_balance_expr,
+                                    status=case(
+                                        (new_balance_expr > 0, "pending"),
+                                        else_="completed",
+                                    ),
+                                    last_processed_at=func.now(),
+                                    error_message=None,
+                                )
+                            )
+                            logger.success(
+                                f"✅ Completed staking for {pending_stake.wallet_address} "
+                                f"netuid={pending_stake.netuid}"
+                            )
+                            metrics["succeeded"] += 1
+                            metrics["completed"] += 1
+                        else:
+                            # More to stake - just update timestamp, don't decrement pending_balance
+                            # (we use chain state as truth, pending_balance just flags "needs processing")
+                            await session.execute(
+                                update(PendingStake)
+                                .where(
+                                    and_(
+                                        PendingStake.wallet_address == pending_stake.wallet_address,
+                                        PendingStake.netuid == pending_stake.netuid,
+                                        PendingStake.source_hotkey == pending_stake.source_hotkey,
+                                    )
+                                )
+                                .values(
+                                    status="pending",
+                                    last_processed_at=func.now(),
+                                    error_message=error_msg,
+                                )
+                            )
+                            logger.info(
+                                f"Processed {amount_processed / ONE_TAO_RAO:.9f}, more remaining on chain"
+                            )
+                            metrics["succeeded"] += 1
+                            metrics["partial"] += 1
+
+                        await session.commit()
+
+                except Exception as e:
+                    error_msg = f"Error processing stake: {e}"
+                    logger.error(f"{error_msg}\n{traceback.format_exc()}")
+                    metrics["failed"] += 1
+
+                    async with get_session() as session:
+                        # Mark as pending with error, will retry next run
+                        new_attempt_count = pending_stake.attempt_count + 1
+                        new_status = "failed" if new_attempt_count >= 15 else "pending"
+
+                        await session.execute(
+                            update(PendingStake)
+                            .where(
+                                and_(
+                                    PendingStake.wallet_address == pending_stake.wallet_address,
+                                    PendingStake.netuid == pending_stake.netuid,
+                                    PendingStake.source_hotkey == pending_stake.source_hotkey,
+                                )
+                            )
+                            .values(
+                                status=new_status,
+                                error_message=error_msg[:500],
+                            )
+                        )
+                        await session.commit()
+
+        tasks = [
+            asyncio.create_task(_process_one(pending_stake)) for pending_stake in pending_stakes
+        ]
+        await asyncio.gather(*tasks)
+
+    # Log summary metrics
+    logger.info(
+        f"Finished processing pending stakes: "
+        f"total={metrics['total']}, succeeded={metrics['succeeded']}, failed={metrics['failed']}, "
+        f"completed={metrics['completed']}, partial={metrics['partial']}, "
+        f"block_refreshes={block_hash_state['refresh_count']}"
+    )
 
 
 async def upsert_pending_stake(

@@ -108,7 +108,7 @@ def calculate_bounty_boost(age_seconds: int) -> float:
     Calculate compute multiplier boost based on bounty age.
 
     The boost ramps up from BOUNTY_BOOST_MIN (1.5x) to BOUNTY_BOOST_MAX (4x)
-    over BOUNTY_BOOST_RAMP_MINUTES (60 minutes).
+    over BOUNTY_BOOST_RAMP_MINUTES (180 minutes).
 
     This incentivizes miners to respond to older/more urgent bounties.
     """
@@ -130,7 +130,7 @@ async def get_bounty_info(chute_id: str) -> Optional[dict]:
 
     Returns dict with:
     - amount: bounty amount (based on age)
-    - boost: dynamic boost multiplier (1.5x at 0min -> 4x at 60min+)
+    - boost: dynamic boost multiplier (1.5x at 0min -> 4x at 180min+)
     - age_seconds: how old the bounty is
     - created_at: timestamp when bounty was created
 
