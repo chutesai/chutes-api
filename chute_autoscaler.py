@@ -276,13 +276,15 @@ class AutoScaleContext:
         self.target_count = self.current_count
         self.action = "no_action"
         self.urgency_score = 0.0
+        self.smoothed_urgency = 0.0
+        self.smoothed_util = 0.0
         self.is_starving = False
         self.is_donor = False
         self.is_critical_donor = False
         self.downscale_amount = 0
         self.upscale_amount = 0
         self.preferred_downscale_gpus = set()
-        self.boost = 1.0  # Compute multiplier boost (1.0 - 4.0)
+        self.boost = 1.0
 
 
 async def instance_cleanup():
@@ -332,6 +334,66 @@ async def instance_cleanup():
             total += 1
         if total:
             logger.success(f"Purged {total} total unverified+old instances.")
+
+
+# EMA smoothing for stability
+EMA_ALPHA_URGENCY = 0.3  # For urgency/boost calculations
+EMA_ALPHA_UTIL = 0.4  # For utilization (slightly more reactive)
+EMA_REDIS_TTL = 7200  # 2 hours - survive missed runs but not stale forever
+
+
+async def get_smoothed_metrics(chute_ids: List[str]) -> Dict[str, Dict[str, float]]:
+    """
+    Fetch previously smoothed metrics from Redis for all chutes.
+    Returns dict of chute_id -> {"urgency": float, "util": float}
+    """
+    if not chute_ids:
+        return {}
+
+    pipe = settings.redis_client.pipeline()
+    for chute_id in chute_ids:
+        pipe.hgetall(f"smooth:{chute_id}")
+    results = await pipe.execute()
+
+    smoothed = {}
+    for chute_id, data in zip(chute_ids, results):
+        if data:
+            smoothed[chute_id] = {
+                "urgency": float(data.get(b"urgency", 0)),
+                "util": float(data.get(b"util", 0)),
+            }
+    return smoothed
+
+
+async def save_smoothed_metrics(metrics: Dict[str, Dict[str, float]]):
+    """
+    Save smoothed metrics to Redis.
+    metrics: dict of chute_id -> {"urgency": float, "util": float}
+    """
+    if not metrics:
+        return
+
+    pipe = settings.redis_client.pipeline()
+    for chute_id, values in metrics.items():
+        pipe.hset(
+            f"smooth:{chute_id}",
+            mapping={
+                "urgency": str(values["urgency"]),
+                "util": str(values["util"]),
+            },
+        )
+        pipe.expire(f"smooth:{chute_id}", EMA_REDIS_TTL)
+    await pipe.execute()
+
+
+def calculate_ema(current: float, previous: float | None, alpha: float) -> float:
+    """
+    Calculate exponential moving average.
+    If no previous value, return current (first data point).
+    """
+    if previous is None:
+        return current
+    return alpha * current + (1 - alpha) * previous
 
 
 # Compute multiplier adjustment timing constants
@@ -911,11 +973,19 @@ async def _perform_autoscale_impl(
     for inst in all_active_instances:
         instances_by_chute[inst.chute_id].append(inst)
 
+    # Fetch previous smoothed metrics from Redis for EMA calculation
+    all_chute_ids = list(chute_metrics.keys())
+    previous_smoothed = {}
+    if not dry_run:
+        previous_smoothed = await get_smoothed_metrics(all_chute_ids)
+
     # 1. Initialize Contexts and Calculate Urgency
     contexts: Dict[str, AutoScaleContext] = {}
     starving_chutes: List[AutoScaleContext] = []
     # Track filtered chutes for accurate capacity logging
     filtered_chutes: Dict[str, int] = {}
+    # Collect new smoothed metrics to save
+    new_smoothed_metrics: Dict[str, Dict[str, float]] = {}
 
     for chute_id, metrics in chute_metrics.items():
         info = chute_info_map.get(chute_id)
@@ -941,14 +1011,30 @@ async def _perform_autoscale_impl(
         )
         contexts[chute_id] = ctx
 
-        # Calculate Urgency Score
+        # Calculate Urgency Score (raw/instantaneous)
         # Formula: (RateLimitRatio * 5000) + (Utilization * 100)
         # Prioritizes error-reduction over pure utilization.
         util_score = min(100, ctx.utilization_basis * 100)
         rl_score = ctx.rate_limit_basis * 5000
         ctx.urgency_score = util_score + rl_score
 
+        # Calculate smoothed values using EMA
+        # These provide stability for boost calculations and scale-down decisions
+        prev = previous_smoothed.get(chute_id)
+        prev_urgency = prev["urgency"] if prev else None
+        prev_util = prev["util"] if prev else None
+
+        ctx.smoothed_urgency = calculate_ema(ctx.urgency_score, prev_urgency, EMA_ALPHA_URGENCY)
+        ctx.smoothed_util = calculate_ema(ctx.utilization_basis, prev_util, EMA_ALPHA_UTIL)
+
+        # Store for saving to Redis later (not in dry_run)
+        new_smoothed_metrics[chute_id] = {
+            "urgency": ctx.smoothed_urgency,
+            "util": ctx.smoothed_util,
+        }
+
         # Identify Starving Chutes (High Demand)
+        # Use RAW metrics here for fast reaction to demand spikes
         if ctx.utilization_basis >= ctx.threshold or ctx.rate_limit_basis >= RATE_LIMIT_SCALE_UP:
             ctx.is_starving = True
             starving_chutes.append(ctx)
@@ -956,6 +1042,7 @@ async def _perform_autoscale_impl(
         # Identify Potential Donors (for forced donations during arbitration)
         # Private chutes are not donors unless they belong to chutes_user_id (semi-private).
         # Chutes in LIMIT_OVERRIDES should never be preempted.
+        # Use SMOOTHED utilization for donor determination to prevent flip-flopping
         allow_donor = ctx.public or (ctx.info and ctx.info.user_id == await chutes_user_id())
         if (
             not ctx.any_rate_limiting
@@ -965,12 +1052,13 @@ async def _perform_autoscale_impl(
         ):
             # Voluntary scale-down candidate: below scale_down_threshold
             # These will scale down on their own (gated by moving average)
-            if ctx.utilization_basis < ctx.scale_down_threshold:
+            # Use smoothed_util to prevent borderline chutes from flip-flopping
+            if ctx.smoothed_util < ctx.scale_down_threshold:
                 ctx.is_critical_donor = True
                 ctx.is_donor = True
             # Forced donation candidate: in stable zone (below threshold but above scale_down_threshold)
             # These won't scale down voluntarily but can be forced to donate when others are starving
-            elif ctx.utilization_basis < ctx.threshold:
+            elif ctx.smoothed_util < ctx.threshold:
                 ctx.is_donor = True
 
     # 2. Local Decision Making (Ideal World)
@@ -981,6 +1069,9 @@ async def _perform_autoscale_impl(
     # Force multiple donors per starving chute based on need, up to a cap
     MAX_FORCED_DONATIONS_PER_CHUTE = 5
     MAX_FORCED_DONATIONS_TOTAL = 20
+    # Maximum percentage of a donor's capacity that can be force-donated in one cycle
+    # Prevents aggressive 25%+ capacity cuts that could destabilize donors
+    MAX_FORCED_DONATION_RATIO = 0.10  # Max 10% of donor capacity per cycle
 
     total_forced = 0
     if starving_chutes:
@@ -1019,9 +1110,14 @@ async def _perform_autoscale_impl(
                 # Check if donor actually has hardware the starving chute can use
                 available_matching_gpus = set(donor.hardware_map.keys()) & needed_gpus
                 if available_matching_gpus:
-                    # Calculate how many this donor can give (stay above UNDERUTILIZED_CAP)
-                    can_give = remaining_capacity - UNDERUTILIZED_CAP
-                    eligible_donors.append((donor, available_matching_gpus, can_give))
+                    # Calculate how many this donor can give, respecting multiple limits:
+                    # 1. Stay above UNDERUTILIZED_CAP (absolute floor)
+                    # 2. Don't exceed MAX_FORCED_DONATION_RATIO of current capacity (prevent destabilization)
+                    floor_limit = remaining_capacity - UNDERUTILIZED_CAP
+                    ratio_limit = max(1, int(donor.current_count * MAX_FORCED_DONATION_RATIO))
+                    can_give = min(floor_limit, ratio_limit)
+                    if can_give > 0:
+                        eligible_donors.append((donor, available_matching_gpus, can_give))
 
             if not eligible_donors:
                 continue
@@ -1069,7 +1165,7 @@ async def _perform_autoscale_impl(
 
     # 3b. Priority Locking & Boost Calculation
     # Boost multipliers for chutes wanting to scale up.
-    # Base boost is calculated from individual urgency (0-500 -> 1.0-2.5x).
+    # Base boost is calculated from SMOOTHED urgency (0-500 -> 1.0-2.5x) for stability.
     # Then adjusted slightly based on relative urgency across all scaling chutes,
     # so miners are incentivized toward the most urgent work without hard blocking.
     URGENCY_MAX_FOR_BOOST = 500
@@ -1077,20 +1173,21 @@ async def _perform_autoscale_impl(
     URGENCY_BOOST_MAX = 2.5
     RELATIVE_ADJUSTMENT_MAX = 0.2  # ±20% adjustment based on relative urgency
 
-    # Collect urgency scores for chutes wanting to scale up
+    # Collect SMOOTHED urgency scores for chutes wanting to scale up
+    # Using smoothed values prevents boost from oscillating between runs
     scaling_chutes = [ctx for ctx in contexts.values() if ctx.upscale_amount > 0]
     if scaling_chutes:
-        urgency_scores = [ctx.urgency_score for ctx in scaling_chutes]
-        avg_urgency = sum(urgency_scores) / len(urgency_scores)
-        max_urgency = max(urgency_scores)
+        smoothed_scores = [ctx.smoothed_urgency for ctx in scaling_chutes]
+        avg_urgency = sum(smoothed_scores) / len(smoothed_scores)
+        max_urgency = max(smoothed_scores)
     else:
         avg_urgency = 0
         max_urgency = 0
 
     for ctx in contexts.values():
         if ctx.upscale_amount > 0:
-            # Base boost from individual urgency
-            normalized_urgency = min(ctx.urgency_score / URGENCY_MAX_FOR_BOOST, 1.0)
+            # Base boost from SMOOTHED individual urgency (stable across runs)
+            normalized_urgency = min(ctx.smoothed_urgency / URGENCY_MAX_FOR_BOOST, 1.0)
             base_boost = URGENCY_BOOST_MIN + (
                 normalized_urgency * (URGENCY_BOOST_MAX - URGENCY_BOOST_MIN)
             )
@@ -1101,7 +1198,7 @@ async def _perform_autoscale_impl(
             if max_urgency > 0:
                 # Normalize to [-1, 1] range
                 spread = max(max_urgency, 1)
-                relative_position = (ctx.urgency_score - avg_urgency) / spread
+                relative_position = (ctx.smoothed_urgency - avg_urgency) / spread
                 relative_position = max(-1.0, min(1.0, relative_position))
                 relative_factor = 1.0 + (relative_position * RELATIVE_ADJUSTMENT_MAX)
             else:
@@ -1226,11 +1323,11 @@ async def _perform_autoscale_impl(
         # Log scale-up details (soft mode would do these)
         if scale_ups:
             logger.info("--- SCALE UPS (soft mode would execute) ---")
-            for ctx in sorted(scale_ups, key=lambda x: x.urgency_score, reverse=True):
+            for ctx in sorted(scale_ups, key=lambda x: x.smoothed_urgency, reverse=True):
                 logger.info(
                     f"  {ctx.chute_id} | {ctx.current_count} -> {ctx.target_count} (+{ctx.upscale_amount}) | "
                     f"util={ctx.utilization_basis:.2f} rl={ctx.rate_limit_basis:.3f} | "
-                    f"urgency={ctx.urgency_score:.0f} boost={ctx.boost:.2f}"
+                    f"urgency={ctx.urgency_score:.0f} smoothed={ctx.smoothed_urgency:.0f} boost={ctx.boost:.2f}"
                 )
 
         # Log scale-down details (only full mode would execute)
@@ -1239,7 +1336,7 @@ async def _perform_autoscale_impl(
             for ctx in sorted(scale_downs, key=lambda x: x.downscale_amount, reverse=True):
                 logger.info(
                     f"  {ctx.chute_id} | {ctx.current_count} -> {ctx.target_count} (-{ctx.downscale_amount}) | "
-                    f"util={ctx.utilization_basis:.2f} | action={ctx.action}"
+                    f"util={ctx.utilization_basis:.2f} smoothed={ctx.smoothed_util:.2f} | action={ctx.action}"
                 )
 
         # Log no-action chutes
@@ -1274,8 +1371,10 @@ async def _perform_autoscale_impl(
                         "upscale_amount",
                         "downscale_amount",
                         "utilization_basis",
+                        "smoothed_util",
                         "rate_limit_basis",
                         "urgency_score",
+                        "smoothed_urgency",
                         "boost",
                         "public",
                         "threshold",
@@ -1293,8 +1392,10 @@ async def _perform_autoscale_impl(
                             ctx.upscale_amount,
                             ctx.downscale_amount,
                             ctx.utilization_basis,
+                            ctx.smoothed_util,
                             ctx.rate_limit_basis,
                             ctx.urgency_score,
+                            ctx.smoothed_urgency,
                             ctx.boost,
                             ctx.public,
                             ctx.threshold,
@@ -1309,6 +1410,9 @@ async def _perform_autoscale_impl(
     else:
         # Update boost values in database
         await update_chute_boosts(chute_boosts)
+
+        # Save smoothed metrics to Redis for next run's EMA calculation
+        await save_smoothed_metrics(new_smoothed_metrics)
 
         # Refresh instance compute_multipliers (only if requested - should run hourly, not every run)
         if refresh_multipliers:
@@ -1523,15 +1627,17 @@ async def calculate_local_decision(ctx: AutoScaleContext):
         )
         return
 
-    # Voluntary Scale-Down: if utilization is below scale_down_threshold
+    # Voluntary Scale-Down: if SMOOTHED utilization is below scale_down_threshold
+    # Using smoothed_util prevents borderline chutes from flip-flopping between runs
     # This is conservative - gated by moving average check during execution
     # Separate from forced donations which happen in arbitration phase
     if (
-        ctx.utilization_basis < ctx.scale_down_threshold
+        ctx.smoothed_util < ctx.scale_down_threshold
         and ctx.current_count > failsafe_min
         and not ctx.any_rate_limiting
     ):
         # Calculate what utilization would be after removing one instance
+        # Use raw utilization_basis for projection since it's about immediate capacity
         if ctx.current_count > 1:
             projected_util = (ctx.utilization_basis * ctx.current_count) / (ctx.current_count - 1)
         else:
@@ -1543,8 +1649,8 @@ async def calculate_local_decision(ctx: AutoScaleContext):
             ctx.target_count = ctx.current_count - 1
             ctx.action = "scale_down_candidate"
             logger.info(
-                f"Scale down candidate: {ctx.chute_id} - util={ctx.utilization_basis:.1%} < {ctx.scale_down_threshold:.1%}, "
-                f"projected_util={projected_util:.1%}, target={ctx.target_count}"
+                f"Scale down candidate: {ctx.chute_id} - smoothed_util={ctx.smoothed_util:.1%} < {ctx.scale_down_threshold:.1%}, "
+                f"raw_util={ctx.utilization_basis:.1%}, projected_util={projected_util:.1%}, target={ctx.target_count}"
             )
             return
 
