@@ -105,3 +105,29 @@ class BTTxHistory(Base):
     created_at = Column(DateTime, nullable=False, default=func.now())
     source = Column(String, nullable=False)
     dest = Column(String, nullable=False)
+
+
+class PendingStake(Base):
+    """
+    Tracks pending stake operations for the cronjob-based autostaker.
+    """
+
+    __tablename__ = "pending_stakes"
+
+    wallet_address = Column(String, nullable=False, primary_key=True)
+    netuid = Column(BigInteger, nullable=False, primary_key=True, default=0)
+    source_hotkey = Column(String, nullable=False, primary_key=True, default="")
+
+    user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
+
+    pending_balance = Column(BigInteger, nullable=False, default=0)
+
+    status = Column(String, nullable=False, default="pending")
+    last_processed_at = Column(DateTime(timezone=True), nullable=True)
+    last_attempt_at = Column(DateTime(timezone=True), nullable=True)
+    attempt_count = Column(BigInteger, nullable=False, default=0)
+    error_message = Column(String, nullable=True)
+
+    # Timestamps
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

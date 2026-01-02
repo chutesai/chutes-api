@@ -45,7 +45,7 @@ dependencies = [
   "transformers<4.49.0",
   "dnslib>=0.9.26,<0.10.0",
   "semver>=3.0.4,<4.0.0",
-  "bittensor-wallet>=3.1.0,<4.0.0",
+  "bittensor-wallet>=4.0.1",
   "cllmv==0.0.6",
   "dcap-qvl>=0.3.2,<0.4.0",
   "huggingface-hub==0.34.6",
@@ -53,6 +53,7 @@ dependencies = [
   "redis>=7.0,<7.1",
   "uvloop>=0.22.1",
   "httptools>=0.7.1",
+  "bittensor-drand>=1.2.0",
 ]
 
 # Dev dependencies go under optional-dependencies

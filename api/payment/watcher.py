@@ -11,7 +11,6 @@ from sqlalchemy import (
     and_,
     or_,
     func,
-    text,
 )
 from sqlalchemy.exc import IntegrityError
 from async_substrate_interface.sync_substrate import SubstrateInterface
@@ -26,7 +25,7 @@ from api.user.schemas import User
 from api.payment.schemas import Payment, PaymentMonitorState
 from api.config import settings
 from api.database import get_session, engine, Base
-from api.autostaker import stake
+from api.autostaker import upsert_pending_stake
 
 
 class PaymentMonitor:
@@ -217,13 +216,6 @@ class PaymentMonitor:
             # Increase user balance: fair market value * amount of rao / 1e9
             user.balance += delta
 
-            # Track new balance for the payment_address.
-            await session.execute(
-                text(
-                    "INSERT INTO wallet_balances (wallet_id, balance) VALUES (:wallet_id, :balance) ON CONFLICT (wallet_id) DO UPDATE SET balance = wallet_balances.balance + EXCLUDED.balance"
-                ),
-                {"wallet_id": user.payment_address, "balance": amount},
-            )
             try:
                 await session.commit()
             except IntegrityError as exc:
@@ -237,8 +229,99 @@ class PaymentMonitor:
                 f"Received payment [user_id={user.user_id} username={user.username}]: {amount} rao @ ${fmv} FMV = ${delta} balance increase, updated balance: ${user.balance}"
             )
 
-            # Autostake the payment tao to chutes.
-            await stake.kiq(user.user_id)
+            # Queue for autostaking (TAO = netuid 0, no source hotkey)
+            await upsert_pending_stake(
+                user_id=user.user_id,
+                wallet_address=user.payment_address,
+                netuid=0,
+                amount_rao=amount,
+                source_hotkey="",
+            )
+
+    async def _handle_stake_transfer_payment(
+        self,
+        destination_coldkey: str,
+        origin_coldkey: str,
+        hotkey_address: str,
+        netuid: int,
+        tao_amount: int,
+        block: int,
+        block_hash: str,
+        tao_fmv: float,
+        extrinsic_idx: int,
+    ):
+        """
+        Process an incoming stake transfer payment (alpha tokens transferred to user's coldkey).
+        Uses market value only - no bonus.
+
+        Note: tao_amount is the TAO equivalent from the StakeTransferred event.
+        The actual alpha amount is queried from chain by the autostaker.
+        """
+        async with get_session() as session:
+            user = (
+                await session.execute(
+                    select(User).where(User.payment_address == destination_coldkey)
+                )
+            ).scalar_one_or_none()
+            if not user:
+                logger.warning(f"Failed to find user with payment address {destination_coldkey}")
+                return
+
+            # Calculate USD value directly from TAO amount
+            usd_value = tao_amount * tao_fmv / 1e9
+
+            payment_id = str(
+                uuid.uuid5(
+                    uuid.NAMESPACE_OID,
+                    f"{block}:{destination_coldkey}:{hotkey_address}:{netuid}:{tao_amount}",
+                )
+            )
+
+            if tao_amount < 7000000:
+                logger.warning("Dust stake transfer was sent, ignoring...")
+                return
+
+            payment = Payment(
+                payment_id=payment_id,
+                user_id=user.user_id,
+                source_address=origin_coldkey,
+                block=block,
+                rao_amount=tao_amount,  # Store TAO equivalent
+                usd_amount=usd_value,
+                fmv=tao_fmv,
+                transaction_hash=block_hash,
+                extrinsic_idx=extrinsic_idx,
+            )
+            session.add(payment)
+
+            # No bonus - just market value
+            user.balance += usd_value
+
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                if "UniqueViolationError" in str(exc):
+                    logger.warning(f"Skipping (apparent) duplicate stake transfer: {payment_id=}")
+                    await session.rollback()
+                    return
+                else:
+                    raise
+
+            logger.success(
+                f"Received alpha stake transfer [user_id={user.user_id} username={user.username}]: "
+                f"{tao_amount / 1e9:.9f} TAO equivalent on netuid {netuid} @ ${tao_fmv:.2f} FMV = "
+                f"${usd_value:.4f}, updated balance: ${user.balance:.2f}"
+            )
+
+            # Queue for stake move and burn
+            # Note: We pass tao_amount here but the autostaker will query actual alpha from chain
+            await upsert_pending_stake(
+                user_id=user.user_id,
+                wallet_address=user.payment_address,
+                netuid=netuid,
+                amount_rao=tao_amount,  # This is TAO equivalent; autostaker reconciles with chain
+                source_hotkey=hotkey_address,
+            )
 
     async def _get_state(self) -> Tuple[int, str]:
         """
@@ -317,38 +400,104 @@ class PaymentMonitor:
                     current_block_hash = self.get_block_hash(current_block_number)
                     events = self.get_events(current_block_hash)
                     payments = 0
+                    stake_payments = 0
                     logger.info(f"Processing block {current_block_number}...")
                     for raw_event in events:
                         event = raw_event.get("event")
                         if not event:
                             continue
+
+                        module_id = event.get("module_id")
+                        event_id = event.get("event_id")
+                        attributes = event.get("attributes")
+
+                        # Handle TAO transfers (Balances.Transfer)
                         if (
-                            event.get("module_id") != "Balances"
-                            or event.get("event_id") != "Transfer"
-                            or not event.get("attributes")
-                            or {"from", "to", "amount"} - set(event["attributes"])
+                            module_id == "Balances"
+                            and event_id == "Transfer"
+                            and attributes
+                            and not ({"from", "to", "amount"} - set(attributes))
                         ):
-                            continue
-                        from_address = event["attributes"]["from"]
-                        to_address = event["attributes"]["to"]
-                        if isinstance(from_address, (list, tuple)):
-                            from_address = ss58_encode(bytes(from_address[0]).hex(), ss58_format=42)
-                            to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
-                        amount = event["attributes"]["amount"]
-                        if to_address in self._payment_addresses:
-                            await self._handle_payment(
-                                to_address,
-                                from_address,
-                                amount,
-                                current_block_number,
-                                current_block_hash,
-                                fmv,
-                                raw_event.get("extrinsic_idx"),
-                            )
-                            payments += 1
-                    if payments:
+                            from_address = attributes["from"]
+                            to_address = attributes["to"]
+                            if isinstance(from_address, (list, tuple)):
+                                from_address = ss58_encode(
+                                    bytes(from_address[0]).hex(), ss58_format=42
+                                )
+                                to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
+                            amount = attributes["amount"]
+                            if to_address in self._payment_addresses:
+                                await self._handle_payment(
+                                    to_address,
+                                    from_address,
+                                    amount,
+                                    current_block_number,
+                                    current_block_hash,
+                                    fmv,
+                                    raw_event.get("extrinsic_idx"),
+                                )
+                                payments += 1
+
+                        # Handle alpha stake transfers (SubtensorModule.StakeTransferred)
+                        # Event params: origin_coldkey, destination_coldkey, hotkey, origin_netuid, destination_netuid, tao_amount
+                        # Note: The 6th param is TAO equivalent, NOT alpha. We use this for USD calculation.
+                        # The actual alpha amount will be queried from chain when processing the stake move.
+                        elif (
+                            module_id == "SubtensorModule"
+                            and event_id == "StakeTransferred"
+                            and attributes
+                        ):
+                            # Extract attributes - may be positional list or dict
+                            if isinstance(attributes, (list, tuple)):
+                                origin_coldkey = attributes[0]
+                                destination_coldkey = attributes[1]
+                                hotkey = attributes[2]
+                                origin_netuid = attributes[3]
+                                # destination_netuid = attributes[4]
+                                tao_amount = attributes[5]  # This is TAO equivalent, not alpha
+                            else:
+                                origin_coldkey = attributes.get("origin_coldkey") or attributes.get(
+                                    "0"
+                                )
+                                destination_coldkey = attributes.get(
+                                    "destination_coldkey"
+                                ) or attributes.get("1")
+                                hotkey = attributes.get("hotkey") or attributes.get("2")
+                                origin_netuid = attributes.get("origin_netuid") or attributes.get(
+                                    "3"
+                                )
+                                tao_amount = attributes.get("tao_amount") or attributes.get("5")
+
+                            # Convert addresses if needed
+                            if isinstance(origin_coldkey, (list, tuple)):
+                                origin_coldkey = ss58_encode(
+                                    bytes(origin_coldkey[0]).hex(), ss58_format=42
+                                )
+                            if isinstance(destination_coldkey, (list, tuple)):
+                                destination_coldkey = ss58_encode(
+                                    bytes(destination_coldkey[0]).hex(), ss58_format=42
+                                )
+                            if isinstance(hotkey, (list, tuple)):
+                                hotkey = ss58_encode(bytes(hotkey[0]).hex(), ss58_format=42)
+
+                            # Check if this stake was transferred to one of our user's coldkeys
+                            if destination_coldkey in self._payment_addresses and tao_amount > 0:
+                                await self._handle_stake_transfer_payment(
+                                    destination_coldkey,
+                                    origin_coldkey,
+                                    hotkey,
+                                    origin_netuid,
+                                    tao_amount,  # Pass TAO amount for USD calculation
+                                    current_block_number,
+                                    current_block_hash,
+                                    fmv,
+                                    raw_event.get("extrinsic_idx"),
+                                )
+                                stake_payments += 1
+
+                    if payments or stake_payments:
                         logger.success(
-                            f"Processed {payments} payment(s) in block: {current_block_number}"
+                            f"Processed {payments} TAO payment(s) and {stake_payments} stake payment(s) in block: {current_block_number}"
                         )
 
                     # Update state and continue to next block.
