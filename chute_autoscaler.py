@@ -1103,17 +1103,19 @@ async def _perform_autoscale_impl(
                 if donor.established_instance_count == 0:
                     continue
                 # Donor must have capacity above minimum after any pending downscales
+                # Use chute-specific failsafe minimum, not just global UNDERUTILIZED_CAP
+                donor_failsafe = FAILSAFE.get(donor.chute_id, UNDERUTILIZED_CAP)
                 remaining_capacity = donor.current_count - donor.downscale_amount
-                if remaining_capacity <= UNDERUTILIZED_CAP:
+                if remaining_capacity <= donor_failsafe:
                     continue
 
                 # Check if donor actually has hardware the starving chute can use
                 available_matching_gpus = set(donor.hardware_map.keys()) & needed_gpus
                 if available_matching_gpus:
                     # Calculate how many this donor can give, respecting multiple limits:
-                    # 1. Stay above UNDERUTILIZED_CAP (absolute floor)
+                    # 1. Stay above failsafe minimum (chute-specific or global UNDERUTILIZED_CAP)
                     # 2. Don't exceed MAX_FORCED_DONATION_RATIO of current capacity (prevent destabilization)
-                    floor_limit = remaining_capacity - UNDERUTILIZED_CAP
+                    floor_limit = remaining_capacity - donor_failsafe
                     ratio_limit = max(1, int(donor.current_count * MAX_FORCED_DONATION_RATIO))
                     can_give = min(floor_limit, ratio_limit)
                     if can_give > 0:
