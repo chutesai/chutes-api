@@ -287,7 +287,7 @@ async def get_stats(
     Returns instance-based metrics (total_instances, compute_seconds, compute_units, bounty_count)
     which align with how miners are actually scored for validator weights.
     """
-    cache_key = f"mstats:{per_chute}"
+    cache_key = f"get_stats:{per_chute}"
 
     def _filter_by_key(mstats):
         if miner_hotkey:
@@ -505,9 +505,10 @@ async def get_stats(
 
 @router.get("/scores")
 async def get_scores(hotkey: Optional[str] = None, request: Request = None):
+    cache_key = "get_scores"
     rv = None
     if request:
-        cached = await settings.redis_client.get("miner_scores")
+        cached = await settings.redis_client.get(cache_key)
         if cached:
             rv = json.loads(cached)
         else:
@@ -517,7 +518,7 @@ async def get_scores(hotkey: Optional[str] = None, request: Request = None):
             )
     if not rv:
         rv = await get_scoring_data()
-        await settings.redis_client.set("miner_scores", json.dumps(rv))
+        await settings.redis_client.set(cache_key, json.dumps(rv))
     if hotkey:
         for key in rv:
             if key != "totals":
