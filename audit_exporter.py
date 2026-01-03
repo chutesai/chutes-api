@@ -51,6 +51,21 @@ WHERE (started_at >= :start_time AND started_at < :end_time) OR (started_at >= :
  ORDER BY started_at ASC
 """
 )
+COMPUTE_HISTORY_QUERY = text(
+    """
+SELECT
+    instance_id,
+    compute_multiplier,
+    started_at,
+    ended_at
+FROM instance_compute_history
+WHERE ended_at IS NULL
+   OR (ended_at >= :start_time AND ended_at <= :end_time)
+   OR (started_at >= :start_time AND started_at <= :end_time)
+   OR (started_at < :start_time AND (ended_at IS NULL OR ended_at > :end_time))
+ORDER BY instance_id, started_at
+"""
+)
 REPORT_QUERY = text(
     """
 SELECT *
@@ -82,6 +97,29 @@ FROM jobs
 WHERE (started_at >= :start_time AND started_at < :end_time) OR (finished_at >= :start_time AND finished_at < :end_time)
 """
 )
+
+
+async def get_compute_history(start_time, end_time) -> list:
+    """
+    Get compute multiplier history for instances.
+
+    This captures all history records that overlap with the time window,
+    allowing accurate time-weighted scoring calculations.
+    """
+    async with get_session() as session:
+        result = await session.execute(
+            COMPUTE_HISTORY_QUERY,
+            {
+                "start_time": start_time.replace(tzinfo=None),
+                "end_time": end_time.replace(tzinfo=None),
+            },
+        )
+        results = [dict(row._mapping) for row in result]
+        for item in results:
+            for key in item:
+                if isinstance(item[key], datetime):
+                    item[key] = item[key].isoformat()
+        return results
 
 
 async def get_instance_audit(start_time, end_time) -> list:
@@ -256,10 +294,12 @@ async def main():
     )
 
     instance_audit = await get_instance_audit(start_time, end_time)
+    compute_history = await get_compute_history(start_time, end_time)
     invocation_reports = await generate_invocation_report_data(start_time, end_time)
     report_data = json.dumps(
         {
             "instance_audit": instance_audit,
+            "compute_history": compute_history,
             "csv_exports": invocation_reports,
         }
     ).encode()

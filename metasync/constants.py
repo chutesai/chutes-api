@@ -95,6 +95,10 @@ ORDER BY mts.miner_hotkey, mts.time_point
 """
 
 # Instances lifetime/compute units queries - this is the entire basis for scoring!
+# Uses instance_compute_history for accurate time-weighted multipliers.
+# The history table includes the startup period (created_at to activated_at) at 0.3x rate,
+# so billing_start uses created_at to capture this.
+# All bonuses (bounty, urgency, TEE, private) are baked into compute_multiplier.
 INSTANCES_QUERY = """
 WITH billed_instances AS (
     SELECT
@@ -107,7 +111,8 @@ WITH billed_instances AS (
         ia.stop_billing_at,
         ia.compute_multiplier,
         ia.bounty,
-        GREATEST(ia.activated_at, now() - interval '{interval}') as billing_start,
+        -- Start from created_at to include startup period (history has 0.3x rate for this period)
+        GREATEST(ia.created_at, now() - interval '{interval}') as billing_start,
         LEAST(
             COALESCE(ia.stop_billing_at, now()),
             COALESCE(ia.deleted_at, now()),
@@ -133,68 +138,45 @@ WITH billed_instances AS (
       AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
 ),
 
--- Count total bounties per chute in the interval
-chute_bounty_totals AS (
+-- Calculate time-weighted compute units using history table.
+-- For each instance, sum (overlap_seconds * multiplier) across all history intervals.
+instance_weighted_compute AS (
     SELECT
-        bi.chute_id,
-        COUNT(*)::bigint AS n_total
-    FROM billed_instances bi
-    WHERE bi.bounty IS TRUE
-      AND bi.billing_end > bi.billing_start
-    GROUP BY bi.chute_id
-),
-
--- Count bounties per miner per chute in the interval
-miner_chute_bounty_counts AS (
-    SELECT
+        bi.instance_id,
         bi.miner_hotkey,
-        bi.chute_id,
-        COUNT(*)::bigint AS n_miner_chute
+        bi.billing_start,
+        bi.billing_end,
+        bi.bounty,
+        bi.compute_multiplier as fallback_multiplier,
+        COALESCE(
+            SUM(
+                EXTRACT(EPOCH FROM (
+                    LEAST(COALESCE(ich.ended_at, now()), bi.billing_end)
+                    - GREATEST(ich.started_at, bi.billing_start)
+                )) * ich.compute_multiplier
+            ),
+            -- Fallback to instance_audit.compute_multiplier if no history exists
+            EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)
+        ) AS weighted_compute_units
     FROM billed_instances bi
-    WHERE bi.bounty IS TRUE
-      AND bi.billing_end > bi.billing_start
-    GROUP BY bi.miner_hotkey, bi.chute_id
+    LEFT JOIN instance_compute_history ich
+           ON ich.instance_id = bi.instance_id
+          AND ich.started_at < bi.billing_end
+          AND (ich.ended_at IS NULL OR ich.ended_at > bi.billing_start)
+    WHERE bi.billing_end > bi.billing_start
+    GROUP BY bi.instance_id, bi.miner_hotkey, bi.billing_start, bi.billing_end, bi.bounty, bi.compute_multiplier
 ),
 
--- Convert counts to an "effective" bounty score with:
---   per-miner geometric diminishing + global chute dampening
-miner_bounty_effective AS (
-    SELECT
-        mcbc.miner_hotkey,
-        SUM(
-            (1.0 - POWER({bounty_decay}, mcbc.n_miner_chute::double precision))
-            / (1.0 - {bounty_decay})
-            *
-            POWER(GREATEST(cbt.n_total, 1)::double precision, {bounty_rho} - 1.0)
-        ) AS bounty_score
-    FROM miner_chute_bounty_counts mcbc
-    JOIN chute_bounty_totals cbt USING (chute_id)
-    GROUP BY mcbc.miner_hotkey
-),
-
--- Aggregate compute units by miner (and pull in the effective bounty score)
+-- Aggregate compute units by miner
 miner_compute_units AS (
     SELECT
-        bi.miner_hotkey,
+        iwc.miner_hotkey,
         COUNT(*) AS total_instances,
-        COALESCE(mbe.bounty_score, 0.0) AS bounty_score,
-        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start))) AS compute_seconds,
-        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0))
-        + SUM(
-            CASE
-                WHEN bi.activated_at >= now() - interval '{interval}' THEN
-                    LEAST(
-                        GREATEST(EXTRACT(EPOCH FROM (bi.activated_at - bi.created_at)), 0),
-                        5400
-                    ) * COALESCE(bi.compute_multiplier, 1.0) * 0.3
-                ELSE 0
-            END
-        ) AS compute_units
-    FROM billed_instances bi
-    LEFT JOIN miner_bounty_effective mbe
-           ON mbe.miner_hotkey = bi.miner_hotkey
-    WHERE bi.billing_end > bi.billing_start
-    GROUP BY bi.miner_hotkey, mbe.bounty_score
+        COUNT(CASE WHEN iwc.bounty IS TRUE THEN 1 END) AS bounty_score,
+        SUM(EXTRACT(EPOCH FROM (iwc.billing_end - iwc.billing_start))) AS compute_seconds,
+        SUM(iwc.weighted_compute_units) AS compute_units
+    FROM instance_weighted_compute iwc
+    GROUP BY iwc.miner_hotkey
 )
 
 SELECT
@@ -202,7 +184,7 @@ SELECT
     total_instances,
     bounty_score,
     COALESCE(compute_seconds, 0) AS compute_seconds,
-    COALESCE(compute_units, 0)  AS compute_units
+    COALESCE(compute_units, 0) AS compute_units
 FROM miner_compute_units
 ORDER BY compute_units DESC
 """

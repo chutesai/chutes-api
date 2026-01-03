@@ -308,17 +308,19 @@ async def get_stats(
         )
 
     # Simple instance-based stats query - matches the scoring mechanism structure
-    # but without the complex bounty decay formula (just counts for stats purposes)
+    # but without the complex bounty decay formula (just counts for stats purposes).
+    # Uses instance_compute_history for accurate time-weighted multipliers.
+    # Startup bonus is included in history table (0.3x rate from created_at to activated_at).
     instance_stats_query = """
     WITH billed_instances AS (
         SELECT
+            ia.instance_id,
             ia.miner_hotkey,
             ia.chute_id,
-            ia.created_at,
             ia.activated_at,
             ia.compute_multiplier,
             ia.bounty,
-            GREATEST(ia.activated_at, now() - interval '{interval}') as billing_start,
+            GREATEST(ia.created_at, now() - interval '{interval}') as billing_start,
             LEAST(
                 COALESCE(ia.stop_billing_at, now()),
                 COALESCE(ia.deleted_at, now()),
@@ -338,26 +340,44 @@ async def get_stats(
               OR ia.deleted_at IS NULL
           )
           AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
+    ),
+    instance_weighted AS (
+        SELECT
+            bi.instance_id,
+            bi.miner_hotkey,
+            bi.chute_id,
+            bi.billing_start,
+            bi.billing_end,
+            bi.bounty,
+            bi.compute_multiplier as fallback_multiplier,
+            COALESCE(
+                SUM(
+                    EXTRACT(EPOCH FROM (
+                        LEAST(COALESCE(ich.ended_at, now()), bi.billing_end)
+                        - GREATEST(ich.started_at, bi.billing_start)
+                    )) * ich.compute_multiplier
+                ),
+                EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)
+            ) AS weighted_compute_units
+        FROM billed_instances bi
+        LEFT JOIN instance_compute_history ich
+               ON ich.instance_id = bi.instance_id
+              AND ich.started_at < bi.billing_end
+              AND (ich.ended_at IS NULL OR ich.ended_at > bi.billing_start)
+        WHERE bi.billing_end > bi.billing_start
+        GROUP BY bi.instance_id, bi.miner_hotkey, bi.chute_id,
+                 bi.billing_start, bi.billing_end, bi.bounty, bi.compute_multiplier
     )
     SELECT
-        bi.miner_hotkey,
+        iw.miner_hotkey,
         COUNT(*) AS total_instances,
-        COUNT(CASE WHEN bi.bounty IS TRUE THEN 1 END) AS bounty_count,
-        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start))) AS compute_seconds,
-        SUM(
-            EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)
-            + CASE
-                WHEN bi.activated_at >= now() - interval '{interval}' THEN
-                    LEAST(GREATEST(EXTRACT(EPOCH FROM (bi.activated_at - bi.created_at)), 0), 5400)
-                    * COALESCE(bi.compute_multiplier, 1.0) * 0.3
-                ELSE 0
-            END
-        ) AS compute_units
-    FROM billed_instances bi
-    JOIN metagraph_nodes mn ON bi.miner_hotkey = mn.hotkey AND mn.netuid = 64 AND mn.node_id >= 0
-    WHERE bi.billing_end > bi.billing_start
-    GROUP BY bi.miner_hotkey
-    HAVING SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)) > 0
+        COUNT(CASE WHEN iw.bounty IS TRUE THEN 1 END) AS bounty_count,
+        SUM(EXTRACT(EPOCH FROM (iw.billing_end - iw.billing_start))) AS compute_seconds,
+        SUM(iw.weighted_compute_units) AS compute_units
+    FROM instance_weighted iw
+    JOIN metagraph_nodes mn ON iw.miner_hotkey = mn.hotkey AND mn.netuid = 64 AND mn.node_id >= 0
+    GROUP BY iw.miner_hotkey
+    HAVING SUM(iw.weighted_compute_units) > 0
     ORDER BY compute_units DESC
     """
 
@@ -365,13 +385,13 @@ async def get_stats(
     per_chute_stats_query = """
     WITH billed_instances AS (
         SELECT
+            ia.instance_id,
             ia.miner_hotkey,
             ia.chute_id,
-            ia.created_at,
             ia.activated_at,
             ia.compute_multiplier,
             ia.bounty,
-            GREATEST(ia.activated_at, now() - interval '{interval}') as billing_start,
+            GREATEST(ia.created_at, now() - interval '{interval}') as billing_start,
             LEAST(
                 COALESCE(ia.stop_billing_at, now()),
                 COALESCE(ia.deleted_at, now()),
@@ -391,27 +411,45 @@ async def get_stats(
               OR ia.deleted_at IS NULL
           )
           AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
+    ),
+    instance_weighted AS (
+        SELECT
+            bi.instance_id,
+            bi.miner_hotkey,
+            bi.chute_id,
+            bi.billing_start,
+            bi.billing_end,
+            bi.bounty,
+            bi.compute_multiplier as fallback_multiplier,
+            COALESCE(
+                SUM(
+                    EXTRACT(EPOCH FROM (
+                        LEAST(COALESCE(ich.ended_at, now()), bi.billing_end)
+                        - GREATEST(ich.started_at, bi.billing_start)
+                    )) * ich.compute_multiplier
+                ),
+                EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)
+            ) AS weighted_compute_units
+        FROM billed_instances bi
+        LEFT JOIN instance_compute_history ich
+               ON ich.instance_id = bi.instance_id
+              AND ich.started_at < bi.billing_end
+              AND (ich.ended_at IS NULL OR ich.ended_at > bi.billing_start)
+        WHERE bi.billing_end > bi.billing_start
+        GROUP BY bi.instance_id, bi.miner_hotkey, bi.chute_id,
+                 bi.billing_start, bi.billing_end, bi.bounty, bi.compute_multiplier
     )
     SELECT
-        bi.miner_hotkey,
-        bi.chute_id,
+        iw.miner_hotkey,
+        iw.chute_id,
         COUNT(*) AS total_instances,
-        COUNT(CASE WHEN bi.bounty IS TRUE THEN 1 END) AS bounty_count,
-        SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start))) AS compute_seconds,
-        SUM(
-            EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)
-            + CASE
-                WHEN bi.activated_at >= now() - interval '{interval}' THEN
-                    LEAST(GREATEST(EXTRACT(EPOCH FROM (bi.activated_at - bi.created_at)), 0), 5400)
-                    * COALESCE(bi.compute_multiplier, 1.0) * 0.3
-                ELSE 0
-            END
-        ) AS compute_units
-    FROM billed_instances bi
-    JOIN metagraph_nodes mn ON bi.miner_hotkey = mn.hotkey AND mn.netuid = 64 AND mn.node_id >= 0
-    WHERE bi.billing_end > bi.billing_start
-    GROUP BY bi.miner_hotkey, bi.chute_id
-    HAVING SUM(EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)) > 0
+        COUNT(CASE WHEN iw.bounty IS TRUE THEN 1 END) AS bounty_count,
+        SUM(EXTRACT(EPOCH FROM (iw.billing_end - iw.billing_start))) AS compute_seconds,
+        SUM(iw.weighted_compute_units) AS compute_units
+    FROM instance_weighted iw
+    JOIN metagraph_nodes mn ON iw.miner_hotkey = mn.hotkey AND mn.netuid = 64 AND mn.node_id >= 0
+    GROUP BY iw.miner_hotkey, iw.chute_id
+    HAVING SUM(iw.weighted_compute_units) > 0
     ORDER BY compute_units DESC
     """
 

@@ -18,7 +18,7 @@ from api.image.util import get_inspecto_hash
 import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional, Tuple
-from datetime import timedelta
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Header, Request
 from sqlalchemy import select, text, func, update, and_
 from sqlalchemy.orm import joinedload
@@ -1115,6 +1115,29 @@ async def activate_launch_config_instance(
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:
+        # Reject instances that took too long to activate (> 90 minutes). These should be cleaned up automatically
+        # in the chute autoscaler's instance_cleanup() method, but just in case...
+        max_startup_seconds = 2 * 60 * 60
+        if instance.created_at:
+            startup_seconds = (
+                datetime.utcnow() - instance.created_at.replace(tzinfo=None)
+            ).total_seconds()
+            if startup_seconds > max_startup_seconds:
+                reason = f"Instance took too long to activate ({startup_seconds:.0f}s > {max_startup_seconds}s max)"
+                logger.warning(reason)
+                await db.delete(instance)
+                await asyncio.create_task(notify_deleted(instance))
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id, "reason": reason},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_410_GONE,
+                    detail=reason,
+                )
+
         # If a bounty exists for this chute, claim it and apply dynamic boost based on age.
         # Older bounties = higher boost (1.5x at 0min → 4x at 180min+)
         bounty = await claim_bounty(instance.chute_id)
