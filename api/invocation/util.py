@@ -12,6 +12,7 @@ from loguru import logger
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.config import settings
 from api.database import get_session
+from api.chute.schemas import NodeSelector
 from sqlalchemy import text
 
 TOKEN_METRICS_QUERY = """
@@ -98,21 +99,26 @@ async def gather_metrics(interval: str = "1 hour"):
 
     prom_results = await query_prometheus(queries)
 
-    # Get all chute IDs and their compute multipliers from DB
+    # Get all chute IDs and their node_selectors from DB
     chute_data = {}
     async with get_session() as session:
         result = await session.execute(
             text(
                 """
-                SELECT c.chute_id, c.name, COALESCE((c.node_selector->>'compute_multiplier')::float, 1.0) as compute_multiplier
+                SELECT c.chute_id, c.name, c.node_selector
                 FROM chutes c
                 """
             )
         )
         for row in result:
+            try:
+                node_selector = NodeSelector(**row.node_selector)
+                compute_multiplier = node_selector.compute_multiplier
+            except Exception:
+                compute_multiplier = 1.0
             chute_data[row.chute_id] = {
                 "name": row.name,
-                "compute_multiplier": float(row.compute_multiplier),
+                "compute_multiplier": compute_multiplier,
             }
 
     # Get active instance counts per chute
