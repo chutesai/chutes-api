@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=UTC
 
 # Install system dependencies and Python 3.12
-RUN apt-get update && apt-get upgrade && apt-get install -y \
+RUN apt-get update && apt-get -y upgrade && apt-get install -y \
     python3.12 \
     python3.12-dev \
     python3.12-venv \

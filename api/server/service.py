@@ -189,6 +189,27 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
         raise GpuEvidenceError("Encountered an unexpected exception verifying GPU evidence.")
 
 
+async def generate_and_store_boot_token(miner_hotkey: str, vm_name: str) -> str:
+    """
+    Generate and store a boot token for a verified VM.
+
+    Args:
+        miner_hotkey: Miner hotkey that owns this VM
+        vm_name: VM name/identifier
+
+    Returns:
+        Boot token string
+    """
+    boot_token = generate_nonce()
+    redis_key = f"boot_token:{boot_token}"
+    # Store boot token with miner_hotkey:vm_name (10 minute TTL)
+    boot_token_value = f"{miner_hotkey}:{vm_name}"
+    await settings.redis_client.setex(redis_key, 10 * 60, boot_token_value)
+    logger.info(f"Generated boot token for VM {vm_name} (miner: {miner_hotkey})")
+    
+    return boot_token
+
+
 async def process_boot_attestation(
     db: AsyncSession,
     server_ip: str,
@@ -238,12 +259,7 @@ async def process_boot_attestation(
         logger.success(f"Boot attestation successful: {boot_attestation.attestation_id}")
 
         # Generate boot token for this verified VM
-        boot_token = generate_nonce()
-        redis_key = f"boot_token:{boot_token}"
-        # Store boot token with miner_hotkey:vm_name (10 minute TTL)
-        boot_token_value = f"{args.miner_hotkey}:{args.vm_name}"
-        await settings.redis_client.setex(redis_key, 10 * 60, boot_token_value)
-        logger.info(f"Generated boot token for VM {args.vm_name} (miner: {args.miner_hotkey})")
+        boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
 
         return boot_token
 
