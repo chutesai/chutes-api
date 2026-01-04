@@ -22,7 +22,7 @@ from sqlalchemy import text
 from datetime import UTC, datetime, timedelta
 from substrateinterface import SubstrateInterface
 from api.config import settings
-from api.database import get_session
+from api.database import get_session, get_inv_session
 from api.audit.schemas import AuditEntry
 import api.database.orms  # noqa
 
@@ -177,12 +177,13 @@ async def generate_invocation_report_data(start_time, end_time) -> dict:
     Export all invocation and report data for this time slice to CSV file,
     tracking the blob storage paths and checksums.
     """
-    async with get_session() as session:
-        for type_, query in (
-            ("invocations", INVOCATION_QUERY),
-            ("reports", REPORT_QUERY),
-            ("jobs", JOB_QUERY),
-        ):
+    for type_, query in (
+        ("invocations", INVOCATION_QUERY),
+        ("reports", REPORT_QUERY),
+        ("jobs", JOB_QUERY),
+    ):
+        session_method = get_inv_session if type_ == "invocations" else get_session
+        async with session_method() as session:
             result = await session.stream(
                 query,
                 {

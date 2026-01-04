@@ -96,6 +96,8 @@ async def gather_metrics(interval: str = "1 hour"):
         "utilization": f"avg by (chute_id) (avg_over_time(utilization[{prom_interval}]))",
         "completed": f"sum by (chute_id) (increase(requests_completed_total[{prom_interval}]))",
         "rate_limited": f"sum by (chute_id) (increase(requests_rate_limited_total[{prom_interval}]))",
+        "usage_usd": f"sum by (chute_id) (increase(usage_usd_total[{prom_interval}]))",
+        "compute_seconds": f"sum by (chute_id) (increase(compute_seconds_total[{prom_interval}]))",
     }
 
     prom_results = await query_prometheus(queries)
@@ -156,6 +158,8 @@ async def gather_metrics(interval: str = "1 hour"):
         completed = prom_results.get("completed", {}).get(chute_id, 0)
         rate_limited = prom_results.get("rate_limited", {}).get(chute_id, 0)
         utilization = prom_results.get("utilization", {}).get(chute_id, 0)
+        usage_usd = prom_results.get("usage_usd", {}).get(chute_id, 0)
+        compute_seconds = prom_results.get("compute_seconds", {}).get(chute_id, 0)
 
         item = {
             "chute_id": chute_id,
@@ -163,13 +167,13 @@ async def gather_metrics(interval: str = "1 hour"):
             "start_date": now.isoformat(),  # Approximate, Prometheus handles the range
             "compute_multiplier": compute_multiplier,
             "total_invocations": int(completed),
-            "total_compute_time": 0,  # Not directly available from Prometheus
+            "total_compute_time": compute_seconds,
             "error_count": 0,  # Could add error metric if available
             "rate_limit_count": int(rate_limited),
             "instance_count": instance_counts.get(chute_id, 0),
             "utilization": utilization,
             "per_second_price_usd": compute_multiplier * COMPUTE_UNIT_PRICE_BASIS / 3600,
-            "total_usage_usd": 0,  # Would need compute_time to calculate
+            "total_usage_usd": usage_usd,
         }
         items.append(item)
         yield item

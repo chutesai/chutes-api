@@ -163,6 +163,11 @@ async def update_usage_data(
     - compute_time rounded to 4 decimal places (0.1ms precision)
     - count omitted (always 1, handled by consumer)
     """
+    from api.metrics.invocation import track_invocation_usage
+
+    # Track in Prometheus for miner metrics endpoint
+    track_invocation_usage(chute_id, balance_used, compute_time)
+
     record = json.dumps(
         {
             "u": user_id,
@@ -1163,52 +1168,9 @@ async def invoke(
                         ...
                     yield sse({"result": data})
 
-                # Store complete record in new invocations database, async.
                 # XXX this is a different started_at from global request started_at, for compute units
                 duration = time.time() - started_at
-                asyncio.create_task(
-                    safe_store_invocation(
-                        parent_invocation_id,
-                        invocation_id,
-                        chute.chute_id,
-                        chute.user_id,
-                        function,
-                        user_id,
-                        chute.image_id,
-                        chute.image.user_id,
-                        target.instance_id,
-                        target.miner_uid,
-                        target.miner_hotkey,
-                        duration,
-                        multiplier,
-                        error_message=None,
-                        metrics=metrics,
-                        legacy=False,
-                    )
-                )
-
-                # Track in the legacy DB.
                 compute_units = multiplier * math.ceil(duration)
-                asyncio.create_task(
-                    store_invocation(
-                        parent_invocation_id,
-                        invocation_id,
-                        chute.chute_id,
-                        chute.user_id,
-                        function,
-                        user_id,
-                        chute.image_id,
-                        chute.image.user_id,
-                        target.instance_id,
-                        target.miner_uid,
-                        target.miner_hotkey,
-                        duration,
-                        multiplier,
-                        error_message=None,
-                        metrics=metrics,
-                        legacy=True,
-                    )
-                )
 
                 # Clear any consecutive failure flags and disable state.
                 asyncio.create_task(
@@ -1339,6 +1301,55 @@ async def invoke(
                     and chute.user_id != await chutes_user_id()
                 ):
                     balance_used = 0
+
+                # Add balance_used to metrics for persistence (key 'b' for compactness)
+                if metrics is None:
+                    metrics = {}
+                metrics["b"] = balance_used
+
+                # Store complete record in new invocations database, async.
+                asyncio.create_task(
+                    safe_store_invocation(
+                        parent_invocation_id,
+                        invocation_id,
+                        chute.chute_id,
+                        chute.user_id,
+                        function,
+                        user_id,
+                        chute.image_id,
+                        chute.image.user_id,
+                        target.instance_id,
+                        target.miner_uid,
+                        target.miner_hotkey,
+                        duration,
+                        multiplier,
+                        error_message=None,
+                        metrics=metrics,
+                        legacy=False,
+                    )
+                )
+
+                # Track in the legacy DB.
+                asyncio.create_task(
+                    store_invocation(
+                        parent_invocation_id,
+                        invocation_id,
+                        chute.chute_id,
+                        chute.user_id,
+                        function,
+                        user_id,
+                        chute.image_id,
+                        chute.image.user_id,
+                        target.instance_id,
+                        target.miner_uid,
+                        target.miner_hotkey,
+                        duration,
+                        multiplier,
+                        error_message=None,
+                        metrics=metrics,
+                        legacy=True,
+                    )
+                )
 
                 # Ship the data over to usage tracker which actually deducts/aggregates balance/etc.
                 asyncio.create_task(

@@ -250,6 +250,39 @@ async def metrics(
     return StreamingResponse(_stream())
 
 
+@router.get("/active_instances/")
+async def list_active_instances(
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get all active instances across the platform.
+    Used by miners to make informed preemption decisions based on global state.
+    """
+    query = text("""
+        SELECT
+            instance_id,
+            miner_hotkey,
+            chute_id,
+            activated_at,
+            COALESCE(compute_multiplier, 1.0) as compute_multiplier
+        FROM instances
+        WHERE active = true
+        AND verified = true
+    """)
+    result = await session.execute(query)
+    return [
+        {
+            "instance_id": row[0],
+            "miner_hotkey": row[1],
+            "chute_id": row[2],
+            "activated_at": row[3].isoformat() if row[3] else None,
+            "compute_multiplier": float(row[4]),
+        }
+        for row in result.fetchall()
+    ]
+
+
 @router.get("/chutes/{chute_id}/{version}")
 async def get_chute(
     chute_id: str,
