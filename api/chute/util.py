@@ -198,14 +198,11 @@ async def store_invocation(
     compute_multiplier: float,
     error_message: Optional[str] = None,
     metrics: Optional[dict] = {},
-    legacy: Optional[bool] = False,
 ):
-    session_method = get_session if legacy else get_inv_session
-    insert_sql = UNIFIED_INVOCATION_INSERT_LEGACY if legacy else UNIFIED_INVOCATION_INSERT
-    async with session_method() as session:
+    async with get_inv_session() as session:
         async with session.begin():
             result = await session.execute(
-                insert_sql,
+                UNIFIED_INVOCATION_INSERT,
                 {
                     "parent_invocation_id": parent_invocation_id,
                     "invocation_id": invocation_id,
@@ -1325,29 +1322,6 @@ async def invoke(
                         multiplier,
                         error_message=None,
                         metrics=metrics,
-                        legacy=False,
-                    )
-                )
-
-                # Track in the legacy DB.
-                asyncio.create_task(
-                    store_invocation(
-                        parent_invocation_id,
-                        invocation_id,
-                        chute.chute_id,
-                        chute.user_id,
-                        function,
-                        user_id,
-                        chute.image_id,
-                        chute.image.user_id,
-                        target.instance_id,
-                        target.miner_uid,
-                        target.miner_hotkey,
-                        duration,
-                        multiplier,
-                        error_message=None,
-                        metrics=metrics,
-                        legacy=True,
                     )
                 )
 
@@ -1448,28 +1422,6 @@ async def invoke(
                         duration,
                         multiplier,
                         error_message=error_message,
-                        legacy=False,
-                    )
-                )
-
-                # Legacy invocations table storage.
-                asyncio.create_task(
-                    store_invocation(
-                        parent_invocation_id,
-                        invocation_id,
-                        chute.chute_id,
-                        chute.user_id,
-                        function,
-                        user_id,
-                        chute.image_id,
-                        chute.image.user_id,
-                        target.instance_id,
-                        target.miner_uid,
-                        target.miner_hotkey,
-                        duration,
-                        multiplier,
-                        error_message=error_message,
-                        legacy=True,
                     )
                 )
 
