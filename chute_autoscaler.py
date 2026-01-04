@@ -290,6 +290,7 @@ class AutoScaleContext:
         self.upscale_amount = 0
         self.preferred_downscale_gpus = set()
         self.boost = 1.0
+        self.effective_multiplier = 0.0  # Total effective compute multiplier for miners
 
 
 async def instance_cleanup():
@@ -1224,6 +1225,52 @@ async def _perform_autoscale_impl(
         else:
             ctx.boost = 1.0
 
+    # Calculate effective compute multiplier for each chute (for CSV export and logging)
+    # This mirrors the logic in api/chute/util.py:calculate_effective_compute_multiplier
+    # but uses ctx.boost (which may not be saved to DB yet in dry-run mode)
+    from api.constants import PRIVATE_INSTANCE_BONUS, INTEGRATED_SUBNET_BONUS, TEE_BONUS
+    from api.chute.util import INTEGRATED_SUBNETS
+    from api.bounty.util import get_bounty_infos
+
+    # Batch fetch all bounty info in one Redis round-trip
+    all_chute_ids = list(contexts.keys())
+    bounty_infos = await get_bounty_infos(all_chute_ids)
+
+    for ctx in contexts.values():
+        try:
+            ns = NodeSelector(**ctx.info.node_selector)
+            base_mult = ns.compute_multiplier
+        except Exception:
+            base_mult = 1.0
+
+        total = base_mult
+
+        # Private/integrated bonus
+        if not ctx.public and ctx.info:
+            is_integrated = any(
+                config["model_substring"] in ctx.info.name.lower()
+                for config in INTEGRATED_SUBNETS.values()
+            )
+            if is_integrated:
+                total *= INTEGRATED_SUBNET_BONUS
+            else:
+                total *= PRIVATE_INSTANCE_BONUS
+
+        # Urgency boost
+        if ctx.boost > 1.0:
+            total *= ctx.boost
+
+        # Bounty boost
+        bounty_info = bounty_infos.get(ctx.chute_id)
+        if bounty_info and bounty_info.get("boost", 1.0) > 1.0:
+            total *= bounty_info["boost"]
+
+        # TEE bonus
+        if ctx.tee:
+            total *= TEE_BONUS
+
+        ctx.effective_multiplier = total
+
     # Kinda hacky, because it's not actually creating bounties, but we'll
     # send bounty notifications for miners to have instant feedback when
     # there are urgent scaling needs.
@@ -1392,6 +1439,7 @@ async def _perform_autoscale_impl(
                         "urgency_score",
                         "smoothed_urgency",
                         "boost",
+                        "effective_multiplier",
                         "public",
                         "threshold",
                         "scale_down_threshold",
@@ -1413,6 +1461,7 @@ async def _perform_autoscale_impl(
                             ctx.urgency_score,
                             ctx.smoothed_urgency,
                             ctx.boost,
+                            ctx.effective_multiplier,
                             ctx.public,
                             ctx.threshold,
                             ctx.scale_down_threshold,
