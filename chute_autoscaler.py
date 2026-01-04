@@ -267,10 +267,15 @@ class AutoScaleContext:
         # Scale-down threshold is proportionally lower than scale-up threshold
         # Default: 0.35/0.6 = 0.583 ratio
         self.scale_down_threshold = self.threshold * (UTILIZATION_SCALE_DOWN / UTILIZATION_SCALE_UP)
+        # Starving threshold: when utilization is high enough to justify forced donations
+        # Fixed at 80%, unless the chute's scaling threshold is >= 80%, then 10% above that (capped at 100%)
+        self.starving_threshold = min(1.0, max(0.80, self.threshold * 1.10))
         self.has_rolling_update = info.has_rolling_update if info else False
         # max_instances: None means unbounded, use a large number for comparisons
         self.max_instances = info.max_instances if (info and info.max_instances) else 10000
         self.public = info.public if info else True
+        # Pending instances: unverified but recently created (in process of starting up)
+        self.pending_instance_count = info.pending_instance_count if info else 0
 
         # Decision outputs
         self.target_count = self.current_count
@@ -938,10 +943,11 @@ async def _perform_autoscale_impl(
                             c.scaling_threshold,
                             NOW() - c.created_at <= INTERVAL '3 hours' AS new_chute,
                             COUNT(DISTINCT CASE WHEN i.active = true AND i.verified = true THEN i.instance_id END) AS instance_count,
+                            COUNT(DISTINCT CASE WHEN i.verified = false AND i.created_at > NOW() - INTERVAL '30 minutes' THEN i.instance_id END) AS pending_instance_count,
                             EXISTS(SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = c.chute_id) AS has_rolling_update,
                             NOW() AS db_now
                         FROM chutes c
-                        LEFT JOIN instances i ON c.chute_id = i.chute_id AND i.verified = true AND i.active = true
+                        LEFT JOIN instances i ON c.chute_id = i.chute_id
                         LEFT JOIN user_current_balance ucb on ucb.user_id = c.user_id
                         WHERE c.jobs IS NULL
                               OR c.jobs = '[]'::jsonb
@@ -1033,9 +1039,16 @@ async def _perform_autoscale_impl(
             "util": ctx.smoothed_util,
         }
 
-        # Identify Starving Chutes (High Demand)
+        # Identify Starving Chutes (High Demand) - eligible for forced donations from other chutes
         # Use RAW metrics here for fast reaction to demand spikes
-        if ctx.utilization_basis >= ctx.threshold or ctx.rate_limit_basis >= RATE_LIMIT_SCALE_UP:
+        # "Starving" requires severe capacity pressure, not just being above scale-up threshold:
+        # - Very high utilization (at or above starving_threshold) where rate limiting is imminent, OR
+        # - Active rate limiting (any amount)
+        # Chutes just above the scale-up threshold can still scale up via normal means,
+        # but won't force donations from other chutes in the stable zone.
+        is_severely_loaded = ctx.utilization_basis >= ctx.starving_threshold
+        is_rate_limiting = ctx.rate_limit_basis >= RATE_LIMIT_SCALE_UP
+        if is_severely_loaded or is_rate_limiting:
             ctx.is_starving = True
             starving_chutes.append(ctx)
 
@@ -1082,7 +1095,8 @@ async def _perform_autoscale_impl(
                 break
 
             # How many instances does this chute need?
-            instances_needed = hungry_ctx.upscale_amount
+            # Reduce by pending instances that are already spinning up (may or may not succeed)
+            instances_needed = hungry_ctx.upscale_amount - hungry_ctx.pending_instance_count
             if instances_needed <= 0:
                 continue
 
