@@ -290,7 +290,9 @@ class AutoScaleContext:
         self.upscale_amount = 0
         self.preferred_downscale_gpus = set()
         self.boost = 1.0
+        self.base_multiplier = 0.0  # Base compute multiplier from node selector
         self.effective_multiplier = 0.0  # Total effective compute multiplier for miners
+        self.cm_delta_ratio = 0.0  # Ratio of effective/base (how much boost overall)
 
 
 async def instance_cleanup():
@@ -1243,6 +1245,7 @@ async def _perform_autoscale_impl(
         except Exception:
             base_mult = 1.0
 
+        ctx.base_multiplier = base_mult
         total = base_mult
 
         # Private/integrated bonus
@@ -1270,6 +1273,7 @@ async def _perform_autoscale_impl(
             total *= TEE_BONUS
 
         ctx.effective_multiplier = total
+        ctx.cm_delta_ratio = total / base_mult if base_mult > 0 else 1.0
 
     # Kinda hacky, because it's not actually creating bounties, but we'll
     # send bounty notifications for miners to have instant feedback when
@@ -1439,7 +1443,9 @@ async def _perform_autoscale_impl(
                         "urgency_score",
                         "smoothed_urgency",
                         "boost",
+                        "base_multiplier",
                         "effective_multiplier",
+                        "cm_delta_ratio",
                         "public",
                         "threshold",
                         "scale_down_threshold",
@@ -1461,7 +1467,9 @@ async def _perform_autoscale_impl(
                             ctx.urgency_score,
                             ctx.smoothed_urgency,
                             ctx.boost,
+                            ctx.base_multiplier,
                             ctx.effective_multiplier,
+                            ctx.cm_delta_ratio,
                             ctx.public,
                             ctx.threshold,
                             ctx.scale_down_threshold,
