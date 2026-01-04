@@ -60,18 +60,25 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
 
     # Load active miners from metagraph (and map coldkey pairings to de-dupe multi-hotkey miners).
     raw_values = {}
+    blacklisted_hotkeys = set()
     logger.info(f"Loading metagraph for netuid={settings.netuid}...")
     async with get_session() as session:
         metagraph_nodes = await session.execute(
             text(
-                f"SELECT coldkey, hotkey FROM metagraph_nodes WHERE netuid = {settings.netuid} AND node_id >= 0"
+                f"SELECT coldkey, hotkey, blacklist_reason FROM metagraph_nodes WHERE netuid = {settings.netuid} AND node_id >= 0"
             )
         )
-        hot_cold_map = {hotkey: coldkey for coldkey, hotkey in metagraph_nodes}
+        hot_cold_map = {}
+        for coldkey, hotkey, blacklist_reason in metagraph_nodes:
+            hot_cold_map[hotkey] = coldkey
+            if blacklist_reason:
+                blacklisted_hotkeys.add(hotkey)
         coldkey_counts = {
             coldkey: sum([1 for _, ck in hot_cold_map.items() if ck == coldkey])
             for coldkey in hot_cold_map.values()
         }
+    if blacklisted_hotkeys:
+        logger.info(f"Found {len(blacklisted_hotkeys)} blacklisted miners to exclude from scoring")
 
     # Base score - instances active during the scoring period.
     logger.info("Fetching scores based on active instances during scoring interval...")
@@ -84,7 +91,7 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
             instance_seconds,
             instance_compute_units,
         ) in instances_result:
-            if not hotkey or hotkey not in hot_cold_map:
+            if not hotkey or hotkey not in hot_cold_map or hotkey in blacklisted_hotkeys:
                 continue
             raw_values[hotkey] = {
                 "total_instances": float(total_instances or 0.0),

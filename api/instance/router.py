@@ -343,6 +343,37 @@ async def get_instance_reconciliation_csv(
     )
 
 
+@router.get("/compute_history_csv")
+async def get_instance_compute_history_csv(
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get instance_compute_history records for the scoring period (last 7 days + buffer).
+    Used by the auditor to reconcile compute history data on startup.
+    """
+    query = """
+        SELECT
+            instance_id,
+            compute_multiplier,
+            started_at,
+            ended_at
+        FROM instance_compute_history
+        WHERE ended_at IS NULL
+           OR ended_at >= NOW() - INTERVAL '8 days'
+        ORDER BY instance_id, started_at
+    """
+    output = StringIO()
+    writer = csv.writer(output)
+    result = await db.execute(text(query))
+    writer.writerow([col for col in result.keys()])
+    writer.writerows(result)
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": 'attachment; filename="compute-history.csv"'},
+    )
+
+
 async def _validate_launch_config_env(
     db: AsyncSession,
     launch_config: LaunchConfig,
