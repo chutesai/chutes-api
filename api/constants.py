@@ -70,7 +70,7 @@ PRIVATE_INSTANCE_BONUS = 2
 INTEGRATED_SUBNET_BONUS = 3
 
 # TEE bonus.
-TEE_BONUS = 1.5
+TEE_BONUS = 2.25
 
 # Duration for instance disablement when consecutive errors are hit (increases linearly until max).
 INSTANCE_DISABLE_BASE_TIMEOUT = 90
