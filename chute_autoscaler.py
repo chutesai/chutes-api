@@ -440,6 +440,282 @@ def _calculate_blended_multiplier(
     return current_val * (1 - blend) + target * blend
 
 
+async def simulate_miner_scores(
+    chute_effective_multipliers: Dict[str, float],
+) -> Dict[str, Dict]:
+    """
+    Simulate what miner scores would be if the updated effective compute multipliers
+    were applied to instances. This uses the exact same scoring logic as
+    metasync/shared.py:get_scoring_data but with projected multiplier changes.
+
+    Args:
+        chute_effective_multipliers: Dict mapping chute_id -> new effective_compute_multiplier
+                                    (calculated from updated boosts in dry-run)
+
+    Returns:
+        Dict with:
+        - current_scores: current normalized scores per miner
+        - simulated_scores: projected scores if multipliers were updated
+        - current_raw: current raw compute_units per miner
+        - simulated_raw: projected raw compute_units per miner
+        - instance_changes: list of instance-level multiplier changes
+        - miner_changes: summary of score changes per miner
+    """
+    from metasync.constants import SCORING_INTERVAL
+
+    logger.info("Simulating miner scores with updated compute multipliers...")
+
+    # Use the same interval as metasync scoring
+    interval = SCORING_INTERVAL
+
+    async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '30s'"))
+
+        metagraph_result = await session.execute(
+            text(f"""
+                SELECT coldkey, hotkey, blacklist_reason
+                FROM metagraph_nodes
+                WHERE netuid = {settings.netuid} AND node_id >= 0
+            """)
+        )
+        hot_cold_map = {}
+        blacklisted_hotkeys = set()
+        for coldkey, hotkey, blacklist_reason in metagraph_result:
+            hot_cold_map[hotkey] = coldkey
+            if blacklist_reason:
+                blacklisted_hotkeys.add(hotkey)
+
+        coldkey_counts = {}
+        for hotkey, coldkey in hot_cold_map.items():
+            coldkey_counts[coldkey] = coldkey_counts.get(coldkey, 0) + 1
+
+        current_query = text(f"""
+            WITH billed_instances AS (
+                SELECT
+                    ia.miner_hotkey,
+                    ia.instance_id,
+                    ia.chute_id,
+                    ia.created_at,
+                    ia.activated_at,
+                    ia.deleted_at,
+                    ia.stop_billing_at,
+                    ia.compute_multiplier,
+                    ia.bounty,
+                    GREATEST(ia.created_at, now() - interval '{interval}') as billing_start,
+                    LEAST(
+                        COALESCE(ia.stop_billing_at, now()),
+                        COALESCE(ia.deleted_at, now()),
+                        now()
+                    ) as billing_end
+                FROM instance_audit ia
+                WHERE ia.activated_at IS NOT NULL
+                  AND (
+                      (
+                        ia.billed_to IS NULL
+                        AND ia.deleted_at IS NOT NULL
+                        AND ia.deleted_at - ia.activated_at >= INTERVAL '1 hour'
+                      )
+                      OR ia.valid_termination IS TRUE
+                      OR ia.deletion_reason in (
+                          'job has been terminated due to insufficient user balance',
+                          'user-defined/private chute instance has not been used since shutdown_after_seconds',
+                          'user has zero/negative balance (private chute)'
+                      )
+                      OR ia.deletion_reason LIKE '%has an old version%'
+                      OR ia.deleted_at IS NULL
+                  )
+                  AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
+            ),
+            instance_weighted_compute AS (
+                SELECT
+                    bi.instance_id,
+                    bi.miner_hotkey,
+                    bi.chute_id,
+                    bi.billing_start,
+                    bi.billing_end,
+                    bi.bounty,
+                    bi.compute_multiplier as fallback_multiplier,
+                    COALESCE(
+                        SUM(
+                            EXTRACT(EPOCH FROM (
+                                LEAST(COALESCE(ich.ended_at, now()), bi.billing_end)
+                                - GREATEST(ich.started_at, bi.billing_start)
+                            )) * ich.compute_multiplier
+                        ),
+                        EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) * COALESCE(bi.compute_multiplier, 1.0)
+                    ) AS weighted_compute_units,
+                    EXTRACT(EPOCH FROM (bi.billing_end - bi.billing_start)) AS billing_seconds
+                FROM billed_instances bi
+                LEFT JOIN instance_compute_history ich
+                       ON ich.instance_id = bi.instance_id
+                      AND ich.started_at < bi.billing_end
+                      AND (ich.ended_at IS NULL OR ich.ended_at > bi.billing_start)
+                WHERE bi.billing_end > bi.billing_start
+                GROUP BY bi.instance_id, bi.miner_hotkey, bi.chute_id, bi.billing_start, bi.billing_end, bi.bounty, bi.compute_multiplier
+            )
+            SELECT
+                instance_id,
+                miner_hotkey,
+                chute_id,
+                billing_seconds,
+                weighted_compute_units,
+                fallback_multiplier
+            FROM instance_weighted_compute
+        """)
+
+        instance_result = await session.execute(current_query)
+        instances_data = []
+        for row in instance_result:
+            instances_data.append(
+                {
+                    "instance_id": row.instance_id,
+                    "miner_hotkey": row.miner_hotkey,
+                    "chute_id": row.chute_id,
+                    "billing_seconds": float(row.billing_seconds or 0),
+                    "current_compute_units": float(row.weighted_compute_units or 0),
+                    "current_multiplier": float(row.fallback_multiplier or 1.0),
+                }
+            )
+
+        active_instances_result = await session.execute(
+            text("""
+                SELECT
+                    i.instance_id,
+                    i.chute_id,
+                    i.miner_hotkey,
+                    i.compute_multiplier,
+                    i.activated_at,
+                    i.created_at
+                FROM instances i
+                WHERE i.active = true
+                  AND i.verified = true
+                  AND i.activated_at IS NOT NULL
+            """)
+        )
+        active_instances = {}
+        for row in active_instances_result:
+            active_instances[row.instance_id] = {
+                "chute_id": row.chute_id,
+                "miner_hotkey": row.miner_hotkey,
+                "current_multiplier": float(row.compute_multiplier or 1.0),
+                "activated_at": row.activated_at,
+            }
+
+    now = datetime.now()
+    instance_changes = []
+
+    for instance_id, inst_data in active_instances.items():
+        chute_id = inst_data["chute_id"]
+        target = chute_effective_multipliers.get(chute_id)
+
+        if target is None:
+            continue
+
+        hours_since = (
+            now - inst_data["activated_at"].replace(tzinfo=None)
+        ).total_seconds() / 3600.0
+        current = inst_data["current_multiplier"]
+        new_value = _calculate_blended_multiplier(current, target, hours_since)
+
+        if new_value is not None and abs(current - new_value) >= 0.001:
+            instance_changes.append(
+                {
+                    "instance_id": instance_id,
+                    "chute_id": chute_id,
+                    "miner_hotkey": inst_data["miner_hotkey"],
+                    "current_multiplier": current,
+                    "new_multiplier": new_value,
+                    "target_multiplier": target,
+                    "hours_since_activation": hours_since,
+                }
+            )
+
+    new_multipliers = {ic["instance_id"]: ic["new_multiplier"] for ic in instance_changes}
+
+    current_raw = defaultdict(float)
+    simulated_raw = defaultdict(float)
+
+    for inst in instances_data:
+        hotkey = inst["miner_hotkey"]
+        if not hotkey or hotkey not in hot_cold_map or hotkey in blacklisted_hotkeys:
+            continue
+
+        instance_id = inst["instance_id"]
+        billing_seconds = inst["billing_seconds"]
+        current_units = inst["current_compute_units"]
+
+        current_raw[hotkey] += current_units
+
+        # Simulated score: if this instance would get a new multiplier, recalculate
+        if instance_id in new_multipliers:
+            old_mult = inst["current_multiplier"]
+            new_mult = new_multipliers[instance_id]
+            if old_mult > 0:
+                simulated_units = current_units * (new_mult / old_mult)
+            else:
+                simulated_units = billing_seconds * new_mult
+            simulated_raw[hotkey] += simulated_units
+        else:
+            simulated_raw[hotkey] += current_units
+
+    for coldkey in set(hot_cold_map.values()):
+        if coldkey_counts.get(coldkey, 0) > 1:
+            coldkey_hotkeys = [
+                hk for hk, ck in hot_cold_map.items() if ck == coldkey and hk in current_raw
+            ]
+            if len(coldkey_hotkeys) > 1:
+                coldkey_hotkeys.sort(key=lambda hk: current_raw.get(hk, 0.0), reverse=True)
+                for hk in coldkey_hotkeys[1:]:
+                    current_raw.pop(hk, None)
+                    simulated_raw.pop(hk, None)
+
+    current_sum = sum(max(0.0, v) for v in current_raw.values())
+    simulated_sum = sum(max(0.0, v) for v in simulated_raw.values())
+
+    if current_sum > 0:
+        current_scores = {hk: max(0.0, v) / current_sum for hk, v in current_raw.items()}
+    else:
+        n = max(len(current_raw), 1)
+        current_scores = {hk: 1.0 / n for hk in current_raw.keys()}
+
+    if simulated_sum > 0:
+        simulated_scores = {hk: max(0.0, v) / simulated_sum for hk, v in simulated_raw.items()}
+    else:
+        n = max(len(simulated_raw), 1)
+        simulated_scores = {hk: 1.0 / n for hk in simulated_raw.keys()}
+
+    miner_changes = []
+    all_hotkeys = set(current_scores.keys()) | set(simulated_scores.keys())
+    for hk in all_hotkeys:
+        curr = current_scores.get(hk, 0.0)
+        sim = simulated_scores.get(hk, 0.0)
+        curr_raw = current_raw.get(hk, 0.0)
+        sim_raw = simulated_raw.get(hk, 0.0)
+        if abs(curr - sim) > 0.000001:
+            miner_changes.append(
+                {
+                    "hotkey": hk,
+                    "current_score": curr,
+                    "simulated_score": sim,
+                    "score_change": sim - curr,
+                    "score_change_pct": ((sim - curr) / curr * 100) if curr > 0 else 0,
+                    "current_raw": curr_raw,
+                    "simulated_raw": sim_raw,
+                }
+            )
+
+    miner_changes.sort(key=lambda x: abs(x["score_change"]), reverse=True)
+
+    return {
+        "current_scores": current_scores,
+        "simulated_scores": simulated_scores,
+        "current_raw": dict(current_raw),
+        "simulated_raw": dict(simulated_raw),
+        "instance_changes": instance_changes,
+        "miner_changes": miner_changes,
+    }
+
+
 @retry_on_db_failure()
 async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     """
@@ -867,6 +1143,7 @@ async def perform_autoscale(
     soft_mode: bool = False,
     dry_run_csv: str = None,
     refresh_multipliers: bool = False,
+    simulate_scores: bool = False,
 ):
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
@@ -883,10 +1160,14 @@ async def perform_autoscale(
         refresh_multipliers: If True, refresh instance compute_multipliers. Should be
                              run hourly (before :05 when validators snapshot) rather
                              than every autoscaler run.
+        simulate_scores: If True (requires dry_run), simulate what miner scores would
+                        be if the updated compute multipliers were applied.
     """
     try:
         async with autoscaler_lock(soft_mode=soft_mode):
-            await _perform_autoscale_impl(dry_run, soft_mode, dry_run_csv, refresh_multipliers)
+            await _perform_autoscale_impl(
+                dry_run, soft_mode, dry_run_csv, refresh_multipliers, simulate_scores
+            )
     except LockNotAcquired:
         # Soft mode couldn't acquire lock, exit quietly
         return
@@ -897,6 +1178,7 @@ async def _perform_autoscale_impl(
     soft_mode: bool = False,
     dry_run_csv: str = None,
     refresh_multipliers: bool = False,
+    simulate_scores: bool = False,
 ):
     """Internal implementation of autoscale logic (called within lock)."""
     if dry_run and soft_mode:
@@ -1590,6 +1872,56 @@ async def _perform_autoscale_impl(
                 f"avg={sum(boosts) / len(boosts):.2f}"
             )
 
+        # Run score simulation if requested
+        simulation_results = None
+        if simulate_scores:
+            # Build effective multipliers map from contexts
+            # These use the updated boost values calculated during this dry-run
+            chute_effective_multipliers = {
+                ctx.chute_id: ctx.effective_multiplier
+                for ctx in contexts.values()
+                if ctx.effective_multiplier > 0
+            }
+            simulation_results = await simulate_miner_scores(chute_effective_multipliers)
+
+            logger.info("=== SCORE SIMULATION ===")
+            logger.info(
+                f"Instance multiplier changes: {len(simulation_results['instance_changes'])}"
+            )
+            logger.info(f"Miners with score changes: {len(simulation_results['miner_changes'])}")
+
+            # Log top miner changes (biggest absolute changes first)
+            if simulation_results["miner_changes"]:
+                logger.info("--- TOP MINER SCORE CHANGES ---")
+                logger.info(
+                    f"{'Hotkey':<48} {'Current':<10} {'Simulated':<10} {'Change':<12} {'Change %':<10}"
+                )
+                logger.info("-" * 90)
+                for mc in simulation_results["miner_changes"][:20]:
+                    logger.info(
+                        f"{mc['hotkey']:<48} "
+                        f"{mc['current_score']:<10.6f} "
+                        f"{mc['simulated_score']:<10.6f} "
+                        f"{mc['score_change']:+<12.6f} "
+                        f"{mc['score_change_pct']:+.2f}%"
+                    )
+
+            # Log instance-level changes for transparency
+            if simulation_results["instance_changes"]:
+                logger.info(
+                    f"--- INSTANCE MULTIPLIER CHANGES (first 20 of {len(simulation_results['instance_changes'])}) ---"
+                )
+                for ic in simulation_results["instance_changes"][:20]:
+                    logger.info(
+                        f"  {ic['instance_id'][:8]}... | "
+                        f"chute={ic['chute_id'][:8]}... | "
+                        f"miner={ic['miner_hotkey'][:12]}... | "
+                        f"mult: {ic['current_multiplier']:.2f} -> {ic['new_multiplier']:.2f} "
+                        f"(target={ic['target_multiplier']:.2f}, {ic['hours_since_activation']:.1f}h)"
+                    )
+
+            logger.info("=== END SCORE SIMULATION ===")
+
         # Export CSV if requested
         if dry_run_csv:
             import csv
@@ -1644,6 +1976,67 @@ async def _perform_autoscale_impl(
                         ]
                     )
             logger.info(f"Exported dry run data to {dry_run_csv}")
+
+            # Export simulation CSVs if simulation was run
+            if simulation_results:
+                # Export miner score changes
+                base_path = dry_run_csv.rsplit(".", 1)[0]
+                miner_csv = f"{base_path}_miner_scores.csv"
+                with open(miner_csv, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(
+                        [
+                            "hotkey",
+                            "current_score",
+                            "simulated_score",
+                            "score_change",
+                            "score_change_pct",
+                            "current_raw_compute_units",
+                            "simulated_raw_compute_units",
+                        ]
+                    )
+                    for mc in simulation_results["miner_changes"]:
+                        writer.writerow(
+                            [
+                                mc["hotkey"],
+                                mc["current_score"],
+                                mc["simulated_score"],
+                                mc["score_change"],
+                                mc["score_change_pct"],
+                                mc["current_raw"],
+                                mc["simulated_raw"],
+                            ]
+                        )
+                logger.info(f"Exported miner score simulation to {miner_csv}")
+
+                # Export instance-level multiplier changes
+                instance_csv = f"{base_path}_instance_changes.csv"
+                with open(instance_csv, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(
+                        [
+                            "instance_id",
+                            "chute_id",
+                            "miner_hotkey",
+                            "current_multiplier",
+                            "new_multiplier",
+                            "target_multiplier",
+                            "hours_since_activation",
+                        ]
+                    )
+                    for ic in simulation_results["instance_changes"]:
+                        writer.writerow(
+                            [
+                                ic["instance_id"],
+                                ic["chute_id"],
+                                ic["miner_hotkey"],
+                                ic["current_multiplier"],
+                                ic["new_multiplier"],
+                                ic["target_multiplier"],
+                                ic["hours_since_activation"],
+                            ]
+                        )
+                logger.info(f"Exported instance multiplier changes to {instance_csv}")
 
         logger.info("=== END DRY RUN ===")
         return
@@ -2037,6 +2430,11 @@ if __name__ == "__main__":
         help="Export dry run results to CSV file (only works with --dry-run)",
     )
     parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Simulate miner scores with updated compute multipliers (only works with --dry-run)",
+    )
+    parser.add_argument(
         "--refresh-multipliers",
         action="store_true",
         help="Refresh instance compute_multipliers (should run hourly before :05, not every run)",
@@ -2044,11 +2442,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.csv and not args.dry_run:
         parser.error("--csv requires --dry-run")
+    if args.simulate and not args.dry_run:
+        parser.error("--simulate requires --dry-run")
     asyncio.run(
         perform_autoscale(
             dry_run=args.dry_run,
             soft_mode=args.soft,
             dry_run_csv=args.csv,
             refresh_multipliers=args.refresh_multipliers,
+            simulate_scores=args.simulate,
         )
     )

@@ -1,9 +1,5 @@
 SCORING_INTERVAL = "7 days"
 
-# Bounty decay/rho for the instances query (kept for data tracking).
-BOUNTY_DECAY = 0.8
-BOUNTY_RHO = 0.5
-
 # Dynamic bounty boost based on bounty age at claim time (maxes out at 3 hours)
 BOUNTY_BOOST_MIN = 1.5
 BOUNTY_BOOST_MAX = 4.0
