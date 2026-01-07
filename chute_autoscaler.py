@@ -276,6 +276,8 @@ class AutoScaleContext:
         self.public = info.public if info else True
         # Pending instances: unverified but recently created (in process of starting up)
         self.pending_instance_count = info.pending_instance_count if info else 0
+        # Concurrency: how many concurrent requests per instance before rate limiting
+        self.concurrency = info.concurrency if info else 1
 
         # Decision outputs
         self.target_count = self.current_count
@@ -995,6 +997,8 @@ async def _perform_autoscale_impl(
     filtered_chutes: Dict[str, int] = {}
     # Collect new smoothed metrics to save
     new_smoothed_metrics: Dict[str, Dict[str, float]] = {}
+    # Cache chutes_user_id for preemptible check
+    chutes_uid = await chutes_user_id()
 
     for chute_id, metrics in chute_metrics.items():
         info = chute_info_map.get(chute_id)
@@ -1021,11 +1025,105 @@ async def _perform_autoscale_impl(
         contexts[chute_id] = ctx
 
         # Calculate Urgency Score (raw/instantaneous)
-        # Formula: (RateLimitRatio * 5000) + (Utilization * 100)
-        # Prioritizes error-reduction over pure utilization.
-        util_score = min(100, ctx.utilization_basis * 100)
-        rl_score = ctx.rate_limit_basis * 5000
-        ctx.urgency_score = util_score + rl_score
+        # The goal is to reflect "how urgently do we need capacity RIGHT NOW"
+        #
+        # Components:
+        # 1. Recency-weighted rate limiting: Recent RL matters much more than historical
+        #    - 5m window: full weight (this is happening now)
+        #    - 15m window: 30% weight (recent but may have resolved)
+        #    - 1h window: 5% weight (mostly historical, slight memory)
+        # 2. Volume significance: Rate limiting must represent meaningful demand
+        #    - Uses dynamic thresholds based on actual throughput, not magic numbers
+        #    - Prevents gaming by spamming a few requests to trigger RL ratios
+        #    - Only applies to preemptible (per-request billed) chutes
+        # 3. Threshold-relative utilization: How far over YOUR threshold
+        #    - A chute at 9% util with threshold=1% is 9x over, very urgent
+        #    - A chute at 60% util with threshold=60% is at threshold, moderate
+        # 4. Capacity pressure multiplier: Low utilization dampens urgency
+        #    - If util=6% but historical RL, we have 94% spare capacity, less urgent
+        #
+        # This prevents high boosts for chutes that HAD problems but now have spare capacity,
+        # and prevents gaming by triggering RL with tiny request volumes.
+
+        # Determine if this chute is preemptible (per-request billing) vs hourly billing
+        # Preemptible: public OR legacy_private_billing OR chutes_user_id (semi-private)
+        # Non-preemptible (hourly): private AND NOT legacy AND NOT chutes_user_id
+        is_preemptible = (
+            ctx.public
+            or has_legacy_private_billing(ctx.info)
+            or (ctx.info and ctx.info.user_id == chutes_uid)
+        )
+
+        # Volume significance check for rate limiting (dynamic, no magic numbers)
+        # Rate limiting is "significant" if it represents meaningful unmet demand:
+        # 1. RL count should be at least 10% of completed count (real additional demand)
+        # 2. OR RL count should fill at least one "slot" per instance (concurrency worth)
+        # Non-preemptible (hourly billed) chutes skip this - user pays for capacity anyway.
+        def is_rl_significant(rl_count: float, completed_count: float) -> bool:
+            if not is_preemptible:
+                # Hourly billed: user pays regardless, any RL is significant to them
+                return rl_count > 0
+            if rl_count <= 0:
+                return False
+            # Minimum bar: at least 10% of completed requests were denied
+            # This filters out noise like 2 RL out of 1000 completed
+            if completed_count > 0 and rl_count >= completed_count * 0.1:
+                return True
+            # Alternative: RL count fills at least one slot per instance
+            # This catches cases where completed is low but RL is meaningful
+            slots_per_instance = max(1, ctx.concurrency)
+            instances = max(1, ctx.current_count)
+            if rl_count >= slots_per_instance * instances:
+                return True
+            return False
+
+        # Apply significance filter to each time window
+        rl_5m_significant = (
+            ctx.rate_limit_5m
+            if is_rl_significant(ctx.rate_limited_count_5m, ctx.completed_5m)
+            else 0
+        )
+        rl_15m_significant = (
+            ctx.rate_limit_15m
+            if is_rl_significant(ctx.rate_limited_count_15m, ctx.completed_15m)
+            else 0
+        )
+        # 1h: use 15m counts as proxy (don't have 1h counts)
+        rl_1h_significant = (
+            ctx.rate_limit_1h
+            if is_rl_significant(ctx.rate_limited_count_15m, ctx.completed_15m)
+            else 0
+        )
+
+        # Recency-weighted rate limiting (0-1 scale)
+        rl_weighted = (
+            rl_5m_significant * 1.0  # Full weight for current
+            + rl_15m_significant * 0.3  # Partial weight for recent
+            + rl_1h_significant * 0.05  # Minimal weight for historical
+        )
+        # Normalize (theoretical max is 1.35 if all windows at 100%)
+        rl_weighted = min(1.0, rl_weighted / 1.35)
+
+        # Threshold-relative utilization score
+        # How far over threshold as a ratio (1.0 = at threshold, 2.0 = 2x threshold)
+        if ctx.threshold > 0:
+            threshold_ratio = ctx.utilization_basis / ctx.threshold
+        else:
+            threshold_ratio = ctx.utilization_basis * 100  # Effectively infinite if threshold=0
+
+        # Capacity pressure: how much of capacity is actually being used
+        # This dampens urgency when we have lots of spare capacity
+        # Range: 0.2 (at 0% util) to 1.0 (at 100% util)
+        capacity_pressure = 0.2 + (ctx.utilization_basis * 0.8)
+
+        # Combine components:
+        # - Rate limiting is the primary signal (scaled 0-500)
+        # - Threshold-relative util adds urgency for overloaded chutes (scaled 0-100)
+        # - Capacity pressure dampens everything if we have spare capacity
+        rl_score = rl_weighted * 500
+        util_score = min(100, (threshold_ratio - 1.0) * 50) if threshold_ratio > 1.0 else 0
+
+        ctx.urgency_score = (rl_score + util_score) * capacity_pressure
 
         # Calculate smoothed values using EMA
         # These provide stability for boost calculations and scale-down decisions
@@ -1224,10 +1322,17 @@ async def _perform_autoscale_impl(
 
     # 3b. Priority Locking & Boost Calculation
     # Boost multipliers for chutes wanting to scale up.
-    # Base boost is calculated from SMOOTHED urgency (0-500 -> 1.0-2.5x) for stability.
-    # Then adjusted slightly based on relative urgency across all scaling chutes,
-    # so miners are incentivized toward the most urgent work without hard blocking.
-    URGENCY_MAX_FOR_BOOST = 500
+    # Base boost is calculated from SMOOTHED urgency for stability.
+    #
+    # With the new urgency formula:
+    # - Max theoretical urgency: (500 rl + 100 util) * 1.0 pressure = 600
+    # - High urgency (active RL + high util): ~300-400
+    # - Moderate urgency (some RL or high util): ~100-200
+    # - Low urgency (historical RL, low util): ~20-50
+    #
+    # We set URGENCY_MAX_FOR_BOOST at 300 so that genuinely urgent chutes
+    # hit max boost, while chutes with only historical issues get modest boost.
+    URGENCY_MAX_FOR_BOOST = 300
     URGENCY_BOOST_MIN = 1.0
     URGENCY_BOOST_MAX = 2.5
     RELATIVE_ADJUSTMENT_MAX = 0.2  # ±20% adjustment based on relative urgency
@@ -1263,7 +1368,26 @@ async def _perform_autoscale_impl(
             else:
                 relative_factor = 1.0
 
-            ctx.boost = max(1.0, base_boost * relative_factor)
+            # Sustained urgency factor: dampen boost for sudden spikes
+            # If raw urgency is much higher than smoothed, this is a new spike - be conservative.
+            # If raw ≈ smoothed, urgency has been sustained - reward more.
+            # This prevents gaming by burst-spam → deploy → collect boost → repeat.
+            #
+            # Formula: sustainability = smoothed / max(raw, smoothed)
+            # - If smoothed == raw: sustainability = 1.0 (fully sustained)
+            # - If smoothed << raw: sustainability approaches 0 (sudden spike)
+            # We then blend: effective_boost = 1.0 + (base_boost - 1.0) * sustainability
+            # This keeps minimum boost at 1.0 but scales the bonus by sustainability.
+            if ctx.urgency_score > 0:
+                sustainability = ctx.smoothed_urgency / max(ctx.urgency_score, ctx.smoothed_urgency)
+                # Apply a floor so sustained urgency still gets decent boost even if slightly declining
+                sustainability = max(0.3, sustainability)
+            else:
+                sustainability = 1.0 if ctx.smoothed_urgency == 0 else 0.3
+
+            adjusted_boost = base_boost * relative_factor
+            # Scale the boost bonus (amount above 1.0) by sustainability
+            ctx.boost = max(1.0, 1.0 + (adjusted_boost - 1.0) * sustainability)
         else:
             ctx.boost = 1.0
 
