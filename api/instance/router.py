@@ -1685,6 +1685,19 @@ async def delete_instance(
                 f"zeroing compute_multiplier!"
             )
 
+        # Apply penalty to instance_compute_history BEFORE delete (so the delete trigger
+        # closes the record with the penalized multiplier already applied).
+        # This ensures scoring uses the penalized value, not the original.
+        await db.execute(
+            text("""
+                UPDATE instance_compute_history
+                SET compute_multiplier = compute_multiplier * :penalty
+                WHERE instance_id = :instance_id
+                  AND ended_at IS NULL
+            """),
+            {"instance_id": instance_id, "penalty": compute_multiplier_penalty},
+        )
+
     await db.delete(instance)
 
     # Update instance audit table.
