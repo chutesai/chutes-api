@@ -328,8 +328,8 @@ async def get_instance_reconciliation_csv(
             instance_id,
             deleted_at
         FROM instance_audit
-        WHERE deleted_at IS NOT NULL
-        AND activated_at IS NOT NULL
+        WHERE (deleted_at IS NULL OR deleted_at >= NOW() - INTERVAL '7 days 1 hour')
+          AND activated_at IS NOT NULL
     """
     output = StringIO()
     writer = csv.writer(output)
