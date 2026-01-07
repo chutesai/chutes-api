@@ -1131,18 +1131,58 @@ async def _perform_autoscale_impl(
                 if available_matching_gpus:
                     # Calculate how many this donor can give, respecting multiple limits:
                     # 1. Stay above failsafe minimum (chute-specific or global UNDERUTILIZED_CAP)
-                    # 2. Don't exceed MAX_FORCED_DONATION_RATIO of current capacity (prevent destabilization)
+                    # 2. Don't exceed MAX_FORCED_DONATION_RATIO of ORIGINAL capacity (prevent destabilization)
+                    #    Use current_count (original), not remaining_capacity, so limit is consistent
+                    #    across multiple starving chutes hitting the same donor
+                    # 3. For non-critical donors (in stable zone, not already scaling down),
+                    #    ensure donation won't push utilization above threshold
                     floor_limit = remaining_capacity - donor_failsafe
-                    ratio_limit = max(1, int(donor.current_count * MAX_FORCED_DONATION_RATIO))
+                    # Calculate ratio limit based on original capacity, minus what we've already committed
+                    total_ratio_limit = max(1, int(donor.current_count * MAX_FORCED_DONATION_RATIO))
+                    ratio_limit = max(0, total_ratio_limit - donor.downscale_amount)
+
+                    # For stable-zone donors (not critical), check if donation would cause thrashing
+                    # A donor at 37% util losing 60% capacity would jump to 92% and trigger scale-up
                     can_give = min(floor_limit, ratio_limit)
+                    if can_give > 0 and not donor.is_critical_donor:
+                        # Calculate what utilization would be after donation
+                        new_count = donor.current_count - donor.downscale_amount - can_give
+                        if new_count > 0:
+                            projected_util = (
+                                donor.utilization_basis * donor.current_count
+                            ) / new_count
+                            # Don't donate if it would push donor above scale-up threshold
+                            # This prevents thrashing where we steal from A to give to B,
+                            # then A becomes starving next cycle
+                            if projected_util >= donor.threshold:
+                                # Reduce donation to stay under threshold
+                                # Solve: (util * current) / (current - downscale - X) < threshold
+                                # X < current - downscale - (util * current / threshold)
+                                max_safe = (
+                                    donor.current_count
+                                    - donor.downscale_amount
+                                    - (
+                                        donor.utilization_basis
+                                        * donor.current_count
+                                        / donor.threshold
+                                    )
+                                )
+                                can_give = max(0, int(max_safe))
+
                     if can_give > 0:
                         eligible_donors.append((donor, available_matching_gpus, can_give))
 
             if not eligible_donors:
                 continue
 
-            # Shuffle for fairness, then take from donors until we have enough
-            random.shuffle(eligible_donors)
+            # Prioritize critical donors (already scaling down voluntarily) over stable-zone donors
+            # This prevents forcing capacity away from stable chutes when there are chutes
+            # that would scale down anyway
+            critical_donors = [(d, g, c) for d, g, c in eligible_donors if d.is_critical_donor]
+            stable_donors = [(d, g, c) for d, g, c in eligible_donors if not d.is_critical_donor]
+            random.shuffle(critical_donors)
+            random.shuffle(stable_donors)
+            eligible_donors = critical_donors + stable_donors
             donations_for_this_chute = 0
             max_for_this_chute = min(
                 instances_needed,
@@ -1391,8 +1431,11 @@ async def _perform_autoscale_impl(
         if scale_ups:
             logger.info("--- SCALE UPS (soft mode would execute) ---")
             for ctx in sorted(scale_ups, key=lambda x: x.smoothed_urgency, reverse=True):
+                # Show actual delta (target - current), not upscale_amount which may differ
+                # due to failsafe minimums being applied after initial calculation
+                actual_delta = ctx.target_count - ctx.current_count
                 logger.info(
-                    f"  {ctx.chute_id} | {ctx.current_count} -> {ctx.target_count} (+{ctx.upscale_amount}) | "
+                    f"  {ctx.chute_id} | {ctx.current_count} -> {ctx.target_count} (+{actual_delta}) | "
                     f"util={ctx.utilization_basis:.2f} rl={ctx.rate_limit_basis:.3f} | "
                     f"urgency={ctx.urgency_score:.0f} smoothed={ctx.smoothed_urgency:.0f} boost={ctx.boost:.2f}"
                 )
