@@ -2,7 +2,6 @@
 TDX quote parsing, crypto operations, and server helper functions.
 """
 
-import base64
 import secrets
 from typing import Dict
 from sqlalchemy import select
@@ -329,9 +328,7 @@ def decrypt_passphrase(encrypted_passphrase: str) -> str:
     return decrypted.decode()
 
 
-async def get_cache_passphrase(
-    db: AsyncSession, miner_hotkey: str, vm_name: str
-) -> str:
+async def get_cache_passphrase(db: AsyncSession, miner_hotkey: str, vm_name: str) -> str:
     """
     Get existing cache passphrase for a VM configuration.
 

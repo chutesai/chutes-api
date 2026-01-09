@@ -124,7 +124,8 @@ async def get_cache_luks_passphrase(
     try:
         if not boot_token:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Boot token is required (X-Boot-Token header)"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Boot token is required (X-Boot-Token header)",
             )
         if not hotkey:
             raise HTTPException(
@@ -172,7 +173,8 @@ async def create_cache_luks_passphrase(
     try:
         if not boot_token:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="Boot token is required (X-Boot-Token header)"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Boot token is required (X-Boot-Token header)",
             )
         if not hotkey:
             raise HTTPException(

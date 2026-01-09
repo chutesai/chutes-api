@@ -206,7 +206,7 @@ async def generate_and_store_boot_token(miner_hotkey: str, vm_name: str) -> str:
     boot_token_value = f"{miner_hotkey}:{vm_name}"
     await settings.redis_client.setex(redis_key, 10 * 60, boot_token_value)
     logger.info(f"Generated boot token for VM {vm_name} (miner: {miner_hotkey})")
-    
+
     return boot_token
 
 
@@ -625,7 +625,7 @@ async def get_cache_passphrase_with_token(
 ) -> str:
     """
     Validate boot token and retrieve existing cache passphrase.
-    
+
     This is called when the cache volume is already encrypted and needs the passphrase.
 
     Args:
@@ -667,7 +667,7 @@ async def create_cache_passphrase_with_token(
 ) -> str:
     """
     Validate boot token and create/override cache passphrase.
-    
+
     This is called when the cache volume is unencrypted (new or wiped).
 
     Args:

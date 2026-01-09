@@ -4,7 +4,6 @@ Application-wide settings.
 
 import os
 import hashlib
-import base64
 from pathlib import Path
 import aioboto3
 import json
@@ -53,24 +52,24 @@ class Settings(BaseSettings):
     @cached_property
     def fernet_key(self) -> Optional[Fernet]:
         """Get validated Fernet cipher for cache passphrase encryption.
-        
+
         Returns:
             Fernet cipher instance, or None if CACHE_PASSPHRASE_KEY not configured
-            
+
         Raises:
             ValueError: If CACHE_PASSPHRASE_KEY is invalid format
         """
         key = os.getenv("CACHE_PASSPHRASE_KEY")
         if not key:
             return None
-            
+
         # Fernet keys must be 32 url-safe base64-encoded bytes (44 characters)
         if len(key) != 44:
             raise ValueError(
                 f"CACHE_PASSPHRASE_KEY must be 44 characters (32 bytes base64-encoded), got {len(key)} characters. "
                 "Generate a valid key with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
             )
-        
+
         try:
             return Fernet(key.encode())
         except Exception as e:
