@@ -1908,32 +1908,89 @@ async def count_str_tokens(output_str):
 
 async def update_llm_means():
     logger.info("Updating LLM miner mean metrics...")
+    async with get_session(readonly=True) as session:
+        result = await session.execute(
+            text("""
+SELECT
+    ins.instance_id,
+    ins.chute_id
+FROM instances ins
+JOIN chutes c ON ins.chute_id = c.chute_id
+WHERE
+    ins.active = true
+    AND ins.verified = true
+    AND c.standard_template = 'vllm'
+""")
+        )
+        instance_rows = result.fetchall()
+
+    instance_map = {row.instance_id: row.chute_id for row in instance_rows}
+    invocation_rows = []
+    if instance_map:
+        async with get_inv_session() as inv_session:
+            result = await inv_session.execute(
+                text("""
+SELECT
+    instance_id,
+    miner_hotkey,
+    AVG((metrics->>'tps')::float) as avg_tps,
+    AVG((metrics->>'ot')::int) as avg_output_tokens
+FROM invocations
+WHERE
+    started_at >= NOW() - INTERVAL '1 day'
+    AND instance_id = ANY(:instance_ids)
+GROUP BY
+    instance_id,
+    miner_hotkey
+"""),
+                {"instance_ids": list(instance_map.keys())},
+            )
+            invocation_rows = result.fetchall()
+
+    llm_means_rows = [
+        {
+            "chute_id": instance_map[row.instance_id],
+            "miner_hotkey": row.miner_hotkey,
+            "instance_id": row.instance_id,
+            "avg_tps": row.avg_tps,
+            "avg_output_tokens": row.avg_output_tokens,
+        }
+        for row in invocation_rows
+        if row.instance_id in instance_map
+    ]
+
     async with get_session() as session:
         await session.execute(text("DROP TABLE IF EXISTS llm_means_temp"))
         await session.execute(
             text("""
-CREATE TABLE llm_means_temp AS
-SELECT
-    ins.chute_id,
-    invocations.miner_hotkey,
-    invocations.instance_id,
-    AVG((metrics->>'tps')::float) as avg_tps,
-    AVG((metrics->>'ot')::int) as avg_output_tokens
-FROM invocations
-JOIN instances ins ON invocations.instance_id = ins.instance_id
-JOIN chutes c ON ins.chute_id = c.chute_id
-WHERE
-    started_at >= NOW() - INTERVAL '1 day'
-    AND c.standard_template = 'vllm'
-GROUP BY
-    ins.chute_id,
-    invocations.instance_id,
-    invocations.miner_hotkey
-ORDER BY
-    ins.chute_id,
-    avg_tps DESC
+CREATE TABLE llm_means_temp (
+    chute_id text,
+    miner_hotkey text,
+    instance_id text,
+    avg_tps double precision,
+    avg_output_tokens double precision
+)
 """)
         )
+        if llm_means_rows:
+            await session.execute(
+                text("""
+INSERT INTO llm_means_temp (
+    chute_id,
+    miner_hotkey,
+    instance_id,
+    avg_tps,
+    avg_output_tokens
+) VALUES (
+    :chute_id,
+    :miner_hotkey,
+    :instance_id,
+    :avg_tps,
+    :avg_output_tokens
+)
+"""),
+                llm_means_rows,
+            )
         await session.execute(text("DROP TABLE IF EXISTS llm_means"))
         await session.execute(text("ALTER TABLE llm_means_temp RENAME TO llm_means"))
         await session.commit()

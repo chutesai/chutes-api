@@ -8,7 +8,7 @@ from loguru import logger
 from datetime import datetime
 from fastapi import APIRouter, status, HTTPException, Depends
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 from api.database import get_db_session
@@ -89,8 +89,10 @@ async def increase_chute_bounty(
 
     # Boosting?
     if boost and 1.0 <= boost <= 4.0:
-        await session.execute(
-            text("INSERT INTO chute_manual_boosts (chute_id, boost) VALUES (:chute_id, :boost)"),
+        await db.execute(
+            text(
+                "INSERT INTO chute_manual_boosts (chute_id, boost) VALUES (:chute_id, :boost) ON CONFLICT (chute_id) DO UPDATE SET boost = :boost"
+            ),
             {"chute_id": chute_id, "boost": boost},
         )
         await db.commit()

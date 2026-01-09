@@ -212,12 +212,20 @@ FAILSAFE = {
 
 class AutoScaleContext:
     def __init__(
-        self, chute_id, metrics, info, supported_gpus, instances: List[Instance], db_now: datetime
+        self,
+        chute_id,
+        metrics,
+        info,
+        supported_gpus,
+        gpu_count,
+        instances: List[Instance],
+        db_now: datetime,
     ):
         self.chute_id = chute_id
         self.metrics = metrics
         self.info = info
         self.supported_gpus = supported_gpus
+        self.gpu_count = gpu_count
         self.tee = info.tee if info else False
         self.current_version = info.version if info else None
         self.instances = instances
@@ -290,6 +298,7 @@ class AutoScaleContext:
         self.is_starving = False
         self.is_donor = False
         self.is_critical_donor = False
+        self.blocked_by_starving = False
         self.downscale_amount = 0
         self.upscale_amount = 0
         self.preferred_downscale_gpus = set()
@@ -1301,12 +1310,20 @@ async def _perform_autoscale_impl(
         try:
             ns = NodeSelector(**info.node_selector)
             supported_gpus = set(ns.supported_gpus)
+            gpu_count = ns.gpu_count
         except Exception:
             logger.warning(f"Failed to parse node selector for {chute_id}")
             supported_gpus = set()
+            gpu_count = None
 
         ctx = AutoScaleContext(
-            chute_id, metrics, info, supported_gpus, instances_by_chute[chute_id], db_now
+            chute_id,
+            metrics,
+            info,
+            supported_gpus,
+            gpu_count,
+            instances_by_chute[chute_id],
+            db_now,
         )
         contexts[chute_id] = ctx
 
@@ -1460,6 +1477,27 @@ async def _perform_autoscale_impl(
             # These won't scale down voluntarily but can be forced to donate when others are starving
             elif ctx.smoothed_util < ctx.threshold:
                 ctx.is_donor = True
+
+    # If any starving chutes exist, block non-starving scale-ups that are GPU-compatible.
+    if starving_chutes:
+        for ctx in contexts.values():
+            if ctx.is_starving:
+                continue
+            for starving_ctx in starving_chutes:
+                if starving_ctx.chute_id == ctx.chute_id:
+                    continue
+                if (
+                    ctx.gpu_count is not None
+                    and starving_ctx.gpu_count is not None
+                    and ctx.gpu_count != starving_ctx.gpu_count
+                ):
+                    continue
+                if not ctx.supported_gpus or not starving_ctx.supported_gpus:
+                    ctx.blocked_by_starving = True
+                elif ctx.supported_gpus & starving_ctx.supported_gpus:
+                    ctx.blocked_by_starving = True
+                if ctx.blocked_by_starving:
+                    break
 
     # 2. Local Decision Making (Ideal World)
     for ctx in contexts.values():
@@ -2297,7 +2335,7 @@ async def calculate_local_decision(ctx: AutoScaleContext):
 
     # Moderate Scale-Up: at/above threshold but not starving or rate limiting.
     # Scale to bring utilization back to the target threshold.
-    if ctx.utilization_basis >= ctx.threshold:
+    if ctx.utilization_basis >= ctx.threshold and not ctx.blocked_by_starving:
         # target_count ~= current_count * (util / threshold)
         desired_count = math.ceil(ctx.current_count * (ctx.utilization_basis / ctx.threshold))
         desired_count = max(ctx.current_count + 1, desired_count)
@@ -2311,6 +2349,11 @@ async def calculate_local_decision(ctx: AutoScaleContext):
                 f"{ctx.threshold:.1%}, adding {ctx.upscale_amount} instance(s), "
                 f"target={ctx.target_count}"
             )
+    elif ctx.utilization_basis >= ctx.threshold and ctx.blocked_by_starving:
+        logger.info(
+            f"Scale up blocked: {ctx.chute_id} - util={ctx.utilization_basis:.1%} >= "
+            f"{ctx.threshold:.1%} but GPU-compatible starving chutes exist"
+        )
     else:
         # Default/Stable - maintain current count (respecting failsafe minimum)
         # Chutes in stable zone (between scale_down_threshold and threshold) can still

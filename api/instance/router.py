@@ -127,7 +127,7 @@ async def _check_blacklisted(db, hotkey):
     return mgnode
 
 
-async def _check_scalable(db, chute, hotkey):
+async def _check_scalable(db, chute, hotkey, created_at=None):
     chute_id = chute.chute_id
     query = text("""
         SELECT
@@ -171,6 +171,31 @@ async def _check_scalable(db, chute, hotkey):
 
     # Check if scaling is allowed based on target count.
     if active_count >= target_count:
+        if created_at:
+            capacity_query = text("""
+                SELECT target_count, instance_count
+                FROM capacity_log
+                WHERE chute_id = :chute_id
+                  AND timestamp <= :created_at
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
+            capacity_result = await db.execute(
+                capacity_query,
+                {"chute_id": chute_id, "created_at": created_at.replace(tzinfo=None)},
+            )
+            capacity_row = capacity_result.mappings().first()
+            if (
+                capacity_row
+                and capacity_row.get("target_count") is not None
+                and capacity_row.get("instance_count") is not None
+                and active_count < capacity_row["target_count"]
+            ):
+                logger.info(
+                    f"SCALELOCK bypass: {chute_id=} instance created at {created_at} when "
+                    f"target_count={capacity_row['target_count']}"
+                )
+                return
         logger.warning(
             f"SCALELOCK: chute {chute_id=} {chute.name} has reached target capacity: "
             f"{current_count=}, {active_count=}, {target_count=}, {hotkey_count=}"
@@ -1151,7 +1176,7 @@ async def activate_launch_config_instance(
                 detail=reason,
             )
     elif chute.public:
-        await _check_scalable(db, chute, launch_config.miner_hotkey)
+        await _check_scalable(db, chute, launch_config.miner_hotkey, created_at=instance.created_at)
 
     # Activate the instance (and trigger tentative billing stop time).
     if not instance.active:

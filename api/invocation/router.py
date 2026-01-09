@@ -37,7 +37,7 @@ from api.util import (
 from api.user.schemas import User, InvocationQuota
 from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
 from api.report.schemas import Report, ReportArgs
-from api.database import get_db_session, get_session, get_db_ro_session
+from api.database import get_db_session, get_session, get_inv_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import get_prompt_prefix_hashes
 from api.util import validate_tool_call_arguments
@@ -105,7 +105,7 @@ async def get_usage(request: Request):
 async def _cached_get_metrics(table, cache_key):
     if (cached := await settings.redis_client.get(cache_key)) is not None:
         return json.loads(gzip.decompress(base64.b64decode(cached)))
-    async with get_session() as session:
+    async with get_inv_session() as session:
         result = await session.execute(text(f"SELECT * FROM {table}"))
         rows = result.mappings().all()
         rv = [dict(row) for row in rows]
@@ -273,20 +273,6 @@ async def report_invocation(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="A report has already been filed for this invocation",
-        )
-    invocation_exists = (
-        await db.execute(
-            select(
-                text(
-                    "EXISTS (SELECT 1 FROM invocations WHERE parent_invocation_id = :invocation_id AND user_id = :user_id)"
-                ).bindparams(invocation_id=invocation_id, user_id=current_user.user_id)
-            )
-        )
-    ).scalar()
-    if not invocation_exists:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Invocation not found, or does not belong to you",
         )
 
     report = Report(

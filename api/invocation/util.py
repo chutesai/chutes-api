@@ -11,7 +11,7 @@ from typing import Dict
 from loguru import logger
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.config import settings
-from api.database import get_session
+from api.database import get_session, get_inv_session
 from api.chute.schemas import NodeSelector
 from sqlalchemy import text
 
@@ -210,7 +210,7 @@ async def generate_invocation_history_metrics():
     """
     Generate all vllm/diffusion metrics through time.
     """
-    async with get_session() as session:
+    async with get_inv_session() as session:
         await session.execute(text("TRUNCATE TABLE vllm_metrics RESTART IDENTITY"))
         await session.execute(text("TRUNCATE TABLE diffusion_metrics RESTART IDENTITY"))
         await session.execute(text(TOKEN_METRICS_QUERY))
