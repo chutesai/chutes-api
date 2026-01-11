@@ -80,6 +80,8 @@ DANGEROUS_BUILTINS = {
 
 
 def is_allowed_env_var(env_key: str) -> bool:
+    if "trust" in env_key.lower():
+        return False
     if env_key in ALLOWED_ENV_VARS:
         return True
     return env_key.startswith(ALLOWED_ENV_VAR_PREFIXES)
@@ -233,6 +235,14 @@ def check_affine_code(code: str) -> tuple[bool, str]:
             elif isinstance(node.func, ast.Attribute):
                 if node.func.attr in DANGEROUS_BUILTINS:
                     return False, f"Dangerous function '{node.func.attr}' is not allowed"
+                if (
+                    node.func.attr in ["update", "setdefault"]
+                    and isinstance(node.func.value, ast.Attribute)
+                    and isinstance(node.func.value.value, ast.Name)
+                    and node.func.value.value.id == "os"
+                    and node.func.value.attr == "environ"
+                ):
+                    return False, f"os.environ.{node.func.attr} is not allowed"
             if isinstance(node.func, ast.Name) and node.func.id in ["str", "repr"]:
                 return False, f"{node.func.id}() constructor is not allowed"
             if isinstance(node.func, ast.Attribute):

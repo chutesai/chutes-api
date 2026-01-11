@@ -284,3 +284,60 @@ def test_invalid_engine_args_hex_decode_obfuscation() -> None:
         """,
         "engine_args for build_sglang_chute must be a string literal",
     )
+
+
+def test_invalid_env_var_contains_trust() -> None:
+    assert_invalid(
+        """
+        import os
+        from chutes.chute.template.vllm import build_vllm_chute
+
+        os.environ["VLLM_TRUST_REMOTE_CODE"] = "1"
+
+        chute = build_vllm_chute(
+            username="Dashirunner8",
+            model_name="foo/affine-test",
+            image="chutes/vllm:nightly-2026010900",
+            engine_args="--context-length 4096",
+        )
+        """,
+        "Setting os.environ['VLLM_TRUST_REMOTE_CODE'] is not allowed",
+    )
+
+
+def test_invalid_os_environ_update() -> None:
+    assert_invalid(
+        """
+        import os
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        os.environ.update({"VLLM_BATCH_INVARIANT": "1"})
+
+        chute = build_sglang_chute(
+            username="Dashirunner8",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            engine_args="--context-length 4096",
+        )
+        """,
+        "os.environ.update is not allowed",
+    )
+
+
+def test_invalid_os_environ_setdefault() -> None:
+    assert_invalid(
+        """
+        import os
+        from chutes.chute.template.vllm import build_vllm_chute
+
+        os.environ.setdefault("VLLM_BATCH_INVARIANT", "1")
+
+        chute = build_vllm_chute(
+            username="Dashirunner8",
+            model_name="foo/affine-test",
+            image="chutes/vllm:nightly-2026010900",
+            engine_args="--context-length 4096",
+        )
+        """,
+        "os.environ.setdefault is not allowed",
+    )
