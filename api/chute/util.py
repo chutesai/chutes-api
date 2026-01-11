@@ -781,21 +781,14 @@ async def _invoke_one(
                         (random.random() <= 0.005 or chunk_idx <= 3)
                         and image_supports_cllmv(chute.image)
                         and target.version == chute.version
-                        and not chute.tee
-                        and chute.chute_id
-                        not in (
-                            "385aa551-6085-5c94-bda8-aa12609ef73b",
-                            "64371741-a0a4-577c-923e-f545da8f6476",
-                            "69f319a7-7f25-5cce-ae30-68b30fd5ec5d",
-                            "f53ae961-7dcd-576f-badd-098f907d9bd2",
-                            "110bf8d9-d07e-54dd-9c31-abe1a9919c7a",
-                            "39d75699-957f-571f-8737-f2c72819d3e8",
-                            "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
-                            "579ca543-dda4-51d0-83ef-5667d1a5ed5f",
-                        )
                         and "model" in data
                         and not data.get("error")
                     ):
+                        model_identifier = (
+                            chute.name
+                            if chute.image.name == "vllm"
+                            else re.sub(chute.name, r"-TEE$", "")
+                        )
                         verification_token = data.get("chutes_verification")
                         text = None
                         has_tool_call = False
@@ -830,16 +823,17 @@ async def _invoke_one(
                                 text,
                                 verification_token,
                                 target.config_id,
-                                chute.name,
+                                model_identifier,
                                 chute.revision,
                             )
                         ):
                             logger.warning(
                                 f"CLLMV FAILURE: STREAMED {target.instance_id=} {target.miner_hotkey=} {chute.name=}: {data=}"
                             )
-                            raise InvalidCLLMV(
-                                f"BAD_RESPONSE {target.instance_id=} {chute.name=} returned invalid chunk (failed cllmv check)"
-                            )
+                            if "affine" in chute.name.lower():
+                                raise InvalidCLLMV(
+                                    f"BAD_RESPONSE {target.instance_id=} {chute.name=} returned invalid chunk (failed cllmv check)"
+                                )
 
                     last_chunk = chunk
                 if b"data:" in chunk:
@@ -1001,19 +995,12 @@ async def _invoke_one(
                         image_supports_cllmv(chute.image)
                         and target.version == chute.version
                         and "model" in json_data
-                        and not chute.tee
-                        and chute.chute_id
-                        not in (
-                            "385aa551-6085-5c94-bda8-aa12609ef73b",
-                            "64371741-a0a4-577c-923e-f545da8f6476",
-                            "69f319a7-7f25-5cce-ae30-68b30fd5ec5d",
-                            "f53ae961-7dcd-576f-badd-098f907d9bd2",
-                            "110bf8d9-d07e-54dd-9c31-abe1a9919c7a",
-                            "39d75699-957f-571f-8737-f2c72819d3e8",
-                            "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
-                            "579ca543-dda4-51d0-83ef-5667d1a5ed5f",
-                        )
                     ):
+                        model_identifier = (
+                            chute.name
+                            if chute.image.name == "vllm"
+                            else re.sub(chute.name, r"-TEE$", "")
+                        )
                         verification_token = json_data.get("chutes_verification")
                         text = None
                         if json_data.get("choices"):
@@ -1030,15 +1017,16 @@ async def _invoke_one(
                             text,
                             verification_token,
                             target.config_id,
-                            chute.name,
+                            model_identifier,
                             chute.revision,
                         ):
                             logger.warning(
                                 f"CLLMV FAILURE: {target.instance_id=} {target.miner_hotkey=} {chute.name=}"
                             )
-                            raise InvalidCLLMV(
-                                f"BAD_RESPONSE {target.instance_id=} {chute.name=} returned invalid chunk (failed cllmv check)"
-                            )
+                            if "affine" in chute.name.lower():
+                                raise InvalidCLLMV(
+                                    f"BAD_RESPONSE {target.instance_id=} {chute.name=} returned invalid chunk (failed cllmv check)"
+                                )
                         elif "affine" in chute.name.lower():
                             logger.success(
                                 f"CLLMV success {target.instance_id=} {target.miner_hotkey=} {chute.name=} {chute.chute_id=}"

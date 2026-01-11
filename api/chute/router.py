@@ -400,13 +400,13 @@ async def list_chutes(
                 or_(
                     Chute.public.is_(True),
                     Chute.user_id == current_user.user_id,
-                    Chute.name.ilike("%/affine%"),
+                    Chute.name.ilike("%affine%"),
                 )
             )
         else:
             query = query.where(Chute.user_id == current_user.user_id)
     else:
-        query = query.where(or_(Chute.public.is_(True), Chute.name.ilike("%/affine%")))
+        query = query.where(or_(Chute.public.is_(True), Chute.name.ilike("%affine%")))
 
     # Filter by name/tag/etc.
     if name and name.strip():
@@ -662,7 +662,7 @@ async def get_chute_code(
                 or await is_shared(chute_id, current_user.user_id)
             )
         )
-        or "/affine" in chute.name.lower()
+        or "affine" in chute.name.lower()
         or (current_user and subnet_role_accessible(chute, current_user, admin=True))
     ):
         authorized = True
@@ -1075,14 +1075,19 @@ async def _deploy_chute(
         )
 
     # Only allow newer SGLang versions for affine.
-    if "/affine" in chute_args.name.lower():
+    if "affine" in chute_args.name.lower():
         if (
-            not image_supports_cllmv(image, min_version=2025111902)
+            not image_supports_cllmv(
+                image, min_sglang_version=2025111902, min_vllm_version=2026010900
+            )
             or image.user_id != await chutes_user_id()
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail='Must use image="chutes/sglang:nightly-2025111902" (or more recent) for affine deployments.',
+                detail=(
+                    'Must use image="chutes/sglang:nightly-2025111902" (or more recent sglang), '
+                    'or image="chutes/vllm:nightly-2026010900" (or more recent vllm) for affine deployments.'
+                ),
             )
 
     # Prevent deploying images with old chutes SDK versions.

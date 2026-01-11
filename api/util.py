@@ -762,19 +762,28 @@ async def is_cloudflare_ip(ip_address):
     return False
 
 
-def image_supports_cllmv(image, min_version: int = 2025100801) -> bool:
-    if image.name != "sglang":
+def _image_supports_cllmv(image, name: str, min_version: int) -> bool:
+    if image.name != name:
         return False
-
     tag = image.tag.lower()
-    if not tag.startswith("nightly-"):
+    if not tag.startswith("nightly-") or len(tag) < 18:
         return False
-    date_part = tag[8:]
+    date_part = tag[8:][:10]
     try:
         date_num = int(date_part)
         return date_num >= min_version
     except (ValueError, Exception):
         return False
+
+
+def image_supports_cllmv(
+    image, min_sglang_version: int = 2025100801, min_vllm_version: int = 2026010900
+) -> bool:
+    if _image_supports_cllmv(image, "sglang", min_version=min_sglang_version):
+        return True
+    if image.name == "vllm" and _image_supports_cllmv(image, "vllm", min_version=min_vllm_version):
+        return True
+    return False
 
 
 async def validate_tool_call_arguments(body: dict) -> None:
