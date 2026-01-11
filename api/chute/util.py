@@ -59,6 +59,7 @@ from api.util import (
     use_encrypted_path,
     notify_deleted,
     image_supports_cllmv,
+    extract_hf_model_name,
     has_legacy_private_billing,
 )
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
@@ -787,7 +788,7 @@ async def _invoke_one(
                         model_identifier = (
                             chute.name
                             if chute.image.name == "vllm"
-                            else re.sub(chute.name, r"-TEE$", "")
+                            else extract_hf_model_name(chute.chute_id, chute.code)
                         )
                         verification_token = data.get("chutes_verification")
                         text = None
@@ -999,7 +1000,7 @@ async def _invoke_one(
                         model_identifier = (
                             chute.name
                             if chute.image.name == "vllm"
-                            else re.sub(chute.name, r"-TEE$", "")
+                            else extract_hf_model_name(chute.chute_id, chute.code)
                         )
                         verification_token = json_data.get("chutes_verification")
                         text = None

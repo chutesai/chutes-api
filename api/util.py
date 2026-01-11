@@ -6,6 +6,7 @@ import os
 import re
 import time
 import uuid
+import ast
 import aiodns
 import pybase64 as base64
 import ctypes
@@ -23,6 +24,7 @@ import importlib.util
 from io import BytesIO
 from PIL import Image
 import orjson as json
+from functools import lru_cache
 from typing import Set
 from loguru import logger
 from api.config import settings
@@ -43,6 +45,53 @@ from async_substrate_interface.async_substrate import AsyncSubstrateInterface
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
+ALLOWED_CHUTE_BUILDERS = {"build_sglang_chute", "build_vllm_chute"}
+
+
+@lru_cache(maxsize=2500)
+def extract_hf_model_name(chute_id: str, code: str) -> str:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ""
+
+    def get_model_name(node: ast.Call) -> str:
+        for keyword in node.keywords:
+            if keyword.arg != "model_name":
+                continue
+            if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                return keyword.value.value
+            return ""
+        return ""
+
+    def is_allowed_builder(node: ast.Call) -> bool:
+        if isinstance(node.func, ast.Name):
+            return node.func.id in ALLOWED_CHUTE_BUILDERS
+        if isinstance(node.func, ast.Attribute):
+            return node.func.attr in ALLOWED_CHUTE_BUILDERS
+        return False
+
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            if isinstance(node.targets[0], ast.Name) and node.targets[0].id == "chute":
+                if isinstance(node.value, ast.Call) and is_allowed_builder(node.value):
+                    model_name = get_model_name(node.value)
+                    if model_name:
+                        return model_name
+        if isinstance(node, ast.AnnAssign):
+            if isinstance(node.target, ast.Name) and node.target.id == "chute":
+                if isinstance(node.value, ast.Call) and is_allowed_builder(node.value):
+                    model_name = get_model_name(node.value)
+                    if model_name:
+                        return model_name
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and is_allowed_builder(node):
+            model_name = get_model_name(node)
+            if model_name:
+                return model_name
+
+    return ""
 
 
 def is_valid_bittensor_address(address):
