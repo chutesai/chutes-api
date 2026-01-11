@@ -8,7 +8,7 @@ def test_extract_model_name_sglang() -> None:
     from chutes.chute.template.sglang import build_sglang_chute
 
     chute = build_sglang_chute(
-        username="Dashirunner8",
+        username="exampleuser",
         model_name="foo/affine-test",
         image="chutes/sglang:nightly-2025121000",
     )
@@ -21,7 +21,7 @@ def test_extract_model_name_vllm() -> None:
     from chutes.chute.template.vllm import build_vllm_chute
 
     chute = build_vllm_chute(
-        username="Dashirunner8",
+        username="exampleuser",
         model_name="foo/affine-test",
         image="chutes/vllm:nightly-2026010900",
     )
@@ -34,7 +34,7 @@ def test_extract_model_name_fallback_call() -> None:
     from chutes.chute.template.sglang import build_sglang_chute
 
     something_else = build_sglang_chute(
-        username="Dashirunner8",
+        username="exampleuser",
         model_name="foo/affine-test",
         image="chutes/sglang:nightly-2025121000",
     )
@@ -47,7 +47,7 @@ def test_extract_model_name_missing_returns_empty() -> None:
     from chutes.chute.template.vllm import build_vllm_chute
 
     chute = build_vllm_chute(
-        username="Dashirunner8",
+        username="exampleuser",
         image="chutes/vllm:nightly-2026010900",
     )
     """
@@ -59,7 +59,7 @@ def test_extract_model_name_non_string_returns_empty() -> None:
     from chutes.chute.template.vllm import build_vllm_chute
 
     chute = build_vllm_chute(
-        username="Dashirunner8",
+        username="exampleuser",
         model_name={"name": "foo/affine-test"},
         image="chutes/vllm:nightly-2026010900",
     )
@@ -77,7 +77,7 @@ def test_extract_model_name_cache_key_includes_chute_id() -> None:
     from chutes.chute.template.vllm import build_vllm_chute
 
     chute = build_vllm_chute(
-        username="Dashirunner8",
+        username="exampleuser",
         model_name="foo/affine-test",
         image="chutes/vllm:nightly-2026010900",
     )

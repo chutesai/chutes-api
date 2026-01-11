@@ -20,7 +20,7 @@ def test_valid_sglang_chute_with_engine_args() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             readme="foo/affine-test",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
@@ -49,7 +49,7 @@ def test_valid_vllm_chute_with_engine_args() -> None:
         from chutes.chute.template.vllm import build_vllm_chute
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             readme="foo/affine-test",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
@@ -81,7 +81,7 @@ def test_valid_allowed_env_vars() -> None:
         os.environ["LMCACHE_USE_EXPERIMENTAL"] = "true"
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--context-length 4096",
@@ -99,7 +99,7 @@ def test_invalid_disallowed_env_var() -> None:
         os.environ["AWS_SECRET_ACCESS_KEY"] = "nope"
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--context-length 4096",
@@ -115,7 +115,7 @@ def test_invalid_engine_args_trust_remote_code() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--trust-remote-code true",
@@ -131,7 +131,7 @@ def test_invalid_engine_args_concatenated_flags() -> None:
         from chutes.chute.template.vllm import build_vllm_chute
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
             engine_args="--mem-fraction-static 0.85--context-length 36384",
@@ -147,7 +147,7 @@ def test_invalid_engine_args_non_string() -> None:
         from chutes.chute.template.vllm import build_vllm_chute
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
             engine_args={"foo": "bar"},
@@ -163,7 +163,7 @@ def test_invalid_image_prefix_for_builder() -> None:
         from chutes.chute.template.vllm import build_vllm_chute
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--context-length 4096",
@@ -180,7 +180,7 @@ def test_invalid_import_outside_chutes() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--context-length 4096",
@@ -196,7 +196,7 @@ def test_invalid_missing_chute_assignment() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         something_else = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--context-length 4096",
@@ -212,7 +212,7 @@ def test_invalid_engine_args_f_string_obfuscation() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args=f"--trust-remote-code true",
@@ -228,7 +228,7 @@ def test_invalid_engine_args_format_obfuscation() -> None:
         from chutes.chute.template.vllm import build_vllm_chute
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
             engine_args="--trust-{0} true".format("remote-code"),
@@ -244,7 +244,7 @@ def test_invalid_engine_args_join_obfuscation() -> None:
         from chutes.chute.template.vllm import build_vllm_chute
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
             engine_args="".join(["--trust-remote", "-code true"]),
@@ -260,7 +260,7 @@ def test_invalid_engine_args_concat_non_literal() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--trust-" + "remote-code true",
@@ -276,7 +276,7 @@ def test_invalid_engine_args_hex_decode_obfuscation() -> None:
         from chutes.chute.template.sglang import build_sglang_chute
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args=bytes.fromhex("2d2d74727573742d72656d6f74652d636f64652074727565"),
@@ -295,7 +295,7 @@ def test_invalid_env_var_contains_trust() -> None:
         os.environ["VLLM_TRUST_REMOTE_CODE"] = "1"
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
             engine_args="--context-length 4096",
@@ -314,7 +314,7 @@ def test_invalid_os_environ_update() -> None:
         os.environ.update({"VLLM_BATCH_INVARIANT": "1"})
 
         chute = build_sglang_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/sglang:nightly-2025121000",
             engine_args="--context-length 4096",
@@ -333,7 +333,7 @@ def test_invalid_os_environ_setdefault() -> None:
         os.environ.setdefault("VLLM_BATCH_INVARIANT", "1")
 
         chute = build_vllm_chute(
-            username="Dashirunner8",
+            username="exampleuser",
             model_name="foo/affine-test",
             image="chutes/vllm:nightly-2026010900",
             engine_args="--context-length 4096",

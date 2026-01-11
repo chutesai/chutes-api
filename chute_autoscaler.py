@@ -217,14 +217,17 @@ class AutoScaleContext:
         metrics,
         info,
         supported_gpus,
-        gpu_count,
         instances: List[Instance],
         db_now: datetime,
+        gpu_count=None,
     ):
         self.chute_id = chute_id
         self.metrics = metrics
         self.info = info
         self.supported_gpus = supported_gpus
+        if gpu_count is None and info:
+            node_selector = getattr(info, "node_selector", None) or {}
+            gpu_count = node_selector.get("gpu_count")
         self.gpu_count = gpu_count
         self.tee = info.tee if info else False
         self.current_version = info.version if info else None
@@ -294,7 +297,7 @@ class AutoScaleContext:
         self.action = "no_action"
         self.urgency_score = 0.0
         self.smoothed_urgency = 0.0
-        self.smoothed_util = 0.0
+        self.smoothed_util = self.utilization_basis
         self.is_starving = False
         self.is_donor = False
         self.is_critical_donor = False
