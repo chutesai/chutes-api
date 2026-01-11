@@ -4,12 +4,20 @@ Affine validation, to an extent anyways...
 
 import re
 import ast
+from typing import Optional
 
 # Super excessive limits.
 MAX_CODE_SIZE = 10000
 MAX_AST_NODES = 1000
 MAX_STRING_LENGTH = 1000
 MAX_AST_DEPTH = 20
+
+ALLOWED_ENV_VARS = {
+    "VLLM_BATCH_INVARIANT",
+    "LMCACHE_USE_EXPERIMENTAL",
+}
+ALLOWED_ENV_VAR_PREFIXES = ("SGLANG_", "VLLM_", "LMCACHE_")
+ALLOWED_TEMPLATE_BUILDERS = {"build_sglang_chute", "build_vllm_chute"}
 
 DANGEROUS_BUILTINS = {
     "eval",
@@ -71,6 +79,27 @@ DANGEROUS_BUILTINS = {
 }
 
 
+def is_allowed_env_var(env_key: str) -> bool:
+    if env_key in ALLOWED_ENV_VARS:
+        return True
+    return env_key.startswith(ALLOWED_ENV_VAR_PREFIXES)
+
+
+def is_os_environ_subscript(node: ast.Subscript) -> bool:
+    return (
+        isinstance(node.value, ast.Attribute)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "os"
+        and node.value.attr == "environ"
+    )
+
+
+def get_os_environ_key(node: ast.Subscript) -> Optional[str]:
+    if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+        return node.slice.value
+    return None
+
+
 def is_truthy_value(node):
     if isinstance(node, ast.Constant):
         return bool(node.value)
@@ -81,7 +110,7 @@ def is_truthy_value(node):
 
 def check_affine_code(code: str) -> tuple[bool, str]:
     """
-    Check if an affine model meets the requirements (LLM chute using SGLang only).
+    Check if an affine model meets the requirements (LLM chute using SGLang or VLLM).
     """
     if len(code) > MAX_CODE_SIZE:
         return False, f"Code size exceeds maximum allowed size of {MAX_CODE_SIZE} bytes"
@@ -156,10 +185,10 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                     imported_names.add(alias.asname if alias.asname else alias.name)
             elif node.module.startswith("chutes.chute.template"):
                 for alias in node.names:
-                    if alias.name != "build_sglang_chute":
+                    if alias.name not in ALLOWED_TEMPLATE_BUILDERS:
                         return (
                             False,
-                            f"From {node.module}, only build_sglang_chute can be imported",
+                            f"From {node.module}, only build_sglang_chute or build_vllm_chute can be imported",
                         )
                     imported_names.add(alias.asname if alias.asname else alias.name)
             else:
@@ -384,6 +413,10 @@ def check_affine_code(code: str) -> tuple[bool, str]:
 
         if isinstance(node, ast.Assign):
             for target in node.targets:
+                if isinstance(target, ast.Subscript) and is_os_environ_subscript(target):
+                    env_key = get_os_environ_key(target)
+                    if env_key and not is_allowed_env_var(env_key):
+                        return False, f"Setting os.environ['{env_key}'] is not allowed"
                 if isinstance(target, ast.Attribute):
                     current = target
                     attrs = []
@@ -411,7 +444,7 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                             if var_name == "chute":
                                 chute_constructor_found = True
                                 chute_assignment = "Chute"
-                        elif func_name == "build_sglang_chute":
+                        elif func_name in ALLOWED_TEMPLATE_BUILDERS:
                             if func_name not in imported_names:
                                 return False, f"Function {func_name} is used but not imported"
                             if var_name == "chute":
@@ -436,10 +469,15 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                                 "image argument must be a string literal, not Image(...)",
                                             )
                                         image_str = keyword.value.value
-                                        if not image_str.startswith("chutes/sglang"):
+                                        image_prefix = (
+                                            "chutes/sglang"
+                                            if func_name == "build_sglang_chute"
+                                            else "chutes/vllm"
+                                        )
+                                        if not image_str.startswith(image_prefix):
                                             return (
                                                 False,
-                                                "image must start with 'chutes/sglang'",
+                                                f"image must start with '{image_prefix}'",
                                             )
                                     elif keyword.arg == "engine_args":
                                         if not (
@@ -448,7 +486,7 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                         ):
                                             return (
                                                 False,
-                                                "engine_args for build_sglang_chute must be a string literal",
+                                                f"engine_args for {func_name} must be a string literal",
                                             )
                                         if (
                                             "trust_remote_code" in keyword.value.value
@@ -469,15 +507,13 @@ def check_affine_code(code: str) -> tuple[bool, str]:
                                     False,
                                     f"Function {func_name} must be assigned to variable 'chute', not '{var_name}'",
                                 )
-                        elif func_name == "build_vllm_chute":
-                            return (
-                                False,
-                                "build_vllm_chute is not allowed, only build_sglang_chute is permitted",
-                            )
                     assignments[var_name] = node
 
     if chute_assignment is None and not chute_constructor_found:
-        return False, "No 'chute' variable found calling build_sglang_chute or Chute constructor"
+        return (
+            False,
+            "No 'chute' variable found calling build_sglang_chute, build_vllm_chute, or Chute constructor",
+        )
 
     all_vars = set()
     loop_vars = set()
