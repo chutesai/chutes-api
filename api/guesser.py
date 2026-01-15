@@ -108,7 +108,18 @@ class ConfigGuesser:
             if quant_config.get("quant_method") == "fp8":
                 return "fp8"
 
-            # Check for bit-based quantization
+            # Check for compressed-tensors format (used by Kimi-K2, etc.)
+            if quant_config.get("quant_method") == "compressed-tensors":
+                config_groups = quant_config.get("config_groups", {})
+                for group_name, group_config in config_groups.items():
+                    weights = group_config.get("weights", {})
+                    num_bits = weights.get("num_bits")
+                    if num_bits == 4:
+                        return "4bit"
+                    elif num_bits == 8:
+                        return "8bit"
+
+            # Check for bit-based quantization (legacy format)
             bits = quant_config.get("bits", 16)
             if bits == 4:
                 return "4bit"
