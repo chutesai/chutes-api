@@ -69,6 +69,14 @@ from api.instance.util import (
 from api.server.service import (
     validate_request_nonce,
     create_nonce,
+    get_instance_quote,
+)
+from api.server.schemas import TdxQuoteResponse
+from api.server.exceptions import (
+    InstanceNotFoundError,
+    ChuteNotTeeError,
+    NonceError,
+    GetEvidenceError,
 )
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
@@ -1957,6 +1965,74 @@ async def get_instance_nonce(request: Request):
 async def get_token(salt: str = None, request: Request = None):
     origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
     return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
+
+
+@router.get("/{instance_id}/quote", response_model=TdxQuoteResponse)
+async def get_instance_quote(
+    instance_id: str,
+    nonce: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes")),
+):
+    """
+    Get TDX quote for a specific instance.
+
+    Args:
+        instance_id: Instance ID
+        nonce: User-provided nonce (64 hex characters, 32 bytes)
+
+    Returns:
+        TdxQuoteResponse with quote and certificate
+
+    Raises:
+        404: Instance not found
+        400: Invalid nonce format or instance not TEE-enabled
+        403: User cannot access instance
+        500: Server attestation failures
+    """
+    # Load instance with chute for authorization check
+    instance = (
+        (
+            await db.execute(
+                select(Instance)
+                .where(Instance.instance_id == instance_id)
+                .options(joinedload(Instance.chute))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+
+    if not instance:
+        raise InstanceNotFoundError(instance_id)
+
+    # Check authorization: user must own chute, have it shared, or chute must be public
+    if (
+        instance.chute.user_id != current_user.user_id
+        and not await is_shared(instance.chute.chute_id, current_user.user_id)
+        and not instance.chute.public
+    ):
+        if not subnet_role_accessible(instance.chute, current_user):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have access to this instance",
+            )
+
+    try:
+        quote_base64, cert_base64 = await get_instance_quote(db, instance_id, nonce)
+        return TdxQuoteResponse(
+            quote=quote_base64,
+            instance_id=None,  # Not needed for single instance response
+            certificate=cert_base64,
+        )
+    except (InstanceNotFoundError, ChuteNotTeeError, NonceError) as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail)
+    except GetEvidenceError as e:
+        logger.error(f"Failed to get quote for instance {instance_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve quote from server",
+        )
 
 
 @router.get("/{instance_id}/logs")

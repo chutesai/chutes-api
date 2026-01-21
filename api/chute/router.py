@@ -51,6 +51,12 @@ from api.chute.util import (
     invalidate_chute_cache,
     update_usage_data,
 )
+from api.server.service import get_chute_instance_quotes
+from api.server.schemas import TdxQuotesResponse
+from api.server.exceptions import ChuteNotTeeError, GetEvidenceError
+from api.server.service import get_chute_instance_quotes
+from api.server.schemas import TdxQuotesResponse
+from api.server.exceptions import ChuteNotTeeError, GetEvidenceError
 from api.bounty.util import (
     get_bounty_info,
     get_bounty_infos,
@@ -830,6 +836,66 @@ async def get_chute_utilization(request: Request):
             item["total_rate_limit_errors"] = item.get("rate_limited_requests_1h", 0)
             utilization_data.append(item)
         return utilization_data
+
+
+@router.get("/{chute_id_or_name:path}/quotes", response_model=TdxQuotesResponse)
+async def get_chute_quotes(
+    chute_id_or_name: str,
+    nonce: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
+):
+    """
+    Get TDX quotes for all instances of a chute.
+
+    Args:
+        chute_id_or_name: Chute ID or name
+        nonce: User-provided nonce (64 hex characters, 32 bytes)
+
+    Returns:
+        TdxQuotesResponse with array of quotes
+
+    Raises:
+        404: Chute not found
+        400: Invalid nonce format or chute not TEE-enabled
+        403: User cannot access chute
+        500: Server attestation failures
+    """
+    chute = await get_one(chute_id_or_name)
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found",
+        )
+
+    # Auth check - same logic as get_chute
+    authorized = False
+    if (
+        chute.public
+        or (current_user and chute.user_id == current_user.user_id)
+        or (current_user and await is_shared(chute.chute_id, current_user.user_id))
+        or (current_user and subnet_role_accessible(chute, current_user))
+        or "affine" in chute.name.lower()
+    ):
+        authorized = True
+
+    if not authorized:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found, or does not belong to you",
+        )
+
+    try:
+        quotes = await get_chute_instance_quotes(db, chute.chute_id, nonce)
+        return TdxQuotesResponse(quotes=quotes)
+    except ChuteNotTeeError as e:
+        raise e
+    except GetEvidenceError as e:
+        logger.error(f"Failed to get quotes for chute {chute.chute_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve quotes from servers",
+        )
 
 
 @router.get("/{chute_id_or_name:path}", response_model=ChuteResponse)

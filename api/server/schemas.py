@@ -17,7 +17,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, List, Optional
 from api.database import Base, generate_uuid
 from api.node.schemas import NodeArgs
 
@@ -87,6 +87,20 @@ class ServerArgs(BaseModel):
     id: str = Field(..., description="Server ID (e.g. k8s node uid)")
     name: str = Field(..., description="Server name ")
     gpus: list[NodeArgs] = Field(..., description="GPU info for this server")
+
+
+class TdxQuoteResponse(BaseModel):
+    """Response model for TDX quote retrieval."""
+
+    quote: str = Field(..., description="Base64-encoded TDX quote")
+    instance_id: Optional[str] = Field(None, description="Instance ID (for bulk responses)")
+    certificate: str = Field(..., description="Base64-encoded DER format TLS certificate from the server")
+
+
+class TdxQuotesResponse(BaseModel):
+    """Response model for bulk TDX quote retrieval."""
+
+    quotes: List[TdxQuoteResponse] = Field(..., description="Array of quotes")
 
 
 class BootAttestation(Base):

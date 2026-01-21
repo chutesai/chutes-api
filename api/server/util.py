@@ -3,6 +3,7 @@ TDX quote parsing, crypto operations, and server helper functions.
 """
 
 import secrets
+import base64
 from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.sql import func
@@ -26,6 +27,7 @@ from api.server.exceptions import (
     MeasurementMismatchError,
     NoClientCertError,
     NoServerCertError,
+    NonceError,
 )
 from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
@@ -47,7 +49,7 @@ def extract_client_cert_hash():
     async def _extract_request_client_cert(request: Request):
         try:
             cert = _get_client_certificate(request)
-            cert_hash = _get_public_key_hash(cert)
+            cert_hash = get_public_key_hash(cert)
 
             return cert_hash
         except Exception as e:
@@ -60,7 +62,7 @@ def extract_client_cert_hash():
 def extract_server_cert_hash(response: ClientResponse):
     try:
         cert = _get_server_certificate(response)
-        cert_hash = _get_public_key_hash(cert)
+        cert_hash = get_public_key_hash(cert)
 
         return cert_hash
     except Exception as e:
@@ -93,7 +95,7 @@ def _get_server_certificate(response: ClientResponse) -> bytes:
     return cert
 
 
-def _get_public_key_hash(cert: Certificate) -> str:
+def get_public_key_hash(cert: Certificate) -> str:
     """
     Compute SHA-256 hash of certificate's public key in DER format.
     This matches the bash snippet's logic:
@@ -111,6 +113,49 @@ def _get_public_key_hash(cert: Certificate) -> str:
     hash_digest = hashlib.sha256(public_key_der).hexdigest()
 
     return hash_digest
+
+
+def validate_user_nonce(nonce: str) -> str:
+    """
+    Validate that a user-provided nonce is exactly 64 hex characters (32 bytes).
+
+    Args:
+        nonce: Nonce string to validate
+
+    Returns:
+        Validated nonce string
+
+    Raises:
+        NonceError: If nonce is not exactly 64 hex characters
+    """
+    if not nonce:
+        raise NonceError("Nonce is required")
+    
+    if len(nonce) != 64:
+        raise NonceError(f"Nonce must be exactly 64 hex characters (32 bytes), got {len(nonce)}")
+    
+    try:
+        # Validate it's valid hex
+        int(nonce, 16)
+    except ValueError:
+        raise NonceError("Nonce must be a valid hexadecimal string")
+    
+    return nonce
+
+
+def cert_to_base64_der(cert: Certificate) -> str:
+    """
+    Convert a Certificate object to base64-encoded DER format.
+
+    Args:
+        cert: Certificate object to convert
+
+    Returns:
+        Base64-encoded DER certificate string
+    """
+    cert_der = cert.public_bytes(serialization.Encoding.DER)
+    cert_base64 = base64.b64encode(cert_der).decode("utf-8")
+    return cert_base64
 
 
 def _get_client_certificate(request: Request) -> bytes:

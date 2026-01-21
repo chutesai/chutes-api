@@ -39,6 +39,8 @@ from api.server.exceptions import (
     NonceError,
     ServerNotFoundError,
     ServerRegistrationError,
+    ChuteNotTeeError,
+    InstanceNotFoundError,
 )
 from api.server.util import (
     _track_server,
@@ -51,7 +53,16 @@ from api.server.util import (
     verify_result,
     sync_server_luks_passphrases,
     delete_luks_passphrases_for_server,
+    get_public_key_hash,
+    cert_to_base64_der,
+    validate_user_nonce,
 )
+from api.instance.schemas import Instance
+from api.chute.schemas import Chute
+from api.node.schemas import Node
+from sqlalchemy.orm import joinedload
+from typing import List, Tuple
+from api.server.schemas import TdxQuoteResponse
 from api.node.schemas import NodeArgs
 from api.util import extract_ip
 
@@ -422,7 +433,8 @@ async def verify_server(
         logger.info(
             f"Verifying server server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} with nonce {nonce}"
         )
-        quote, gpu_evidence, expected_cert_hash = await client.get_evidence(nonce)
+        quote, gpu_evidence, cert = await client.get_evidence(nonce)
+        expected_cert_hash = get_public_key_hash(cert)
 
         # Verify quote measurements (matches by full MRTD + RTMRs; multiple configs may share RTMR0)
         await verify_quote(quote, nonce, expected_cert_hash)
@@ -868,3 +880,170 @@ async def process_luks_passphrase_request(
     )
     await _consume_boot_token(boot_token)
     return result
+
+
+async def get_instance_server(db: AsyncSession, instance_id: str) -> Server:
+    """
+    Get the TEE server associated with an instance via its nodes.
+
+    Args:
+        db: Database session
+        instance_id: Instance ID
+
+    Returns:
+        Server object
+
+    Raises:
+        InstanceNotFoundError: If instance not found
+        ChuteNotTeeError: If the instance's chute is not TEE-enabled
+    """
+    # Load instance with chute, nodes and their servers
+    query = (
+        select(Instance)
+        .where(Instance.instance_id == instance_id)
+        .options(
+            joinedload(Instance.chute),
+            joinedload(Instance.nodes).joinedload(Node.server)
+        )
+    )
+    result = await db.execute(query)
+    instance = result.unique().scalar_one_or_none()
+
+    if not instance:
+        raise InstanceNotFoundError(instance_id)
+
+    # Check if chute is TEE-enabled (TEE chutes can only run on TEE servers)
+    if not instance.chute.tee:
+        raise ChuteNotTeeError(instance.chute.chute_id)
+
+    # Instance always has nodes, get server from first node
+    node = instance.nodes[0]
+    server = node.server
+
+    return server
+
+
+async def _get_quote_from_server(server: Server, nonce: str) -> Tuple[str, str]:
+    """
+    Get TDX quote from a server.
+
+    Args:
+        server: Server object
+        nonce: User-provided nonce (64 hex characters)
+
+    Returns:
+        Tuple of (base64_encoded_quote, base64_der_certificate)
+
+    Raises:
+        GetEvidenceError: If quote retrieval fails
+    """
+    # Get quote from server
+    client = TeeServerClient(server)
+    quote, gpu_evidence, cert = await client.get_evidence(nonce)
+
+    # Convert quote and cert to base64 strings
+    quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
+    cert_base64 = cert_to_base64_der(cert)
+
+    return quote_base64, cert_base64
+
+
+async def get_instance_quote(
+    db: AsyncSession, instance_id: str, nonce: str
+) -> Tuple[str, str]:
+    """
+    Get TDX quote for a specific instance.
+
+    Args:
+        db: Database session
+        instance_id: Instance ID
+        nonce: User-provided nonce (64 hex characters)
+
+    Returns:
+        Tuple of (base64_encoded_quote, base64_der_certificate)
+
+    Raises:
+        InstanceNotFoundError: If instance not found
+        ChuteNotTeeError: If the instance's chute is not TEE-enabled
+        GetEvidenceError: If quote retrieval fails
+    """
+    # Validate nonce
+    validate_user_nonce(nonce)
+
+    # Get server
+    server = await get_instance_server(db, instance_id)
+
+    # Get quote from server
+    return await _get_quote_from_server(server, nonce)
+
+
+async def get_chute_instance_quotes(
+    db: AsyncSession, chute_id: str, nonce: str
+) -> List[TdxQuoteResponse]:
+    """
+    Get TDX quotes for all instances of a chute.
+
+    Args:
+        db: Database session
+        chute_id: Chute ID
+        nonce: User-provided nonce (64 hex characters)
+
+    Returns:
+        List of TdxQuoteResponse objects
+
+    Raises:
+        ChuteNotTeeError: If chute is not TEE-enabled
+        GetEvidenceError: If quote retrieval fails for any instance
+    """
+    # Validate nonce
+    validate_user_nonce(nonce)
+
+    # Check if chute is TEE-enabled
+    query = select(Chute).where(Chute.chute_id == chute_id)
+    result = await db.execute(query)
+    chute = result.scalar_one_or_none()
+
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Chute {chute_id} not found"
+        )
+
+    if not chute.tee:
+        raise ChuteNotTeeError(chute_id)
+
+    # Load all active/verified instances for chute
+    instances_query = (
+        select(Instance)
+        .where(
+            Instance.chute_id == chute_id,
+            Instance.active == True,
+            Instance.verified == True,
+        )
+        .options(joinedload(Instance.nodes).joinedload(Node.server))
+    )
+    instances_result = await db.execute(instances_query)
+    instances = instances_result.unique().scalars().all()
+
+    quotes = []
+    for instance in instances:
+        try:
+            # Instance always has nodes, get server from first node
+            # Since chute is TEE-enabled, all instances have TEE servers
+            node = instance.nodes[0]
+            server = node.server
+
+            # Get quote from server (already loaded, no extra query needed)
+            quote_base64, cert_base64 = await _get_quote_from_server(server, nonce)
+            quotes.append(
+                TdxQuoteResponse(
+                    quote=quote_base64,
+                    instance_id=instance.instance_id,
+                    certificate=cert_base64,
+                )
+            )
+        except GetEvidenceError as e:
+            # Log but continue with other instances
+            logger.error(f"Failed to get quote for instance {instance.instance_id}: {str(e)}")
+            continue
+
+    return quotes

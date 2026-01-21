@@ -8,11 +8,12 @@ from urllib.parse import urljoin
 
 import aiohttp
 from loguru import logger
+from cryptography.x509 import Certificate
 from api.constants import HOTKEY_HEADER, NONCE_HEADER, SIGNATURE_HEADER
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
 from api.server.schemas import Server
-from api.server.util import extract_server_cert_hash
+from api.server.util import _get_server_certificate
 from api.config import settings
 
 
@@ -73,7 +74,7 @@ class TeeServerClient:
         async with aiohttp.ClientSession(connector=connector, raise_for_status=True) as session:
             yield session
 
-    async def get_evidence(self, nonce: str) -> Tuple[TdxQuote, Dict[str, str], str]:
+    async def get_evidence(self, nonce: str) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
         try:
             url = urljoin(self._url, "server/attest")
             headers, _ = self._sign_request(purpose="attest")
@@ -85,12 +86,12 @@ class TeeServerClient:
                         "nonce": nonce,
                     },
                 ) as resp:
-                    expected_cert_hash = extract_server_cert_hash(resp)
+                    cert = _get_server_certificate(resp)
                     data = await resp.json()
                     quote = RuntimeTdxQuote.from_base64(data["tdx_quote"])
                     gpu_evidence = json.loads(data["nvtrust_evidence"])
 
-                    return quote, gpu_evidence, expected_cert_hash
+                    return quote, gpu_evidence, cert
         except Exception as exc:
             logger.error(f"Failed to get attestation evidence from {self._url}: {exc}")
             raise GetEvidenceError(f"Failed to get evidence for attestation: {str(exc)}")

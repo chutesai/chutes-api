@@ -118,3 +118,21 @@ class InvalidTdxConfiguration(HTTPException):
 
     def __init__(self, detail: str = "Missing or invalid configuration for TDX verification."):
         super().__init__(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+
+class ChuteNotTeeError(HTTPException):
+    """Raised when a chute is not TEE-enabled."""
+
+    def __init__(self, chute_id: str):
+        super().__init__(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Chute {chute_id} is not TEE-enabled",
+        )
+
+class InstanceNotFoundError(HTTPException):
+    """Raised when an instance is not found."""
+
+    def __init__(self, instance_id: str):
+        super().__init__(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"Instance {instance_id} not found"
+        )
