@@ -7,7 +7,7 @@ import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
 import tempfile
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
 from sqlalchemy import select, func
@@ -51,6 +51,8 @@ from api.server.util import (
     get_cache_passphrase,
     create_or_update_cache_passphrase,
 )
+from api.config import TeeMeasurementConfig
+from api.node.schemas import NodeArgs
 from api.util import extract_ip
 
 
@@ -188,6 +190,45 @@ async def verify_quote(
     return result
 
 
+def validate_gpus_for_measurements(
+    quote: TdxQuote, gpus: list[NodeArgs], measurement_config: TeeMeasurementConfig
+) -> None:
+    """
+    Validate that the provided GPUs match the expected GPUs for this measurement configuration.
+
+    Args:
+        quote: Verified TDX quote
+        gpus: List of GPU nodes being registered
+        measurement_config: Measurement configuration for this MRTD
+
+    Raises:
+        MeasurementMismatchError: If GPUs don't match measurement configuration expectations
+    """
+    # Extract GPU identifiers
+    provided_gpu_ids = {gpu.gpu_identifier.lower() for gpu in gpus}
+    expected_gpu_ids = set(measurement_config.expected_gpus)
+
+    # Check that all provided GPUs are in expected list
+    unexpected_gpus = provided_gpu_ids - expected_gpu_ids
+    if unexpected_gpus:
+        raise MeasurementMismatchError(
+            f"GPU mismatch for measurement config '{measurement_config.name}': "
+            f"Expected GPUs {expected_gpu_ids}, but got {unexpected_gpus}"
+        )
+
+    # Check GPU count if specified
+    if measurement_config.gpu_count and len(gpus) != measurement_config.gpu_count:
+        raise MeasurementMismatchError(
+            f"GPU count mismatch for measurement config '{measurement_config.name}': "
+            f"Expected {measurement_config.gpu_count} GPUs, but got {len(gpus)}"
+        )
+
+    logger.info(
+        f"GPU validation passed for measurement config '{measurement_config.name}': "
+        f"{len(gpus)} GPUs of types {provided_gpu_ids}"
+    )
+
+
 async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:
     try:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as fp:
@@ -313,8 +354,8 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
             for key in ["processors", "max_threads_per_processor"]:
                 setattr(gpu, key, gpu_info.get(key))
 
-        # Start verification process
-        await verify_server(db, server, miner_hotkey)
+        # Start verification process (pass GPUs for validation)
+        await verify_server(db, server, miner_hotkey, gpus=args.gpus)
 
         # Track nodes once verified
         await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
@@ -345,20 +386,17 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         )
 
 
-async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> None:
+async def verify_server(
+    db: AsyncSession, server: Server, miner_hotkey: str, gpus: list[NodeArgs]
+) -> None:
     """
-    Register a new server.
+    Verify server attestation and validate GPUs match measurement configuration.
 
     Args:
         db: Database session
-        args: Server registration arguments
-        miner_hotkey: Miner hotkey from authentication
-
-    Returns:
-        Created server object
-
-    Raises:
-        ServerRegistrationError: If registration fails
+        server: Server to verify
+        miner_hotkey: Miner hotkey
+        gpus: List of GPUs to validate against measurement configuration
     """
     failure_reason = ""
     quote = None
@@ -371,9 +409,20 @@ async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> 
         )
         quote, gpu_evidence, expected_cert_hash = await client.get_evidence(nonce)
 
+        # Verify quote measurements (this will lookup measurement config by MRTD)
         await verify_quote(quote, nonce, expected_cert_hash)
 
+        # Get measurement configuration
+        mrtd_upper = quote.mrtd.upper()
+        measurement_config = settings.tee_measurements.get(mrtd_upper)
+        if not measurement_config:
+            raise MeasurementMismatchError(f"Unknown MRTD: {mrtd_upper[:16]}...")
+
+        # Verify GPU evidence
         await verify_gpu_evidence(gpu_evidence, nonce)
+
+        # Validate GPUs match measurement configuration
+        validate_gpus_for_measurements(quote, gpus, measurement_config)
 
         logger.success(
             f"Verified server server_id={server.server_id} ip={server.ip} for miner: {miner_hotkey}"

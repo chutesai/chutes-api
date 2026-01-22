@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tee-measurements
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+data:
+  tee_measurements.yaml: |
+    # TEE Measurement Configuration
+    # This file is managed via Kubernetes ConfigMap
+    # Update the ConfigMap to add/modify measurement configurations
+    measurements:
+      # Example measurement configuration - replace with actual values
+      - mrtd: "PLACEHOLDER_MRTD_96_HEX_CHARS"
+        name: "8xh200"
+        description: "8x H200 GPU configuration"
+        boot_rtmrs:
+          rtmr0: "PLACEHOLDER_RTMR0_96_HEX_CHARS"
+          rtmr1: "PLACEHOLDER_RTMR1_96_HEX_CHARS"
+          rtmr2: "PLACEHOLDER_RTMR2_96_HEX_CHARS"
+          rtmr3: "PLACEHOLDER_RTMR3_96_HEX_CHARS"
+        runtime_rtmrs:
+          rtmr0: "PLACEHOLDER_RTMR0_96_HEX_CHARS"
+          rtmr1: "PLACEHOLDER_RTMR1_96_HEX_CHARS"
+          rtmr2: "PLACEHOLDER_RTMR2_96_HEX_CHARS"
+          rtmr3: "PLACEHOLDER_RTMR3_96_HEX_CHARS"
+        expected_gpus:
+          - "h200"
+        gpu_count: 8

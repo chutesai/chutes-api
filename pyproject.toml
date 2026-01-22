@@ -54,6 +54,7 @@ dependencies = [
   "uvloop>=0.22.1",
   "httptools>=0.7.1",
   "bittensor-drand>=1.2.0",
+  "pyyaml>=6.0.1,<7.0.0",
 ]
 
 # Dev dependencies go under optional-dependencies

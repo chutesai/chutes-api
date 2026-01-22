@@ -49,15 +49,18 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if .Values.squad_enabled }}
       volumes:
+        {{- if .Values.squad_enabled }}
         - name: squad-certs
           secret:
             secretName: squad-cert
             items:
               - key: squad_pub.pem
                 path: squad_pub.pem
-      {{- end }}
+        {{- end }}
+        - name: tee-measurements
+          configMap:
+            name: tee-measurements
       containers:
         - name: api
           image: "{{ .Values.api.image }}"
@@ -88,12 +91,15 @@ spec:
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
             {{- end }}
-          {{- if .Values.squad_enabled }}
           volumeMounts:
+            {{- if .Values.squad_enabled }}
             - name: squad-certs
               mountPath: "/etc/squad"
               readOnly: true
-          {{- end }}
+            {{- end }}
+            - name: tee-measurements
+              mountPath: "/etc/config"
+              readOnly: true
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

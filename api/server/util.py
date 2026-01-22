@@ -182,7 +182,9 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
 
 def verify_measurements(quote: TdxQuote) -> bool:
     """
-    Verify quote measurements against expected values.
+    Verify quote measurements against allowed measurement values.
+
+    Uses MRTD as lookup key to find expected RTMRs for this measurement configuration.
 
     Args:
         quote: Parsed TDX quote
@@ -193,13 +195,24 @@ def verify_measurements(quote: TdxQuote) -> bool:
     Raises:
         MeasurementMismatchError: If any measurements don't match
     """
+    mrtd_upper = quote.mrtd.upper()
+    measurement_config = settings.tee_measurements.get(mrtd_upper)
+
+    if not measurement_config:
+        available = list(settings.tee_measurements.keys())
+        raise MeasurementMismatchError(
+            f"Unknown MRTD: {mrtd_upper[:16]}... (not in configured measurements). "
+            f"Available measurement configs: {len(available)} configured"
+        )
+
     expected_rtmrs = (
-        settings.expected_boot_rmtrs
-        if quote.quote_type == "boot"
-        else settings.expected_runtime_rmtrs
+        measurement_config.boot_rtmrs if quote.quote_type == "boot" else measurement_config.runtime_rtmrs
     )
-    logger.info("Verifying quote against configured MRTD and RTMRS.")
-    return _verify_measurements(quote, expected_rtmrs)
+
+    logger.info(
+        f"Verifying quote for measurement config '{measurement_config.name}' (MRTD: {mrtd_upper[:16]}...)"
+    )
+    return _verify_measurements(quote, expected_rtmrs, measurement_config.name)
 
 
 def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
@@ -216,31 +229,35 @@ def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
     Raises:
         MeasurementMismatchError: If any measurements don't match
     """
+    # Get measurement config name for logging if available
+    mrtd_upper = quote.mrtd.upper()
+    measurement_config = settings.tee_measurements.get(mrtd_upper)
+    measurement_name = measurement_config.name if measurement_config else "unknown"
+
     logger.info("Verifying quote against verification result MRTD and RTMRS.")
-    return _verify_measurements(quote, result.rtmrs)
+    return _verify_measurements(quote, result.rtmrs, measurement_name)
 
 
-def _verify_measurements(quote: TdxQuote, expected_rtmrs: Dict[str, str]) -> bool:
+def _verify_measurements(
+    quote: TdxQuote, expected_rtmrs: Dict[str, str], measurement_name: str = "unknown"
+) -> bool:
     try:
         mismatches = []
 
-        # Verify MRTD
-        expected_mrtd = settings.expected_mrtd
-        if quote.mrtd.upper() != expected_mrtd.upper():
-            error_msg = f"MRTD mismatch: expected {expected_mrtd}, got {quote.mrtd}"
-            logger.error(error_msg)
-            mismatches.append(error_msg)
+        # MRTD verification is implicit - if we found the measurement config, MRTD is valid
+        # No need to check MRTD again here
 
         # Verify RTMRs
         for rtmr_name, expected_value in expected_rtmrs.items():
-            actual_value = quote.rtmrs.get(rtmr_name)
+            actual_value = quote.rtmrs.get(rtmr_name.lower())
             if not actual_value:
                 error_msg = f"Quote missing expected RTMR[{rtmr_name}]"
                 logger.error(error_msg)
                 mismatches.append(error_msg)
             elif actual_value.upper() != expected_value.upper():
                 error_msg = (
-                    f"RTMR {rtmr_name} mismatch: expected {expected_value}, got {actual_value}"
+                    f"RTMR {rtmr_name} mismatch for measurement config '{measurement_name}': "
+                    f"expected {expected_value[:16]}..., got {actual_value[:16]}..."
                 )
                 logger.error(error_msg)
                 mismatches.append(error_msg)
@@ -251,7 +268,7 @@ def _verify_measurements(quote: TdxQuote, expected_rtmrs: Dict[str, str]) -> boo
             logger.error(f"Measurement verification failed: {'; '.join(mismatches)}")
             raise MeasurementMismatchError()
 
-        logger.info("Measurements verified successfully")
+        logger.info(f"Measurements verified successfully for measurement config '{measurement_name}'")
         return True
 
     except MeasurementMismatchError:
