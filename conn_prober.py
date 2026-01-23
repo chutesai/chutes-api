@@ -18,6 +18,7 @@ from api.instance.schemas import Instance
 from api.instance.util import invalidate_instance_cache
 from api.util import aes_encrypt, notify_deleted, semcomp
 from api.chute.util import get_one
+from watchtower import check_runint
 
 ENETUNREACH_TOKEN = "ENETUNREACH"
 REDIS_PREFIX = "conntestfail:"
@@ -155,6 +156,20 @@ async def check_instance_connectivity(
         return instance.instance_id, True
 
     allow_egress = chute.allow_external_egress
+    # Runtime integrity check (version >= 0.4.9).
+    try:
+        if not await check_runint(instance):
+            if delete_on_failure:
+                async with get_session() as session:
+                    await _record_failure_or_delete(session, instance, hard_reason=None)
+            return instance.instance_id, False
+    except Exception as exc:
+        logger.warning(f"RUNINT: timeout/error checking {instance.instance_id=}: {exc}")
+        if delete_on_failure:
+            async with get_session() as session:
+                await _record_failure_or_delete(session, instance, hard_reason=None)
+        return instance.instance_id, False
+
     try:
         await _verify_netnanny(instance, allow_egress)
         logger.success(f"🔒 netnanny challenge verified for {instance.instance_id=}")

@@ -98,6 +98,56 @@ NETNANNY.verify.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint8]
 NETNANNY.verify.restype = ctypes.c_int
 
 
+def _verify_rint_commitment(commitment_hex: str, expected_nonce: str) -> bool:
+    """Verify the runtime integrity commitment (mini-cert)."""
+    try:
+        from ecdsa import VerifyingKey, NIST256p, BadSignatureError
+        import hashlib
+
+        if len(commitment_hex) != 290:
+            logger.error(f"RUNINT: commitment length mismatch: {len(commitment_hex)} != 290")
+            return False
+
+        commitment_bytes = bytes.fromhex(commitment_hex)
+        if len(commitment_bytes) != 145:
+            logger.error(
+                f"RUNINT: decoded commitment length mismatch: {len(commitment_bytes)} != 145"
+            )
+            return False
+
+        prefix = commitment_bytes[0]
+        if prefix != 0x04:
+            logger.error(f"RUNINT: invalid prefix: {prefix} != 0x04")
+            return False
+
+        pubkey_bytes = commitment_bytes[1:65]
+        nonce_bytes = commitment_bytes[65:81]
+        sig_bytes = commitment_bytes[81:145]
+
+        expected_nonce_hash = hashlib.sha256(expected_nonce.encode()).digest()[:16]
+        if nonce_bytes != expected_nonce_hash:
+            logger.error(
+                f"RUNINT: nonce mismatch: {nonce_bytes.hex()} != {expected_nonce_hash.hex()}"
+            )
+            return False
+
+        vk = VerifyingKey.from_string(pubkey_bytes, curve=NIST256p)
+        msg_to_verify = pubkey_bytes + nonce_bytes
+        msg_hash = hashlib.sha256(msg_to_verify).digest()
+
+        try:
+            vk.verify_digest(sig_bytes, msg_hash)
+            logger.info("RUNINT: commitment verification successful")
+            return True
+        except BadSignatureError:
+            logger.error("RUNINT: signature verification failed")
+            return False
+
+    except Exception as e:
+        logger.error(f"RUNINT: commitment verification error: {e}")
+        return False
+
+
 async def _load_chute(db, chute_id: str) -> Chute:
     chute = (
         (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
@@ -705,6 +755,36 @@ async def _validate_launch_config_instance(
                 detail=launch_config.verification_error,
             )
 
+    # Runtime integrity (runint) verification for version >= 0.4.9
+    if semcomp(chute.chutes_version, "0.4.9") >= 0:
+        if not launch_config.nonce:
+            logger.error(f"{log_prefix} missing runint nonce in launch config")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Missing runtime integrity nonce"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+        if not args.rint_commitment:
+            logger.error(f"{log_prefix} missing runint commitment")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Missing runtime integrity commitment"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+        if not _verify_rint_commitment(args.rint_commitment, launch_config.nonce):
+            logger.error(f"{log_prefix} invalid runint commitment")
+            launch_config.failed_at = func.now()
+            launch_config.verification_error = "Invalid runtime integrity commitment"
+            await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=launch_config.verification_error,
+            )
+
     await _validate_launch_config_filesystem(db, launch_config, chute, args)
 
     # Assign the job to this launch config.
@@ -759,6 +839,8 @@ async def _validate_launch_config_instance(
         hourly_rate=(await node_selector.current_estimated_price())["usd"]["hour"],
         inspecto=getattr(args, "inspecto", None),
         env_creation=args.model_dump(),
+        rint_commitment=getattr(args, "rint_commitment", None),
+        rint_nonce=launch_config.nonce,
     )
     if launch_config.job_id or (
         not chute.public
@@ -988,9 +1070,18 @@ async def get_launch_config(
         disk_gb = job.job_args["_disk_gb"]
 
     # Create the launch config and JWT.
+    config_id = str(uuid.uuid4())
+
+    # Generate runtime integrity nonce for version >= 0.4.9
+    rint_nonce = None
+    if semcomp(chute.chutes_version or "0.0.0", "0.4.9") >= 0:
+        rint_nonce = secrets.token_hex(16)
+        # Store in Redis with 2-hour TTL, keyed by config_id
+        await settings.redis_client.set(f"rint_nonce:{config_id}", rint_nonce, ex=7200)
+
     try:
         launch_config = LaunchConfig(
-            config_id=str(uuid.uuid4()),
+            config_id=config_id,
             env_key=secrets.token_bytes(16).hex(),
             chute_id=chute_id,
             job_id=job_id,
@@ -999,6 +1090,7 @@ async def get_launch_config(
             miner_coldkey=miner.coldkey,
             env_type="tee" if chute.tee else "graval",
             seed=0,
+            nonce=rint_nonce,
         )
         db.add(launch_config)
         await db.commit()
@@ -1022,6 +1114,69 @@ async def get_launch_config(
         "token": token,
         "config_id": launch_config.config_id,
     }
+
+
+@router.get("/nonce")
+async def get_rint_nonce(
+    db: AsyncSession = Depends(get_db_session),
+    authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
+):
+    """
+    Get runtime integrity nonce for a launch config.
+
+    This endpoint consumes the nonce from Redis (one-time use).
+    Only available for chutes_version >= 0.4.9.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required",
+        )
+
+    token = authorization.strip().split(" ")[-1]
+
+    # Decode the JWT to get the config_id
+    try:
+        import jwt
+
+        payload = jwt.decode(token, options={"verify_signature": False})
+        config_id = payload.get("config_id")
+        if not config_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid token: missing config_id",
+            )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid token: {exc}",
+        )
+
+    # Load the launch config
+    launch_config = (
+        (await db.execute(select(LaunchConfig).where(LaunchConfig.config_id == config_id)))
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not launch_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Launch config {config_id} not found",
+        )
+
+    # Check if nonce exists in Redis (one-time use)
+    redis_key = f"rint_nonce:{config_id}"
+    nonce = await settings.redis_client.get(redis_key)
+    if not nonce:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Nonce for config {config_id} not found or already consumed",
+        )
+
+    # Consume the nonce (delete from Redis)
+    await settings.redis_client.delete(redis_key)
+
+    return {"nonce": nonce.decode() if isinstance(nonce, bytes) else nonce}
 
 
 @router.post("/launch_config/{config_id}/attest")

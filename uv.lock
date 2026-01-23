@@ -749,7 +749,7 @@ wheels = [
 
 [[package]]
 name = "chutes"
-version = "0.4.6"
+version = "0.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -779,7 +779,7 @@ dependencies = [
     { name = "uvicorn" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/18/aaf595cea9ed9b3b1a92c1483cee97b815d4693bd5d61d3f5aee932ae772/chutes-0.4.6-py3-none-any.whl", hash = "sha256:27ad7a4cab80a6fb63e1a40892543a8103a828ea7641d7157757277049fef8a8", size = 5384992, upload-time = "2026-01-20T20:34:21.448Z" },
+    { url = "https://files.pythonhosted.org/packages/51/3d/565708b1d57d7feed59e6284f2162467a49a1524e6857b4951a04c2ece86/chutes-0.4.7-py3-none-any.whl", hash = "sha256:b10e924fb343969d9a72a732b43ec0ec452f9a0c496ad01a10b58234e96e318b", size = 6277342, upload-time = "2026-01-20T23:01:13.175Z" },
 ]
 
 [[package]]
@@ -855,7 +855,7 @@ requires-dist = [
     { name = "backoff", specifier = ">=2.2.1,<3.0.0" },
     { name = "bittensor-drand", specifier = ">=1.2.0" },
     { name = "bittensor-wallet", specifier = ">=4.0.1" },
-    { name = "chutes", specifier = "==0.4.6" },
+    { name = "chutes", specifier = "==0.4.7" },
     { name = "cllmv", specifier = "==0.0.7" },
     { name = "dcap-qvl", specifier = ">=0.3.2,<0.4.0" },
     { name = "dnslib", specifier = ">=0.9.26,<0.10.0" },

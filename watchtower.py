@@ -1380,6 +1380,86 @@ async def check_instance_connections(instance):
     return False
 
 
+async def check_runint(instance: Instance) -> bool:
+    """Verify runtime integrity of an instance via the /_rint endpoint."""
+    if semcomp(instance.chutes_version or "0.0.0", "0.4.9") < 0:
+        return True
+
+    if not instance.rint_commitment or not instance.rint_nonce:
+        logger.warning(
+            f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} missing commitment/nonce"
+        )
+        return False
+
+    try:
+        from ecdsa import VerifyingKey, NIST256p, BadSignatureError
+
+        challenge = secrets.token_hex(16)
+        payload = {"challenge": challenge}
+        enc_payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+        path = aes_encrypt("/_rint", instance.symmetric_key, hex_encode=True)
+
+        async with miner_client.post(
+            instance.miner_hotkey,
+            f"http://{instance.host}:{instance.port}/{path}",
+            enc_payload,
+            timeout=15.0,
+        ) as resp:
+            if resp.status != 200:
+                logger.error(
+                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                    f"returned {resp.status}"
+                )
+                return False
+
+            body = await resp.json()
+            if "error" in body:
+                logger.error(
+                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                    f"error: {body['error']}"
+                )
+                return False
+
+            signature_hex = body.get("signature")
+            epoch = body.get("epoch")
+
+            if not signature_hex or epoch is None:
+                logger.error(
+                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                    f"missing signature or epoch"
+                )
+                return False
+
+            commitment_bytes = bytes.fromhex(instance.rint_commitment)
+            pubkey_bytes = commitment_bytes[1:65]
+            vk = VerifyingKey.from_string(pubkey_bytes, curve=NIST256p)
+
+            msg = f"{challenge}:{epoch}".encode()
+            msg_hash = hashlib.sha256(msg).digest()
+            sig_bytes = bytes.fromhex(signature_hex)
+
+            try:
+                vk.verify_digest(sig_bytes, msg_hash)
+                logger.success(
+                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                    f"verification successful {epoch=}"
+                )
+                return True
+            except BadSignatureError:
+                logger.error(
+                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                    f"signature verification failed"
+                )
+                return False
+
+    except Exception as e:
+        logger.error(
+            f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+            f"error: {e}\n{traceback.format_exc()}"
+        )
+        return False
+
+
 async def main():
     """
     Main loop, continuously check all chutes and instances.
