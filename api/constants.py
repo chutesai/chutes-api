@@ -48,7 +48,7 @@ UTILIZATION_SCALE_UP = 0.5
 
 # Utilization threshold below which scale-down is considered.
 # Gap between SCALE_DOWN and SCALE_UP creates a "stable zone".
-UTILIZATION_SCALE_DOWN = 0.3
+UTILIZATION_SCALE_DOWN = 0.2
 
 # Cap on number of instances for an underutilized public chute.
 UNDERUTILIZED_CAP = 2

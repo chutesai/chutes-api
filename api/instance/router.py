@@ -85,7 +85,7 @@ from api.util import (
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
-from watchtower import is_kubernetes_env, verify_expected_command
+from watchtower import is_kubernetes_env, verify_expected_command, verify_fs_hash
 
 router = APIRouter()
 
@@ -1407,28 +1407,26 @@ async def activate_launch_config_instance(
                 f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
             )
 
-        # Verify egress.
-        # net_success = True
-        # if semcomp(chute.chutes_version, "0.3.56") >= 0:
-        #    from conn_prober import check_instance_connectivity
-
-        #    _, net_success = await check_instance_connectivity(instance, delete_on_failure=False)
-        # if not net_success:
-        #    reason = "Instance has failed network connectivity probes, based on allow_external_egress flag"
-        #    logger.warning(reason)
-        # XXX TODO
-        # await db.delete(instance)
-        # await asyncio.create_task(notify_deleted(instance))
-        # await db.execute(
-        #    text(
-        #        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
-        #    ),
-        #    {"instance_id": instance.instance_id, "reason": reason},
-        # )
-        # raise HTTPException(
-        #    status_code=status.HTTP_403_FORBIDDEN,
-        #    detail=reason,
-        # )
+        # Verify filesystem.
+        if semcomp(chute.chutes_version, "0.4.9") >= 0:
+            if not await verify_fs_hash(instance):
+                reason = (
+                    "Instance has failed filesystem verification: "
+                    f"{instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} {chute.standard_template=}"
+                )
+                logger.warning(reason)
+                await db.delete(instance)
+                await asyncio.create_task(notify_deleted(instance))
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                    ),
+                    {"instance_id": instance.instance_id, "reason": reason},
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=reason,
+                )
 
         instance.active = True
         instance.activated_at = func.now()

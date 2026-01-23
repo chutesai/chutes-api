@@ -1501,9 +1501,8 @@ async def _perform_autoscale_impl(
         # Chutes in LIMIT_OVERRIDES should never be preempted.
         # Use SMOOTHED utilization for donor determination to prevent flip-flopping
         allow_donor = ctx.public or (ctx.info and ctx.info.user_id == await chutes_user_id())
-        has_active_rate_limiting = ctx.rate_limit_5m > 0 or ctx.rate_limit_15m > 0
         if (
-            not has_active_rate_limiting
+            not ctx.any_rate_limiting
             and ctx.current_count > 0
             and allow_donor
             and ctx.chute_id not in LIMIT_OVERRIDES
@@ -2401,7 +2400,7 @@ async def calculate_local_decision(ctx: AutoScaleContext):
         # This allows gradual convergence while still being responsive
         # e.g., 29 instances, ideal=5, excess=24 -> remove 6 this cycle
         # Next cycle: ~23 instances, utilization adjusts, recalculate
-        num_to_remove = max(1, excess // 4)
+        num_to_remove = max(1, excess // 5)
 
         # Ensure we don't go below failsafe
         num_to_remove = min(num_to_remove, ctx.current_count - failsafe_min)
@@ -2411,7 +2410,7 @@ async def calculate_local_decision(ctx: AutoScaleContext):
             # Verify projected utilization stays below scale-up threshold
             projected_util = (ctx.utilization_basis * ctx.current_count) / proposed_target
 
-            if projected_util < ctx.threshold:
+            if projected_util < min(ctx.threshold, UTILIZATION_SCALE_DOWN):
                 ctx.downscale_amount = num_to_remove
                 ctx.target_count = proposed_target
                 ctx.action = "scale_down_candidate"

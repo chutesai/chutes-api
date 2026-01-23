@@ -29,6 +29,7 @@ from api.util import (
 )
 from api.database import get_session
 from api.chute.schemas import Chute
+from api.image.schemas import Image
 from api.job.schemas import Job
 from api.exceptions import EnvdumpMissing
 from sqlalchemy import text, update, func, select
@@ -1378,6 +1379,63 @@ async def check_instance_connections(instance):
             f"Unexpected error checking {instance.instance_id=} {instance.miner_hotkey=}: {str(exc)}"
         )
     return False
+
+
+async def get_expected_fs_hash(chute_id: str, seed: str):
+    async with get_session() as session:
+        image_id = (
+            (await session.execute(select(Chute.image_id).where(Chute.chute_id == chute_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        filename = (
+            (await session.execute(select(Chute.filename).where(Chute.chute_id == chute_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        patch_version = (
+            (await session.execute(select(Image.patch_version).where(Image.image_id == image_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+    from api.graval_worker import generate_fs_hash
+
+    expected_hash = await generate_fs_hash(
+        image_id, patch_version, seed=seed, sparse=False, exclude_path=f"/app/{filename}"
+    )
+    return expected_hash
+
+
+async def verify_fs_hash(instance):
+    if semcomp(instance.chutes_version or "0.0.0", "0.4.0") < 0:
+        logger.warning(
+            f"Unable to check FS hash, legacy chutes lib version: {instance.instance_id=} {instance.chutes_version=}"
+        )
+        return True
+
+    seed = secrets.token_bytes(16).hex()
+    enc_payload = aes_encrypt(json.dumps({"salt": seed, "mode": "full"}), instance.symmetric_key)
+    path = aes_encrypt("/_fs_hash", instance.symmetric_key, hex_encode=True)
+    try:
+        async with miner_client.post(
+            instance.miner_hotkey,
+            f"http://{instance.host}:{instance.port}/{path}",
+            enc_payload,
+            timeout=60.0,
+        ) as resp:
+            fs_hash = (await resp.json())["result"]
+            expected = await get_expected_fs_hash(instance.chute_id, seed)
+            if fs_hash != expected:
+                logger.warning(
+                    f"Instance FS hash mismatch! {instance.instance_id=} {instance.miner_hotkey=}, {expected=} {fs_hash=}"
+                )
+                return False
+    except Exception as exc:
+        logger.error(
+            f"Failed to compare FS hashes for {instance.instance_id=} {instance.miner_hotkey=}: {str(exc)}\n{traceback.format_exc()}"
+        )
+        return False
+    return True
 
 
 async def check_runint(instance: Instance) -> bool:
