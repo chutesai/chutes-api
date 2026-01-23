@@ -1434,23 +1434,39 @@ async def check_runint(instance: Instance) -> bool:
             pubkey_bytes = commitment_bytes[1:65]
             vk = VerifyingKey.from_string(pubkey_bytes, curve=NIST256p)
 
-            msg = f"{challenge}:{epoch}".encode()
+            # Message format: challenge || epoch (8 bytes LE)
+            epoch_bytes = epoch.to_bytes(8, byteorder="little")
+            msg = challenge.encode() + epoch_bytes
             msg_hash = hashlib.sha256(msg).digest()
             sig_bytes = bytes.fromhex(signature_hex)
 
             try:
                 vk.verify_digest(sig_bytes, msg_hash)
-                logger.success(
-                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
-                    f"verification successful {epoch=}"
-                )
-                return True
             except BadSignatureError:
                 logger.error(
                     f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
                     f"signature verification failed"
                 )
                 return False
+
+            # Check epoch is advancing (detect replay attacks)
+            epoch_key = f"rint_epoch:{instance.instance_id}"
+            last_epoch = await settings.redis_client.get(epoch_key)
+            if last_epoch is not None:
+                last_epoch = int(last_epoch)
+                if epoch < last_epoch:
+                    logger.error(
+                        f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                        f"epoch went backwards: {epoch} < {last_epoch}"
+                    )
+                    return False
+            await settings.redis_client.set(epoch_key, str(epoch), ex=86400)
+
+            logger.success(
+                f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                f"verification successful {epoch=}"
+            )
+            return True
 
     except Exception as e:
         logger.error(
