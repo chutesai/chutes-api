@@ -1309,6 +1309,37 @@ async def claim_launch_config(
     }
 
 
+async def delayed_instance_fs_check(instance_id: str):
+    await asyncio.sleep(10)  # XXX wait for uvicorn to be listening.
+
+    async with get_session() as session:
+        instance = (
+            (await session.execute(select(Instance).where(Instance.instance_id == instance_id)))
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not instance:
+            return
+        if not await verify_fs_hash(instance):
+            reason = (
+                "Instance has failed filesystem verification: "
+                f"{instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+            )
+            logger.warning(reason)
+            await session.delete(instance)
+            await asyncio.create_task(notify_deleted(instance))
+            await session.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+                ),
+                {"instance_id": instance.instance_id, "reason": reason},
+            )
+        else:
+            logger.success(
+                f"Successfully verified FS hash {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
+            )
+
+
 @router.get("/launch_config/{config_id}/activate")
 async def activate_launch_config_instance(
     config_id: str,
@@ -1432,6 +1463,8 @@ async def activate_launch_config_instance(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=reason,
                 )
+        elif semcomp(chute.chutes_version, "0.4.0") >= 0:
+            asyncio.create_task(delayed_instance_fs_check(instance.instance_id))
 
         instance.active = True
         instance.activated_at = func.now()
