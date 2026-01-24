@@ -61,6 +61,7 @@ class LaunchConfigArgs(BaseModel):
     run_path: Optional[str] = None
     py_dirs: Optional[list[str]] = None
     rint_commitment: Optional[str] = None
+    rint_nonce: Optional[str] = None
 
 
 class GravalLaunchConfigArgs(LaunchConfigArgs):

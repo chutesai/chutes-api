@@ -586,13 +586,16 @@ async def _validate_launch_config_inspecto(
                     inspecto_valid = False
                     fail_reason = "missing args.inspecto hash!"
                 else:
+                    seed = launch_config.config_id
+                    if semcomp(chute.chutes_version, "0.4.9") >= 0:
+                        seed = args.rint_nonce + seed
                     raw = INSPECTO.verify_hash(
                         inspecto_hash.encode("utf-8"),
-                        launch_config.config_id.encode("utf-8"),
+                        seed.encode("utf-8"),
                         args.inspecto.encode("utf-8"),
                     )
                     logger.info(
-                        f"INSPECTO: verify_hash({inspecto_hash=}, {launch_config.config_id=}, {args.inspecto=}) -> {raw=}",
+                        f"INSPECTO: verify_hash({inspecto_hash=}, {seed=}, {args.inspecto=}) -> {raw=}",
                     )
                     if not raw:
                         inspecto_valid = False
@@ -757,7 +760,7 @@ async def _validate_launch_config_instance(
 
     # Runtime integrity (runint) verification for version >= 0.4.9
     if semcomp(chute.chutes_version, "0.4.9") >= 0:
-        if not launch_config.nonce:
+        if not launch_config.nonce or not args.rint_nonce:
             logger.error(f"{log_prefix} missing runint nonce in launch config")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Missing runtime integrity nonce"
@@ -775,7 +778,7 @@ async def _validate_launch_config_instance(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
-        if not _verify_rint_commitment(args.rint_commitment, launch_config.nonce):
+        if not _verify_rint_commitment(args.rint_commitment, args.rint_nonce):
             logger.error(f"{log_prefix} invalid runint commitment")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Invalid runtime integrity commitment"
@@ -840,7 +843,7 @@ async def _validate_launch_config_instance(
         inspecto=getattr(args, "inspecto", None),
         env_creation=args.model_dump(),
         rint_commitment=getattr(args, "rint_commitment", None),
-        rint_nonce=launch_config.nonce,
+        rint_nonce=getattr(args, "rint_nonce", None),
     )
     if launch_config.job_id or (
         not chute.public
@@ -1116,8 +1119,9 @@ async def get_launch_config(
     }
 
 
-@router.get("/nonce")
+@router.get("/launch_config/{config_id}/nonce")
 async def get_rint_nonce(
+    config_id: str,
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
 ):
@@ -1140,11 +1144,11 @@ async def get_rint_nonce(
         import jwt
 
         payload = jwt.decode(token, options={"verify_signature": False})
-        config_id = payload.get("config_id")
-        if not config_id:
+        req_config_id = payload.get("sub")
+        if not req_config_id or req_config_id != config_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid token: missing config_id",
+                detail="Invalid or missing token, expected launch JWT",
             )
     except Exception as exc:
         raise HTTPException(
