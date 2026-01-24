@@ -19,6 +19,7 @@ import api.miner_client as miner_client
 from loguru import logger
 from typing import Optional, Tuple
 from datetime import datetime, timedelta
+from fastapi.responses import PlainTextResponse
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Header, Request
 from sqlalchemy import select, text, func, update, and_
 from sqlalchemy.orm import joinedload
@@ -778,7 +779,7 @@ async def _validate_launch_config_instance(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
-        if not _verify_rint_commitment(args.rint_commitment, args.rint_nonce):
+        if not _verify_rint_commitment(args.rint_commitment, launch_config.nonce):
             logger.error(f"{log_prefix} invalid runint commitment")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Invalid runtime integrity commitment"
@@ -1180,7 +1181,7 @@ async def get_rint_nonce(
     # Consume the nonce (delete from Redis)
     await settings.redis_client.delete(redis_key)
 
-    return {"nonce": nonce.decode() if isinstance(nonce, bytes) else nonce}
+    return PlainTextResponse(nonce.decode() if isinstance(nonce, bytes) else nonce)
 
 
 @router.post("/launch_config/{config_id}/attest")
