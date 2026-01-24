@@ -5,6 +5,7 @@ FastAPI routes for server management and TDX attestation.
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
 
 from api.database import get_db_session
@@ -238,10 +239,29 @@ async def create_server(
         return {"message": "Server registered successfully."}
 
     except ServerRegistrationError as e:
-        logger.error(f"Server registration failed: {str(e)}")
+        logger.error(
+            f"Server registration failed: server_id={args.id} host={args.host} miner_hotkey={hotkey} error={e.detail}"
+        )
         raise e
+    except HTTPException:
+        # Re-raise HTTPExceptions (like blacklist, node conflicts, invalid host) as-is
+        raise
+    except (IntegrityError, DatabaseError) as e:
+        # Handle database errors that might occur before register_server is called
+        # (e.g., in check_node_inventory)
+        logger.error(
+            f"Database error in server registration: server_id={args.id} host={args.host} miner_hotkey={hotkey} error={str(e)}",
+            exc_info=True,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server registration failed - database error. Please contact support with your server ID and miner hotkey.",
+        )
     except Exception as e:
-        logger.error(f"Unexpected error in server registration: {str(e)}")
+        logger.error(
+            f"Unexpected error in server registration: server_id={args.id} host={args.host} miner_hotkey={hotkey} error={str(e)}",
+            exc_info=True,
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server registration failed"
         )

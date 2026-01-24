@@ -45,7 +45,7 @@ from api.bounty.util import claim_bounty, calculate_bounty_boost
 from api.secret.schemas import Secret
 from api.image.schemas import Image  # noqa
 from api.instance.schemas import (
-    GravalLaunchConfigArgs,
+    LaunchConfigArgs,
     TeeLaunchConfigArgs,
     Instance,
     instance_nodes,
@@ -403,7 +403,7 @@ async def _validate_launch_config_env(
     db: AsyncSession,
     launch_config: LaunchConfig,
     chute: Chute,
-    args: GravalLaunchConfigArgs,
+    args: LaunchConfigArgs,
     log_prefix: str,
 ):
     from chutes.envdump import DUMPER
@@ -507,7 +507,7 @@ async def _validate_launch_config_inspecto(
     db: AsyncSession,
     launch_config: LaunchConfig,
     chute: Chute,
-    args: GravalLaunchConfigArgs,
+    args: LaunchConfigArgs,
     log_prefix: str,
 ):
     if semcomp(chute.chutes_version, "0.3.50") >= 0:
@@ -568,7 +568,7 @@ async def _validate_launch_config_inspecto(
 
 
 async def _validate_launch_config_filesystem(
-    db: AsyncSession, launch_config: LaunchConfig, chute: Chute, args: GravalLaunchConfigArgs
+    db: AsyncSession, launch_config: LaunchConfig, chute: Chute, args: LaunchConfigArgs
 ):
     # Valid filesystem/integrity?
     if semcomp(chute.chutes_version, "0.3.1") >= 0:
@@ -873,7 +873,7 @@ async def _validate_launch_config_instance(
 
 async def _validate_graval_launch_config_instance(
     config_id: str,
-    args: GravalLaunchConfigArgs,
+    args: LaunchConfigArgs,
     request: Request,
     db: AsyncSession,
     authorization: str,
@@ -1130,7 +1130,7 @@ async def claim_tee_launch_config(
 @router.post("/launch_config/{config_id}")
 async def claim_launch_config(
     config_id: str,
-    args: GravalLaunchConfigArgs,
+    args: LaunchConfigArgs,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
@@ -1195,7 +1195,7 @@ async def claim_launch_config(
 @router.post("/launch_config/graval/{config_id}")
 async def claim_graval_launch_config(
     config_id: str,
-    args: GravalLaunchConfigArgs,
+    args: LaunchConfigArgs,
     request: Request,
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),

@@ -295,17 +295,30 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         # Track nodes once verified
         await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
 
-    except AttestationError:
-        logger.error(f"Attestation failed for server {args.host}")
-        raise ServerRegistrationError("Server registration failed - attestation failed.")
+    except AttestationError as e:
+        # Preserve the specific error message from the AttestationError
+        error_detail = e.detail if hasattr(e, "detail") else str(e)
+        logger.error(
+            f"Server registration failed - attestation error: server_id={args.id} host={args.host} miner_hotkey={miner_hotkey} error={error_detail}"
+        )
+        raise ServerRegistrationError(f"Server registration failed - {error_detail}")
     except IntegrityError as e:
         await db.rollback()
-        logger.error(f"Server registration failed: {str(e)}")
-        raise ServerRegistrationError("Server registration failed - constraint violation")
+        logger.error(
+            f"Server registration failed - IntegrityError: server_id={args.id} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}"
+        )
+        raise ServerRegistrationError(
+            "Server registration failed - database constraint violation. This may indicate a duplicate server ID, invalid miner configuration, or other database conflict. Please contact support with your server ID and miner hotkey."
+        )
     except Exception as e:
         await db.rollback()
-        logger.error(f"Unexpected error during server registration: {str(e)}")
-        raise ServerRegistrationError(f"Server registration failed: {str(e)}")
+        logger.error(
+            f"Unexpected error during server registration: server_id={args.id} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}",
+            exc_info=True,
+        )
+        raise ServerRegistrationError(
+            "Server registration failed - unexpected error occurred. Please contact support with your server ID and miner hotkey."
+        )
 
 
 async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> None:
@@ -329,14 +342,18 @@ async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> 
         client = TeeServerClient(server)
 
         nonce = generate_nonce()
-        logger.info(f"Verifying server {server.ip} with nonce {nonce}")
+        logger.info(
+            f"Verifying server server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} with nonce {nonce}"
+        )
         quote, gpu_evidence, expected_cert_hash = await client.get_evidence(nonce)
 
         await verify_quote(quote, nonce, expected_cert_hash)
 
         await verify_gpu_evidence(gpu_evidence, nonce)
 
-        logger.success(f"Verified server {server.server_id} for miner: {miner_hotkey}")
+        logger.success(
+            f"Verified server server_id={server.server_id} ip={server.ip} for miner: {miner_hotkey}"
+        )
 
         # Create attestation record
         server_attestation = ServerAttestation(
@@ -352,21 +369,32 @@ async def verify_server(db: AsyncSession, server: Server, miner_hotkey: str) -> 
 
     except GetEvidenceError as e:
         failure_reason = "Failed to get attestation evidence."
+        logger.error(
+            f"Server verification failed - GetEvidenceError: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
+        )
         raise e
     except (InvalidQuoteError, MeasurementMismatchError) as e:
-        logger.error(f"Server verification failed for {server.ip}:\n{e}")
+        logger.error(
+            f"Server verification failed - quote error: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
+        )
         failure_reason = "Server verification failed: invalid quote"
         raise e
     except InvalidGpuEvidenceError as e:
-        logger.error(f"Failed to verify GPU evidence for {server.ip}.  Invalid GPU evidence.")
+        logger.error(
+            f"Server verification failed - invalid GPU evidence: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
+        )
         failure_reason = "Server verification failed: invalid GPU evidence"
         raise e
     except GpuEvidenceError as e:
-        logger.error(f"Failed to verify GPU evidence for {server.ip}")
+        logger.error(
+            f"Server verification failed - GPU evidence error: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
+        )
         failure_reason = "Server verification failed: Failed to verify GPU evidence"
         raise e
     except Exception as e:
-        logger.error(f"Unexpected error during server verification for {server.ip}: {str(e)}")
+        logger.error(
+            f"Unexpected error during server verification: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={str(e)}"
+        )
         failure_reason = "Unexpected error during server verification."
         raise e
     finally:
