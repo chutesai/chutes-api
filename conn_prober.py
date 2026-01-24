@@ -156,7 +156,7 @@ async def check_instance_connectivity(
         return instance.instance_id, True
 
     allow_egress = chute.allow_external_egress
-    # Runtime integrity check (version >= 0.4.9).
+    # Runtime integrity check.
     try:
         if not await check_runint(instance):
             if delete_on_failure:
