@@ -99,49 +99,84 @@ NETNANNY.verify.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint8]
 NETNANNY.verify.restype = ctypes.c_int
 
 
-def _verify_rint_commitment(commitment_hex: str, expected_nonce: str) -> bool:
+def _verify_rint_commitment(commitment_hex: str, expected_nonce: str, chutes_version: str) -> bool:
     """Verify the runtime integrity commitment (mini-cert)."""
     try:
-        from ecdsa import VerifyingKey, SECP256k1, BadSignatureError
+        from ecdsa import VerifyingKey, NIST256p, SECP256k1, BadSignatureError
         import hashlib
 
-        if len(commitment_hex) != 324:
-            logger.error(f"RUNINT: commitment length mismatch: {len(commitment_hex)} != 324")
-            return False
+        use_v3 = semcomp(chutes_version or "0.0.0", "0.5.0") >= 0
+        if use_v3:
+            if len(commitment_hex) != 324:
+                logger.error(f"RUNINT: commitment length mismatch: {len(commitment_hex)} != 324")
+                return False
+        else:
+            if len(commitment_hex) != 308:
+                logger.error(f"RUNINT: commitment length mismatch: {len(commitment_hex)} != 308")
+                return False
 
         commitment_bytes = bytes.fromhex(commitment_hex)
-        if len(commitment_bytes) != 162:
-            logger.error(
-                f"RUNINT: decoded commitment length mismatch: {len(commitment_bytes)} != 162"
-            )
-            return False
+        if use_v3:
+            if len(commitment_bytes) != 162:
+                logger.error(
+                    f"RUNINT: decoded commitment length mismatch: {len(commitment_bytes)} != 162"
+                )
+                return False
+        else:
+            if len(commitment_bytes) != 154:
+                logger.error(
+                    f"RUNINT: decoded commitment length mismatch: {len(commitment_bytes)} != 154"
+                )
+                return False
 
         prefix = commitment_bytes[0]
-        if prefix != 0x03:
-            logger.error(f"RUNINT: invalid prefix: {prefix} != 0x03")
-            return False
+        if use_v3:
+            if prefix != 0x03:
+                logger.error(f"RUNINT: invalid prefix: {prefix} != 0x03")
+                return False
+        else:
+            if prefix != 0x02:
+                logger.error(f"RUNINT: invalid prefix: {prefix} != 0x02")
+                return False
 
         version = commitment_bytes[1]
-        if version != 0x03:
-            logger.error(f"RUNINT: invalid version: {version} != 0x03")
-            return False
+        if use_v3:
+            if version != 0x03:
+                logger.error(f"RUNINT: invalid version: {version} != 0x03")
+                return False
+        else:
+            if version != 0x02:
+                logger.error(f"RUNINT: invalid version: {version} != 0x02")
+                return False
 
         pubkey_bytes = commitment_bytes[2:66]
         nonce_bytes = commitment_bytes[66:82]
-        lib_fp_bytes = commitment_bytes[82:98]
-        sig_bytes = commitment_bytes[98:162]
+        if use_v3:
+            lib_fp_bytes = commitment_bytes[82:98]
+            sig_bytes = commitment_bytes[98:162]
+        else:
+            lib_fp_bytes = commitment_bytes[82:90]
+            sig_bytes = commitment_bytes[90:154]
 
-        nonce_tag = b"rint-nonce-v3"
-        expected_nonce_value = hashlib.sha256(
-            nonce_tag + lib_fp_bytes + expected_nonce.encode()
-        ).digest()[:16]
+        if use_v3:
+            nonce_tag = b"rint-nonce-v3"
+            expected_nonce_value = hashlib.sha256(
+                nonce_tag + lib_fp_bytes + expected_nonce.encode()
+            ).digest()[:16]
+        else:
+            expected_nonce_bytes = expected_nonce.encode()
+            if len(expected_nonce_bytes) <= 16:
+                expected_nonce_value = expected_nonce_bytes.ljust(16, b"\x00")
+            else:
+                expected_nonce_value = hashlib.sha256(expected_nonce_bytes).digest()[:16]
         if nonce_bytes != expected_nonce_value:
             logger.error(
                 f"RUNINT: nonce mismatch: {nonce_bytes.hex()} != {expected_nonce_value.hex()}"
             )
             return False
 
-        vk = VerifyingKey.from_string(pubkey_bytes, curve=SECP256k1)
+        curve = SECP256k1 if use_v3 else NIST256p
+        vk = VerifyingKey.from_string(pubkey_bytes, curve=curve)
         msg_to_verify = bytes([version]) + pubkey_bytes + nonce_bytes + lib_fp_bytes
         msg_hash = hashlib.sha256(msg_to_verify).digest()
 
@@ -597,7 +632,7 @@ async def _validate_launch_config_inspecto(
                     fail_reason = "missing args.inspecto hash!"
                 else:
                     seed = launch_config.config_id
-                    if semcomp(chute.chutes_version, "0.5.0") >= 0:
+                    if semcomp(chute.chutes_version, "0.4.9") >= 0:
                         seed = args.rint_nonce + seed
                     raw = INSPECTO.verify_hash(
                         inspecto_hash.encode("utf-8"),
@@ -788,7 +823,9 @@ async def _validate_launch_config_instance(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=launch_config.verification_error,
             )
-        if not _verify_rint_commitment(args.rint_commitment, launch_config.nonce):
+        if not _verify_rint_commitment(
+            args.rint_commitment, launch_config.nonce, chute.chutes_version
+        ):
             logger.error(f"{log_prefix} invalid runint commitment")
             launch_config.failed_at = func.now()
             launch_config.verification_error = "Invalid runtime integrity commitment"

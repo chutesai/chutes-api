@@ -1440,7 +1440,7 @@ async def verify_fs_hash(instance):
 
 async def check_runint(instance: Instance) -> bool:
     """Verify runtime integrity of an instance via the /_rint endpoint."""
-    if semcomp(instance.chutes_version or "0.0.0", "0.5.0") < 0:
+    if semcomp(instance.chutes_version or "0.0.0", "0.4.9") < 0:
         return True
 
     if not instance.rint_commitment or not instance.rint_nonce:
@@ -1450,7 +1450,7 @@ async def check_runint(instance: Instance) -> bool:
         return False
 
     try:
-        from ecdsa import VerifyingKey, SECP256k1, BadSignatureError
+        from ecdsa import VerifyingKey, NIST256p, SECP256k1, BadSignatureError
 
         challenge = secrets.token_hex(16)
         payload = {"challenge": challenge}
@@ -1488,21 +1488,37 @@ async def check_runint(instance: Instance) -> bool:
                 )
                 return False
 
+            use_v3 = semcomp(instance.chutes_version or "0.0.0", "0.5.0") >= 0
             commitment_bytes = bytes.fromhex(instance.rint_commitment)
-            if len(commitment_bytes) != 162 or commitment_bytes[0] != 0x03:
-                logger.error(
-                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
-                    f"invalid commitment format: len={len(commitment_bytes)} prefix={commitment_bytes[0] if commitment_bytes else None}"
-                )
-                return False
-            if commitment_bytes[1] != 0x03:
-                logger.error(
-                    f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
-                    f"invalid commitment version: {commitment_bytes[1]}"
-                )
-                return False
+            if use_v3:
+                if len(commitment_bytes) != 162 or commitment_bytes[0] != 0x03:
+                    logger.error(
+                        f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                        f"invalid commitment format: len={len(commitment_bytes)} prefix={commitment_bytes[0] if commitment_bytes else None}"
+                    )
+                    return False
+                if commitment_bytes[1] != 0x03:
+                    logger.error(
+                        f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                        f"invalid commitment version: {commitment_bytes[1]}"
+                    )
+                    return False
+            else:
+                if len(commitment_bytes) != 154 or commitment_bytes[0] != 0x02:
+                    logger.error(
+                        f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                        f"invalid commitment format: len={len(commitment_bytes)} prefix={commitment_bytes[0] if commitment_bytes else None}"
+                    )
+                    return False
+                if commitment_bytes[1] != 0x02:
+                    logger.error(
+                        f"RUNINT: {instance.instance_id=} {instance.miner_hotkey=} "
+                        f"invalid commitment version: {commitment_bytes[1]}"
+                    )
+                    return False
             pubkey_bytes = commitment_bytes[2:66]
-            vk = VerifyingKey.from_string(pubkey_bytes, curve=SECP256k1)
+            curve = SECP256k1 if use_v3 else NIST256p
+            vk = VerifyingKey.from_string(pubkey_bytes, curve=curve)
 
             # Message format: challenge || epoch (8 bytes LE)
             epoch_bytes = epoch.to_bytes(8, byteorder="little")
