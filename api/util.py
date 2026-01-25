@@ -475,6 +475,7 @@ def decrypt_instance_response(
     ciphertext: bytes | str,
     instance,
     iv: str = None,
+    force_legacy: bool = False,
 ) -> bytes:
     """
     Decrypt a response from a miner instance.
@@ -486,10 +487,17 @@ def decrypt_instance_response(
         ciphertext: The encrypted data
         instance: The Instance object with symmetric_key and rint_session_key
         iv: IV for legacy AES-CBC (ignored for new scheme)
+        force_legacy: If True, always use legacy AES-CBC (for PoVW which uses symmetric_key)
 
     Returns:
         Decrypted plaintext bytes
     """
+    # PoVW responses always use legacy AES-CBC with symmetric_key
+    if force_legacy:
+        if iv is None:
+            raise ValueError("iv required for legacy AES-CBC decryption")
+        return aes_decrypt(ciphertext, instance.symmetric_key, iv)
+
     # chutes >= 0.5.1 uses AES-256-GCM with ECDH-derived session key
     if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
         if not instance.rint_session_key:

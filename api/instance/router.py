@@ -1782,7 +1782,10 @@ async def verify_launch_config_instance(
     try:
         ciphertext = response_body["response"]
         iv = response_body.get("iv")  # Only used for legacy AES-CBC
-        response = await asyncio.to_thread(decrypt_instance_response, ciphertext, instance, iv)
+        # PoVW always uses legacy AES-CBC with symmetric_key (graval decrypts it client-side)
+        response = await asyncio.to_thread(
+            decrypt_instance_response, ciphertext, instance, iv, force_legacy=True
+        )
         assert response == f"secret is {launch_config.config_id} {launch_config.seed}".encode()
     except Exception as exc:
         reason = (
