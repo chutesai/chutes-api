@@ -109,8 +109,10 @@ class TeeServerClient:
         """
         try:
             url = urljoin(self._url, f"service/chute-service-{deployment_id}/_tee_evidence")
+            # Sign the request with purpose="attest" to match the proxy's authorize dependency
+            headers, _ = self._sign_request(purpose="attest")
             async with self._attestation_session() as session:
-                async with session.get(url) as resp:
+                async with session.get(url, headers=headers) as resp:
                     expected_cert_hash = extract_server_cert_hash(resp)
                     data = await resp.json()
                     quote = RuntimeTdxQuote.from_base64(data["tdx_quote"])
