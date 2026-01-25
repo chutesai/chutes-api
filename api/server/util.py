@@ -19,6 +19,7 @@ from cryptography.x509 import Certificate
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from api.server.exceptions import (
+    InvalidQuoteError,
     InvalidSignatureError,
     InvalidTdxConfiguration,
     MeasurementMismatchError,
@@ -159,19 +160,23 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
 
     logger.info("Verifying TDX quote signature using dcap-qvl")
 
+    try:
     # Perform quote verification
-    verified_report = await get_collateral_and_verify(quote.raw_bytes)
+        verified_report = await get_collateral_and_verify(quote.raw_bytes)
 
-    result = TdxVerificationResult.from_report(verified_report)
+        result = TdxVerificationResult.from_report(verified_report)
 
-    if result.is_valid:
-        logger.success("TDX quote signature verification successful")
-    else:
-        error_msg = verified_report.get("error", "Unknown verification error")
-        logger.error(f"TDX quote signature verification failed: {error_msg}")
-        raise InvalidSignatureError("TDX quote signature verification failed")
+        if result.is_valid:
+            logger.success("TDX quote signature verification successful")
+        else:
+            error_msg = verified_report.get("error", "Unknown verification error")
+            logger.error(f"TDX quote signature verification failed: {error_msg}")
+            raise InvalidSignatureError("TDX quote signature verification failed")
 
-    return result
+        return result
+    except Exception as e:
+        logger.error(f"Unexpected error during quote verification: {e}")
+        raise InvalidQuoteError(f"Unable to parse provided quote for verification.")
 
 
 def verify_measurements(quote: TdxQuote) -> bool:
