@@ -1489,28 +1489,28 @@ async def activate_launch_config_instance(
                 f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
             )
 
-        # Verify filesystem.
-        if semcomp(chute.chutes_version, "0.4.9") >= 0:
-            if not await verify_fs_hash(instance):
-                reason = (
-                    "Instance has failed filesystem verification: "
-                    f"{instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} {chute.standard_template=}"
-                )
-                logger.warning(reason)
-                await db.delete(instance)
-                await asyncio.create_task(notify_deleted(instance))
-                await db.execute(
-                    text(
-                        "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
-                    ),
-                    {"instance_id": instance.instance_id, "reason": reason},
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=reason,
-                )
-        elif semcomp(chute.chutes_version, "0.4.0") >= 0:
-            asyncio.create_task(delayed_instance_fs_check(instance.instance_id))
+        ## Verify filesystem.
+        #if semcomp(chute.chutes_version, "0.4.9") >= 0:
+        #    if not await verify_fs_hash(instance):
+        #        reason = (
+        #            "Instance has failed filesystem verification: "
+        #            f"{instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=} {chute.standard_template=}"
+        #        )
+        #        logger.warning(reason)
+        #        await db.delete(instance)
+        #        await asyncio.create_task(notify_deleted(instance))
+        #        await db.execute(
+        #            text(
+        #                "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
+        #            ),
+        #            {"instance_id": instance.instance_id, "reason": reason},
+        #        )
+        #        raise HTTPException(
+        #            status_code=status.HTTP_403_FORBIDDEN,
+        #            detail=reason,
+        #        )
+        #elif semcomp(chute.chutes_version, "0.4.0") >= 0:
+        #    asyncio.create_task(delayed_instance_fs_check(instance.instance_id))
 
         instance.active = True
         instance.activated_at = func.now()
