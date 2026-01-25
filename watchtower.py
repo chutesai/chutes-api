@@ -227,17 +227,21 @@ async def check_weight_files(
     if cached:
         file_size = int(cached.decode())
     else:
-        async with aiohttp.ClientSession() as session:
-            url = f"https://huggingface.co/{model}/resolve/{revision}/{path}"
-            async with session.head(url) as resp:
-                content_length = resp.headers.get("x-linked-size")
-                if content_length:
-                    logger.info(f"Size of {model} -> {path}: {content_length}")
-                    file_size = int(content_length)
-                    await settings.redis_client.set(size_key, content_length)
-                else:
-                    logger.warning(f"Could not determine size of {model} -> {path}")
-                    return
+        try:
+            async with aiohttp.ClientSession() as session:
+                url = f"https://huggingface.co/{model}/resolve/{revision}/{path}"
+                async with session.head(url) as resp:
+                    content_length = resp.headers.get("x-linked-size")
+                    if content_length:
+                        logger.info(f"Size of {model} -> {path}: {content_length}")
+                        file_size = int(content_length)
+                        await settings.redis_client.set(size_key, content_length)
+                    else:
+                        logger.warning(f"Could not determine size of {model} -> {path}")
+                        return
+        except Exception as exc:
+            logger.error(f"Error checking HF for {model=} {revision=} {path=}: {str(exc)}")
+            return
 
     # Now a random offset.
     start_byte = 0
@@ -247,13 +251,17 @@ async def check_weight_files(
         start_byte = random.randint(0, file_size - check_size)
         end_byte = start_byte + check_size
     expected_digest = None
-    async with aiohttp.ClientSession() as session:
-        url = f"https://huggingface.co/{model}/resolve/{revision}/{path}"
-        async with session.get(
-            url, headers={"Range": f"bytes={start_byte}-{end_byte - 1}"}
-        ) as resp:
-            content = await resp.read()
-            expected_digest = hashlib.sha256(content).hexdigest()
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://huggingface.co/{model}/resolve/{revision}/{path}"
+            async with session.get(
+                url, headers={"Range": f"bytes={start_byte}-{end_byte - 1}"}
+            ) as resp:
+                content = await resp.read()
+                expected_digest = hashlib.sha256(content).hexdigest()
+    except Exception as exc:
+        logger.error(f"Error checking HF for {model=} {revision=} and {path=}: {str(exc)}")
+        return
 
     # Verify each instance has the same.
     logger.info(
@@ -1407,7 +1415,7 @@ async def verify_fs_hash(instance):
             instance.miner_hotkey,
             f"http://{instance.host}:{instance.port}/{path}",
             enc_payload,
-            timeout=60.0,
+            timeout=90.0,
         ) as resp:
             fs_hash = (await resp.json())["result"]
             expected = await get_expected_fs_hash(instance.chute_id, seed)

@@ -1143,7 +1143,7 @@ async def get_rint_nonce(
     Get runtime integrity nonce for a launch config.
 
     This endpoint consumes the nonce from Redis (one-time use).
-    Only available for chutes_version >= 0.5.0.
+    Only available for chutes_version >= 0.4.9.
     """
     if not authorization:
         raise HTTPException(
