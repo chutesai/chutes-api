@@ -210,6 +210,12 @@ PRICE_COMPATIBILITY_THRESHOLD = 0.67
 AUTOSCALER_FULL_INTERVAL_SECONDS = int(os.getenv("AUTOSCALER_FULL_INTERVAL_SECONDS", "1200"))
 AUTOSCALER_SOFT_INTERVAL_SECONDS = int(os.getenv("AUTOSCALER_SOFT_INTERVAL_SECONDS", "120"))
 
+# Forced donation anti-thrashing settings
+# Chutes that were starving recently cannot be donors (prevents A->B->A donation cycles)
+STARVING_COOLDOWN_MINUTES = 90
+# Redis key prefix for tracking recently starving chutes
+STARVING_HISTORY_KEY_PREFIX = "starving:"
+
 # Higher min instance counts for some chutes...
 LIMIT_OVERRIDES = {}
 FAILSAFE = {
@@ -429,6 +435,32 @@ def calculate_ema(current: float, previous: float | None, alpha: float) -> float
     if previous is None:
         return current
     return alpha * current + (1 - alpha) * previous
+
+
+async def mark_chute_as_starving(chute_id: str):
+    """
+    Mark a chute as recently starving in Redis.
+    This prevents the chute from being used as a forced donation donor
+    for STARVING_COOLDOWN_MINUTES, avoiding A->B->A donation thrashing.
+    """
+    key = f"{STARVING_HISTORY_KEY_PREFIX}{chute_id}"
+    await settings.redis_client.set(key, "1", ex=STARVING_COOLDOWN_MINUTES * 60)
+
+
+async def get_recently_starving_chutes(chute_ids: List[str]) -> Set[str]:
+    """
+    Check which chutes have been starving recently (within STARVING_COOLDOWN_MINUTES).
+    Returns set of chute_ids that were recently starving.
+    """
+    if not chute_ids:
+        return set()
+
+    pipe = settings.redis_client.pipeline()
+    for chute_id in chute_ids:
+        pipe.exists(f"{STARVING_HISTORY_KEY_PREFIX}{chute_id}")
+    results = await pipe.execute()
+
+    return {chute_id for chute_id, exists in zip(chute_ids, results) if exists}
 
 
 # Compute multiplier adjustment timing constants
@@ -1487,12 +1519,18 @@ async def _perform_autoscale_impl(
         # Use RAW metrics here for fast reaction to demand spikes
         # "Starving" requires severe capacity pressure, not just being above scale-up threshold:
         # - Very high utilization (at or above starving_threshold) where rate limiting is imminent, OR
-        # - Active rate limiting (any amount)
+        # - Sustained rate limiting: both 5m and 15m windows show >5% rate limiting,
+        #   AND 5m rate > 15m rate (indicates ongoing/worsening pressure, not just historical)
         # Chutes just above the scale-up threshold can still scale up via normal means,
         # but won't force donations from other chutes in the stable zone.
         is_severely_loaded = ctx.utilization_basis >= ctx.starving_threshold
-        is_rate_limiting = ctx.rate_limit_basis >= RATE_LIMIT_SCALE_UP
-        if is_severely_loaded or is_rate_limiting:
+        # Require sustained rate limiting: both windows > 5%, and 5m >= 15m (not improving)
+        is_sustained_rate_limiting = (
+            ctx.rate_limit_5m >= 0.05
+            and ctx.rate_limit_15m >= 0.05
+            and ctx.rate_limit_5m >= ctx.rate_limit_15m
+        )
+        if is_severely_loaded or is_sustained_rate_limiting:
             ctx.is_starving = True
             starving_chutes.append(ctx)
 
@@ -1553,12 +1591,23 @@ async def _perform_autoscale_impl(
         await calculate_local_decision(ctx)
 
     # 3. Global Arbitration (The Real World Matchmaking)
-    # Force multiple donors per starving chute based on need, up to a cap
-    MAX_FORCED_DONATIONS_PER_CHUTE = 5
-    MAX_FORCED_DONATIONS_TOTAL = 20
-    # Maximum percentage of a donor's capacity that can be force-donated in one cycle
-    # Prevents aggressive 25%+ capacity cuts that could destabilize donors
-    MAX_FORCED_DONATION_RATIO = 0.10  # Max 10% of donor capacity per cycle
+    # Force donors to give up capacity for starving chutes, but conservatively:
+    # - Only force a portion of needed instances (traffic may subside)
+    # - Max 1 instance per donor per interval (prevents destabilizing any single chute)
+    # - Don't take from chutes that were recently starving (prevents A->B->A cycles)
+    MAX_FORCED_DONATIONS_PER_CHUTE = 3  # Reduced: be conservative, traffic may subside
+    MAX_FORCED_DONATIONS_TOTAL = 10  # Reduced total cap
+    # Each donor can only give 1 instance per full interval (20 min)
+    MAX_DONATIONS_PER_DONOR = 1
+
+    # Get set of chutes that were starving in the past 90 minutes
+    # These cannot be donors to prevent A->B->A donation thrashing
+    recently_starving = await get_recently_starving_chutes(list(contexts.keys()))
+
+    # Mark current starving chutes in Redis (for future intervals)
+    if not dry_run:
+        for ctx in starving_chutes:
+            await mark_chute_as_starving(ctx.chute_id)
 
     total_forced = 0
     if starving_chutes:
@@ -1569,10 +1618,16 @@ async def _perform_autoscale_impl(
                 break
 
             # How many instances does this chute need?
-            # Reduce by pending instances that are already spinning up (may or may not succeed)
+            # Subtract pending instances (already spinning up) from the demand
             instances_needed = hungry_ctx.upscale_amount - hungry_ctx.pending_instance_count
             if instances_needed <= 0:
                 continue
+
+            # Be conservative: only force a portion of needed instances
+            # Traffic may subside soon, and we can always force more next interval
+            # Force at most ceil(needed / 3) instances, minimum 1
+            conservative_needed = max(1, math.ceil(instances_needed / 3))
+            instances_needed = min(instances_needed, conservative_needed)
 
             # Match strictly by TEE status and actual available hardware
             needed_gpus = hungry_ctx.supported_gpus
@@ -1587,6 +1642,12 @@ async def _perform_autoscale_impl(
                     or donor.tee != hungry_ctx.tee
                 ):
                     continue
+                # Skip chutes that were recently starving (prevents A->B->A cycles)
+                if donor.chute_id in recently_starving:
+                    continue
+                # Skip donors that have already donated this interval
+                if donor.downscale_amount >= MAX_DONATIONS_PER_DONOR:
+                    continue
                 # Donor must have established instances (1+ hour old) to donate
                 if donor.established_instance_count == 0:
                     continue
@@ -1600,45 +1661,25 @@ async def _perform_autoscale_impl(
                 # Check if donor actually has hardware the starving chute can use
                 available_matching_gpus = set(donor.hardware_map.keys()) & needed_gpus
                 if available_matching_gpus:
-                    # Calculate how many this donor can give, respecting multiple limits:
-                    # 1. Stay above failsafe minimum (chute-specific or global UNDERUTILIZED_CAP)
-                    # 2. Don't exceed MAX_FORCED_DONATION_RATIO of ORIGINAL capacity (prevent destabilization)
-                    #    Use current_count (original), not remaining_capacity, so limit is consistent
-                    #    across multiple starving chutes hitting the same donor
-                    # 3. For non-critical donors (in stable zone, not already scaling down),
-                    #    ensure donation won't push utilization above threshold
-                    floor_limit = remaining_capacity - donor_failsafe
-                    # Calculate ratio limit based on original capacity, minus what we've already committed
-                    total_ratio_limit = max(1, int(donor.current_count * MAX_FORCED_DONATION_RATIO))
-                    ratio_limit = max(0, total_ratio_limit - donor.downscale_amount)
+                    # Each donor can only give 1 instance per interval (MAX_DONATIONS_PER_DONOR)
+                    # This prevents destabilizing any single donor
+                    can_give = MAX_DONATIONS_PER_DONOR - donor.downscale_amount
 
-                    # For stable-zone donors (not critical), check if donation would cause thrashing
-                    # A donor at 37% util losing 60% capacity would jump to 92% and trigger scale-up
-                    can_give = min(floor_limit, ratio_limit)
+                    # For non-critical donors (in stable zone), check if donation would cause thrashing
+                    # Account for pending instances in projected utilization
                     if can_give > 0 and not donor.is_critical_donor:
                         # Calculate what utilization would be after donation
-                        new_count = donor.current_count - donor.downscale_amount - can_give
+                        # Include pending instances as they'll soon be active
+                        effective_donor_count = donor.current_count + donor.pending_instance_count
+                        new_count = effective_donor_count - donor.downscale_amount - can_give
                         if new_count > 0:
+                            # Project utilization based on current load spread across new capacity
                             projected_util = (
                                 donor.utilization_basis * donor.current_count
                             ) / new_count
                             # Don't donate if it would push donor above scale-up threshold
-                            # This prevents thrashing where we steal from A to give to B,
-                            # then A becomes starving next cycle
                             if projected_util >= donor.threshold:
-                                # Reduce donation to stay under threshold
-                                # Solve: (util * current) / (current - downscale - X) < threshold
-                                # X < current - downscale - (util * current / threshold)
-                                max_safe = (
-                                    donor.current_count
-                                    - donor.downscale_amount
-                                    - (
-                                        donor.utilization_basis
-                                        * donor.current_count
-                                        / donor.threshold
-                                    )
-                                )
-                                can_give = max(0, int(max_safe))
+                                can_give = 0
 
                     if can_give > 0:
                         eligible_donors.append((donor, available_matching_gpus, can_give))
@@ -1666,6 +1707,7 @@ async def _perform_autoscale_impl(
                     break
 
                 # Take up to what this donor can give, but not more than we need
+                # With MAX_DONATIONS_PER_DONOR=1, this will always be 1
                 take_from_donor = min(
                     can_give,
                     max_for_this_chute - donations_for_this_chute,
@@ -2337,12 +2379,16 @@ async def calculate_local_decision(ctx: AutoScaleContext):
     if ctx.is_starving:
         num_to_add = 1
 
+        # Account for pending instances in effective capacity calculations
+        # Pending instances are already spinning up and will soon be available
+        effective_count = ctx.current_count + ctx.pending_instance_count
+
         # Calculate demand-based scaling if we have rate limiting
         demand_based_add = 0
         if ctx.rate_limit_basis > 0:
             demand_based_add = calculate_demand_based_instances(ctx)
 
-        # Very high utilization - aggressive scale up
+        # Very high utilization - aggressive scale up (but account for pending)
         if ctx.utilization_basis >= 0.85:
             num_to_add = max(5, int(ctx.current_count * 0.8))
         elif ctx.utilization_basis >= ctx.threshold * 1.5:
@@ -2363,6 +2409,18 @@ async def calculate_local_decision(ctx: AutoScaleContext):
         elif ctx.rate_limit_1h > 0 and ctx.rate_limit_basis < RATE_LIMIT_SCALE_UP:
             num_to_add = 1
 
+        # Subtract pending instances - they're already in flight
+        # This prevents repeatedly requesting new instances while previous batch is still spinning up
+        num_to_add = max(0, num_to_add - ctx.pending_instance_count)
+
+        if num_to_add == 0:
+            # We have enough instances spinning up, no additional scaling needed
+            logger.info(
+                f"Scale up skipped: {ctx.chute_id} - {ctx.pending_instance_count} pending instances "
+                f"already spinning up, effective_count={effective_count}"
+            )
+            return
+
         ctx.upscale_amount = num_to_add
         ctx.target_count = max(failsafe_min, ctx.current_count + num_to_add)
         ctx.action = "scale_up_candidate"
@@ -2371,7 +2429,8 @@ async def calculate_local_decision(ctx: AutoScaleContext):
             f"Scale up: {ctx.chute_id} - high demand, util={ctx.utilization_basis:.1%}, "
             f"rate_limit(5m={ctx.rate_limit_5m:.1%}, 15m={ctx.rate_limit_15m:.1%}, 1h={ctx.rate_limit_1h:.1%}), "
             f"completed_5m={ctx.completed_5m:.0f}, rate_limited_5m={ctx.rate_limited_count_5m:.0f}, "
-            f"demand_based_add={demand_based_add}, adding {ctx.upscale_amount} instances, target={ctx.target_count}"
+            f"demand_based_add={demand_based_add}, pending={ctx.pending_instance_count}, "
+            f"adding {ctx.upscale_amount} instances, target={ctx.target_count}"
         )
         return
 
@@ -2379,10 +2438,12 @@ async def calculate_local_decision(ctx: AutoScaleContext):
     # Using smoothed_util prevents borderline chutes from flip-flopping between runs
     # This is conservative - gated by moving average check during execution
     # Separate from forced donations which happen in arbitration phase
+    # Don't scale down if there are pending instances - they'll affect utilization soon
     if (
         ctx.smoothed_util < ctx.scale_down_threshold
         and ctx.current_count > failsafe_min
         and not ctx.any_rate_limiting
+        and ctx.pending_instance_count == 0
     ):
         # Calculate ideal target count that would bring utilization up to threshold
         # ideal_count = current_count * (util / threshold)
@@ -2424,18 +2485,27 @@ async def calculate_local_decision(ctx: AutoScaleContext):
     # Moderate Scale-Up: at/above threshold but not starving or rate limiting.
     # Scale to bring utilization back to the target threshold.
     if ctx.utilization_basis >= ctx.threshold and not ctx.blocked_by_starving:
+        # Account for pending instances in capacity calculations
+        effective_count = ctx.current_count + ctx.pending_instance_count
         # target_count ~= current_count * (util / threshold)
         desired_count = math.ceil(ctx.current_count * (ctx.utilization_basis / ctx.threshold))
         desired_count = max(ctx.current_count + 1, desired_count)
         ctx.target_count = max(failsafe_min, desired_count)
         ctx.upscale_amount = max(0, ctx.target_count - ctx.current_count)
-        ctx.action = "scale_up_candidate"
-        clamp_to_max_instances(ctx)
+        # Subtract pending instances - they're already in flight
+        ctx.upscale_amount = max(0, ctx.upscale_amount - ctx.pending_instance_count)
         if ctx.upscale_amount > 0:
+            ctx.action = "scale_up_candidate"
+            clamp_to_max_instances(ctx)
             logger.info(
                 f"Scale up: {ctx.chute_id} - util={ctx.utilization_basis:.1%} >= "
-                f"{ctx.threshold:.1%}, adding {ctx.upscale_amount} instance(s), "
-                f"target={ctx.target_count}"
+                f"{ctx.threshold:.1%}, pending={ctx.pending_instance_count}, "
+                f"adding {ctx.upscale_amount} instance(s), target={ctx.target_count}"
+            )
+        elif ctx.pending_instance_count > 0:
+            logger.info(
+                f"Scale up skipped: {ctx.chute_id} - {ctx.pending_instance_count} pending instances "
+                f"already spinning up"
             )
     elif ctx.utilization_basis >= ctx.threshold and ctx.blocked_by_starving:
         logger.info(
