@@ -1490,7 +1490,7 @@ async def activate_launch_config_instance(
             )
 
         ## Verify filesystem.
-        #if semcomp(chute.chutes_version, "0.4.9") >= 0:
+        # if semcomp(chute.chutes_version, "0.4.9") >= 0:
         #    if not await verify_fs_hash(instance):
         #        reason = (
         #            "Instance has failed filesystem verification: "
@@ -1509,7 +1509,7 @@ async def activate_launch_config_instance(
         #            status_code=status.HTTP_403_FORBIDDEN,
         #            detail=reason,
         #        )
-        #elif semcomp(chute.chutes_version, "0.4.0") >= 0:
+        # elif semcomp(chute.chutes_version, "0.4.0") >= 0:
         #    asyncio.create_task(delayed_instance_fs_check(instance.instance_id))
 
         instance.active = True
