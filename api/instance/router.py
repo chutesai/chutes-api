@@ -1935,7 +1935,7 @@ async def stream_logs(
     backfill: Optional[int] = 100,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    current_user: User = Depends(get_current_user()),
+    current_user: User = Depends(get_current_user(purpose="logs")),
 ):
     """
     Fetch the raw kubernetes pod logs, but only if the chute is private.
