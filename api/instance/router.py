@@ -35,6 +35,7 @@ from api.constants import (
     PRIVATE_INSTANCE_BONUS,
     INTEGRATED_SUBNETS,
     INTEGRATED_SUBNET_BONUS,
+    NoncePurpose,
 )
 from api.node.schemas import Node
 from api.payment.util import decrypt_secret
@@ -65,6 +66,7 @@ from api.instance.util import (
 )
 from api.server.service import (
     validate_request_nonce,
+    create_nonce,
 )
 from api.user.schemas import User
 from api.user.service import get_current_user, chutes_user_id, subnet_role_accessible
@@ -80,6 +82,7 @@ from api.util import (
     notify_activated,
     load_shared_object,
     has_legacy_private_billing,
+    extract_ip,
 )
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
@@ -1093,7 +1096,7 @@ async def claim_tee_launch_config(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
-    expected_nonce: str = Depends(validate_request_nonce()),
+    expected_nonce: str = Depends(validate_request_nonce(NoncePurpose.INSTANCE_VERIFICATION)),
 ):
     """Claim a TEE launch config, verify attestation, and receive symmetric key."""
     launch_config, nodes, instance = await _validate_tee_launch_config_instance(
@@ -1894,6 +1897,29 @@ async def verify_tee_launch_config_instance(
     await db.refresh(instance)
     asyncio.create_task(notify_verified(instance))
     return return_value
+
+
+@router.get("/nonce")
+async def get_instance_nonce(request: Request):
+    """
+    Generate a nonce for TEE instance verification.
+    
+    This endpoint is called by chute instances during TEE verification (Phase 1).
+    The nonce is used to bind the attestation evidence to this specific verification request.
+    """
+    try:
+        server_ip = extract_ip(request)
+        nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.INSTANCE_VERIFICATION)
+        
+        # Return just the nonce string as JSON (library expects this format)
+        # The library will use this nonce in the X-Chutes-Nonce header
+        return nonce_info["nonce"]
+    except Exception as e:
+        logger.error(f"Failed to generate instance nonce: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate nonce"
+        )
 
 
 @router.get("/token_check")

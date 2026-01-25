@@ -13,7 +13,7 @@ from api.config import settings
 from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
-from api.constants import HOTKEY_HEADER
+from api.constants import HOTKEY_HEADER, NoncePurpose
 
 from api.server.schemas import (
     BootAttestationArgs,
@@ -63,7 +63,7 @@ async def get_nonce(request: Request):
     """
     try:
         server_ip = extract_ip(request)
-        nonce_info = await create_nonce(server_ip)
+        nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.BOOT)
 
         return NonceResponse(nonce=nonce_info["nonce"], expires_at=nonce_info["expires_at"])
     except Exception as e:
@@ -78,7 +78,7 @@ async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
-    nonce=Depends(validate_request_nonce()),
+    nonce=Depends(validate_request_nonce(NoncePurpose.BOOT)),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
     """
@@ -380,7 +380,7 @@ async def get_runtime_nonce(
         if server.ip != actual_ip:
             raise Exception()
 
-        nonce_info = await create_nonce(server.ip)
+        nonce_info = await create_nonce(server.ip, purpose=NoncePurpose.RUNTIME)
 
         return NonceResponse(nonce=nonce_info["nonce"], expires_at=nonce_info["expires_at"])
 
@@ -403,7 +403,7 @@ async def verify_runtime_attestation(
     _: User = Depends(
         get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
     ),
-    nonce=Depends(validate_request_nonce()),
+    nonce=Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
     """
