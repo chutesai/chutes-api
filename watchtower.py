@@ -1407,7 +1407,7 @@ async def verify_fs_hash(instance):
             instance.miner_hotkey,
             f"http://{instance.host}:{instance.port}/{path}",
             enc_payload,
-            timeout=60.0,
+            timeout=90.0,
         ) as resp:
             fs_hash = (await resp.json())["result"]
             expected = await get_expected_fs_hash(instance.chute_id, seed)
