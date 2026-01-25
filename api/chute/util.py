@@ -53,10 +53,8 @@ from api.util import (
     sse,
     now_str,
     semcomp,
-    aes_encrypt,
-    aes_decrypt,
-    use_encryption_v2,
-    use_encrypted_path,
+    decrypt_instance_response,
+    encrypt_instance_request,
     notify_deleted,
     image_supports_cllmv,
     extract_hf_model_name,
@@ -666,21 +664,13 @@ async def _invoke_one(
         and chute.user_id != await chutes_user_id()
     )
 
-    iv = None
-    if use_encryption_v2(target.chutes_version):
-        if not target.symmetric_key:
-            raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
-        payload = await asyncio.to_thread(aes_encrypt, json.dumps(payload), target.symmetric_key)
-        iv = bytes.fromhex(payload[:32])
-
-    # Encrypted paths?
     plain_path = path.lstrip("/").rstrip("/")
-    if use_encrypted_path(target.chutes_version):
-        path = "/" + path.lstrip("/")
-        encrypted_path = await asyncio.to_thread(
-            aes_encrypt, path.ljust(24, "?"), target.symmetric_key, hex_encode=True
-        )
-        path = encrypted_path
+    path = "/" + path.lstrip("/")
+    payload, iv = await asyncio.to_thread(encrypt_instance_request, json.dumps(payload), target)
+    encrypted_path, _ = await asyncio.to_thread(
+        encrypt_instance_request, path.ljust(24, "?"), target, True
+    )
+    path = encrypted_path
 
     session, response = None, None
     timeout = 1800
@@ -698,8 +688,7 @@ async def _invoke_one(
     try:
         session = await get_miner_session(target, timeout=timeout)
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
-        if iv:
-            headers["X-Chutes-Serialized"] = "true"
+        headers["X-Chutes-Serialized"] = "true"
         response = await session.post(
             f"/{path}",
             data=payload_string,
@@ -711,7 +700,7 @@ async def _invoke_one(
             )
 
         # Check if the instance restarted and is using encryption V2.
-        if response.status == status.HTTP_426_UPGRADE_REQUIRED and iv:
+        if response.status == status.HTTP_426_UPGRADE_REQUIRED:
             raise KeyExchangeRequired(
                 f"Instance {target.instance_id} responded with 426, new key exchange required."
             )
@@ -738,11 +727,7 @@ async def _invoke_one(
             chunk_idx = 0
             cllmv_verified = False
             async for raw_chunk in response.content:
-                chunk = raw_chunk
-                if iv:
-                    chunk = await asyncio.to_thread(
-                        aes_decrypt, raw_chunk, target.symmetric_key, iv
-                    )
+                chunk = await asyncio.to_thread(decrypt_instance_response, raw_chunk, target, iv)
 
                 # Track time to first token and (approximate) token count; approximate
                 # here because in speculative decoding multiple tokens may be returned.
@@ -917,58 +902,41 @@ async def _invoke_one(
                 track_vllm_usage(chute.chute_id, target.miner_hotkey, total_time, metrics)
                 await track_prefix_hashes(prefixes, target.instance_id)
         else:
-            # Non-streamed responses, which may be encrypted with the new chutes encryption V2.
+            # Non-streamed responses - always encrypted.
             headers = response.headers
             body_bytes = await response.read()
             data = {}
-            if iv:
-                # Encryption V2 always uses JSON, regardless of the underlying data type.
-                response_data = json.loads(body_bytes)
-                if "json" in response_data:
-                    plaintext = await asyncio.to_thread(
-                        aes_decrypt, response_data["json"], target.symmetric_key, iv
+            response_data = json.loads(body_bytes)
+            if "json" in response_data:
+                plaintext = await asyncio.to_thread(
+                    decrypt_instance_response, response_data["json"], target, iv
+                )
+                if chute.standard_template == "vllm" and plaintext.startswith(
+                    b'{"object":"error","message":"input_ids cannot be empty."'
+                ):
+                    logger.warning(
+                        f"Non-stream failed here: {chute.chute_id=} {target.instance_id=} {plaintext=}"
                     )
-                    if chute.standard_template == "vllm" and plaintext.startswith(
-                        b'{"object":"error","message":"input_ids cannot be empty."'
-                    ):
-                        logger.warning(
-                            f"Non-stream failed here: {chute.chute_id=} {target.instance_id=} {plaintext=}"
-                        )
-                        raise Exception(
-                            "SGLang backend failure, input_ids null error response produced."
-                        )
-                    try:
-                        data = {"content_type": "application/json", "json": json.loads(plaintext)}
-                    except Exception as exc2:
-                        logger.error(f"FAILED HERE: {str(exc2)} from {plaintext=}")
-                        raise
-                else:
-                    # Response was a file or other response object.
-                    plaintext = await asyncio.to_thread(
-                        aes_decrypt, response_data["body"], target.symmetric_key, iv
+                    raise Exception(
+                        "SGLang backend failure, input_ids null error response produced."
                     )
-                    headers = response_data["headers"]
-                    data = {
-                        "content_type": response_data.get(
-                            "media_type", headers.get("Content-Type", "text/plain")
-                        ),
-                        "bytes": base64.b64encode(plaintext).decode(),
-                    }
+                try:
+                    data = {"content_type": "application/json", "json": json.loads(plaintext)}
+                except Exception as exc2:
+                    logger.error(f"FAILED HERE: {str(exc2)} from {plaintext=}")
+                    raise
             else:
-                # Legacy response handling.
-                content_type = response.headers.get("content-type")
-                if content_type in (None, "application/json"):
-                    json_data = await response.json()
-                    data = {"content_type": content_type, "json": json_data}
-                elif content_type.startswith("text/"):
-                    text_data = await response.text()
-                    data = {"content_type": content_type, "text": text_data}
-                else:
-                    raw_data = await response.read()
-                    data = {
-                        "content_type": content_type,
-                        "bytes": base64.b64encode(raw_data).decode(),
-                    }
+                # Response was a file or other response object.
+                plaintext = await asyncio.to_thread(
+                    decrypt_instance_response, response_data["body"], target, iv
+                )
+                headers = response_data["headers"]
+                data = {
+                    "content_type": response_data.get(
+                        "media_type", headers.get("Content-Type", "text/plain")
+                    ),
+                    "bytes": base64.b64encode(plaintext).decode(),
+                }
 
             # Track metrics for the standard LLM/diffusion templates.
             total_time = time.time() - started_at
@@ -1616,21 +1584,14 @@ async def load_llm_details(chute, target):
     """
     Load the /v1/models endpoint for a chute from a single instance.
     """
-    path = "/get_models"
-    if use_encrypted_path(target.chutes_version):
-        path = await asyncio.to_thread(
-            aes_encrypt, path.ljust(24, "?"), target.symmetric_key, hex_encode=True
-        )
+    path, _ = await asyncio.to_thread(
+        encrypt_instance_request, "/get_models".ljust(24, "?"), target, True
+    )
     payload = {
         "args": base64.b64encode(gzip.compress(pickle.dumps(tuple()))).decode(),
         "kwargs": base64.b64encode(gzip.compress(pickle.dumps({}))).decode(),
     }
-    iv = None
-    if use_encryption_v2(target.chutes_version):
-        if not target.symmetric_key:
-            raise KeyExchangeRequired(f"Instance {target.instance_id} requires new symmetric key.")
-        payload = await asyncio.to_thread(aes_encrypt, json.dumps(payload), target.symmetric_key)
-        iv = bytes.fromhex(payload[:32])
+    payload, iv = await asyncio.to_thread(encrypt_instance_request, json.dumps(payload), target)
 
     async with aiohttp.ClientSession(
         timeout=aiohttp.ClientTimeout(connect=5.0, total=60.0),
@@ -1638,8 +1599,7 @@ async def load_llm_details(chute, target):
         raise_for_status=True,
     ) as session:
         headers, payload_string = sign_request(miner_ss58=target.miner_hotkey, payload=payload)
-        if iv:
-            headers["X-Chutes-Serialized"] = "true"
+        headers["X-Chutes-Serialized"] = "true"
         async with session.post(
             f"http://{target.host}:{target.port}/{path}", data=payload_string, headers=headers
         ) as resp:
@@ -1647,12 +1607,8 @@ async def load_llm_details(chute, target):
             logger.info(
                 f"{target.chute_id=} {target.instance_id=} {target.miner_hotkey=}: {raw_data=}"
             )
-            info = (
-                raw_data
-                if not iv
-                else json.loads(
-                    await asyncio.to_thread(aes_decrypt, raw_data["json"], target.symmetric_key, iv)
-                )
+            info = json.loads(
+                await asyncio.to_thread(decrypt_instance_response, raw_data["json"], target, iv)
             )
             return info["data"][0]
 

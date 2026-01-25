@@ -26,9 +26,8 @@ from ipaddress import ip_address
 from api.config import settings
 from api.util import (
     semcomp,
-    aes_encrypt,
-    aes_decrypt,
-    use_encrypted_path,
+    decrypt_instance_response,
+    encrypt_instance_request,
     get_resolved_ips,
     generate_ip_token,
 )
@@ -71,12 +70,11 @@ def generate_device_info_challenge(device_count: int):
 
 def get_actual_path(instance, path):
     """
-    Get the real path, which may be encrypted.
+    Get the real path, which is encrypted.
     """
-    if not use_encrypted_path(instance.chutes_version):
-        return path
     path = "/" + path.lstrip("/")
-    return aes_encrypt(path.ljust(24, "?"), instance.symmetric_key, hex_encode=True)
+    encrypted, _ = encrypt_instance_request(path.ljust(24, "?"), instance, hex_encode=True)
+    return encrypted
 
 
 @backoff.on_exception(
@@ -528,10 +526,8 @@ async def check_live_code(instance: Instance) -> bool:
         return False
 
     # Filesystem version.
-    payload = {"path": "/proc/1/cmdline"}
-    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
-    iv = payload[:32]
-    path = aes_encrypt("/_slurp", instance.symmetric_key, hex_encode=True)
+    payload, iv = encrypt_instance_request(json.dumps({"path": "/proc/1/cmdline"}), instance)
+    path, _ = encrypt_instance_request("/_slurp", instance, hex_encode=True)
     async with miner_client.post(
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
@@ -539,10 +535,9 @@ async def check_live_code(instance: Instance) -> bool:
         timeout=15.0,
     ) as resp:
         data = await resp.json()
+        decrypted = decrypt_instance_response(data["json"], instance, iv=iv)
         command_line = (
-            base64.b64decode(
-                json.loads(aes_decrypt(data["json"], instance.symmetric_key, iv=iv))["contents"]
-            )
+            base64.b64decode(json.loads(decrypted)["contents"])
             .decode()
             .replace("\x00", " ")
             .strip()
@@ -559,10 +554,10 @@ async def check_live_code(instance: Instance) -> bool:
             return False
 
     # Double check the code.
-    payload = {"path": f"/app/{instance.chute.filename}"}
-    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
-    iv = payload[:32]
-    path = aes_encrypt("/_slurp", instance.symmetric_key, hex_encode=True)
+    payload, iv = encrypt_instance_request(
+        json.dumps({"path": f"/app/{instance.chute.filename}"}), instance
+    )
+    path, _ = encrypt_instance_request("/_slurp", instance, hex_encode=True)
     async with miner_client.post(
         instance.miner_hotkey,
         f"http://{instance.host}:{instance.port}/{path}",
@@ -570,9 +565,8 @@ async def check_live_code(instance: Instance) -> bool:
         timeout=12.0,
     ) as resp:
         data = await resp.json()
-        code = base64.b64decode(
-            json.loads(aes_decrypt(data["json"], instance.symmetric_key, iv=iv))["contents"]
-        )
+        decrypted = decrypt_instance_response(data["json"], instance, iv=iv)
+        code = base64.b64decode(json.loads(decrypted)["contents"])
         if code != instance.chute.code.encode():
             logger.error(
                 f"Failed code slurp evaluation: {instance.instance_id=} {instance.miner_hotkey=}:\n{code}"

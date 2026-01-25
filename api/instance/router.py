@@ -76,6 +76,8 @@ from api.util import (
     is_valid_host,
     generate_ip_token,
     aes_decrypt,
+    derive_ecdh_session_key,
+    decrypt_instance_response,
     notify_created,
     notify_deleted,
     notify_verified,
@@ -855,6 +857,7 @@ async def _validate_launch_config_instance(
         env_creation=args.model_dump(),
         rint_commitment=getattr(args, "rint_commitment", None),
         rint_nonce=getattr(args, "rint_nonce", None),
+        rint_pubkey=getattr(args, "rint_pubkey", None),
     )
     if launch_config.job_id or (
         not chute.public
@@ -1268,6 +1271,33 @@ async def claim_launch_config(
         config_id, args, request, db, authorization
     )
 
+    # Enforce rint_pubkey for chutes >= 0.5.1
+    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
+        if not instance.rint_pubkey or not instance.rint_nonce:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="rint_pubkey and rint_nonce required for chutes >= 0.5.1",
+            )
+
+    # Generate ECDH session key if miner provided rint_pubkey
+    validator_pubkey = None
+    if instance.rint_pubkey and instance.rint_nonce:
+        try:
+            validator_pubkey, session_key = derive_ecdh_session_key(
+                instance.rint_pubkey, instance.rint_nonce
+            )
+            instance.rint_session_key = session_key
+            logger.info(
+                f"Derived ECDH session key for {instance.instance_id} "
+                f"validator_pubkey={validator_pubkey[:16]}..."
+            )
+        except Exception as exc:
+            logger.error(f"ECDH session key derivation failed: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ECDH session key derivation failed: {exc}",
+            )
+
     # Generate a ciphertext for this instance to decrypt.
     node = random.choice(nodes)
     iterations = SUPPORTED_GPUS[node.gpu_identifier]["graval"]["iterations"]
@@ -1307,7 +1337,7 @@ async def claim_launch_config(
 
     # The miner must decrypt the proposed symmetric key from this response payload,
     # then encrypt something using this symmetric key within the expected graval timeout.
-    return {
+    response = {
         "seed": launch_config.seed,
         "iterations": iterations,
         "job_id": launch_config.job_id,
@@ -1317,6 +1347,12 @@ async def claim_launch_config(
             "response_plaintext": f"secret is {launch_config.config_id} {launch_config.seed}",
         },
     }
+
+    # Include validator pubkey if ECDH was used
+    if validator_pubkey:
+        response["validator_pubkey"] = validator_pubkey
+
+    return response
 
 
 async def delayed_instance_fs_check(instance_id: str):
@@ -1745,8 +1781,8 @@ async def verify_launch_config_instance(
     response_body = await request.json()
     try:
         ciphertext = response_body["response"]
-        iv = response_body["iv"]
-        response = await asyncio.to_thread(aes_decrypt, ciphertext, instance.symmetric_key, iv)
+        iv = response_body.get("iv")  # Only used for legacy AES-CBC
+        response = await asyncio.to_thread(decrypt_instance_response, ciphertext, instance, iv)
         assert response == f"secret is {launch_config.config_id} {launch_config.seed}".encode()
     except Exception as exc:
         reason = (

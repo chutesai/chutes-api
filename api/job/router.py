@@ -15,7 +15,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
 import api.miner_client as miner_client
-from api.util import aes_encrypt, notify_job_deleted
+from api.util import encrypt_instance_request, notify_job_deleted
 from api.database import get_db_session
 from api.chute.schemas import Chute, NodeSelector
 from api.chute.util import is_shared
@@ -239,8 +239,8 @@ async def delete_job(
         instance = job.instance
         try:
             payload = {"reason": "user initiated"}
-            enc_payload = aes_encrypt(json.dumps(payload).encode(), instance.symmetric_key)
-            path = aes_encrypt("/_shutdown", instance.symmetric_key, hex_encode=True)
+            enc_payload, _ = encrypt_instance_request(json.dumps(payload), instance)
+            path, _ = encrypt_instance_request("/_shutdown", instance, hex_encode=True)
             async with miner_client.post(
                 instance.miner_hotkey,
                 f"http://{instance.host}:{instance.port}/{path}",

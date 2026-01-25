@@ -16,7 +16,7 @@ from api.chute.schemas import RollingUpdate, Chute
 from api.database import get_session
 from api.instance.schemas import Instance
 from api.instance.util import invalidate_instance_cache
-from api.util import aes_encrypt, notify_deleted, semcomp
+from api.util import encrypt_instance_request, notify_deleted, semcomp
 from api.chute.util import get_one
 from watchtower import check_runint
 
@@ -31,10 +31,9 @@ NETNANNY.verify.restype = ctypes.c_int
 
 
 async def _post_connectivity(instance: Instance, endpoint: str) -> Dict[str, Any]:
-    enc_path = aes_encrypt("/_connectivity", instance.symmetric_key, hex_encode=True)
+    enc_path, _ = encrypt_instance_request("/_connectivity", instance, hex_encode=True)
     url = f"http://{instance.host}:{instance.port}/{enc_path}"
-    payload = {"endpoint": endpoint}
-    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    payload, _ = encrypt_instance_request(json.dumps({"endpoint": endpoint}), instance)
     async with miner_client.post(
         instance.miner_hotkey,
         url,
@@ -46,10 +45,9 @@ async def _post_connectivity(instance: Instance, endpoint: str) -> Dict[str, Any
 
 
 async def _post_netnanny_challenge(instance: Instance, challenge: str) -> Dict[str, Any]:
-    enc_path = aes_encrypt("/_netnanny_challenge", instance.symmetric_key, hex_encode=True)
+    enc_path, _ = encrypt_instance_request("/_netnanny_challenge", instance, hex_encode=True)
     url = f"http://{instance.host}:{instance.port}/{enc_path}"
-    payload = {"challenge": challenge}
-    payload = aes_encrypt(json.dumps(payload), instance.symmetric_key)
+    payload, _ = encrypt_instance_request(json.dumps({"challenge": challenge}), instance)
     async with miner_client.post(
         instance.miner_hotkey,
         url,
