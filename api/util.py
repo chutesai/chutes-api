@@ -369,11 +369,16 @@ def aes_gcm_decrypt(ciphertext: bytes, key: bytes) -> bytes:
     """
     Decrypt AES-256-GCM ciphertext from runint.
     Format: nonce (12 bytes) || ciphertext || tag (16 bytes)
+    Ciphertext is base64 encoded (miner's _encrypt always base64 encodes).
     """
     if isinstance(key, str):
         key = bytes.fromhex(key)
-    if isinstance(ciphertext, str):
-        ciphertext = base64.b64decode(ciphertext)
+
+    # Ciphertext is always base64 encoded from miner (string or bytes)
+    if isinstance(ciphertext, bytes):
+        ciphertext = ciphertext.rstrip(b"\n\r")  # Strip trailing newlines from streaming
+        ciphertext = ciphertext.decode("ascii")  # Convert to string for b64decode
+    ciphertext = base64.b64decode(ciphertext)
 
     if len(ciphertext) < 28:  # 12 nonce + 16 tag minimum
         raise ValueError("Ciphertext too short for AES-GCM")
