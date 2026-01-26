@@ -675,7 +675,7 @@ async def _validate_launch_config_instance(
     launch_config: LaunchConfig,
     chute: Chute,
     log_prefix: str,
-) -> Tuple[LaunchConfig, list[Node], Instance]:
+) -> Tuple[LaunchConfig, list[Node], Instance, Optional[str]]:
     miner = await _check_blacklisted(db, launch_config.miner_hotkey)
 
     config_id = launch_config.config_id
@@ -970,7 +970,34 @@ async def _validate_launch_config_instance(
             await error_session.commit()
         raise
 
-    return launch_config, nodes, instance
+    # Enforce rint_pubkey for chutes >= 0.5.1
+    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
+        if not instance.rint_pubkey or not instance.rint_nonce:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="rint_pubkey and rint_nonce required for chutes >= 0.5.1",
+            )
+
+    # Generate ECDH session key if miner provided rint_pubkey
+    validator_pubkey = None
+    if instance.rint_pubkey and instance.rint_nonce:
+        try:
+            validator_pubkey, session_key = derive_ecdh_session_key(
+                instance.rint_pubkey, instance.rint_nonce
+            )
+            instance.rint_session_key = session_key
+            logger.info(
+                f"Derived ECDH session key for {instance.instance_id} "
+                f"validator_pubkey={validator_pubkey[:16]}..."
+            )
+        except Exception as exc:
+            logger.error(f"ECDH session key derivation failed: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ECDH session key derivation failed: {exc}",
+            )
+
+    return launch_config, nodes, instance, validator_pubkey
 
 
 async def _validate_graval_launch_config_instance(
@@ -979,7 +1006,7 @@ async def _validate_graval_launch_config_instance(
     request: Request,
     db: AsyncSession,
     authorization: str,
-) -> Tuple[LaunchConfig, list[Node], Instance]:
+) -> Tuple[LaunchConfig, list[Node], Instance, Optional[str]]:
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
@@ -1008,7 +1035,7 @@ async def _validate_tee_launch_config_instance(
     request: Request,
     db: AsyncSession,
     authorization: str,
-) -> Tuple[LaunchConfig, list[Node], Instance]:
+) -> Tuple[LaunchConfig, list[Node], Instance, Optional[str]]:
     token = authorization.strip().split(" ")[-1]
     launch_config = await load_launch_config_from_jwt(db, config_id, token)
     chute = await _load_chute(db, launch_config.chute_id)
@@ -1208,38 +1235,11 @@ async def validate_tee_launch_config_instance(
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
     expected_nonce: str = Depends(validate_request_nonce()),
 ):
-    launch_config, nodes, instance = await _validate_tee_launch_config_instance(
+    launch_config, nodes, instance, validator_pubkey = await _validate_tee_launch_config_instance(
         config_id, args, request, db, authorization
     )
 
     _validate_launch_config_not_expired(launch_config)
-
-    # Enforce rint_pubkey for chutes >= 0.5.1
-    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
-        if not instance.rint_pubkey or not instance.rint_nonce:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="rint_pubkey and rint_nonce required for chutes >= 0.5.1",
-            )
-
-    # Generate ECDH session key if miner provided rint_pubkey
-    validator_pubkey = None
-    if instance.rint_pubkey and instance.rint_nonce:
-        try:
-            validator_pubkey, session_key = derive_ecdh_session_key(
-                instance.rint_pubkey, instance.rint_nonce
-            )
-            instance.rint_session_key = session_key
-            logger.info(
-                f"Derived ECDH session key for TEE instance {instance.instance_id} "
-                f"validator_pubkey={validator_pubkey[:16]}..."
-            )
-        except Exception as exc:
-            logger.error(f"ECDH session key derivation failed for TEE: {exc}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"ECDH session key derivation failed: {exc}",
-            )
 
     # Store the launch config
     await db.commit()
@@ -1300,36 +1300,9 @@ async def claim_launch_config(
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
 ):
-    launch_config, nodes, instance = await _validate_graval_launch_config_instance(
+    launch_config, nodes, instance, validator_pubkey = await _validate_graval_launch_config_instance(
         config_id, args, request, db, authorization
     )
-
-    # Enforce rint_pubkey for chutes >= 0.5.1
-    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
-        if not instance.rint_pubkey or not instance.rint_nonce:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="rint_pubkey and rint_nonce required for chutes >= 0.5.1",
-            )
-
-    # Generate ECDH session key if miner provided rint_pubkey
-    validator_pubkey = None
-    if instance.rint_pubkey and instance.rint_nonce:
-        try:
-            validator_pubkey, session_key = derive_ecdh_session_key(
-                instance.rint_pubkey, instance.rint_nonce
-            )
-            instance.rint_session_key = session_key
-            logger.info(
-                f"Derived ECDH session key for {instance.instance_id} "
-                f"validator_pubkey={validator_pubkey[:16]}..."
-            )
-        except Exception as exc:
-            logger.error(f"ECDH session key derivation failed: {exc}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"ECDH session key derivation failed: {exc}",
-            )
 
     # Generate a ciphertext for this instance to decrypt.
     node = random.choice(nodes)
