@@ -115,8 +115,8 @@ class TeeServerClient:
                 async with session.get(url, headers=headers) as resp:
                     expected_cert_hash = extract_server_cert_hash(resp)
                     data = await resp.json()
-                    quote = RuntimeTdxQuote.from_base64(data["tdx_quote"])
-                    gpu_evidence = json.loads(data["nvtrust_evidence"])
+                    quote = RuntimeTdxQuote.from_base64(data["evidence"]["tdx_quote"])
+                    gpu_evidence = json.loads(data["evidence"]["nvtrust_evidence"])
 
                     return quote, gpu_evidence, expected_cert_hash
         except Exception as exc:
