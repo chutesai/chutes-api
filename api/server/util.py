@@ -202,9 +202,11 @@ def verify_measurements(quote: TdxQuote) -> bool:
 
     if not measurement_config:
         available = list(settings.tee_measurements.keys())
+        logger.info(
+            f"Unknown RTMR0: {rtmr0_upper}."
+        )
         raise MeasurementMismatchError(
-            f"Unknown RTMR0: {rtmr0_upper[:16]}... (not in configured measurements). "
-            f"Available measurement configs: {len(available)} configured"
+            f"Quote does not match expected measurements.  Ensure you are running the latest VM."
         )
 
     expected_rtmrs = (
