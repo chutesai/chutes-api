@@ -79,6 +79,7 @@ class TestAutoscaleContext:
         info.user_id = "test-user"
         info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
         info.new_chute = False
+        info.pending_instance_count = 0
         return info
 
     @pytest.fixture
@@ -154,6 +155,7 @@ class TestScaleDownDecision:
             info.user_id = "test-user"
             info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
             info.new_chute = False
+            info.pending_instance_count = 0
 
             rl_val = 0.05 if rate_limiting else 0.0
             metrics = {
@@ -184,7 +186,9 @@ class TestScaleDownDecision:
     async def test_scale_down_below_threshold(self, make_context):
         from chute_autoscaler import calculate_local_decision
 
-        ctx = make_context(utilization=0.2, current_count=5)
+        # Note: scale-down now requires pending_instance_count == 0 (which is the default)
+        ctx = make_context(utilization=0.1, current_count=5)
+        ctx.smoothed_util = 0.1  # Must set smoothed_util below scale_down_threshold
         await calculate_local_decision(ctx)
 
         assert ctx.action == "scale_down_candidate"
@@ -242,6 +246,7 @@ class TestScaleUpDecision:
             info.user_id = "test-user"
             info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
             info.new_chute = False
+            info.pending_instance_count = 0
 
             metrics = {
                 "utilization": {
@@ -320,6 +325,7 @@ class TestUrgencyScoring:
         info.user_id = "test-user"
         info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
         info.new_chute = False
+        info.pending_instance_count = 0
 
         metrics = {
             "utilization": {"current": 0.9, "5m": 0.9, "15m": 0.9, "1h": 0.9},
@@ -357,6 +363,7 @@ class TestUrgencyScoring:
         info.user_id = "test-user"
         info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
         info.new_chute = False
+        info.pending_instance_count = 0
 
         metrics = {
             "utilization": {"current": 0.5, "5m": 0.5, "15m": 0.5, "1h": 0.5},
@@ -634,6 +641,7 @@ class TestDonorIdentification:
             info.user_id = "chutes-user" if is_chutes_user else "other-user"
             info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
             info.new_chute = False
+            info.pending_instance_count = 0
 
             metrics = {
                 "utilization": {
@@ -660,7 +668,8 @@ class TestDonorIdentification:
         return _make
 
     def test_critical_donor_below_scale_down_threshold(self, make_context):
-        ctx = make_context(utilization=0.2)
+        ctx = make_context(utilization=0.1)
+        ctx.smoothed_util = 0.1  # Must set smoothed_util for donor identification
         assert ctx.utilization_basis < ctx.scale_down_threshold
 
     def test_optional_donor_in_stable_zone(self, make_context):

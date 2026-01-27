@@ -83,7 +83,7 @@ ADD data/containers.conf /etc/containers/containers.conf
 RUN mkdir -p /root/build /forge /var/lib/containers
 
 # Install trivy
-RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.68.1
+RUN curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.68.2
 
 # Install cosign
 ENV COSIGN_VERSION=2.5.3

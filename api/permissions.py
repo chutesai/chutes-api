@@ -67,6 +67,10 @@ class Permissioning:
         bitmask=1 << 13,
         description="Allow granting subnet admin/request roles to other users, i.e. subnet role self-service",
     )
+    chutes_support = Role(
+        bitmask=1 << 14,
+        description="Chutes team support role",
+    )
 
     @classmethod
     def enabled(cls, user, role):

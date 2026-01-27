@@ -26,6 +26,7 @@ from api.exceptions import (
     BuildTimeout,
     PushTimeout,
 )
+from api.util import semcomp
 from api.image.schemas import Image
 from api.chute.schemas import Chute, RollingUpdate
 from api.graval_worker import handle_rolling_update
@@ -35,6 +36,7 @@ from sqlalchemy.future import select
 from api.database import orms  # noqa
 
 CFSV_PATH = os.path.join(os.path.dirname(chutes.__file__), "cfsv")
+CFSV_V2_PATH = f"{CFSV_PATH}_v2"
 
 
 async def initialize():
@@ -94,7 +96,10 @@ async def build_and_push_image(image, build_dir):
 
     # Copy cfsv binary to build directory
     build_cfsv_path = os.path.join(build_dir, "cfsv")
-    shutil.copy2(CFSV_PATH, build_cfsv_path)
+    if semcomp(image.chutes_version or "0.0.0", "0.4.6") >= 0:
+        shutil.copy2(CFSV_V2_PATH, build_cfsv_path)
+    else:
+        shutil.copy2(CFSV_PATH, build_cfsv_path)
     os.chmod(build_cfsv_path, 0o755)
 
     # Helper to capture and stream logs
@@ -885,7 +890,10 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     with tempfile.TemporaryDirectory() as build_dir:
         try:
             build_cfsv_path = os.path.join(build_dir, "cfsv")
-            shutil.copy2(CFSV_PATH, build_cfsv_path)
+            if semcomp(chutes_version or "0.0.0", "0.4.6") >= 0:
+                shutil.copy2(CFSV_V2_PATH, build_cfsv_path)
+            else:
+                shutil.copy2(CFSV_PATH, build_cfsv_path)
             os.chmod(build_cfsv_path, 0o755)
 
             storage_driver = os.getenv("STORAGE_DRIVER", "overlay")

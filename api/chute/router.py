@@ -895,6 +895,7 @@ async def _deploy_chute(
     current_user: User,
     use_rolling_update: bool = True,
     accept_fee: bool = False,
+    is_subnet_model: bool = False,
 ):
     """
     Deploy a chute!
@@ -1081,20 +1082,26 @@ async def _deploy_chute(
                 image, min_sglang_version=2025111902, min_vllm_version=2026011303
             )
             or image.user_id != await chutes_user_id()
+            or semcomp(image.chutes_version, "0.5.1") < 0
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    'Must use image="chutes/sglang:nightly-2025111902" (or more recent sglang), '
-                    'or image="chutes/vllm:nightly-2026011303" (or more recent vllm) for affine deployments.'
+                    'Must use image="chutes/sglang:nightly-2025111902.p1" or nightly tag after 20260120*, '
+                    'or image="chutes/vllm:nightly-2026012000" (or more recent nightly vllm) for affine deployments.'
                 ),
             )
 
     # Prevent deploying images with old chutes SDK versions.
     min_version = "0.3.61"
+    if is_subnet_model:
+        min_version = "0.5.1"
     if current_user.user_id != await chutes_user_id() and (
         not image.chutes_version or semcomp(image.chutes_version, min_version) < 0
     ):
+        logger.warning(
+            f"Integrated subnet miner attempted to deploy {image.chutes_version=}, blocking"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=(
@@ -1481,6 +1488,7 @@ async def deploy_chute(
         current_user,
         use_rolling_update=not is_subnet_model,
         accept_fee=accept_fee,
+        is_subnet_model=is_subnet_model,
     )
     return chute
 

@@ -43,6 +43,8 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from scalecodec.utils.ss58 import is_valid_ss58_address, ss58_decode
 from async_substrate_interface.async_substrate import AsyncSubstrateInterface
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 ALLOWED_HOST_RE = re.compile(r"(?!-)[a-z\d-]{1,63}(?<!-)$")
 ALLOWED_CHUTE_BUILDERS = {"build_sglang_chute", "build_vllm_chute"}
@@ -361,6 +363,193 @@ def aes_decrypt(ciphertext: bytes, key: bytes, iv: bytes) -> bytes:
     decrypted_data = decryptor.update(cipher_bytes) + decryptor.finalize()
     unpadded_data = unpadder.update(decrypted_data) + unpadder.finalize()
     return unpadded_data
+
+
+def aes_gcm_decrypt(ciphertext: bytes, key: bytes) -> bytes:
+    """
+    Decrypt AES-256-GCM ciphertext from runint.
+    Format: nonce (12 bytes) || ciphertext || tag (16 bytes)
+    Ciphertext is base64 encoded (miner's _encrypt always base64 encodes).
+    """
+    if isinstance(key, str):
+        key = bytes.fromhex(key)
+
+    # Ciphertext is always base64 encoded from miner (string or bytes)
+    if isinstance(ciphertext, bytes):
+        ciphertext = ciphertext.rstrip(b"\n\r")  # Strip trailing newlines from streaming
+        ciphertext = ciphertext.decode("ascii")  # Convert to string for b64decode
+    ciphertext = base64.b64decode(ciphertext)
+
+    if len(ciphertext) < 28:  # 12 nonce + 16 tag minimum
+        raise ValueError("Ciphertext too short for AES-GCM")
+
+    nonce = ciphertext[:12]
+    tag = ciphertext[-16:]
+    ct = ciphertext[12:-16]
+
+    cipher = Cipher(
+        algorithms.AES(key),
+        modes.GCM(nonce, tag),
+        backend=default_backend(),
+    )
+    decryptor = cipher.decryptor()
+    plaintext = decryptor.update(ct) + decryptor.finalize()
+    return plaintext
+
+
+def derive_ecdh_session_key(miner_pubkey_hex: str, rint_nonce_hex: str) -> tuple[str, str]:
+    """
+    Generate an ephemeral ECDH keypair and derive session key with miner's pubkey.
+
+    Args:
+        miner_pubkey_hex: Miner's secp256k1 public key as 128 hex chars (64 bytes = x || y)
+        rint_nonce_hex: The rint_nonce from instance (32 hex chars = 16 bytes hash)
+
+    Returns:
+        (validator_pubkey_hex, session_key_hex): Validator's pubkey to send back,
+        and the derived 32-byte session key for AES-256-GCM.
+
+    The session key derivation matches runint:
+        SHA256("runint-session-v1" || shared_secret || miner_pubkey || validator_pubkey || rint_nonce)
+    """
+    # Parse miner's public key (raw x||y format, 64 bytes)
+    miner_pubkey_bytes = bytes.fromhex(miner_pubkey_hex)
+    if len(miner_pubkey_bytes) != 64:
+        raise ValueError(f"Invalid miner pubkey length: {len(miner_pubkey_bytes)}")
+
+    # Parse rint_nonce (16 bytes)
+    rint_nonce_bytes = bytes.fromhex(rint_nonce_hex)
+    if len(rint_nonce_bytes) != 16:
+        raise ValueError(f"Invalid rint_nonce length: {len(rint_nonce_bytes)}")
+
+    # Add 0x04 prefix for uncompressed point format
+    miner_pubkey_uncompressed = b"\x04" + miner_pubkey_bytes
+    miner_public_key = ec.EllipticCurvePublicKey.from_encoded_point(
+        ec.SECP256K1(), miner_pubkey_uncompressed
+    )
+
+    # Generate ephemeral validator keypair
+    validator_private_key = ec.generate_private_key(ec.SECP256K1(), default_backend())
+    validator_public_key = validator_private_key.public_key()
+
+    # Get validator pubkey bytes (remove 0x04 prefix)
+    validator_pubkey_uncompressed = validator_public_key.public_bytes(
+        Encoding.X962, PublicFormat.UncompressedPoint
+    )
+    validator_pubkey_bytes = validator_pubkey_uncompressed[1:]  # Remove 0x04
+    validator_pubkey_hex = validator_pubkey_bytes.hex()
+
+    # Perform ECDH to get shared secret
+    shared_secret = validator_private_key.exchange(ec.ECDH(), miner_public_key)
+
+    # Derive session key: SHA256("runint-session-v1" || shared_secret || miner_pub || validator_pub || rint_nonce)
+    h = hashlib.sha256()
+    h.update(b"runint-session-v1")
+    h.update(shared_secret)
+    h.update(miner_pubkey_bytes)
+    h.update(validator_pubkey_bytes)
+    h.update(rint_nonce_bytes)
+    session_key = h.digest()
+
+    return validator_pubkey_hex, session_key.hex()
+
+
+def aes_gcm_encrypt(plaintext: bytes, key: bytes) -> bytes:
+    """
+    Encrypt with AES-256-GCM.
+    Format: nonce (12 bytes) || ciphertext || tag (16 bytes)
+    """
+    if isinstance(key, str):
+        key = bytes.fromhex(key)
+    if isinstance(plaintext, str):
+        plaintext = plaintext.encode()
+
+    nonce = secrets.token_bytes(12)
+    cipher = Cipher(
+        algorithms.AES(key),
+        modes.GCM(nonce),
+        backend=default_backend(),
+    )
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+    # nonce || ciphertext || tag
+    return nonce + ciphertext + encryptor.tag
+
+
+def decrypt_instance_response(
+    ciphertext: bytes | str,
+    instance,
+    iv: str = None,
+    force_legacy: bool = False,
+) -> bytes:
+    """
+    Decrypt a response from a miner instance.
+
+    For chutes >= 0.5.1: uses AES-256-GCM with rint_session_key (nonce embedded in ciphertext)
+    For older chutes: uses legacy AES-CBC with symmetric_key and iv
+
+    Args:
+        ciphertext: The encrypted data
+        instance: The Instance object with symmetric_key and rint_session_key
+        iv: IV for legacy AES-CBC (ignored for new scheme)
+        force_legacy: If True, always use legacy AES-CBC (for PoVW which uses symmetric_key)
+
+    Returns:
+        Decrypted plaintext bytes
+    """
+    # PoVW responses always use legacy AES-CBC with symmetric_key
+    if force_legacy:
+        if iv is None:
+            raise ValueError("iv required for legacy AES-CBC decryption")
+        return aes_decrypt(ciphertext, instance.symmetric_key, iv)
+
+    # chutes >= 0.5.1 uses AES-256-GCM with ECDH-derived session key
+    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
+        if not instance.rint_session_key:
+            raise ValueError("chutes >= 0.5.1 requires rint_session_key")
+        return aes_gcm_decrypt(ciphertext, instance.rint_session_key)
+
+    # Legacy AES-CBC decryption
+    if iv is None:
+        raise ValueError("iv required for legacy AES-CBC decryption")
+    return aes_decrypt(ciphertext, instance.symmetric_key, iv)
+
+
+def encrypt_instance_request(
+    plaintext: bytes, instance, hex_encode=False
+) -> tuple[str, str | None]:
+    """
+    Encrypt a request to a miner instance.
+
+    For chutes >= 0.5.1: uses AES-256-GCM with rint_session_key
+    For older chutes: uses legacy AES-CBC with symmetric_key
+
+    Args:
+        plaintext: The data to encrypt
+        instance: The Instance object with symmetric_key and rint_session_key
+        hex_encode: Whether to hex encode (legacy only, ignored for GCM)
+
+    Returns:
+        Tuple of (encrypted_string, iv_or_none):
+        - For GCM: (base64_ciphertext, None)
+        - For legacy: (iv_hex + base64/hex_ciphertext, iv_hex)
+    """
+    if isinstance(plaintext, str):
+        plaintext = plaintext.encode()
+
+    # chutes >= 0.5.1 uses AES-256-GCM with ECDH-derived session key
+    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
+        if not instance.rint_session_key:
+            raise ValueError("chutes >= 0.5.1 requires rint_session_key")
+        encrypted = aes_gcm_encrypt(plaintext, instance.rint_session_key)
+        if hex_encode:
+            return encrypted.hex(), None
+        return base64.b64encode(encrypted).decode(), None
+
+    # Legacy AES-CBC encryption
+    encrypted = aes_encrypt(plaintext, instance.symmetric_key, hex_encode=hex_encode)
+    iv = encrypted[:32]  # First 32 hex chars are the IV
+    return encrypted, iv
 
 
 def use_encryption_v2(chutes_version: str):
