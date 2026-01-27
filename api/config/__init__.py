@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(arbitrary_types_allowed=True)
     _validator_keypair: Optional[Keypair] = None
 
+    def model_post_init(self, __context) -> None:
+        """Validate configuration after initialization."""
+        # Eagerly validate TEE measurement configuration to fail fast on startup
+        _ = self.tee_measurements
+
     @cached_property
     def validator_keypair(self) -> Optional[Keypair]:
         if not self._validator_keypair and os.getenv("VALIDATOR_SEED"):
