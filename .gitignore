@@ -176,3 +176,4 @@ cython_debug/
 tests/integration/keys
 .vscode
 *.code-workspace
+**/config/*.yaml

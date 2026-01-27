@@ -361,10 +361,22 @@ class Settings(BaseSettings):
                 )
                 continue
 
+            # Check for duplicate RTMR0 values
+            config_name = measurement_config.get("name", "unnamed")
+            if rtmr0_upper in measurements:
+                existing_name = measurements[rtmr0_upper].name
+                error_msg = (
+                    f"Duplicate RTMR0 detected in TEE measurement configuration: "
+                    f"measurement config '{config_name}' has the same RTMR0 as '{existing_name}' "
+                    f"(RTMR0: {rtmr0_upper[:16]}...). Each measurement configuration must have a unique RTMR0 value."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
             mrtd_upper = measurement_config["mrtd"].upper().strip()
             if len(mrtd_upper) != 96:
                 logger.warning(
-                    f"Invalid MRTD length for measurement config {measurement_config.get('name')}: {len(mrtd_upper)} (expected 96)"
+                    f"Invalid MRTD length for measurement config {config_name}: {len(mrtd_upper)} (expected 96)"
                 )
                 continue
 
@@ -374,7 +386,7 @@ class Settings(BaseSettings):
             # Validate that RTMR0 matches between boot and runtime (ACPI tables don't change)
             if boot_rtmrs.get("RTMR0") != runtime_rtmrs.get("RTMR0"):
                 logger.warning(
-                    f"RTMR0 mismatch between boot and runtime for measurement config {measurement_config.get('name')}. "
+                    f"RTMR0 mismatch between boot and runtime for measurement config {config_name}. "
                     f"This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
                 )
 
