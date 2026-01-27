@@ -352,6 +352,15 @@ class Settings(BaseSettings):
 
         measurements = {}
         for measurement_config in config.get("measurements", []):
+            # Use RTMR0 as the lookup key since it differs per topology (ACPI tables)
+            # MRTD should be the same across topologies (same firmware)
+            rtmr0_upper = measurement_config["boot_rtmrs"]["rtmr0"].upper().strip()
+            if len(rtmr0_upper) != 96:
+                logger.warning(
+                    f"Invalid RTMR0 length for measurement config {measurement_config.get('name')}: {len(rtmr0_upper)} (expected 96)"
+                )
+                continue
+
             mrtd_upper = measurement_config["mrtd"].upper().strip()
             if len(mrtd_upper) != 96:
                 logger.warning(
@@ -359,13 +368,21 @@ class Settings(BaseSettings):
                 )
                 continue
 
-            measurements[mrtd_upper] = TeeMeasurementConfig(
+            boot_rtmrs = {k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()}
+            runtime_rtmrs = {k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()}
+            
+            # Validate that RTMR0 matches between boot and runtime (ACPI tables don't change)
+            if boot_rtmrs.get("RTMR0") != runtime_rtmrs.get("RTMR0"):
+                logger.warning(
+                    f"RTMR0 mismatch between boot and runtime for measurement config {measurement_config.get('name')}. "
+                    f"This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
+                )
+
+            measurements[rtmr0_upper] = TeeMeasurementConfig(
                 mrtd=mrtd_upper,
                 name=measurement_config["name"],
-                boot_rtmrs={k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()},
-                runtime_rtmrs={
-                    k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()
-                },
+                boot_rtmrs=boot_rtmrs,
+                runtime_rtmrs=runtime_rtmrs,
                 expected_gpus=[gpu.lower() for gpu in measurement_config["expected_gpus"]],
                 gpu_count=measurement_config.get("gpu_count"),
             )

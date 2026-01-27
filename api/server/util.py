@@ -3,7 +3,7 @@ TDX quote parsing, crypto operations, and server helper functions.
 """
 
 import secrets
-from typing import Dict
+from typing import Dict, Optional
 from sqlalchemy import select
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -184,7 +184,8 @@ def verify_measurements(quote: TdxQuote) -> bool:
     """
     Verify quote measurements against allowed measurement values.
 
-    Uses MRTD as lookup key to find expected RTMRs for this measurement configuration.
+    Uses RTMR0 as lookup key to find expected measurements for this configuration.
+    RTMR0 includes ACPI tables which differ per topology, making it a good identifier.
 
     Args:
         quote: Parsed TDX quote
@@ -195,13 +196,14 @@ def verify_measurements(quote: TdxQuote) -> bool:
     Raises:
         MeasurementMismatchError: If any measurements don't match
     """
-    mrtd_upper = quote.mrtd.upper()
-    measurement_config = settings.tee_measurements.get(mrtd_upper)
+    # Use RTMR0 as lookup key (it differs per topology due to ACPI tables)
+    rtmr0_upper = quote.rtmr0.upper()
+    measurement_config = settings.tee_measurements.get(rtmr0_upper)
 
     if not measurement_config:
         available = list(settings.tee_measurements.keys())
         raise MeasurementMismatchError(
-            f"Unknown MRTD: {mrtd_upper[:16]}... (not in configured measurements). "
+            f"Unknown RTMR0: {rtmr0_upper[:16]}... (not in configured measurements). "
             f"Available measurement configs: {len(available)} configured"
         )
 
@@ -210,9 +212,9 @@ def verify_measurements(quote: TdxQuote) -> bool:
     )
 
     logger.info(
-        f"Verifying quote for measurement config '{measurement_config.name}' (MRTD: {mrtd_upper[:16]}...)"
+        f"Verifying quote for measurement config '{measurement_config.name}' (RTMR0: {rtmr0_upper[:16]}...)"
     )
-    return _verify_measurements(quote, expected_rtmrs, measurement_config.name)
+    return _verify_measurements(quote, expected_rtmrs, measurement_config.name, measurement_config.mrtd)
 
 
 def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
@@ -230,22 +232,30 @@ def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
         MeasurementMismatchError: If any measurements don't match
     """
     # Get measurement config name for logging if available
-    mrtd_upper = quote.mrtd.upper()
-    measurement_config = settings.tee_measurements.get(mrtd_upper)
+    rtmr0_upper = quote.rtmr0.upper()
+    measurement_config = settings.tee_measurements.get(rtmr0_upper)
     measurement_name = measurement_config.name if measurement_config else "unknown"
+    expected_mrtd = measurement_config.mrtd if measurement_config else None
 
     logger.info("Verifying quote against verification result MRTD and RTMRS.")
-    return _verify_measurements(quote, result.rtmrs, measurement_name)
+    return _verify_measurements(quote, result.rtmrs, measurement_name, expected_mrtd)
 
 
 def _verify_measurements(
-    quote: TdxQuote, expected_rtmrs: Dict[str, str], measurement_name: str = "unknown"
+    quote: TdxQuote, expected_rtmrs: Dict[str, str], measurement_name: str = "unknown", expected_mrtd: Optional[str] = None
 ) -> bool:
     try:
         mismatches = []
 
-        # MRTD verification is implicit - if we found the measurement config, MRTD is valid
-        # No need to check MRTD again here
+        # Verify MRTD if provided (should be same across topologies with same firmware)
+        if expected_mrtd:
+            if quote.mrtd.upper() != expected_mrtd.upper():
+                error_msg = (
+                    f"MRTD mismatch for measurement config '{measurement_name}': "
+                    f"expected {expected_mrtd[:16]}..., got {quote.mrtd[:16]}..."
+                )
+                logger.error(error_msg)
+                mismatches.append(error_msg)
 
         # Verify RTMRs
         for rtmr_name, expected_value in expected_rtmrs.items():

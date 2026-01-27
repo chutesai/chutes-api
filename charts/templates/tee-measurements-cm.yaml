@@ -9,8 +9,12 @@ data:
     # TEE Measurement Configuration
     # This file is managed via Kubernetes ConfigMap
     # Update the ConfigMap to add/modify measurement configurations
+    #
+    # Note: Configurations are keyed by RTMR0 (boot_rtmrs.rtmr0) since RTMR0 includes ACPI tables
+    # that differ per topology. MRTD should be the same across topologies with the same firmware.
     measurements:
       # Example measurement configuration - replace with actual values
+      # This configuration is identified by boot_rtmrs.rtmr0
       - mrtd: "PLACEHOLDER_MRTD_96_HEX_CHARS"
         name: "8xh200"
         description: "8x H200 GPU configuration"

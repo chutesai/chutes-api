@@ -190,20 +190,27 @@ async def verify_quote(
     return result
 
 
-def validate_gpus_for_measurements(
-    quote: TdxQuote, gpus: list[NodeArgs], measurement_config: TeeMeasurementConfig
-) -> None:
+def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> None:
     """
     Validate that the provided GPUs match the expected GPUs for this measurement configuration.
 
+    Looks up the measurement configuration using the quote's RTMR0.
+
     Args:
-        quote: Verified TDX quote
+        quote: Verified TDX quote (must have been verified via verify_quote)
         gpus: List of GPU nodes being registered
-        measurement_config: Measurement configuration for this MRTD
 
     Raises:
         MeasurementMismatchError: If GPUs don't match measurement configuration expectations
     """
+    # Look up measurement configuration by RTMR0
+    measurement_config = settings.tee_measurements.get(quote.rtmr0.upper())
+    if not measurement_config:
+        # This should not happen if verify_quote was called first, but handle gracefully
+        raise MeasurementMismatchError(
+            f"Unknown RTMR0: {quote.rtmr0[:16]}... (measurement config not found)"
+        )
+
     # Extract GPU identifiers
     provided_gpu_ids = {gpu.gpu_identifier.lower() for gpu in gpus}
     expected_gpu_ids = set(measurement_config.expected_gpus)
@@ -409,20 +416,14 @@ async def verify_server(
         )
         quote, gpu_evidence, expected_cert_hash = await client.get_evidence(nonce)
 
-        # Verify quote measurements (this will lookup measurement config by MRTD)
+        # Verify quote measurements (this will lookup measurement config by RTMR0)
         await verify_quote(quote, nonce, expected_cert_hash)
-
-        # Get measurement configuration
-        mrtd_upper = quote.mrtd.upper()
-        measurement_config = settings.tee_measurements.get(mrtd_upper)
-        if not measurement_config:
-            raise MeasurementMismatchError(f"Unknown MRTD: {mrtd_upper[:16]}...")
 
         # Verify GPU evidence
         await verify_gpu_evidence(gpu_evidence, nonce)
 
         # Validate GPUs match measurement configuration
-        validate_gpus_for_measurements(quote, gpus, measurement_config)
+        validate_gpus_for_measurements(quote, gpus)
 
         logger.success(
             f"Verified server server_id={server.server_id} ip={server.ip} for miner: {miner_hotkey}"
