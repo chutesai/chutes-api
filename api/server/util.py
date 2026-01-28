@@ -267,11 +267,10 @@ def _verify_measurements(
                 logger.error(error_msg)
                 mismatches.append(error_msg)
             elif actual_value.upper() != expected_value.upper():
-                error_msg = (
-                    f"RTMR {rtmr_name} mismatch for measurement config '{measurement_name}': "
-                    f"expected {expected_value[:16]}..., got {actual_value[:16]}..."
-                )
-                logger.error(error_msg)
+                error_msg = f"RTMR {rtmr_name} mismatch for measurement config '{measurement_name}': "
+                logger.error(
+                    f"{error_msg} "
+                    f"expected {expected_value}..., got {actual_value}...")
                 mismatches.append(error_msg)
 
         # If any mismatches found, raise with generic message
