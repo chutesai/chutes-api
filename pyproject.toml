@@ -32,7 +32,7 @@ dependencies = [
   "python-slugify[unidecode]>=8.0.4,<9.0.0",
   "async-lru>=2.0.5,<3.0.0",
   "aiodns>=3.6.0,<4.0.0",
-  "chutes==0.4.8",
+  "chutes==0.5.2rc7",
   "python-socketio[asyncio-client]>=5.15.0,<6.0.0",
   "pillow>=12.0.0,<13.0.0",
   "aioboto3==15.5.0",

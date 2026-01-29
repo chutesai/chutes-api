@@ -608,7 +608,11 @@ async def generate_fs_hash(
             .scalar_one_or_none()
         )
 
-    bin_name = "cfsv" if semcomp(chutes_version or "0.0.0", "0.4.7") < 0 else "cfsv_v2"
+    bin_name = "cfsv"
+    if semcomp(chutes_version or "0.0.0", "0.5.2") >= 0:
+        bin_name = "cfsv_v3"
+    elif semcomp(chutes_version or "0.0.0", "0.4.7") >= 0:
+        bin_name = "cfsv_v2"
 
     chutes_location = pkg_resources.get_distribution("chutes").location
     cfsv_path = os.path.join(chutes_location, "chutes", bin_name)

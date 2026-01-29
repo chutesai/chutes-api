@@ -37,6 +37,7 @@ from api.database import orms  # noqa
 
 CFSV_PATH = os.path.join(os.path.dirname(chutes.__file__), "cfsv")
 CFSV_V2_PATH = f"{CFSV_PATH}_v2"
+CFSV_V3_PATH = f"{CFSV_PATH}_v3"
 
 
 async def initialize():
@@ -96,7 +97,9 @@ async def build_and_push_image(image, build_dir):
 
     # Copy cfsv binary to build directory
     build_cfsv_path = os.path.join(build_dir, "cfsv")
-    if semcomp(image.chutes_version or "0.0.0", "0.4.6") >= 0:
+    if semcomp(image.chutes_version or "0.0.0", "0.5.2") >= 0:
+        shutil.copy2(CFSV_V3_PATH, build_cfsv_path)
+    elif semcomp(image.chutes_version or "0.0.0", "0.4.6") >= 0:
         shutil.copy2(CFSV_V2_PATH, build_cfsv_path)
     else:
         shutil.copy2(CFSV_PATH, build_cfsv_path)
@@ -189,6 +192,7 @@ USER chutes
 RUN pip install chutes=={image.chutes_version}
 RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-netnanny.so"))') /usr/local/lib/chutes-netnanny.so
 RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-logintercept.so"))') /usr/local/lib/chutes-logintercept.so
+RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-cfsv.so"))') /usr/local/lib/chutes-cfsv.so
 ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-logintercept.so
 WORKDIR /app
 """
@@ -240,7 +244,10 @@ ARG PS_OP
 ENV LD_PRELOAD=""
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
-RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
+USER root
+RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index
+USER chutes
+RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 RUN rm -rf does_not_exist.py does_not_exist
 RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 RUN ls -la /tmp/chutesfs.*
@@ -294,7 +301,7 @@ RUN ls -la /tmp/chutesfs.*
 
         final_dockerfile_content = f"""FROM {verification_tag} as fsv
 FROM {chutes_tag}
-COPY --from=fsv /tmp/chutesfs.index /etc/chutesfs.index
+COPY --from=fsv /etc/chutesfs.index /etc/chutesfs.index
 ENTRYPOINT []
 """
         final_dockerfile_path = os.path.join(build_dir, "Dockerfile.final")
@@ -890,7 +897,9 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     with tempfile.TemporaryDirectory() as build_dir:
         try:
             build_cfsv_path = os.path.join(build_dir, "cfsv")
-            if semcomp(chutes_version or "0.0.0", "0.4.6") >= 0:
+            if semcomp(chutes_version or "0.0.0", "0.5.2") >= 0:
+                shutil.copy2(CFSV_V3_PATH, build_cfsv_path)
+            elif semcomp(chutes_version or "0.0.0", "0.4.6") >= 0:
                 shutil.copy2(CFSV_V2_PATH, build_cfsv_path)
             else:
                 shutil.copy2(CFSV_PATH, build_cfsv_path)
@@ -967,6 +976,9 @@ ARG PS_OP
 ENV LD_PRELOAD=""
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
+USER root
+RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index
+USER chutes
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv collect / /tmp/chutesfs.index /tmp/chutesfs.data
 RUN rm -rf does_not_exist.py does_not_exist
 RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash

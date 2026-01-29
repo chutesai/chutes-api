@@ -319,7 +319,7 @@ async def check_weight_files(
             )
         else:
             for inst in incorrect:
-                hard_failed.append(incorrect)
+                hard_failed.append(inst)
 
 
 async def check_llm_weights(chute, instances):
@@ -675,6 +675,20 @@ def is_kubernetes_env(
         )
         return False
 
+    if isinstance(dump.get("mounts"), dict):
+        for mount in dump.get("mounts", {}).get("filesystems", []):
+            if (
+                "chutesfs.index" in mount["target"]
+                or "sglang" in mount["target"]
+                or "site-packages" in mount["target"]
+                or re.search(r"^/app\/.*_src", mount["target"])
+                or "dist-packages" in mount["target"]
+            ):
+                logger.warning(
+                    f"{log_prefix} Invalid environment found: contains source code or chutesfs index mount"
+                )
+                return False
+
     logger.success(f"{log_prefix} kubernetes check passed")
     return True
 
@@ -862,6 +876,8 @@ async def check_chute(chute_id):
 
     # Hard failures get terminated immediately.
     for instance in hard_failed:
+        if not instance:
+            continue
         logger.warning(
             f"Purging instance {instance.instance_id} "
             f"miner {instance.miner_hotkey} "
@@ -871,6 +887,8 @@ async def check_chute(chute_id):
 
     # Limit "soft" fails to max consecutive failures, allowing some downtime but not much.
     for instance in soft_failed:
+        if not instance:
+            continue
         await increment_soft_fail(instance, chute)
 
     # Update verification time for the ones that succeeded.
