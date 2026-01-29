@@ -1229,7 +1229,7 @@ async def get_rint_nonce(
     return PlainTextResponse(nonce.decode() if isinstance(nonce, bytes) else nonce)
 
 
-@router.post("/launch_config/tee/{config_id}")
+@router.post("/launch_config/{config_id}/tee")
 async def claim_tee_launch_config(
     config_id: str,
     args: TeeLaunchConfigArgs,
@@ -1274,7 +1274,7 @@ async def claim_tee_launch_config(
     return response
 
 
-@router.post("/launch_config/graval/{config_id}")
+@router.post("/launch_config/{config_id}/graval")
 async def claim_graval_launch_config(
     config_id: str,
     args: LaunchConfigArgs,
@@ -1708,7 +1708,7 @@ async def _build_launch_config_verified_response(
     return return_value
 
 
-@router.put("/launch_config/graval/{config_id}")
+@router.put("/launch_config/{config_id}/graval")
 async def verify_graval_launch_config_instance(
     config_id: str,
     request: Request,
@@ -1841,7 +1841,7 @@ async def verify_graval_launch_config_instance(
     return return_value
 
 
-@router.put("/launch_config/tee/{config_id}")
+@router.put("/launch_config/{config_id}/tee")
 async def verify_tee_launch_config_instance(
     config_id: str,
     request: Request,
