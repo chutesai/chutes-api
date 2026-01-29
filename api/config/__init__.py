@@ -60,8 +60,9 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context) -> None:
         """Validate configuration after initialization."""
-        # Eagerly validate TEE measurement configuration to fail fast on startup
-        _ = self.tee_measurements
+        # Eagerly validate TEE measurement configuration only when the config file is mounted
+        if self.tee_measurement_config_path.exists():
+            _ = self.tee_measurements
 
     @cached_property
     def validator_keypair(self) -> Optional[Keypair]:
@@ -341,13 +342,6 @@ class Settings(BaseSettings):
     @cached_property
     def tee_measurements(self) -> Dict[str, TeeMeasurementConfig]:
         """Load TEE measurement configurations from YAML file (mounted from ConfigMap)."""
-        if not self.tee_measurement_config_path.exists():
-            logger.error(
-                f"TEE measurement config not found at {self.tee_measurement_config_path}. "
-                "Ensure ConfigMap is mounted correctly."
-            )
-            return {}
-
         try:
             with open(self.tee_measurement_config_path) as f:
                 config = yaml.safe_load(f)
