@@ -140,11 +140,22 @@ async def get_instance_disable_count(instance_id: str) -> int:
     return int(count)
 
 
+class _InstanceInfo:
+    """Simple class to hold instance info for notify_deleted."""
+
+    def __init__(self, instance_id: str, miner_hotkey: str, chute_id: str, config_id: str = None):
+        self.instance_id = instance_id
+        self.miner_hotkey = miner_hotkey
+        self.chute_id = chute_id
+        self.config_id = config_id
+
+
 async def _execute_instance_deletion(
     instance_id: str,
     chute_id: str,
     miner_hotkey: str,
     reason: str,
+    config_id: str = None,
 ) -> bool:
     """Actually delete an instance from the database."""
     async with get_session() as session:
@@ -164,7 +175,7 @@ async def _execute_instance_deletion(
             logger.warning(f"INSTANCE DELETED: {instance_id}: {reason}")
             asyncio.create_task(
                 notify_deleted(
-                    {"instance_id": instance_id, "miner_hotkey": miner_hotkey},
+                    _InstanceInfo(instance_id, miner_hotkey, chute_id, config_id),
                     message=f"Instance {instance_id} of miner {miner_hotkey} has been deleted: {reason}",
                 )
             )

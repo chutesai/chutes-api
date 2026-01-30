@@ -78,6 +78,7 @@ from api.util import (
 )
 from api.affine import check_affine_code
 from api.guesser import guesser
+from api.chute.teeify import transform_code_for_tee
 
 router = APIRouter()
 
@@ -1112,6 +1113,13 @@ async def _deploy_chute(
 
     old_version = None
     if chute:
+        # Prevent modifications to immutable chutes
+        if chute.immutable:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This chute is immutable and cannot be modified. Only deletion is allowed.",
+            )
+
         # Create a rolling update object so we can gracefully restart/recreate.
         permitted = {}
         for inst in chute.instances:
@@ -1470,6 +1478,13 @@ async def deploy_chute(
             "code check and prelim model config/node selector config passed."
         )
 
+    # Affine chutes cannot be created with tee=True directly - must use /teeify endpoint
+    if "affine" in chute_args.name.lower() and chute_args.tee:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Affine chutes cannot be created with tee=True. Deploy without TEE first, then use the /teeify endpoint to promote to TEE.",
+        )
+
     # No-DoS-Plz.
     await limit_deployments(db, current_user)
     if not current_user.has_role(Permissioning.unlimited_dev):
@@ -1725,6 +1740,130 @@ async def easy_deploy_diffusion_chute(
     return await _deploy_chute(chute_args, db, current_user)
 
 
+@router.put("/{chute_id}/teeify", response_model=ChuteResponse)
+async def teeify_chute(
+    chute_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Convert an affine chute to a TEE-enabled version.
+    """
+    # Validate chute_id is a UUID
+    try:
+        uuid.UUID(chute_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must use chute UUID for teeify.",
+        )
+
+    # Find the chute
+    chute = (
+        (
+            await db.execute(
+                select(Chute)
+                .where(Chute.chute_id == chute_id)
+                .options(selectinload(Chute.instances))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+
+    if not chute:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found",
+        )
+
+    # Only subnet admins can promote to TEE
+    if not subnet_role_accessible(chute, current_user, admin=True):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only subnet admins can promote chutes to TEE",
+        )
+
+    # Validate the chute has "affine" in its name
+    if "affine" not in chute.name.lower():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Only chutes with 'affine' in the name can be TEE-ified",
+        )
+
+    # Check if already TEE-ified
+    if chute.tee:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Chute already has TEE enabled",
+        )
+
+    # Transform the code for TEE (keep the same name)
+    try:
+        new_code = transform_code_for_tee(chute.code, chute.name, chute.node_selector)
+    except Exception as exc:
+        logger.error(f"Failed to transform code for TEE: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to transform code for TEE: {str(exc)}",
+        )
+
+    # Calculate the new node_selector for H200
+    from api.chute.teeify import _calculate_h200_gpu_count
+
+    original_gpu_count = chute.node_selector.get("gpu_count", 1)
+    new_gpu_count = _calculate_h200_gpu_count(original_gpu_count, chute.node_selector)
+
+    # Delete existing instances
+    for inst in chute.instances:
+        logger.info(
+            f"Deleting instance for TEE promotion: {inst.instance_id=} {inst.miner_hotkey=}"
+        )
+        await db.delete(inst)
+        await notify_deleted(inst, "promoted to TEE")
+        await db.execute(
+            text(
+                "UPDATE instance_audit SET deletion_reason = :reason, valid_termination = true WHERE instance_id = :instance_id"
+            ),
+            {"instance_id": inst.instance_id, "reason": "promoted to TEE"},
+        )
+
+    # Update the chute
+    chute.code = new_code
+    chute.node_selector = NodeSelector(gpu_count=new_gpu_count, include=["h200"])
+    chute.tee = True
+    chute.immutable = True
+    chute.version = str(
+        uuid.uuid5(uuid.NAMESPACE_OID, f"{chute.image_id}:{chute.image.patch_version}:{new_code}")
+    )
+    chute.updated_at = func.now()
+
+    await db.commit()
+    await db.refresh(chute)
+
+    # Notify miners about the update
+    await settings.redis_client.publish(
+        "miner_broadcast",
+        json.dumps(
+            {
+                "reason": "chute_updated",
+                "data": {
+                    "chute_id": chute.chute_id,
+                    "version": chute.version,
+                    "job_only": not chute.cords,
+                },
+            }
+        ).decode(),
+    )
+
+    logger.success(f"TEE-ified chute: {chute.chute_id} {chute.name}")
+    response = ChuteResponse.from_orm(chute)
+    await _inject_current_estimated_price(chute, response)
+    bounty_info = await get_bounty_info(chute.chute_id)
+    await _inject_effective_compute_multiplier(chute, response, bounty_info=bounty_info)
+    return response
+
+
 @router.put("/{chute_id_or_name:path}", response_model=ChuteResponse)
 async def update_common_attributes(
     chute_id_or_name: str,
@@ -1752,6 +1891,14 @@ async def update_common_attributes(
         .unique()
         .scalar_one_or_none()
     )
+
+    # Prevent modifications to immutable chutes
+    if chute.immutable:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This chute is immutable and cannot be modified. Only deletion is allowed.",
+        )
+
     if args.tagline and args.tagline.strip():
         chute.tagline = args.tagline
     if args.readme and args.readme.strip():

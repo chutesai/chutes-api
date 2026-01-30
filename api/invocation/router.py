@@ -307,6 +307,14 @@ async def _invoke(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
         )
 
+    # Check X-TEE-Only header - if set to true, require TEE-enabled chute
+    tee_only_header = request.headers.get("X-TEE-Only", "").lower()
+    if tee_only_header == "true" and not chute.tee:
+        raise HTTPException(
+            status_code=status.HTTP_426_UPGRADE_REQUIRED,
+            detail="This chute does not have TEE enabled. Use the /teeify endpoint to promote the chute to TEE, or remove the X-TEE-Only header.",
+        )
+
     quota_date = date.today()
     if chute.discount == 1.0:
         request.state.free_invocation = True
