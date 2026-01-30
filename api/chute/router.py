@@ -1859,6 +1859,10 @@ async def teeify_chute(
     logger.success(f"TEE-ified chute: {chute.chute_id} {chute.name}")
     response = ChuteResponse.from_orm(chute)
     await _inject_current_estimated_price(chute, response)
+    await create_bounty_if_not_exists(chute.chute_id)
+    amount = await get_bounty_amount(chute_id)
+    if amount:
+        await send_bounty_notification(chute_id, amount)
     bounty_info = await get_bounty_info(chute.chute_id)
     await _inject_effective_compute_multiplier(chute, response, bounty_info=bounty_info)
     return response
