@@ -48,7 +48,14 @@ from api.chute.util import (
     calculate_effective_compute_multiplier,
     get_manual_boosts,
 )
-from api.bounty.util import get_bounty_info, get_bounty_infos, delete_bounty
+from api.bounty.util import (
+    get_bounty_info,
+    get_bounty_infos,
+    delete_bounty,
+    create_bounty_if_not_exists,
+    get_bounty_amount,
+    send_bounty_notification,
+)
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager
 from api.user.schemas import User, PriceOverride
@@ -78,7 +85,7 @@ from api.util import (
 )
 from api.affine import check_affine_code
 from api.guesser import guesser
-from api.chute.teeify import transform_code_for_tee
+from api.chute.teeify import transform_for_tee
 
 router = APIRouter()
 
@@ -1798,21 +1805,15 @@ async def teeify_chute(
             detail="Chute already has TEE enabled",
         )
 
-    # Transform the code for TEE (keep the same name)
+    # Transform the code and node_selector for TEE
     try:
-        new_code = transform_code_for_tee(chute.code, chute.name, chute.node_selector)
+        new_code, new_node_selector = transform_for_tee(chute.code, chute.node_selector)
     except Exception as exc:
         logger.error(f"Failed to transform code for TEE: {exc}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to transform code for TEE: {str(exc)}",
         )
-
-    # Calculate the new node_selector for H200
-    from api.chute.teeify import _calculate_h200_gpu_count
-
-    original_gpu_count = chute.node_selector.get("gpu_count", 1)
-    new_gpu_count = _calculate_h200_gpu_count(original_gpu_count, chute.node_selector)
 
     # Delete existing instances
     for inst in chute.instances:
@@ -1830,7 +1831,7 @@ async def teeify_chute(
 
     # Update the chute
     chute.code = new_code
-    chute.node_selector = NodeSelector(gpu_count=new_gpu_count, include=["h200"])
+    chute.node_selector = new_node_selector
     chute.tee = True
     chute.immutable = True
     chute.version = str(

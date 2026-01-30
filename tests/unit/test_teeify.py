@@ -4,7 +4,7 @@ Tests for the TEE-ify transformation logic.
 
 import pytest
 from api.chute.teeify import (
-    transform_code_for_tee,
+    transform_for_tee,
     _calculate_h200_gpu_count,
     _next_power_of_2,
 )
@@ -86,7 +86,7 @@ class TestCalculateH200GpuCount:
         assert result == 2
 
 
-class TestTransformCodeForTee:
+class TestTransformForTee:
     def test_basic_sglang_transformation(self):
         """Test basic SGLang chute transformation."""
         code = """
@@ -110,19 +110,22 @@ chute = build_sglang_chute(
 )
 """
         node_selector = {"gpu_count": 1, "include": ["a100"]}
-        result = transform_code_for_tee(code, "rubizinho/Affine-small-model", node_selector)
+        result_code, result_ns = transform_for_tee(code, node_selector)
 
         # Check that tee=True is added
-        assert "tee=True" in result
+        assert "tee=True" in result_code
 
         # Check that node_selector has include=["h200"]
-        assert 'include=["h200"]' in result or "include=['h200']" in result
+        assert 'include=["h200"]' in result_code or "include=['h200']" in result_code
 
         # Check that other params are preserved
-        assert "username=" in result
-        assert "model_name=" in result
-        assert "concurrency=20" in result
-        assert "revision=" in result
+        assert "username=" in result_code
+        assert "model_name=" in result_code
+        assert "concurrency=20" in result_code
+        assert "revision=" in result_code
+
+        # Check returned node_selector
+        assert result_ns == {"gpu_count": 1, "include": ["h200"]}
 
     def test_mixed_gpu_include_transformation(self):
         """Test transformation with mixed GPU includes."""
@@ -150,20 +153,19 @@ chute = build_sglang_chute(
             "gpu_count": 1,
             "include": ["a100", "h100", "h100_sxm", "h100_nvl", "h200"],
         }
-        result = transform_code_for_tee(
-            code,
-            "silentfly/Affine-qwen0121-5FgjroARbfhQjRDSgqrBwPziLANQ6dGgs3cJqdrdnwgy94Z7",
-            node_selector,
-        )
+        result_code, result_ns = transform_for_tee(code, node_selector)
 
         # Check that tee=True is added
-        assert "tee=True" in result
+        assert "tee=True" in result_code
 
         # Check that node_selector now only includes h200
-        assert 'include=["h200"]' in result or "include=['h200']" in result
+        assert 'include=["h200"]' in result_code or "include=['h200']" in result_code
 
         # Old includes should not be present
-        assert "a100" not in result or 'include=["h200"]' in result
+        assert "a100" not in result_code or 'include=["h200"]' in result_code
+
+        # Check returned node_selector
+        assert result_ns == {"gpu_count": 1, "include": ["h200"]}
 
     def test_preserves_other_keywords(self):
         """Test that other keywords are preserved during transformation."""
@@ -191,15 +193,15 @@ chute = build_sglang_chute(
             "gpu_count": 1,
             "include": ["a100", "h100", "h100_sxm", "h100_nvl", "h200"],
         }
-        result = transform_code_for_tee(code, "jessica0911/Affine-qwen1231", node_selector)
+        result_code, _ = transform_for_tee(code, node_selector)
 
         # Check preserved keywords
-        assert "concurrency=24" in result
-        assert "scaling_threshold=0.7" in result
-        assert "max_instances=1" in result
-        assert "shutdown_after_seconds=28800" in result
+        assert "concurrency=24" in result_code
+        assert "scaling_threshold=0.7" in result_code
+        assert "max_instances=1" in result_code
+        assert "shutdown_after_seconds=28800" in result_code
         # AST unparser may use single or double quotes
-        assert "c4a3168c74972c3227a9419f0e12900b56d9b520" in result
+        assert "c4a3168c74972c3227a9419f0e12900b56d9b520" in result_code
 
     def test_vllm_chute_transformation(self):
         """Test transformation of vLLM chute."""
@@ -220,10 +222,12 @@ chute = build_vllm_chute(
 )
 """
         node_selector = {"gpu_count": 2, "include": ["h100"]}
-        result = transform_code_for_tee(code, "test/Affine-model", node_selector)
+        result_code, result_ns = transform_for_tee(code, node_selector)
 
-        assert "tee=True" in result
-        assert 'include=["h200"]' in result or "include=['h200']" in result
+        assert "tee=True" in result_code
+        assert 'include=["h200"]' in result_code or "include=['h200']" in result_code
+        # 2 H100 (80GB each) = 160GB, ceil(160/140) = 2
+        assert result_ns == {"gpu_count": 2, "include": ["h200"]}
 
     def test_multi_gpu_calculation(self):
         """Test that multi-GPU configurations calculate correct H200 count."""
@@ -244,10 +248,11 @@ chute = build_sglang_chute(
         # 4 x A100 (80GB) = 320GB total
         # H200 has 140GB, so ceil(320/140) = 3, next power of 2 = 4
         node_selector = {"gpu_count": 4, "include": ["a100"]}
-        result = transform_code_for_tee(code, "test/Affine-large-model", node_selector)
+        result_code, result_ns = transform_for_tee(code, node_selector)
 
-        assert "gpu_count=4" in result
-        assert "tee=True" in result
+        assert "gpu_count=4" in result_code
+        assert "tee=True" in result_code
+        assert result_ns == {"gpu_count": 4, "include": ["h200"]}
 
     def test_code_with_os_import(self):
         """Test transformation preserves os import."""
@@ -273,10 +278,10 @@ chute = build_sglang_chute(
 )
 """
         node_selector = {"gpu_count": 1, "include": ["a100"]}
-        result = transform_code_for_tee(code, "rubizinho/Affine-small-model", node_selector)
+        result_code, _ = transform_for_tee(code, node_selector)
 
         # os import should be preserved
-        assert "import os" in result
+        assert "import os" in result_code
 
     def test_existing_tee_false_becomes_true(self):
         """Test that existing tee=False is changed to tee=True."""
@@ -296,7 +301,7 @@ chute = build_sglang_chute(
 )
 """
         node_selector = {"gpu_count": 1, "include": ["a100"]}
-        result = transform_code_for_tee(code, "test/Affine-model", node_selector)
+        result_code, _ = transform_for_tee(code, node_selector)
 
-        assert "tee=True" in result
-        assert "tee=False" not in result
+        assert "tee=True" in result_code
+        assert "tee=False" not in result_code

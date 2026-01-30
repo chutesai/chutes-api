@@ -133,23 +133,17 @@ class TeeifyTransformer(ast.NodeTransformer):
         return node
 
 
-def transform_code_for_tee(code: str, chute_name: str, original_node_selector: dict) -> str:
+def transform_for_tee(code: str, original_node_selector: dict) -> tuple[str, dict]:
     """
-    Transform affine chute code for TEE deployment.
+    Transform affine chute code and node_selector for TEE deployment.
 
     Changes:
     1. node_selector becomes include=["h200"] with appropriate gpu_count
     2. tee=True is added/set
 
-    Args:
-        code: Original chute code
-        chute_name: The chute name (unchanged)
-        original_node_selector: The chute's current node_selector dict from DB
-
     Returns:
-        Transformed code string
+        Tuple of (transformed_code, new_node_selector_dict)
     """
-    # Get GPU count from original node selector
     gpu_count = original_node_selector.get("gpu_count", 1)
 
     # Calculate new H200 GPU count based on original VRAM requirements
@@ -164,4 +158,7 @@ def transform_code_for_tee(code: str, chute_name: str, original_node_selector: d
     # Convert back to code
     transformed_code = ast.unparse(tree)
 
-    return transformed_code
+    # Return both the code and the new node_selector
+    new_node_selector = {"gpu_count": new_gpu_count, "include": ["h200"]}
+
+    return transformed_code, new_node_selector
