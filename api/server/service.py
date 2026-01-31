@@ -311,10 +311,12 @@ async def process_boot_attestation(
         quote = BootTdxQuote.from_base64(args.quote)
         await verify_quote(quote, nonce, expected_cert_hash)
 
+        measurement_config = get_matching_measurement_config(quote)
         # Create boot attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,
             server_ip=server_ip,
+            measurement_version=measurement_config.version,
             created_at=func.now(),
             verified_at=func.now(),
         )
@@ -331,11 +333,19 @@ async def process_boot_attestation(
         return boot_token
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
-        # Create failed attestation record
+        # Create failed attestation record; set measurement_version if quote matched a config
+        measurement_version = None
+        try:
+            quote = BootTdxQuote.from_base64(args.quote)
+            measurement_config = get_matching_measurement_config(quote)
+            measurement_version = measurement_config.version
+        except (InvalidQuoteError, MeasurementMismatchError):
+            pass
         boot_attestation = BootAttestation(
             quote_data=args.quote,
             server_ip=server_ip,
             verification_error=str(e.detail),
+            measurement_version=measurement_version,
             created_at=func.now(),
         )
 

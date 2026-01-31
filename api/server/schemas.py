@@ -90,6 +90,7 @@ class BootAttestation(Base):
     quote_data = Column(Text, nullable=False)  # Base64 encoded quote
     server_ip = Column(String, nullable=True)  # For later linking to server
     verification_error = Column(String, nullable=True)
+    measurement_version = Column(String, nullable=True)  # Matched TEE measurement config version (audit trail)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
