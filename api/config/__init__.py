@@ -46,6 +46,7 @@ def load_launch_config_private_key():
 class TeeMeasurementConfig:
     """Configuration for allowed measurements for a TEE VM."""
 
+    version: str
     mrtd: str
     name: str
     boot_rtmrs: Dict[str, str]
@@ -340,37 +341,33 @@ class Settings(BaseSettings):
     tee_measurement_config_path: Path = Path("/etc/config/tee_measurements.yaml")
 
     @cached_property
-    def tee_measurements(self) -> Dict[str, TeeMeasurementConfig]:
+    def tee_measurements(self) -> List[TeeMeasurementConfig]:
         """Load TEE measurement configurations from YAML file (mounted from ConfigMap)."""
         try:
             with open(self.tee_measurement_config_path) as f:
                 config = yaml.safe_load(f)
         except Exception as e:
             logger.error(f"Failed to load TEE measurement config: {e}")
-            return {}
+            return []
 
-        measurements = {}
+        measurements: List[TeeMeasurementConfig] = []
         for measurement_config in config.get("measurements", []):
-            # Use RTMR0 as the lookup key since it differs per topology (ACPI tables)
-            # MRTD should be the same across topologies (same firmware)
-            rtmr0_upper = measurement_config["boot_rtmrs"]["rtmr0"].upper().strip()
-            if len(rtmr0_upper) != 96:
-                logger.warning(
-                    f"Invalid RTMR0 length for measurement config {measurement_config.get('name')}: {len(rtmr0_upper)} (expected 96)"
-                )
-                continue
-
-            # Check for duplicate RTMR0 values
             config_name = measurement_config.get("name", "unnamed")
-            if rtmr0_upper in measurements:
-                existing_name = measurements[rtmr0_upper].name
+            version = measurement_config.get("version")
+            if not version or not str(version).strip():
                 error_msg = (
-                    f"Duplicate RTMR0 detected in TEE measurement configuration: "
-                    f"measurement config '{config_name}' has the same RTMR0 as '{existing_name}' "
-                    f"(RTMR0: {rtmr0_upper[:16]}...). Each measurement configuration must have a unique RTMR0 value."
+                    f"Missing or empty 'version' for measurement config '{config_name}'. "
+                    "Each measurement configuration must have a version."
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
+
+            rtmr0_upper = measurement_config["boot_rtmrs"]["rtmr0"].upper().strip()
+            if len(rtmr0_upper) != 96:
+                logger.warning(
+                    f"Invalid RTMR0 length for measurement config {config_name}: {len(rtmr0_upper)} (expected 96)"
+                )
+                continue
 
             mrtd_upper = measurement_config["mrtd"].upper().strip()
             if len(mrtd_upper) != 96:
@@ -381,21 +378,23 @@ class Settings(BaseSettings):
 
             boot_rtmrs = {k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()}
             runtime_rtmrs = {k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()}
-            
-            # Validate that RTMR0 matches between boot and runtime (ACPI tables don't change)
+
             if boot_rtmrs.get("RTMR0") != runtime_rtmrs.get("RTMR0"):
                 logger.warning(
                     f"RTMR0 mismatch between boot and runtime for measurement config {config_name}. "
-                    f"This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
+                    "This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
                 )
 
-            measurements[rtmr0_upper] = TeeMeasurementConfig(
-                mrtd=mrtd_upper,
-                name=measurement_config["name"],
-                boot_rtmrs=boot_rtmrs,
-                runtime_rtmrs=runtime_rtmrs,
-                expected_gpus=[gpu.lower() for gpu in measurement_config["expected_gpus"]],
-                gpu_count=measurement_config.get("gpu_count"),
+            measurements.append(
+                TeeMeasurementConfig(
+                    version=str(version).strip(),
+                    mrtd=mrtd_upper,
+                    name=measurement_config["name"],
+                    boot_rtmrs=boot_rtmrs,
+                    runtime_rtmrs=runtime_rtmrs,
+                    expected_gpus=[gpu.lower() for gpu in measurement_config["expected_gpus"]],
+                    gpu_count=measurement_config.get("gpu_count"),
+                )
             )
 
         logger.info(f"Loaded {len(measurements)} TEE measurement configurations")

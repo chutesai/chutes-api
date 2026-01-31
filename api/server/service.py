@@ -44,6 +44,7 @@ from api.server.util import (
     _track_server,
     extract_report_data,
     verify_measurements,
+    get_matching_measurement_config,
     generate_nonce,
     get_nonce_expiry_seconds,
     verify_quote_signature,
@@ -51,7 +52,6 @@ from api.server.util import (
     get_cache_passphrase,
     create_or_update_cache_passphrase,
 )
-from api.config import TeeMeasurementConfig
 from api.node.schemas import NodeArgs
 from api.util import extract_ip
 
@@ -203,13 +203,8 @@ def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> Non
     Raises:
         MeasurementMismatchError: If GPUs don't match measurement configuration expectations
     """
-    # Look up measurement configuration by RTMR0
-    measurement_config = settings.tee_measurements.get(quote.rtmr0.upper())
-    if not measurement_config:
-        # This should not happen if verify_quote was called first, but handle gracefully
-        raise MeasurementMismatchError(
-            f"Unknown RTMR0: {quote.rtmr0[:16]}... (measurement config not found)"
-        )
+    # Look up measurement configuration by full MRTD + RTMRs (same as verify_measurements)
+    measurement_config = get_matching_measurement_config(quote)
 
     # Extract GPU identifiers
     provided_gpu_ids = {gpu.gpu_identifier.lower() for gpu in gpus}
@@ -416,7 +411,7 @@ async def verify_server(
         )
         quote, gpu_evidence, expected_cert_hash = await client.get_evidence(nonce)
 
-        # Verify quote measurements (this will lookup measurement config by RTMR0)
+        # Verify quote measurements (matches by full MRTD + RTMRs; multiple configs may share RTMR0)
         await verify_quote(quote, nonce, expected_cert_hash)
 
         # Verify GPU evidence
@@ -425,16 +420,19 @@ async def verify_server(
         # Validate GPUs match measurement configuration
         validate_gpus_for_measurements(quote, gpus)
 
+        measurement_config = get_matching_measurement_config(quote)
+
         logger.success(
             f"Verified server server_id={server.server_id} ip={server.ip} for miner: {miner_hotkey}"
         )
 
-        # Create attestation record
+        # Create attestation record (measurement_version for audit trail; server version = latest attestation)
         server_attestation = ServerAttestation(
             quote_data=base64.b64encode(quote.raw_bytes).decode("utf-8"),
             server_id=server.server_id,
             created_at=func.now(),
             verified_at=func.now(),
+            measurement_version=measurement_config.version,
         )
 
         db.add(server_attestation)
@@ -473,12 +471,19 @@ async def verify_server(
         raise e
     finally:
         if failure_reason:
-            # Create attestation record
+            measurement_version = None
+            if quote:
+                try:
+                    measurement_config = get_matching_measurement_config(quote)
+                    measurement_version = measurement_config.version
+                except MeasurementMismatchError:
+                    pass
             server_attestation = ServerAttestation(
                 quote_data=base64.b64encode(quote.raw_bytes).decode("utf-8") if quote else None,
                 server_id=server.server_id,
                 verification_error=failure_reason,
                 created_at=func.now(),
+                measurement_version=measurement_version,
             )
 
             db.add(server_attestation)

@@ -9,7 +9,15 @@ from typing import Any, Dict, Optional
 from dcap_qvl import VerifiedReport
 from loguru import logger
 
+from api.config import TeeMeasurementConfig
 from api.server.exceptions import InvalidQuoteError
+
+# RTMR dict keys; use these when building or iterating over rtmrs.
+RTMR0 = "rtmr0"
+RTMR1 = "rtmr1"
+RTMR2 = "rtmr2"
+RTMR3 = "rtmr3"
+RTMR_KEYS = (RTMR0, RTMR1, RTMR2, RTMR3)
 
 
 @dataclass
@@ -37,15 +45,39 @@ class TdxQuote(ABC):
     def rtmrs(self) -> Dict[str, str]:
         """Get RTMRs as a dictionary."""
         return {
-            "rtmr0": self.rtmr0,
-            "rtmr1": self.rtmr1,
-            "rtmr2": self.rtmr2,
-            "rtmr3": self.rtmr3,
+            RTMR0: self.rtmr0,
+            RTMR1: self.rtmr1,
+            RTMR2: self.rtmr2,
+            RTMR3: self.rtmr3,
         }
 
     @property
     @abstractmethod
     def quote_type(self): ...
+
+    def matches_measurement(self, config: TeeMeasurementConfig) -> bool:
+        """
+        Return True if this quote's measurements match the given measurement config.
+
+        Compares MRTD (case-insensitive) and the appropriate RTMR set for
+        this quote's type ("boot" -> config.boot_rtmrs, "runtime" -> config.runtime_rtmrs).
+        """
+        if self.mrtd.upper() != config.mrtd.upper():
+            return False
+        expected = (
+            config.boot_rtmrs
+            if self.quote_type == "boot"
+            else config.runtime_rtmrs
+        )
+        if not expected:
+            return False
+        for rtmr_name, expected_value in expected.items():
+            actual = self.rtmrs.get(rtmr_name.lower()) or self.rtmrs.get(
+                rtmr_name
+            )
+            if not actual or actual.upper() != expected_value.upper():
+                return False
+        return True
 
     @classmethod
     def from_base64(cls, quote_base64: str) -> "TdxQuote":
@@ -178,10 +210,10 @@ class TdxVerificationResult:
     def rtmrs(self) -> Dict[str, str]:
         """Get RTMRs as a dictionary."""
         return {
-            "rtmr0": self.rtmr0,
-            "rtmr1": self.rtmr1,
-            "rtmr2": self.rtmr2,
-            "rtmr3": self.rtmr3,
+            RTMR0: self.rtmr0,
+            RTMR1: self.rtmr1,
+            RTMR2: self.rtmr2,
+            RTMR3: self.rtmr3,
         }
 
     @classmethod

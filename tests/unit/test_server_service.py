@@ -39,8 +39,9 @@ from api.server.exceptions import (
     ServerRegistrationError,
     InvalidSignatureError,
 )
+from api.config import TeeMeasurementConfig
 from tests.fixtures.gpus import TEST_GPU_NONCE
-from tests.fixtures.tdx import EXPECTED_MRTD, TDX_BOOT_RMTRS, TDX_RUNTIME_RMTRS
+from tests.fixtures.tdx import EXPECTED_MRTD, EXPECTED_RMTR0, EXPECTED_RMTR1, EXPECTED_RMTR2, EXPECTED_RMTR3
 
 TEST_SERVER_IP = "127.0.0.1"
 TEST_NONCE = TEST_GPU_NONCE
@@ -1047,17 +1048,27 @@ async def test_verify_quote_boot_vs_runtime_different_settings(
         raw_bytes=b"runtime",
     )
 
-    mock_settings.expected_mrtd = "a" * 96
-
-    mock_settings.expected_boot_rmtrs["rtmr0"] = "boot_specific_rtmr0"
-    mock_settings.expected_boot_rmtrs["rtmr1"] = "boot_specific_rtmr1"
-    mock_settings.expected_boot_rmtrs["rtmr2"] = "d" * 96
-    mock_settings.expected_boot_rmtrs["rtmr3"] = "e" * 96
-
-    mock_settings.expected_runtime_rmtrs["rtmr0"] = "runtime_specific_rtmr0"
-    mock_settings.expected_runtime_rmtrs["rtmr1"] = "runtime_specific_rtmr1"
-    mock_settings.expected_runtime_rmtrs["rtmr2"] = "h" * 96
-    mock_settings.expected_runtime_rmtrs["rtmr3"] = "i" * 96
+    mock_settings.tee_measurements = [
+        TeeMeasurementConfig(
+            version="1",
+            mrtd="a" * 96,
+            name="test",
+            boot_rtmrs={
+                "RTMR0": "boot_specific_rtmr0",
+                "RTMR1": "boot_specific_rtmr1",
+                "RTMR2": "d" * 96,
+                "RTMR3": "e" * 96,
+            },
+            runtime_rtmrs={
+                "RTMR0": "runtime_specific_rtmr0",
+                "RTMR1": "runtime_specific_rtmr1",
+                "RTMR2": "h" * 96,
+                "RTMR3": "i" * 96,
+            },
+            expected_gpus=[],
+            gpu_count=None,
+        ),
+    ]
 
     # Both should call their respective verification functions
     await verify_quote(boot_quote, TEST_NONCE)

@@ -7,13 +7,13 @@
 # Or update the ConfigMap:
 #   kubectl create configmap tee-measurements --from-file=tee_measurements.yaml=./config/tee_measurements.yaml.example --dry-run=client -o yaml | kubectl apply -f -
 #
-# Note: Configurations are keyed by RTMR0 (boot_rtmrs.rtmr0) since RTMR0 includes ACPI tables
-# that differ per topology. MRTD should be the same across topologies with the same firmware.
+# Note: Matching is by full MRTD + RTMRs (not just RTMR0). Multiple configs may share the same
+# RTMR0 (e.g. old and new VM versions during transition). Each config must have a unique version.
 
 measurements:
-  # Example: 8x H200 GPU configuration
-  # Keyed by boot_rtmrs.rtmr0 (RTMR0 includes ACPI tables describing PCIe topology)
-  - mrtd: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6"
+  # Example: 8x H200 GPU configuration (version for audit trail; server version = latest attestation)
+  - version: "1"
+    mrtd: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6"
     name: "8xh200"
     description: "8x H200 GPU configuration"
     boot_rtmrs:
@@ -31,7 +31,8 @@ measurements:
     gpu_count: 8
 
   # Example: 8x B200 GPU configuration (same MRTD, different RTMR0 due to different ACPI tables)
-  - mrtd: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6"
+  - version: "1"
+    mrtd: "A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6A1B2C3D4E5F6"
     name: "8xb200"
     description: "8x B200 GPU configuration"
     boot_rtmrs:
