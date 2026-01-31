@@ -132,6 +132,11 @@ def _get_client_certificate(request: Request) -> bytes:
 
 
 def extract_nonce(quote: TdxQuote):
+    """Extract nonce from quote report_data. Raises InvalidQuoteError if report_data is missing."""
+    if quote.report_data is None:
+        raise InvalidQuoteError(
+            "Quote has no report data; nonce cannot be extracted. The quote may be malformed."
+        )
     return quote.report_data[:64].lower()
 
 
@@ -317,7 +322,7 @@ def get_luks_passphrase() -> str:
     passphrase = settings.luks_passphrase
     if not passphrase:
         logger.error("No LUKS passphrase configured")
-        raise InvalidTdxConfiguration("Missing LUKS phassphrase configuration")
+        raise InvalidTdxConfiguration("Missing LUKS passphrase configuration")
 
     return passphrase
 

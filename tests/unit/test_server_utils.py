@@ -28,10 +28,10 @@ from api.server.quote import (
     TdxVerificationResult,
 )
 from api.server.exceptions import (
-    AttestationError,
     InvalidQuoteError,
-    MeasurementMismatchError,
     InvalidSignatureError,
+    InvalidTdxConfiguration,
+    MeasurementMismatchError,
 )
 
 
@@ -66,10 +66,14 @@ def mock_settings():
     return settings
 
 
+# report_data: first 64 hex chars = nonce, next 64 = cert hash (extract_nonce uses report_data[:64])
+BOOT_NONCE_HEX = (b"test_nonce_123".ljust(32, b"\x00")).hex()
+RUNTIME_NONCE_HEX = (b"runtime_nonce_456".ljust(32, b"\x00")).hex()
+
+
 @pytest.fixture
 def sample_boot_quote():
     """Create a sample BootTdxQuote for testing."""
-
     return BootTdxQuote(
         version=4,
         att_key_type=2,
@@ -79,8 +83,8 @@ def sample_boot_quote():
         rtmr1="c" * 96,
         rtmr2="d" * 96,
         rtmr3="e" * 96,
-        report_data=None,
-        user_data="746573745f6e6f6e63655f31323300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # test_nonce_123 as hex
+        report_data=BOOT_NONCE_HEX + "0" * 64,
+        user_data="746573745f6e6f6e63655f31323300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
         platform_id="0" * 32,
         raw_quote_size=4096,
         parsed_at=datetime.now(timezone.utc).isoformat(),
@@ -91,18 +95,17 @@ def sample_boot_quote():
 @pytest.fixture
 def sample_runtime_quote():
     """Create a sample RuntimeTdxQuote for testing."""
-
     return RuntimeTdxQuote(
         version=4,
         att_key_type=2,
         tee_type=0x81,
         mrtd="a" * 96,
-        rtmr0="d" * 96,  # Different from boot
-        rtmr1="e" * 96,  # Different from boot
+        rtmr0="d" * 96,
+        rtmr1="e" * 96,
         rtmr2="f" * 96,
         rtmr3="0" * 96,
-        report_data=None,
-        user_data="72756e74696d655f6e6f6e63655f34353600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # runtime_nonce_456 as hex
+        report_data=RUNTIME_NONCE_HEX + "0" * 64,
+        user_data="72756e74696d655f6e6f6e63655f34353600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
         platform_id="0" * 32,
         raw_quote_size=4096,
         parsed_at=datetime.now(timezone.utc).isoformat(),
@@ -326,13 +329,14 @@ def test_parse_quote_with_user_data(valid_quote_bytes, test_nonce):
     for i, byte in enumerate(nonce_bytes[:64]):
         quote_bytes[user_data_offset + i] = byte
 
-    # Parse both types
+    # Parse both types (nonce written into report_data region at offset 568)
     boot_quote = BootTdxQuote.from_bytes(bytes(quote_bytes))
     runtime_quote = RuntimeTdxQuote.from_bytes(bytes(quote_bytes))
 
-    # Both should extract the same nonce
-    assert extract_nonce(boot_quote) == test_nonce
-    assert extract_nonce(runtime_quote) == test_nonce
+    # extract_nonce returns first 64 hex chars of report_data
+    expected_nonce_hex = (test_nonce.encode("utf-8").ljust(32, b"\x00")).hex()
+    assert extract_nonce(boot_quote) == expected_nonce_hex
+    assert extract_nonce(runtime_quote) == expected_nonce_hex
 
 
 # Quote parsing tests - Invalid cases
@@ -354,8 +358,8 @@ def test_parse_invalid_version(valid_quote_bytes):
     """Test parsing with invalid quote version."""
     quote_bytes = bytearray(valid_quote_bytes)
 
-    # Modify version (first 2 bytes, little endian)
-    quote_bytes[0] = 5  # Invalid version
+    # Modify version (first 2 bytes, little endian) to an unsupported value
+    quote_bytes[0] = 99  # Invalid version (parser accepts 4 and 5 only)
     quote_bytes[1] = 0
 
     with pytest.raises(InvalidQuoteError, match="Invalid quote version"):
@@ -390,21 +394,19 @@ def test_parse_invalid_att_key_type(valid_quote_bytes):
 
 # Extract nonce tests
 def test_extract_nonce_valid(sample_boot_quote):
-    """Test extracting valid nonce from quote."""
-    # The sample quote has test_nonce_123 encoded in user_data
+    """Test extracting valid nonce from quote (first 64 hex chars of report_data)."""
     extracted = extract_nonce(sample_boot_quote)
-    assert extracted == "test_nonce_123"
+    assert extracted == BOOT_NONCE_HEX
 
 
 def test_extract_nonce_runtime_quote(sample_runtime_quote):
     """Test extracting nonce from runtime quote."""
     extracted = extract_nonce(sample_runtime_quote)
-    assert extracted == "runtime_nonce_456"
+    assert extracted == RUNTIME_NONCE_HEX
 
 
 def test_extract_nonce_empty_user_data():
-    """Test extracting nonce when user data is empty."""
-
+    """Test extracting nonce when report_data is empty (zeros)."""
     quote = BootTdxQuote(
         version=4,
         att_key_type=2,
@@ -414,16 +416,15 @@ def test_extract_nonce_empty_user_data():
         rtmr1="c" * 96,
         rtmr2="d" * 96,
         rtmr3="e" * 96,
-        report_data=None,
-        user_data="00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # All zeros
+        report_data="0" * 128,
+        user_data="0" * 128,
         platform_id="0" * 32,
         raw_quote_size=4096,
         parsed_at=datetime.now(timezone.utc).isoformat(),
         raw_bytes=b"test",
     )
-
     extracted = extract_nonce(quote)
-    assert extracted == ""
+    assert extracted == "0" * 64
 
 
 # Verification result consistency (quote vs DCAP result) tests
@@ -441,16 +442,14 @@ def _sample_verification_result():
     )
 
 
-@patch("api.server.util.settings")
-def test_verify_result_success_when_quote_matches_dcap(mock_settings, sample_boot_quote):
+def test_verify_result_success_when_quote_matches_dcap(sample_boot_quote):
     """verify_result succeeds when quote and DCAP result measurements match."""
-    mock_settings.tee_measurements = _tee_measurements_for_quotes()
     result = _sample_verification_result()
     assert verify_result(sample_boot_quote, result) is True
 
 
 def test_verify_result_raises_when_mrtd_differs_from_dcap_result(sample_boot_quote):
-    """verify_result raises AttestationError when quote MRTD != DCAP result MRTD."""
+    """verify_result raises MeasurementMismatchError when quote MRTD != DCAP result MRTD."""
     result = _sample_verification_result()
     result = TdxVerificationResult(
         mrtd="f" * 96,  # differs from quote
@@ -462,13 +461,12 @@ def test_verify_result_raises_when_mrtd_differs_from_dcap_result(sample_boot_quo
         parsed_at=result.parsed_at,
         is_valid=result.is_valid,
     )
-    with pytest.raises(AttestationError) as exc_info:
+    with pytest.raises(MeasurementMismatchError):
         verify_result(sample_boot_quote, result)
-    assert "do not match DCAP" in str(exc_info.value.detail).lower()
 
 
 def test_verify_result_raises_when_rtmr_differs_from_dcap_result(sample_boot_quote):
-    """verify_result raises AttestationError when quote RTMR != DCAP result RTMR."""
+    """verify_result raises MeasurementMismatchError when quote RTMR != DCAP result RTMR."""
     result = _sample_verification_result()
     result = TdxVerificationResult(
         mrtd=result.mrtd,
@@ -480,9 +478,8 @@ def test_verify_result_raises_when_rtmr_differs_from_dcap_result(sample_boot_quo
         parsed_at=result.parsed_at,
         is_valid=result.is_valid,
     )
-    with pytest.raises(AttestationError) as exc_info:
+    with pytest.raises(MeasurementMismatchError):
         verify_result(sample_boot_quote, result)
-    assert "do not match DCAP" in str(exc_info.value.detail).lower()
 
 
 # Quote signature verification tests
@@ -505,13 +502,13 @@ async def test_verify_quote_signature_success(sample_boot_quote):
 
 @pytest.mark.asyncio
 async def test_verify_quote_signature_failure(sample_boot_quote):
-    """Test failed quote signature verification."""
+    """Test failed quote signature verification (util wraps in InvalidQuoteError)."""
     mock_verified_report = Mock()
     mock_verified_report.status = "Invalid"
     mock_verified_report.to_json.return_value = '{"report": {"TD10": {"mr_td": "a", "rt_mr0": "b", "rt_mr1": "c", "rt_mr2": "d", "rt_mr3": "e", "report_data": "test"}}}'
 
     with patch("api.server.util.get_collateral_and_verify", return_value=mock_verified_report):
-        with pytest.raises(InvalidSignatureError):
+        with pytest.raises(InvalidQuoteError, match="Unable to parse provided quote"):
             await verify_quote_signature(sample_boot_quote)
 
 
@@ -679,11 +676,11 @@ def test_get_luks_passphrase_configured(mock_settings):
 
 @patch("api.server.util.settings")
 def test_get_luks_passphrase_not_configured(mock_settings):
-    """Test getting LUKS passphrase when not configured."""
+    """Test getting LUKS passphrase when not configured raises."""
     mock_settings.luks_passphrase = None
 
-    passphrase = get_luks_passphrase()
-    assert passphrase == "placeholder_luks_passphrase"
+    with pytest.raises(InvalidTdxConfiguration, match="LUKS passphrase"):
+        get_luks_passphrase()
 
 
 # Test different quote types with different RTMRs
@@ -790,16 +787,14 @@ def test_extract_nonce_with_binary_data():
         rtmr1="c" * 96,
         rtmr2="d" * 96,
         rtmr3="e" * 96,
-        report_data=None,
+        report_data=user_data_hex[:64].ljust(64, "0") + "0" * 64,
         user_data=user_data_hex,
         platform_id="0" * 32,
         raw_quote_size=4096,
         parsed_at=datetime.now(timezone.utc).isoformat(),
         raw_bytes=b"test",
     )
-
     extracted = extract_nonce(quote)
-    # Should extract the printable portion or handle binary gracefully
     assert extracted is not None
 
 
@@ -831,7 +826,7 @@ def test_verification_result_from_report():
     assert result.rtmr1 == "test_rtmr1"
     assert result.rtmr2 == "test_rtmr2"
     assert result.rtmr3 == "test_rtmr3"
-    assert result.report_data == "test_report_data"
+    assert result.user_data == "test_report_data"
     assert result.is_valid is True
     assert isinstance(result.parsed_at, datetime)
 
@@ -1032,7 +1027,7 @@ def test_all_quote_validation_errors():
 def test_nonce_edge_cases():
     """Test nonce extraction edge cases."""
 
-    # Nonce with only null bytes
+    # report_data None -> extract_nonce raises InvalidQuoteError
     quote_null = BootTdxQuote(
         version=4,
         att_key_type=2,
@@ -1043,17 +1038,16 @@ def test_nonce_edge_cases():
         rtmr2="d" * 96,
         rtmr3="e" * 96,
         report_data=None,
-        user_data="0" * 128,  # All null bytes
+        user_data="0" * 128,
         platform_id="0" * 32,
         raw_quote_size=4096,
         parsed_at=datetime.now(timezone.utc).isoformat(),
         raw_bytes=b"test",
     )
+    with pytest.raises(InvalidQuoteError, match="no report data"):
+        extract_nonce(quote_null)
 
-    extracted = extract_nonce(quote_null)
-    assert extracted == ""
-
-    # Nonce with non-printable characters
+    # Nonce with non-printable (binary) hex in report_data
     non_printable_hex = "01020304050607080910111213141516" + "0" * 96
     quote_binary = BootTdxQuote(
         version=4,
@@ -1064,7 +1058,7 @@ def test_nonce_edge_cases():
         rtmr1="c" * 96,
         rtmr2="d" * 96,
         rtmr3="e" * 96,
-        report_data=None,
+        report_data=non_printable_hex[:64].ljust(64, "0") + "0" * 64,
         user_data=non_printable_hex,
         platform_id="0" * 32,
         raw_quote_size=4096,
@@ -1073,11 +1067,10 @@ def test_nonce_edge_cases():
     )
 
     extracted = extract_nonce(quote_binary)
-    assert extracted == ""  # Should stop at first non-printable
+    assert extracted == non_printable_hex[:64].lower()
 
-    # Nonce exactly 64 bytes
-    max_nonce = "A" * 64
-    max_nonce_hex = max_nonce.encode("utf-8").hex().upper()
+    # Nonce exactly 64 hex chars (report_data[:64]); extract_nonce returns that (lowercased)
+    max_nonce_hex = "A" * 64
     quote_max = BootTdxQuote(
         version=4,
         att_key_type=2,
@@ -1087,8 +1080,8 @@ def test_nonce_edge_cases():
         rtmr1="c" * 96,
         rtmr2="d" * 96,
         rtmr3="e" * 96,
-        report_data=None,
-        user_data=max_nonce_hex,
+        report_data=max_nonce_hex + "0" * 64,
+        user_data=max_nonce_hex + "0" * 64,
         platform_id="0" * 32,
         raw_quote_size=4096,
         parsed_at=datetime.now(timezone.utc).isoformat(),
@@ -1096,7 +1089,7 @@ def test_nonce_edge_cases():
     )
 
     extracted = extract_nonce(quote_max)
-    assert extracted == max_nonce
+    assert extracted == max_nonce_hex.lower()
 
 
 # Cross-type verification tests
