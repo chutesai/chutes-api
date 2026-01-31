@@ -569,14 +569,12 @@ async def process_runtime_attestation(
         result = await verify_quote(quote, expected_nonce, expected_cert_hash)
 
         # Create runtime attestation record
+        measurement_config = get_matching_measurement_config(quote)
         attestation = ServerAttestation(
             server_id=server_id,
             quote_data=args.quote,
-            mrtd=quote.mrtd,
-            rtmrs=quote.rtmrs,
-            verification_result=result.to_dict(),
-            verified=True,
-            nonce_used=expected_nonce,
+            verification_error=None,
+            measurement_version=measurement_config.version,
             verified_at=func.now(),
         )
 
@@ -594,12 +592,18 @@ async def process_runtime_attestation(
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record
+        measurement_version = None
+        try:
+            quote_parsed = RuntimeTdxQuote.from_base64(args.quote)
+            measurement_config = get_matching_measurement_config(quote_parsed)
+            measurement_version = measurement_config.version
+        except (InvalidQuoteError, MeasurementMismatchError):
+            pass
         attestation = ServerAttestation(
             server_id=server_id,
             quote_data=args.quote,
-            verified=False,
             verification_error=str(e.detail),
-            nonce_used=expected_nonce,
+            measurement_version=measurement_version,
         )
 
         db.add(attestation)
@@ -644,16 +648,17 @@ async def get_server_attestation_status(
     }
 
     if latest_attestation:
+        verified = latest_attestation.verification_error is None
         status["last_attestation"] = {
             "attestation_id": latest_attestation.attestation_id,
-            "verified": latest_attestation.verified,
+            "verified": verified,
             "created_at": latest_attestation.created_at.isoformat(),
             "verified_at": latest_attestation.verified_at.isoformat()
             if latest_attestation.verified_at
             else None,
             "verification_error": latest_attestation.verification_error,
         }
-        status["attestation_status"] = "verified" if latest_attestation.verified else "failed"
+        status["attestation_status"] = "verified" if verified else "failed"
 
     return status
 
