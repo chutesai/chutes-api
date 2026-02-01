@@ -1308,6 +1308,7 @@ async def _perform_autoscale_impl(
                             c.tee,
                             c.version,
                             c.boost,
+                            c.disabled,
                             MAX(COALESCE(ucb.effective_balance, 0)) AS user_balance,
                             c.max_instances,
                             c.scaling_threshold,
@@ -2288,6 +2289,13 @@ async def calculate_local_decision(ctx: AutoScaleContext):
     """
     Determine what a chute WANTS to do based purely on its own metrics.
     """
+    # Disabled chutes should not have any instances
+    if ctx.info and ctx.info.disabled:
+        ctx.target_count = 0
+        ctx.action = "no_action"
+        logger.info(f"Chute {ctx.chute_id} is disabled, target_count set to 0.")
+        return
+
     # Private Chutes logic
     if (
         ctx.info

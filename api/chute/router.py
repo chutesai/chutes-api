@@ -1912,6 +1912,29 @@ async def update_common_attributes(
         chute.tool_description = args.tool_description
     if args.logo_id:
         chute.logo_id = args.logo_id
+
+    # Handle disabled field
+    if args.disabled is not None:
+        chute.disabled = args.disabled
+        # If disabling a private chute, terminate all instances with valid_termination=true
+        if args.disabled and not chute.public:
+            instance_ids = [inst.instance_id for inst in chute.instances]
+            if instance_ids:
+                logger.warning(
+                    f"Disabling private chute {chute.chute_id} ({chute.name}), "
+                    f"terminating {len(instance_ids)} instances"
+                )
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET valid_termination = true, "
+                        "deletion_reason = 'chute disabled' WHERE instance_id = ANY(:instance_ids)"
+                    ),
+                    {"instance_ids": instance_ids},
+                )
+                for inst in chute.instances:
+                    await db.delete(inst)
+                    await notify_deleted(inst, "chute disabled")
+
     await db.commit()
     await db.refresh(chute)
     return chute

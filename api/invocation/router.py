@@ -307,6 +307,13 @@ async def _invoke(
             status_code=status.HTTP_404_NOT_FOUND, detail="No matching chute found!"
         )
 
+    # Check if the chute is disabled.
+    if chute.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="This chute is currently disabled.",
+        )
+
     # Check X-TEE-Only header - if set to true, require TEE-enabled chute
     tee_only_header = request.headers.get("X-TEE-Only", "").lower()
     if tee_only_header == "true" and not chute.tee:
