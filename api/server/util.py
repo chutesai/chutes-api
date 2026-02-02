@@ -384,91 +384,97 @@ def decrypt_passphrase(encrypted_passphrase: str) -> str:
     return decrypted.decode()
 
 
-async def get_cache_passphrase(db: AsyncSession, miner_hotkey: str, vm_name: str) -> str:
-    """
-    Get existing cache passphrase for a VM configuration.
-
-    Args:
-        db: Database session
-        miner_hotkey: Miner hotkey that owns the VM
-        vm_name: VM name/identifier
-
-    Returns:
-        Cache volume passphrase (decrypted)
-
-    Raises:
-        ValueError: If no passphrase exists for this VM configuration
-    """
-    # Look up VM cache config
-    result = await db.execute(
-        select(VmCacheConfig).where(
-            VmCacheConfig.miner_hotkey == miner_hotkey,
-            VmCacheConfig.vm_name == vm_name,
-        )
-    )
-    vm_config = result.scalar_one_or_none()
-
-    if not vm_config:
-        raise ValueError(f"No cache passphrase found for VM {vm_name} (miner: {miner_hotkey})")
-
-    logger.info(f"Retrieved existing cache passphrase for VM {vm_name} (miner: {miner_hotkey})")
-    return decrypt_passphrase(vm_config.encrypted_passphrase)
-
-
-async def create_or_update_cache_passphrase(
+async def _get_vm_cache_config(
     db: AsyncSession, miner_hotkey: str, vm_name: str
-) -> str:
-    """
-    Create a new cache passphrase or override existing one for a VM configuration.
-
-    Args:
-        db: Database session
-        miner_hotkey: Miner hotkey that owns the VM
-        vm_name: VM name/identifier
-
-    Returns:
-        Cache volume passphrase (decrypted)
-    """
-    # Generate new passphrase
-    passphrase = generate_cache_passphrase()
-    encrypted = encrypt_passphrase(passphrase)
-
-    # Check if config already exists
+) -> Optional[VmCacheConfig]:
+    """Get VmCacheConfig row if it exists."""
     result = await db.execute(
         select(VmCacheConfig).where(
             VmCacheConfig.miner_hotkey == miner_hotkey,
             VmCacheConfig.vm_name == vm_name,
         )
     )
-    vm_config = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
 
-    if vm_config:
-        # Update existing config
-        logger.info(f"Overriding cache passphrase for VM {vm_name} (miner: {miner_hotkey})")
-        vm_config.encrypted_passphrase = encrypted
-        vm_config.last_boot_at = func.now()
-    else:
-        # Create new config
-        logger.info(f"Creating new cache passphrase for VM {vm_name} (miner: {miner_hotkey})")
-        vm_config = VmCacheConfig(
-            miner_hotkey=miner_hotkey,
-            vm_name=vm_name,
-            encrypted_passphrase=encrypted,
-            last_boot_at=func.now(),
-        )
-        db.add(vm_config)
 
+async def _create_vm_cache_config(
+    db: AsyncSession, miner_hotkey: str, vm_name: str
+) -> VmCacheConfig:
+    """Create and persist a new VmCacheConfig row."""
+    vm_config = VmCacheConfig(
+        miner_hotkey=miner_hotkey,
+        vm_name=vm_name,
+        volume_passphrases={},
+        last_boot_at=func.now(),
+    )
+    db.add(vm_config)
+    await db.flush()
+    return vm_config
+
+
+async def sync_server_luks_passphrases(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+    volume_names: List[str],
+    rekey_volume_names: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """
+    Sync LUKS state: ensure passphrases for every volume in volume_names, prune others.
+    Volumes in rekey_volume_names get new passphrases (no reuse).
+    """
+    rekey_set = set(rekey_volume_names or [])
+    vm_config = await _get_vm_cache_config(db, miner_hotkey, vm_name)
+    if vm_config is None:
+        vm_config = await _create_vm_cache_config(db, miner_hotkey, vm_name)
+    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
+
+    result: Dict[str, str] = {}
+    for vol in volume_names:
+        if vol in rekey_set or vol not in stored:
+            passphrase = generate_cache_passphrase()
+            stored[vol] = encrypt_passphrase(passphrase)
+            result[vol] = passphrase
+        else:
+            result[vol] = decrypt_passphrase(stored[vol])
+
+    # Prune: keep only volume_names
+    vm_config.volume_passphrases = {k: v for k, v in stored.items() if k in volume_names}
+    vm_config.last_boot_at = func.now()
     await db.commit()
     await db.refresh(vm_config)
+    logger.info(f"LUKS sync for VM {vm_name}: volumes={volume_names}, rekey={list(rekey_set)}")
+    return result
 
-    return passphrase
+
+async def delete_luks_passphrases_for_server(
+    db: AsyncSession, miner_hotkey: str, server_name: str
+) -> None:
+    """Remove all LUKS passphrases for a VM (e.g. when server is deleted)."""
+    result = await db.execute(
+        select(VmCacheConfig).where(
+            VmCacheConfig.miner_hotkey == miner_hotkey,
+            VmCacheConfig.vm_name == server_name,
+        )
+    )
+    vm_config = result.scalar_one_or_none()
+    if vm_config:
+        await db.delete(vm_config)
+        await db.commit()
+        logger.info(f"Deleted LUKS config for VM {server_name} (miner: {miner_hotkey})")
 
 
 async def _track_server(
-    db: AsyncSession, id: str, host: str, miner_hotkey: str, is_tee: bool = False
+    db: AsyncSession,
+    name: str,
+    host: str,
+    miner_hotkey: str,
+    is_tee: bool = False,
 ):
     # Add server and nodes to DB
-    server = Server(server_id=id, ip=host, miner_hotkey=miner_hotkey, is_tee=is_tee)
+    server = Server(
+        name=name, ip=host, miner_hotkey=miner_hotkey, is_tee=is_tee
+    )
 
     db.add(server)
     await db.commit()

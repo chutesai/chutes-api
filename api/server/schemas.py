@@ -16,7 +16,8 @@ from sqlalchemy import (
     Index,
     ForeignKeyConstraint,
 )
-from typing import Dict, Any
+from sqlalchemy.dialects.postgresql import JSONB
+from typing import Dict, Any, List, Optional
 from api.database import Base, generate_uuid
 from api.node.schemas import NodeArgs
 
@@ -57,10 +58,16 @@ class RuntimeAttestationResponse(BaseModel):
     status: str
 
 
-class CacheLuksPassphraseResponse(BaseModel):
-    """Response model for cache LUKS passphrase."""
 
-    passphrase: str
+
+class LuksPassphraseRequest(BaseModel):
+    """Request model for LUKS POST: VM sends volume list, API returns keys (existing/new/rekey), prunes others."""
+
+    volumes: List[str] = Field(..., description="Volume names the VM is managing (defines full set)")
+    rekey: Optional[List[str]] = Field(
+        None,
+        description="Volume names that must receive new passphrases (no reuse); must be subset of volumes",
+    )
 
 
 class GpuAttestationArgs(BaseModel):
@@ -76,8 +83,8 @@ class GpuAttestationResponse(BaseModel):
 class ServerArgs(BaseModel):
     """Request model for server registration."""
 
-    id: str = Field(..., description="Server ID, should come from the k8s node uid.")
-    host: str = Field(..., descriptiopn="Public IP address or DNS Name of the server")
+    host: str = Field(..., description="Public IP address or DNS Name of the server")
+    name: str = Field(..., description="VM name (stable identity for LUKS linkage)")
     gpus: list[NodeArgs] = Field(..., description="GPU info for this server")
 
 
@@ -106,9 +113,10 @@ class Server(Base):
 
     __tablename__ = "servers"
 
-    server_id = Column(String, primary_key=True)
+    server_id = Column(String, primary_key=True, default=generate_uuid)
     ip = Column(String, nullable=False)  # Links to boot attestations
     miner_hotkey = Column(String, nullable=False)
+    name = Column(String, nullable=False)  # Stable identity for LUKS linkage (unique with miner_hotkey)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     netuid = Column(Integer, nullable=False, default=64, server_default="64")
@@ -124,6 +132,7 @@ class Server(Base):
 
     __table_args__ = (
         Index("idx_server_miner", "miner_hotkey"),
+        Index("idx_servers_miner_vm_name", "miner_hotkey", "name", unique=True),
         ForeignKeyConstraint(
             ["netuid", "miner_hotkey"], ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"]
         ),
@@ -153,13 +162,13 @@ class ServerAttestation(Base):
 
 
 class VmCacheConfig(Base):
-    """Track cache volume encryption passphrases by VM configuration."""
+    """Track LUKS volume encryption passphrases by VM configuration (JSONB: volume name -> encrypted passphrase)."""
 
     __tablename__ = "vm_cache_configs"
 
     miner_hotkey = Column(String, primary_key=True)
     vm_name = Column(String, primary_key=True)
-    encrypted_passphrase = Column(String, nullable=False)
+    volume_passphrases = Column(JSONB, nullable=False, default=dict)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     last_boot_at = Column(DateTime(timezone=True), nullable=True)

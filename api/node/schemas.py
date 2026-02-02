@@ -43,7 +43,7 @@ class NodeArgs(BaseModel):
 
 
 class MultiNodeArgs(BaseModel):
-    server_id: Optional[str] = None
+    server_name: str
     nodes: List[NodeArgs]
 
 

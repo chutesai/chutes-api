@@ -208,7 +208,11 @@ async def create_nodes(
 
     try:
         await _track_server(
-            db, args.server_id, args.nodes[0].verification_host, hotkey, is_tee=False
+            db,
+            args.server_name,
+            args.nodes[0].verification_host,
+            hotkey,
+            is_tee=False,
         )
         nodes = await _track_nodes(db, hotkey, args.server_id, args.nodes, seed, verified_at)
     except ValueError as exc:

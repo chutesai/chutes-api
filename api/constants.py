@@ -20,6 +20,9 @@ MINER_HEADER = "X-Chutes-Miner"
 VALIDATOR_HEADER = "X-Chutes-Validator"
 ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 
+# LUKS volume names allowed in GET/POST (extendable)
+SUPPORTED_LUKS_VOLUMES = ("storage", "cache")
+
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
 
