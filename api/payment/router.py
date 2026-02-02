@@ -25,12 +25,17 @@ class ReturnDepositArgs(BaseModel):
 
 
 @router.get("/daily_revenue_summary")
-async def get_daily_revenue_summary(db: AsyncSession = Depends(get_db_session)):
+async def get_daily_revenue_summary(
+    days: Optional[int] = 90, db: AsyncSession = Depends(get_db_session)
+):
     """
     Get the summary of daily revenue including paygo, invoiced users, subscriptions and pending private instances.
     """
+    if not days or days < 3 or days > 365:
+        days = 90
     result = await db.execute(
-        text("SELECT * FROM daily_revenue_summary ORDER BY date DESC LIMIT 90")
+        text("SELECT * FROM daily_revenue_summary ORDER BY date DESC LIMIT :days"),
+        {"days": days},
     )
     rows = result.fetchall()
     return [
