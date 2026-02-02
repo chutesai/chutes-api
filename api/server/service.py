@@ -376,13 +376,13 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         # Preserve the specific error message from the AttestationError
         error_detail = e.detail if hasattr(e, "detail") else str(e)
         logger.error(
-            f"Server registration failed - attestation error: server_id={args.id} host={args.host} miner_hotkey={miner_hotkey} error={error_detail}"
+            f"Server registration failed - attestation error: name={args.name} host={args.host} miner_hotkey={miner_hotkey} error={error_detail}"
         )
         raise ServerRegistrationError(f"Server registration failed - {error_detail}")
     except IntegrityError as e:
         await db.rollback()
         logger.error(
-            f"Server registration failed - IntegrityError: server_id={args.id} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}"
+            f"Server registration failed - IntegrityError: name={args.name} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}"
         )
         raise ServerRegistrationError(
             "Server registration failed - database constraint violation. This may indicate a duplicate server ID, invalid miner configuration, or other database conflict. Please contact support with your server ID and miner hotkey."
@@ -390,7 +390,7 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
     except Exception as e:
         await db.rollback()
         logger.error(
-            f"Unexpected error during server registration: server_id={args.id} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}",
+            f"Unexpected error during server registration: name={args.name} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}",
             exc_info=True,
         )
         raise ServerRegistrationError(
