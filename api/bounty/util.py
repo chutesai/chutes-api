@@ -55,10 +55,40 @@ def _parse_timestamp(data) -> Optional[float]:
         return None
 
 
+async def is_chute_disabled(chute_id: str) -> bool:
+    """
+    Lightweight check if a chute is disabled using Redis cache.
+    """
+    try:
+        disabled = await settings.lite_redis_client.get(f"chute_disabled:{chute_id}")
+        return int(disabled) == 1
+    except Exception:
+        return False
+
+
+async def set_chute_disabled(chute_id: str, disabled: bool):
+    """
+    Set or clear the disabled flag for a chute in Redis.
+    """
+    key = f"chute_disabled:{chute_id}"
+    try:
+        if disabled:
+            await settings.lite_redis_client.set(key, "1")
+        else:
+            await settings.lite_redis_client.delete(key)
+    except Exception as exc:
+        logger.warning(f"Failed to set chute disabled state: {exc}")
+
+
 async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> bool:
     """
     Create a bounty timestamp if one doesn't already exist.
     """
+    # Check if chute is disabled before creating bounty
+    if await is_chute_disabled(chute_id):
+        logger.info(f"Bounty creation blocked for disabled chute {chute_id}")
+        return False
+
     key = _bounty_key(chute_id)
     data = str(datetime.now(timezone.utc).timestamp())
     try:

@@ -985,6 +985,12 @@ async def _validate_graval_launch_config_instance(
     chute = await _load_chute(db, launch_config.chute_id)
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
 
+    if chute.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Chute {chute.chute_id} is currently disabled",
+        )
+
     if chute.tee:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1014,6 +1020,12 @@ async def _validate_tee_launch_config_instance(
     chute = await _load_chute(db, launch_config.chute_id)
     log_prefix = f"ENVDUMP: {launch_config.config_id=} {chute.chute_id=}"
 
+    if chute.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Chute {chute.chute_id} is currently disabled",
+        )
+
     if not chute.tee:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -1040,6 +1052,13 @@ async def get_launch_config(
 
     # Load the chute and check if it's scalable.
     chute = await _load_chute(db, chute_id)
+
+    # Check if chute is disabled
+    if chute.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_423_LOCKED,
+            detail=f"Chute {chute_id} is currently disabled",
+        )
     if not job_id:
         if (
             not chute.public

@@ -47,6 +47,7 @@ from api.chute.util import (
     get_mtoken_price,
     calculate_effective_compute_multiplier,
     get_manual_boosts,
+    invalidate_chute_cache,
 )
 from api.bounty.util import (
     get_bounty_info,
@@ -55,6 +56,7 @@ from api.bounty.util import (
     create_bounty_if_not_exists,
     get_bounty_amount,
     send_bounty_notification,
+    set_chute_disabled,
 )
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager
@@ -717,6 +719,11 @@ async def warm_up_chute(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
+        )
+    if chute.disabled:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="This chute is currently disabled.",
         )
     if not current_user:
         raise HTTPException(
@@ -1916,8 +1923,18 @@ async def update_common_attributes(
     # Handle disabled field
     if args.disabled is not None:
         chute.disabled = args.disabled
+
+        # Set the lightweight disabled flag in Redis for fast checks
+        await set_chute_disabled(chute.chute_id, args.disabled)
+
+        # Invalidate caches immediately so other processes see the updated state
+        await invalidate_chute_cache(chute.chute_id, chute.name)
+
         # If disabling a private chute, terminate all instances with valid_termination=true
         if args.disabled and not chute.public:
+            # Delete any active bounty to prevent new instances from spinning up
+            await delete_bounty(chute.chute_id)
+
             instance_ids = [inst.instance_id for inst in chute.instances]
             if instance_ids:
                 logger.warning(

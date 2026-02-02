@@ -607,6 +607,21 @@ async def get_one(name_or_id: str, nonce: int = None):
     return await _get_one(name_or_id, nonce=nonce)
 
 
+async def invalidate_chute_cache(chute_id: str, chute_name: str = None):
+    """
+    Invalidate all caches for a chute (both by ID and by name).
+    """
+    # Clear Redis cache
+    await settings.redis_client.delete(f"_chute:{chute_id}")
+    if chute_name:
+        await settings.redis_client.delete(f"_chute:{chute_name}")
+
+    # Clear in-memory alru_cache
+    _get_one.cache_invalidate(chute_id)
+    if chute_name:
+        _get_one.cache_invalidate(chute_name)
+
+
 @alru_cache(maxsize=5000, ttl=300)
 async def is_shared(chute_id: str, user_id: str):
     """
