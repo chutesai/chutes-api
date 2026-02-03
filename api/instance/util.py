@@ -867,40 +867,63 @@ async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
 
 
 async def is_thrashing_miner(
-    db, miner_hotkey: str, chute_id: str, instance_created_at: datetime
+    db, miner_hotkey: str, chute_id: str, instance_created_at: datetime = None
 ) -> bool:
     """
     Check if a miner is thrashing (deleted an active instance of the same chute
     within THRASH_WINDOW_HOURS before creating this new instance).
 
+    If instance_created_at is None, uses database NOW() for the check.
+
     Returns True if the miner is thrashing and should not receive bounty/urgency boosts.
     """
-    # Ensure instance_created_at is timezone-naive for comparison
-    if instance_created_at.tzinfo is not None:
-        created_at_naive = instance_created_at.replace(tzinfo=None)
+    if instance_created_at is None:
+        # Use database NOW() for timestamp
+        result = await db.execute(
+            text(f"""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM instance_audit
+                    WHERE miner_hotkey = :miner_hotkey
+                      AND chute_id = :chute_id
+                      AND activated_at IS NOT NULL
+                      AND deleted_at IS NOT NULL
+                      AND deleted_at > NOW() - INTERVAL '{THRASH_WINDOW_HOURS} hours'
+                      AND deleted_at <= NOW()
+                )
+            """),
+            {
+                "miner_hotkey": miner_hotkey,
+                "chute_id": chute_id,
+            },
+        )
     else:
-        created_at_naive = instance_created_at
+        # Ensure instance_created_at is timezone-naive for comparison
+        if instance_created_at.tzinfo is not None:
+            created_at_naive = instance_created_at.replace(tzinfo=None)
+        else:
+            created_at_naive = instance_created_at
 
-    result = await db.execute(
-        text("""
-            SELECT EXISTS (
-                SELECT 1
-                FROM instance_audit
-                WHERE miner_hotkey = :miner_hotkey
-                  AND chute_id = :chute_id
-                  AND activated_at IS NOT NULL
-                  AND deleted_at IS NOT NULL
-                  AND deleted_at > :window_start
-                  AND deleted_at <= :created_at
-            )
-        """),
-        {
-            "miner_hotkey": miner_hotkey,
-            "chute_id": chute_id,
-            "window_start": created_at_naive - timedelta(hours=THRASH_WINDOW_HOURS),
-            "created_at": created_at_naive,
-        },
-    )
+        result = await db.execute(
+            text("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM instance_audit
+                    WHERE miner_hotkey = :miner_hotkey
+                      AND chute_id = :chute_id
+                      AND activated_at IS NOT NULL
+                      AND deleted_at IS NOT NULL
+                      AND deleted_at > :window_start
+                      AND deleted_at <= :created_at
+                )
+            """),
+            {
+                "miner_hotkey": miner_hotkey,
+                "chute_id": chute_id,
+                "window_start": created_at_naive - timedelta(hours=THRASH_WINDOW_HOURS),
+                "created_at": created_at_naive,
+            },
+        )
     return result.scalar()
 
 
