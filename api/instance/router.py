@@ -63,6 +63,7 @@ from api.instance.util import (
     create_job_jwt,
     load_launch_config_from_jwt,
     invalidate_instance_cache,
+    is_thrashing_miner,
 )
 from api.server.service import (
     validate_request_nonce,
@@ -881,12 +882,22 @@ async def _validate_launch_config_instance(
         instance.billed_to = chute.user_id
 
     # Add chute boost (urgency boost from autoscaler).
+    # Skip for thrashing miners.
     if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
-        instance.compute_multiplier *= chute.boost
-        logger.info(
-            f"Adding chute boost {chute.boost=} to {instance.instance_id} "
-            f"for total {instance.compute_multiplier=} for {chute.name=} {chute.chute_id=}"
+        is_thrashing = await is_thrashing_miner(
+            db, launch_config.miner_hotkey, chute.chute_id, launch_config.created_at
         )
+        if is_thrashing:
+            logger.warning(
+                f"Thrashing detected for {launch_config.miner_hotkey} on {chute.chute_id}: "
+                f"chute boost {chute.boost=} NOT applied"
+            )
+        else:
+            instance.compute_multiplier *= chute.boost
+            logger.info(
+                f"Adding chute boost {chute.boost=} to {instance.instance_id} "
+                f"for total {instance.compute_multiplier=} for {chute.name=} {chute.chute_id=}"
+            )
 
     # Add manual boost (optional fine-tuning).
     manual_boost = await get_manual_boost(chute.chute_id, db=db)
@@ -1533,15 +1544,26 @@ async def activate_launch_config_instance(
 
         # If a bounty exists for this chute, claim it and apply dynamic boost based on age.
         # Older bounties = higher boost (1.5x at 0min → 4x at 180min+)
+        # However, if the miner is thrashing, we still consume the bounty but don't apply the boost.
         bounty = await claim_bounty(instance.chute_id)
         if bounty:
-            instance.bounty = True
-            bounty_boost = calculate_bounty_boost(bounty["age_seconds"])
-            instance.compute_multiplier *= bounty_boost
-            logger.info(
-                f"Claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
-                f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
+            is_thrashing = await is_thrashing_miner(
+                db, instance.miner_hotkey, instance.chute_id, instance.created_at
             )
+            if is_thrashing:
+                # Bounty consumed but no boost applied - anti-thrashing measure
+                logger.warning(
+                    f"Thrashing detected for {instance.miner_hotkey} on {instance.chute_id}: "
+                    f"bounty consumed but boost NOT applied (age={bounty['age_seconds']}s)"
+                )
+            else:
+                instance.bounty = True
+                bounty_boost = calculate_bounty_boost(bounty["age_seconds"])
+                instance.compute_multiplier *= bounty_boost
+                logger.info(
+                    f"Claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
+                    f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
+                )
 
         ## Verify filesystem.
         # if semcomp(chute.chutes_version, "0.4.9") >= 0:

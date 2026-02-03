@@ -30,6 +30,7 @@ from api.database import get_session
 from api.config import settings
 from api.bounty.util import (
     check_bounty_exists,
+    delete_bounty,
     get_bounty_info,
     get_bounty_infos,
     send_bounty_notification,
@@ -786,10 +787,13 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
       Uses t² curve where t is normalized time in the ramp window
     - 8+ hours: Clamp to target value
 
+    Additionally, instances in the thrash penalty period are skipped entirely.
+
     Pre-loads all instance values first, calculates new values in Python,
     then issues static UPDATE statements to avoid read-modify-write locks.
     """
     from api.chute.util import calculate_effective_compute_multiplier
+    from api.instance.util import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
 
     logger.info("Refreshing compute multipliers for active instances...")
 
@@ -821,6 +825,36 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             logger.info("No active instances to update")
             return
 
+        # Identify instances in thrash penalty period (single query for efficiency)
+        thrash_penalty_result = await session.execute(
+            text("""
+                SELECT i.instance_id
+                FROM instances i
+                WHERE i.chute_id = ANY(:chute_ids)
+                  AND i.active = true
+                  AND i.verified = true
+                  AND i.activated_at IS NOT NULL
+                  AND i.activated_at + INTERVAL ':penalty_hours hours' > NOW()
+                  AND EXISTS (
+                      SELECT 1
+                      FROM instance_audit ia
+                      WHERE ia.miner_hotkey = i.miner_hotkey
+                        AND ia.chute_id = i.chute_id
+                        AND ia.activated_at IS NOT NULL
+                        AND ia.deleted_at IS NOT NULL
+                        AND ia.deleted_at > i.created_at - INTERVAL ':window_hours hours'
+                        AND ia.deleted_at <= i.created_at
+                  )
+            """.replace(":penalty_hours", str(THRASH_PENALTY_HOURS))
+               .replace(":window_hours", str(THRASH_WINDOW_HOURS))),
+            {"chute_ids": list(chutes.keys())},
+        )
+        thrash_penalty_instances = {row.instance_id for row in thrash_penalty_result}
+        if thrash_penalty_instances:
+            logger.info(
+                f"Skipping {len(thrash_penalty_instances)} instances in thrash penalty period"
+            )
+
         # Calculate target multipliers for each chute (without bounty)
         chute_targets = {}
         for chute_id, chute in chutes.items():
@@ -834,6 +868,10 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
         updates = []  # List of (instance_id, new_multiplier)
 
         for inst in instances:
+            # Skip instances in thrash penalty period
+            if inst.instance_id in thrash_penalty_instances:
+                continue
+
             target = chute_targets.get(inst.chute_id)
             if target is None:
                 continue
@@ -1586,6 +1624,13 @@ async def _perform_autoscale_impl(
     for ctx in contexts.values():
         if ctx.chute_id in bounty_infos:
             ctx.has_bounty = True
+            # Delete bounty if chute has active/hot instances (active=true AND verified=true)
+            if ctx.current_count > 0 and not dry_run:
+                if await delete_bounty(ctx.chute_id):
+                    logger.info(
+                        f"Deleted bounty for {ctx.chute_id} - chute has {ctx.current_count} active instances"
+                    )
+                    ctx.has_bounty = False
 
     # 2. Local Decision Making (Ideal World)
     for ctx in contexts.values():
@@ -1857,11 +1902,16 @@ async def _perform_autoscale_impl(
     # Kinda hacky, because it's not actually creating bounties, but we'll
     # send bounty notifications for miners to have instant feedback when
     # there are urgent scaling needs.
+    # Only send notifications for chutes with NO active instances (cold start).
     URGENCY_THRESHOLD_FOR_NOTIFICATION = 100
     if not dry_run:
         from api.chute.util import calculate_effective_compute_multiplier
 
         for ctx in starving_chutes:
+            # Never send bounty notifications if chute has active/hot instances
+            if ctx.current_count > 0:
+                continue
+
             # Only public chutes or semi-private (chutes user) get notifications
             if not ctx.public and (not ctx.info or ctx.info.user_id != await chutes_user_id()):
                 continue
@@ -1869,14 +1919,6 @@ async def _perform_autoscale_impl(
             # Only notify if urgency is high enough and we actually need instances
             if ctx.urgency_score < URGENCY_THRESHOLD_FOR_NOTIFICATION or ctx.upscale_amount <= 0:
                 continue
-
-            # Determine urgency level
-            if ctx.current_count == 0:
-                urgency = "cold"
-            elif ctx.rate_limit_basis >= 0.1:
-                urgency = "critical"
-            else:
-                urgency = "scaling"
 
             # Calculate effective multiplier (without bounty since there may not be one)
             effective_data = await calculate_effective_compute_multiplier(
@@ -1896,10 +1938,10 @@ async def _perform_autoscale_impl(
                 bounty=bounty_amount,
                 effective_multiplier=effective_mult,
                 bounty_boost=bounty_boost,
-                urgency=urgency,
+                urgency="cold",
             )
             logger.info(
-                f"Sent scaling notification for {ctx.chute_id}: urgency={urgency}, "
+                f"Sent scaling notification for {ctx.chute_id}: urgency=cold, "
                 f"effective_mult={effective_mult:.1f}x, upscale_amount={ctx.upscale_amount}"
             )
 

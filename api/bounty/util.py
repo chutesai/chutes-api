@@ -80,6 +80,9 @@ async def set_chute_disabled(chute_id: str, disabled: bool):
         logger.warning(f"Failed to set chute disabled state: {exc}")
 
 
+BOUNTY_COOLDOWN_SECONDS = 600  # 10 minutes between bounty creations per chute
+
+
 async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> bool:
     """
     Create a bounty timestamp if one doesn't already exist.
@@ -88,6 +91,17 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
     if await is_chute_disabled(chute_id):
         logger.info(f"Bounty creation blocked for disabled chute {chute_id}")
         return False
+
+    # Rate limit bounty creation to prevent race conditions where a bounty is
+    # consumed while an instance check loop is running, triggering a new bounty
+    # even though there are now hot instances.
+    cooldown_key = f"bounty_cooldown:{chute_id}"
+    try:
+        cooldown_active = await settings.lite_redis_client.exists(cooldown_key)
+        if cooldown_active:
+            return False
+    except Exception as exc:
+        logger.warning(f"Failed to check bounty cooldown: {exc}")
 
     key = _bounty_key(chute_id)
     data = str(datetime.now(timezone.utc).timestamp())
@@ -99,6 +113,11 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
             data,
             lifetime,
         )
+        if result:
+            # Set cooldown to prevent rapid bounty recreation
+            await settings.lite_redis_client.set(
+                cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS
+            )
         return bool(result)
     except Exception as exc:
         logger.warning(f"Failed to create bounty: {exc}")

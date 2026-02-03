@@ -862,3 +862,89 @@ async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
 
     logger.success(f"Finished cleanup_expired_connections() loop, total_removed={total_removed}")
     return total_removed
+
+
+# Thrash detection constants
+THRASH_WINDOW_HOURS = 3
+THRASH_PENALTY_HOURS = 3
+
+
+async def is_thrashing_miner(
+    db, miner_hotkey: str, chute_id: str, instance_created_at: datetime
+) -> bool:
+    """
+    Check if a miner is thrashing (deleted an active instance of the same chute
+    within THRASH_WINDOW_HOURS before creating this new instance).
+
+    Returns True if the miner is thrashing and should not receive bounty/urgency boosts.
+    """
+    # Ensure instance_created_at is timezone-naive for comparison
+    if instance_created_at.tzinfo is not None:
+        created_at_naive = instance_created_at.replace(tzinfo=None)
+    else:
+        created_at_naive = instance_created_at
+
+    result = await db.execute(
+        text("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM instance_audit
+                WHERE miner_hotkey = :miner_hotkey
+                  AND chute_id = :chute_id
+                  AND activated_at IS NOT NULL
+                  AND deleted_at IS NOT NULL
+                  AND deleted_at > :window_start
+                  AND deleted_at <= :created_at
+            )
+        """),
+        {
+            "miner_hotkey": miner_hotkey,
+            "chute_id": chute_id,
+            "window_start": created_at_naive - timedelta(hours=THRASH_WINDOW_HOURS),
+            "created_at": created_at_naive,
+        },
+    )
+    return result.scalar()
+
+
+async def is_instance_in_thrash_penalty(
+    db, instance_id: str, miner_hotkey: str, chute_id: str, activated_at: datetime
+) -> bool:
+    """
+    Check if an instance is still within its thrash penalty period.
+
+    Used by the autoscaler to skip compute_multiplier updates for thrashing instances.
+    """
+    if activated_at is None:
+        return False
+
+    # Ensure activated_at is timezone-naive for comparison
+    if activated_at.tzinfo is not None:
+        activated_at_naive = activated_at.replace(tzinfo=None)
+    else:
+        activated_at_naive = activated_at
+
+    # Check if still in penalty period
+    now = datetime.utcnow()
+    if now >= activated_at_naive + timedelta(hours=THRASH_PENALTY_HOURS):
+        return False
+
+    # Check if this miner thrashed when creating this instance
+    # Look for deleted active instances before this instance's creation
+    result = await db.execute(
+        text("""
+            SELECT i.created_at
+            FROM instances i
+            WHERE i.instance_id = :instance_id
+        """),
+        {"instance_id": instance_id},
+    )
+    row = result.fetchone()
+    if not row or not row.created_at:
+        return False
+
+    instance_created_at = row.created_at
+    if instance_created_at.tzinfo is not None:
+        instance_created_at = instance_created_at.replace(tzinfo=None)
+
+    return await is_thrashing_miner(db, miner_hotkey, chute_id, instance_created_at)
