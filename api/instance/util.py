@@ -868,22 +868,21 @@ async def verify_tee_chute(
 ):
     """
     Verify TEE chute by fetching evidence from the attestation proxy and validating it.
-    
+
     Args:
         db: Database session
         instance: Instance object
         launch_config: LaunchConfig object
         deployment_id: Deployment ID for the chute
         expected_nonce: Expected nonce for verification
-        
+
     Raises:
         HTTPException: If verification fails
     """
     try:
         # Get the server from the database
         server_query = select(Server).where(
-            Server.ip == instance.host,
-            Server.miner_hotkey == launch_config.miner_hotkey
+            Server.ip == instance.host, Server.miner_hotkey == launch_config.miner_hotkey
         )
         server = (await db.execute(server_query)).scalar_one_or_none()
         if not server:
@@ -891,19 +890,19 @@ async def verify_tee_chute(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Server not found for IP {instance.host} and miner {launch_config.miner_hotkey}",
             )
-        
+
         # Use the TeeServerClient to get evidence from the chute proxy
         client = TeeServerClient(server)
-        
+
         # Get quote, GPU evidence, and cert hash from the chute proxy
         quote, gpu_evidence, expected_cert_hash = await client.get_chute_evidence(deployment_id)
-        
+
         # Verify the quote against the expected nonce and cert hash
         await verify_quote(quote, expected_nonce, expected_cert_hash)
-        
+
         # Verify GPU attestation evidence with expected nonce
         await verify_gpu_evidence(gpu_evidence, expected_nonce)
-        
+
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
     except GetEvidenceError as exc:
         logger.error(f"Failed to get evidence from chute proxy for {instance.host}: {exc}")

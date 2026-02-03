@@ -86,7 +86,9 @@ async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
     return {"nonce": nonce, "expires_at": expires_at.isoformat()}
 
 
-async def validate_and_consume_nonce(nonce_value: str, server_ip: str, purpose: NoncePurpose) -> None:
+async def validate_and_consume_nonce(
+    nonce_value: str, server_ip: str, purpose: NoncePurpose
+) -> None:
     """
     Validate and consume a nonce using Redis.
 
@@ -109,7 +111,7 @@ async def validate_and_consume_nonce(nonce_value: str, server_ip: str, purpose: 
     # Parse the stored value
     try:
         stored_data = json.loads(redis_value.decode())
-        
+
         # Handle legacy format (just server_ip as string) for backward compatibility
         if isinstance(stored_data, str):
             stored_server = stored_data
@@ -142,13 +144,14 @@ async def validate_and_consume_nonce(nonce_value: str, server_ip: str, purpose: 
 def validate_request_nonce(purpose: NoncePurpose):
     """
     Create a nonce validator dependency that validates nonces for a specific purpose.
-    
+
     Args:
         purpose: The expected purpose for the nonce (NoncePurpose enum value)
-    
+
     Returns:
         A FastAPI dependency function that validates the nonce
     """
+
     async def _validate_request_nonce(
         request: Request, nonce: str | None = Header(None, alias=NONCE_HEADER)
     ):
@@ -527,9 +530,7 @@ async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey:
     return server
 
 
-async def get_server_by_name(
-    db: AsyncSession, miner_hotkey: str, server_name: str
-) -> Server:
+async def get_server_by_name(db: AsyncSession, miner_hotkey: str, server_name: str) -> Server:
     """
     Get a server by miner hotkey and VM name (stable identity for API paths).
 
@@ -544,9 +545,7 @@ async def get_server_by_name(
     Raises:
         ServerNotFoundError: If server not found
     """
-    query = select(Server).where(
-        Server.miner_hotkey == miner_hotkey, Server.name == server_name
-    )
+    query = select(Server).where(Server.miner_hotkey == miner_hotkey, Server.name == server_name)
     result = await db.execute(query)
     server = result.scalar_one_or_none()
     if not server:
@@ -661,7 +660,7 @@ async def process_runtime_attestation(
     try:
         # Verify quote signature
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        result = await verify_quote(quote, expected_nonce, expected_cert_hash)
+        await verify_quote(quote, expected_nonce, expected_cert_hash)
 
         # Create runtime attestation record
         measurement_config = get_matching_measurement_config(quote)
@@ -838,9 +837,7 @@ async def _get_boot_token_context(boot_token: str) -> tuple[str, str]:
     return miner_hotkey, vm_name
 
 
-async def _validate_boot_token_for_luks(
-    boot_token: str, hotkey: str, vm_name: str
-) -> None:
+async def _validate_boot_token_for_luks(boot_token: str, hotkey: str, vm_name: str) -> None:
     """Validate boot token and verify hotkey/vm_name match. Raises NonceError on failure."""
     token_hotkey, token_vm_name = await _get_boot_token_context(boot_token)
     if token_hotkey != hotkey:

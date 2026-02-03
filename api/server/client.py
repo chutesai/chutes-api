@@ -97,13 +97,13 @@ class TeeServerClient:
 
     async def get_chute_evidence(self, deployment_id: str) -> Tuple[TdxQuote, Dict[str, str], str]:
         """Get attestation evidence for a specific chute deployment.
-        
+
         Args:
             deployment_id: The chute deployment ID
-            
+
         Returns:
             Tuple of (quote, gpu_evidence, cert_hash)
-            
+
         Raises:
             GetEvidenceError: If evidence retrieval fails
         """

@@ -29,7 +29,6 @@ from api.server.service import (
     process_boot_attestation,
     register_server,
     check_server_ownership,
-    get_server_by_name,
     get_server_by_name_or_id,
     update_server_name,
     process_runtime_attestation,

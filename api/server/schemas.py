@@ -58,12 +58,12 @@ class RuntimeAttestationResponse(BaseModel):
     status: str
 
 
-
-
 class LuksPassphraseRequest(BaseModel):
     """Request model for LUKS POST: VM sends volume list, API returns keys (existing/new/rekey), prunes others."""
 
-    volumes: List[str] = Field(..., description="Volume names the VM is managing (defines full set)")
+    volumes: List[str] = Field(
+        ..., description="Volume names the VM is managing (defines full set)"
+    )
     rekey: Optional[List[str]] = Field(
         None,
         description="Volume names that must receive new passphrases (no reuse); must be subset of volumes",
@@ -98,7 +98,9 @@ class BootAttestation(Base):
     quote_data = Column(Text, nullable=False)  # Base64 encoded quote
     server_ip = Column(String, nullable=True)  # For later linking to server
     verification_error = Column(String, nullable=True)
-    measurement_version = Column(String, nullable=True)  # Matched TEE measurement config version (audit trail)
+    measurement_version = Column(
+        String, nullable=True
+    )  # Matched TEE measurement config version (audit trail)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -117,7 +119,9 @@ class Server(Base):
     server_id = Column(String, primary_key=True)  # Provided by client (e.g. k8s node uid)
     ip = Column(String, nullable=False)  # Links to boot attestations
     miner_hotkey = Column(String, nullable=False)
-    name = Column(String, nullable=False)  # Stable identity for LUKS linkage (unique with miner_hotkey)
+    name = Column(
+        String, nullable=False
+    )  # Stable identity for LUKS linkage (unique with miner_hotkey)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     netuid = Column(Integer, nullable=False, default=64, server_default="64")
@@ -149,7 +153,9 @@ class ServerAttestation(Base):
     server_id = Column(String, ForeignKey("servers.server_id", ondelete="CASCADE"), nullable=False)
     quote_data = Column(Text, nullable=True)  # Base64 encoded quote
     verification_error = Column(String, nullable=True)
-    measurement_version = Column(String, nullable=True)  # Matched TEE measurement config version (audit trail)
+    measurement_version = Column(
+        String, nullable=True
+    )  # Matched TEE measurement config version (audit trail)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verified_at = Column(DateTime(timezone=True), nullable=True)
 

@@ -43,28 +43,40 @@ class InvalidQuoteError(AttestationError):
 class InvalidSignatureError(AttestationError):
     """Raised when TDX quote signature verification fails."""
 
-    def __init__(self, detail: str = "Invalid TDX quote signature. The attestation quote could not be verified."):
+    def __init__(
+        self,
+        detail: str = "Invalid TDX quote signature. The attestation quote could not be verified.",
+    ):
         super().__init__(detail=detail)
 
 
 class MeasurementMismatchError(AttestationError):
     """Raised when measurements don't match expected values."""
 
-    def __init__(self, detail: str = "Measurement verification failed. Please ensure your server is running the most recent VM."):
+    def __init__(
+        self,
+        detail: str = "Measurement verification failed. Please ensure your server is running the most recent VM.",
+    ):
         super().__init__(detail=detail)
 
 
 class GpuEvidenceError(AttestationError):
     """Raised for an unexpected error during GPU evidence verification."""
 
-    def __init__(self, detail: str = "Failed to verify GPU evidence. Please check your GPU attestation configuration."):
+    def __init__(
+        self,
+        detail: str = "Failed to verify GPU evidence. Please check your GPU attestation configuration.",
+    ):
         super().__init__(detail=detail)
 
 
 class InvalidGpuEvidenceError(AttestationError):
     """Raised for invalid GPU evidence."""
 
-    def __init__(self, detail: str = "Invalid GPU evidence. Please ensure your GPUs support attestation and are properly configured."):
+    def __init__(
+        self,
+        detail: str = "Invalid GPU evidence. Please ensure your GPUs support attestation and are properly configured.",
+    ):
         super().__init__(detail=detail)
 
 
@@ -77,8 +89,11 @@ class NonceError(AttestationError):
 
 class GetEvidenceError(AttestationError):
     """Raised when unable to retrieve attestation evidence from the server."""
-    
-    def __init__(self, detail: str = "Failed to get evidence for attestation. Please ensure the server is accessible and the attestation service is running."):
+
+    def __init__(
+        self,
+        detail: str = "Failed to get evidence for attestation. Please ensure the server is accessible and the attestation service is running.",
+    ):
         super().__init__(detail=detail)
 
 

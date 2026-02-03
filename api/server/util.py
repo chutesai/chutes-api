@@ -167,7 +167,7 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
     logger.info("Verifying TDX quote signature using dcap-qvl")
 
     try:
-    # Perform quote verification
+        # Perform quote verification
         verified_report = await get_collateral_and_verify(quote.raw_bytes)
 
         result = TdxVerificationResult.from_report(verified_report)
@@ -182,7 +182,7 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
         return result
     except Exception as e:
         logger.error(f"Unexpected error during quote verification: {e}")
-        raise InvalidQuoteError(f"Unable to parse provided quote for verification.")
+        raise InvalidQuoteError("Unable to parse provided quote for verification.")
 
 
 def get_matching_measurement_config(quote: TdxQuote) -> TeeMeasurementConfig:
@@ -251,9 +251,7 @@ def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
         MeasurementMismatchError: If quote and result measurements differ
     """
     logger.info("Verifying quote matches DCAP verification result.")
-    return _verify_measurements(
-        quote, result.rtmrs, "DCAP result", result.mrtd
-    )
+    return _verify_measurements(quote, result.rtmrs, "DCAP result", result.mrtd)
 
 
 def _verify_measurements(
@@ -279,9 +277,7 @@ def _verify_measurements(
             mismatches.append(error_msg)
 
         for rtmr_name, expected_value in expected_rtmrs.items():
-            actual_value = quote.rtmrs.get(rtmr_name.lower()) or quote.rtmrs.get(
-                rtmr_name
-            )
+            actual_value = quote.rtmrs.get(rtmr_name.lower()) or quote.rtmrs.get(rtmr_name)
             if not actual_value:
                 error_msg = f"Quote missing expected RTMR[{rtmr_name}]"
                 logger.error(error_msg)
@@ -290,17 +286,16 @@ def _verify_measurements(
                 error_msg = (
                     f"RTMR {rtmr_name} mismatch for measurement config '{measurement_name}': "
                 )
-                logger.error(
-                    f"{error_msg} "
-                    f"expected {expected_value}..., got {actual_value}..."
-                )
+                logger.error(f"{error_msg} expected {expected_value}..., got {actual_value}...")
                 mismatches.append(error_msg)
 
         if mismatches:
             logger.error(f"Measurement verification failed: {'; '.join(mismatches)}")
             raise MeasurementMismatchError()
 
-        logger.info(f"Measurements verified successfully for measurement config '{measurement_name}'")
+        logger.info(
+            f"Measurements verified successfully for measurement config '{measurement_name}'"
+        )
         return True
 
     except MeasurementMismatchError:

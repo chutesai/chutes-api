@@ -376,8 +376,12 @@ class Settings(BaseSettings):
                 )
                 continue
 
-            boot_rtmrs = {k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()}
-            runtime_rtmrs = {k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()}
+            boot_rtmrs = {
+                k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()
+            }
+            runtime_rtmrs = {
+                k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()
+            }
 
             if boot_rtmrs.get("RTMR0") != runtime_rtmrs.get("RTMR0"):
                 logger.warning(

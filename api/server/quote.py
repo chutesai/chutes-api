@@ -64,17 +64,11 @@ class TdxQuote(ABC):
         """
         if self.mrtd.upper() != config.mrtd.upper():
             return False
-        expected = (
-            config.boot_rtmrs
-            if self.quote_type == "boot"
-            else config.runtime_rtmrs
-        )
+        expected = config.boot_rtmrs if self.quote_type == "boot" else config.runtime_rtmrs
         if not expected:
             return False
         for rtmr_name, expected_value in expected.items():
-            actual = self.rtmrs.get(rtmr_name.lower()) or self.rtmrs.get(
-                rtmr_name
-            )
+            actual = self.rtmrs.get(rtmr_name.lower()) or self.rtmrs.get(rtmr_name)
             if not actual or actual.upper() != expected_value.upper():
                 return False
         return True

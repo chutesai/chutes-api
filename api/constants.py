@@ -3,7 +3,7 @@ from enum import Enum
 
 class NoncePurpose(str, Enum):
     """Purpose values for attestation nonces to prevent cross-purpose reuse."""
-    
+
     BOOT = "boot"
     RUNTIME = "runtime"
     INSTANCE_VERIFICATION = "instance_verification"

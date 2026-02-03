@@ -53,7 +53,6 @@ from api.instance.schemas import (
     Instance,
     instance_nodes,
     LaunchConfig,
-    LaunchConfigArgs,
 )
 from api.job.schemas import Job
 from api.instance.util import (
@@ -1264,9 +1263,7 @@ async def claim_tee_launch_config(
     # Verify TEE attestation evidence
     await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
 
-    response = {
-        "symmetric_key": instance.symmetric_key
-    }
+    response = {"symmetric_key": instance.symmetric_key}
 
     if validator_pubkey:
         response["validator_pubkey"] = validator_pubkey
@@ -1283,9 +1280,12 @@ async def claim_graval_launch_config(
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
 ):
     """Claim a Graval launch config and receive PoVW challenge."""
-    launch_config, nodes, instance, validator_pubkey = await _validate_graval_launch_config_instance(
-        config_id, args, request, db, authorization
-    )
+    (
+        launch_config,
+        nodes,
+        instance,
+        validator_pubkey,
+    ) = await _validate_graval_launch_config_instance(config_id, args, request, db, authorization)
 
     # Generate a ciphertext for this instance to decrypt.
     node = random.choice(nodes)
@@ -1893,22 +1893,21 @@ async def verify_tee_launch_config_instance(
 async def get_instance_nonce(request: Request):
     """
     Generate a nonce for TEE instance verification.
-    
+
     This endpoint is called by chute instances during TEE verification (Phase 1).
     The nonce is used to bind the attestation evidence to this specific verification request.
     """
     try:
         server_ip = extract_ip(request)
         nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.INSTANCE_VERIFICATION)
-        
+
         # Return just the nonce string as JSON (library expects this format)
         # The library will use this nonce in the X-Chutes-Nonce header
         return nonce_info["nonce"]
     except Exception as e:
         logger.error(f"Failed to generate instance nonce: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate nonce"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate nonce"
         )
 
 
