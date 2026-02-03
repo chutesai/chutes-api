@@ -86,10 +86,10 @@ async def increment_bucket(redis, record: dict) -> None:
     Increment counters in the minute-bucket hash for this record.
 
     Key: usage_pending:{minute_ts}
-    Fields: {user_id}:{chute_id}:a (amount), :n (count), :i (input_tokens), :o (output_tokens), :t (compute_time)
+    Fields: {user_id}:{chute_id}:a (amount), :n (count), :i (input_tokens), :o (output_tokens), :x (cached_tokens), :t (compute_time)
 
     Record format (compact):
-    - u: user_id, c: chute_id, a: amount, i: input_tokens, o: output_tokens, t: compute_time, s: timestamp
+    - u: user_id, c: chute_id, a: amount, i: input_tokens, o: output_tokens, x: cached_tokens, t: compute_time, s: timestamp
     """
     user_id = record["u"]
     chute_id = record["c"]
@@ -102,6 +102,7 @@ async def increment_bucket(redis, record: dict) -> None:
     amount = float(record.get("a", 0))
     input_tokens = int(record.get("i", 0))
     output_tokens = int(record.get("o", 0))
+    cached_tokens = int(record.get("x", 0))
     compute_time = float(record.get("t", 0))
 
     pipeline = redis.pipeline()
@@ -109,6 +110,7 @@ async def increment_bucket(redis, record: dict) -> None:
     pipeline.hincrby(bucket_key, f"{field_prefix}:n", 1)
     pipeline.hincrby(bucket_key, f"{field_prefix}:i", input_tokens)
     pipeline.hincrby(bucket_key, f"{field_prefix}:o", output_tokens)
+    pipeline.hincrby(bucket_key, f"{field_prefix}:x", cached_tokens)
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", compute_time)
     await pipeline.execute()
 
@@ -184,13 +186,14 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
     hour_bucket = (int(bucket_ts) // 3600) * 3600
 
     # Parse fields into aggregated data using HSCAN to avoid loading everything at once
-    # Fields are: {user_id}:{chute_id}:a (amount), :n (count), :i (input_tokens), :o (output_tokens), :t (compute_time)
+    # Fields are: {user_id}:{chute_id}:a (amount), :n (count), :i (input_tokens), :o (output_tokens), :x (cached_tokens), :t (compute_time)
     aggregated = defaultdict(
         lambda: {
             "a": 0.0,  # amount
             "n": 0,  # count
             "i": 0,  # input_tokens
             "o": 0,  # output_tokens
+            "x": 0,  # cached_tokens
             "t": 0.0,  # compute_time
         }
     )
@@ -219,6 +222,8 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                 aggregated[key]["i"] = int(value_str)
             elif metric == "o":
                 aggregated[key]["o"] = int(value_str)
+            elif metric == "x":
+                aggregated[key]["x"] = int(value_str)
             elif metric == "t":
                 aggregated[key]["t"] = float(value_str)
 
@@ -234,7 +239,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
     logger.info(f"Scanned {field_count} fields from {bucket_key} (processing as {processing_key})")
     for (user_id, chute_id), m in aggregated.items():
         logger.info(
-            f"  {user_id}:{chute_id} -> amt={m['a']:.6f} n={m['n']} it={m['i']} ot={m['o']} t={m['t']:.4f}s"
+            f"  {user_id}:{chute_id} -> amt={m['a']:.6f} n={m['n']} it={m['i']} ot={m['o']} ct={m['x']} t={m['t']:.4f}s"
         )
 
     # Calculate user totals for balance deduction
@@ -261,6 +266,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                     "count": m["n"],
                     "input_tokens": m["i"],
                     "output_tokens": m["o"],
+                    "cached_tokens": m["x"],
                     "compute_time": m["t"],
                 }
                 for (user_id, chute_id), m in sorted_items
@@ -271,7 +277,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
             for i in range(0, len(usage_params), batch_size):
                 batch = usage_params[i : i + batch_size]
                 stmt = text("""
-                    INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens, compute_time)
+                    INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time)
                     SELECT
                         u.user_id,
                         to_timestamp(:hour_bucket),
@@ -280,6 +286,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         d.count,
                         d.input_tokens,
                         d.output_tokens,
+                        d.cached_tokens,
                         d.compute_time
                     FROM unnest(
                         CAST(:user_ids AS text[]),
@@ -288,8 +295,9 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         CAST(:counts AS bigint[]),
                         CAST(:input_tokens AS bigint[]),
                         CAST(:output_tokens AS bigint[]),
+                        CAST(:cached_tokens AS bigint[]),
                         CAST(:compute_times AS double precision[])
-                    ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, compute_time)
+                    ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time)
                     JOIN users u ON u.user_id = d.user_id
                     ON CONFLICT (user_id, chute_id, bucket)
                     DO UPDATE SET
@@ -297,6 +305,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         count = (usage_data.count + EXCLUDED.count),
                         input_tokens = (usage_data.input_tokens + EXCLUDED.input_tokens),
                         output_tokens = (usage_data.output_tokens + EXCLUDED.output_tokens),
+                        cached_tokens = (COALESCE(usage_data.cached_tokens, 0) + EXCLUDED.cached_tokens),
                         compute_time = (COALESCE(usage_data.compute_time, 0) + EXCLUDED.compute_time)
                 """)
                 await session.execute(
@@ -309,6 +318,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         "counts": [p["count"] for p in batch],
                         "input_tokens": [p["input_tokens"] for p in batch],
                         "output_tokens": [p["output_tokens"] for p in batch],
+                        "cached_tokens": [p["cached_tokens"] for p in batch],
                         "compute_times": [p["compute_time"] for p in batch],
                     },
                 )
@@ -419,7 +429,7 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
     # minute_ts -> user_id -> chute_id -> metrics
     updates = defaultdict(
         lambda: defaultdict(
-            lambda: defaultdict(lambda: {"a": 0.0, "n": 0, "i": 0, "o": 0, "t": 0.0})
+            lambda: defaultdict(lambda: {"a": 0.0, "n": 0, "i": 0, "o": 0, "x": 0, "t": 0.0})
         )
     )
 
@@ -438,6 +448,7 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
             amount = float(record.get("a", 0))
             input_tokens = int(record.get("i", 0))
             output_tokens = int(record.get("o", 0))
+            cached_tokens = int(record.get("x", 0))
             compute_time = float(record.get("t", 0))
 
             agg = updates[minute_ts][user_id][chute_id]
@@ -445,6 +456,7 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
             agg["n"] += 1
             agg["i"] += input_tokens
             agg["o"] += output_tokens
+            agg["x"] += cached_tokens
             agg["t"] += compute_time
 
             count += 1
@@ -467,6 +479,8 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
                         pipeline.hincrby(bucket_key, f"{field_prefix}:i", m["i"])
                     if m["o"] != 0:
                         pipeline.hincrby(bucket_key, f"{field_prefix}:o", m["o"])
+                    if m["x"] != 0:
+                        pipeline.hincrby(bucket_key, f"{field_prefix}:x", m["x"])
                     if m["t"] != 0:
                         pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", m["t"])
         await pipeline.execute()

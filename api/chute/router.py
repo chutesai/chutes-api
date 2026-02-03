@@ -97,11 +97,15 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     Inject the current estimated price data into a response.
     """
     if chute.standard_template == "vllm":
-        per_million_in, per_million_out = await get_mtoken_price("global", chute.chute_id)
+        per_million_in, per_million_out, cache_discount = await get_mtoken_price(
+            "global", chute.chute_id
+        )
+        input_cache_read = per_million_in * (1 - cache_discount)
         response.current_estimated_price = {
             "per_million_tokens": {
                 "input": {"usd": per_million_in},
                 "output": {"usd": per_million_out},
+                "input_cache_read": {"usd": input_cache_read},
             }
         }
         tao_usd = await get_fetcher().get_price("tao")
@@ -111,6 +115,9 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
             )
             response.current_estimated_price["per_million_tokens"]["output"]["tao"] = (
                 per_million_out / tao_usd
+            )
+            response.current_estimated_price["per_million_tokens"]["input_cache_read"]["tao"] = (
+                input_cache_read / tao_usd
             )
     elif chute.standard_template == "diffusion":
         hourly = await selector_hourly_price(chute.node_selector)

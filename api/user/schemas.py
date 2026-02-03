@@ -303,6 +303,7 @@ class PriceOverride(Base):
     per_million_in = Column(Double, nullable=True)
     per_million_out = Column(Double, nullable=True)
     per_step = Column(Double, nullable=True)
+    cache_discount = Column(Double, nullable=True)
 
     @staticmethod
     async def get(user_id: str, chute_id: str):
@@ -338,6 +339,7 @@ class PriceOverride(Base):
                         "per_million_in": override.per_million_in,
                         "per_million_out": override.per_million_out,
                         "per_step": override.per_step,
+                        "cache_discount": override.cache_discount,
                         "user_id": override.user_id,
                         "chute_id": override.chute_id,
                     }

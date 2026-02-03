@@ -38,6 +38,9 @@ LLM_PRICE_MULT_PER_MILLION_OUT = 0.05434782
 LLM_MIN_PRICE_IN = 0.01
 LLM_MIN_PRICE_OUT = 0.01
 
+# Default discount for cached prompt tokens (50% off).
+DEFAULT_CACHE_DISCOUNT = 0.5
+
 # Likewise, for diffusion models, we allow different node selectors and step
 # counts, so we can't really have a fixed "per image" pricing, just a price
 # that varies based on the node selector and the number of steps requested.
