@@ -310,9 +310,7 @@ async def patch_server_name(
     try:
         server = await update_server_name(db, hotkey, server_id, server_name)
         return {
-            "miner_hotkey": server.miner_hotkey,
-            "vm_name": server.vm_name,
-            "server_id": server.server_id,
+            "name": server.name,
             "ip": server.ip,
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,

@@ -132,7 +132,7 @@ class Server(Base):
 
     __table_args__ = (
         Index("idx_server_miner", "miner_hotkey"),
-        Index("idx_servers_miner_vm_name", "miner_hotkey", "name", unique=True),
+        Index("idx_servers_miner_name", "miner_hotkey", "name", unique=True),
         ForeignKeyConstraint(
             ["netuid", "miner_hotkey"], ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"]
         ),

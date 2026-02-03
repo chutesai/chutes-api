@@ -558,14 +558,14 @@ async def update_server_name(
     db: AsyncSession, miner_hotkey: str, server_id: str, server_name: str
 ) -> Server:
     """
-    Update vm_name for an existing server (by server_id). Used to sync names for
-    servers that existed before the vm_name schema change.
+    Update name for an existing server (by server_id). Used to sync names for
+    servers that existed before the name schema change.
 
     Args:
         db: Database session
         miner_hotkey: Authenticated miner hotkey (must own the server)
         server_id: Server ID (e.g. k8s node uid)
-        new_vm_name: New VM name to set (unique per miner)
+        server_name: New VM name to set (unique per miner)
 
     Returns:
         Updated Server
@@ -585,9 +585,9 @@ async def update_server_name(
         await db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=f"vm_name '{server_name}' already in use by another server for this miner",
+            detail=f"name '{server_name}' already in use by another server for this miner",
         )
-    logger.info(f"Updated server {server_id} vm_name to {server_name}")
+    logger.info(f"Updated server {server_id} name to {server_name}")
     return server
 
 
