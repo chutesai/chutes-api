@@ -793,7 +793,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     then issues static UPDATE statements to avoid read-modify-write locks.
     """
     from api.chute.util import calculate_effective_compute_multiplier
-    from api.instance.util import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
+    from api.constants import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
 
     logger.info("Refreshing compute multipliers for active instances...")
 
@@ -904,6 +904,109 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             logger.success(f"Updated compute_multiplier for {len(updates)} instances")
         else:
             logger.info("No compute_multiplier updates needed")
+
+
+async def _log_thrashing_instances():
+    """
+    Log all instances currently in thrash penalty period for debugging/monitoring.
+    Shows current multiplier vs what it would be without thrash penalty.
+    """
+    from api.constants import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
+    from api.bounty.util import get_bounty_info, calculate_bounty_boost
+
+    async with get_session() as session:
+        await session.execute(text("SET LOCAL statement_timeout = '10s'"))
+
+        # Find all instances in thrash penalty period with details about the prior deletion
+        result = await session.execute(
+            text("""
+                SELECT
+                    i.instance_id,
+                    i.chute_id,
+                    i.miner_hotkey,
+                    i.created_at AS instance_created_at,
+                    i.activated_at,
+                    i.compute_multiplier,
+                    i.bounty,
+                    c.name AS chute_name,
+                    c.boost AS chute_boost,
+                    prior.deleted_at AS prior_deleted_at,
+                    prior.activated_at AS prior_activated_at,
+                    prior.compute_multiplier AS prior_compute_multiplier,
+                    prior.bounty AS prior_bounty,
+                    EXTRACT(EPOCH FROM (i.created_at - prior.deleted_at)) / 60 AS minutes_after_deletion,
+                    EXTRACT(EPOCH FROM (NOW() - i.activated_at)) / 3600 AS hours_since_activation,
+                    EXTRACT(EPOCH FROM (i.activated_at + INTERVAL ':penalty_hours hours' - NOW())) / 60 AS penalty_minutes_remaining
+                FROM instances i
+                JOIN chutes c ON c.chute_id = i.chute_id
+                JOIN LATERAL (
+                    SELECT ia.deleted_at, ia.activated_at, ia.compute_multiplier, ia.bounty
+                    FROM instance_audit ia
+                    WHERE ia.miner_hotkey = i.miner_hotkey
+                      AND ia.chute_id = i.chute_id
+                      AND ia.activated_at IS NOT NULL
+                      AND ia.deleted_at IS NOT NULL
+                      AND ia.deleted_at > i.created_at - INTERVAL ':window_hours hours'
+                      AND ia.deleted_at <= i.created_at
+                    ORDER BY ia.deleted_at DESC
+                    LIMIT 1
+                ) prior ON true
+                WHERE i.active = true
+                  AND i.verified = true
+                  AND i.activated_at IS NOT NULL
+                  AND i.activated_at + INTERVAL ':penalty_hours hours' > NOW()
+                ORDER BY penalty_minutes_remaining ASC
+            """.replace(":penalty_hours", str(THRASH_PENALTY_HOURS))
+               .replace(":window_hours", str(THRASH_WINDOW_HOURS)))
+        )
+        rows = result.fetchall()
+
+        if not rows:
+            logger.info("=== THRASHING INSTANCES === None detected")
+            return
+
+        logger.info(f"=== THRASHING INSTANCES === {len(rows)} in penalty period")
+        logger.info(
+            f"{'Instance':<12} {'Chute':<20} {'Miner':<15} "
+            f"{'Penalty Left':<12} {'Curr Mult':<10} {'Would Be':<10} {'Blocked':<20}"
+        )
+        logger.info("-" * 110)
+
+        for row in rows:
+            current_mult = row.compute_multiplier or 1.0
+            chute_boost = row.chute_boost or 1.0
+
+            # Calculate what multiplier would be if thrash penalty wasn't applied
+            # Start with current multiplier
+            would_be_mult = current_mult
+
+            # Add chute boost that was blocked
+            if chute_boost > 1.0:
+                would_be_mult *= chute_boost
+
+            # Check if there's a current bounty that would have applied
+            bounty_info = await get_bounty_info(row.chute_id)
+            bounty_boost = 1.0
+            if bounty_info and not row.bounty:
+                # There's a bounty and this instance didn't get it
+                bounty_boost = bounty_info.get("boost", 1.0)
+                would_be_mult *= bounty_boost
+
+            # Build blocked components string
+            blocked = []
+            if chute_boost > 1.0:
+                blocked.append(f"boost:{chute_boost:.1f}x")
+            if bounty_boost > 1.0:
+                blocked.append(f"bounty:{bounty_boost:.1f}x")
+            blocked_str = ", ".join(blocked) if blocked else "none"
+
+            logger.info(
+                f"{row.instance_id[:10]}.. {row.chute_name[:18]:<20} {row.miner_hotkey[:13]}.. "
+                f"{row.penalty_minutes_remaining:>8.1f} min "
+                f"{current_mult:>9.2f} {would_be_mult:>9.2f} {blocked_str:<20}"
+            )
+
+        logger.info("=== END THRASHING INSTANCES ===")
 
 
 @retry_on_db_failure()
@@ -1264,6 +1367,7 @@ async def perform_autoscale(
     dry_run_csv: str = None,
     refresh_multipliers: bool = False,
     simulate_scores: bool = False,
+    show_thrashing: bool = False,
 ):
     """
     Gather utilization data and make decisions on scaling up/down (or nothing).
@@ -1282,11 +1386,12 @@ async def perform_autoscale(
                              than every autoscaler run.
         simulate_scores: If True (requires dry_run), simulate what miner scores would
                         be if the updated compute multipliers were applied.
+        show_thrashing: If True, show instances currently in thrash penalty period.
     """
     try:
         async with autoscaler_lock(soft_mode=soft_mode, skip_lock=dry_run):
             await _perform_autoscale_impl(
-                dry_run, soft_mode, dry_run_csv, refresh_multipliers, simulate_scores
+                dry_run, soft_mode, dry_run_csv, refresh_multipliers, simulate_scores, show_thrashing
             )
     except LockNotAcquired:
         # Soft mode couldn't acquire lock, exit quietly
@@ -1299,6 +1404,7 @@ async def _perform_autoscale_impl(
     dry_run_csv: str = None,
     refresh_multipliers: bool = False,
     simulate_scores: bool = False,
+    show_thrashing: bool = False,
 ):
     """Internal implementation of autoscale logic (called within lock)."""
     if dry_run and soft_mode:
@@ -2213,6 +2319,10 @@ async def _perform_autoscale_impl(
                         )
                 logger.info(f"Exported instance multiplier changes to {instance_csv}")
 
+        # Show thrashing instances if requested
+        if show_thrashing:
+            await _log_thrashing_instances()
+
         logger.info("=== END DRY RUN ===")
         return
     else:
@@ -2715,11 +2825,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Refresh instance compute_multipliers (should run hourly before :05, not every run)",
     )
+    parser.add_argument(
+        "--show-thrashing",
+        action="store_true",
+        help="Show instances currently in thrash penalty period (only works with --dry-run)",
+    )
     args = parser.parse_args()
     if args.csv and not args.dry_run:
         parser.error("--csv requires --dry-run")
     if args.simulate and not args.dry_run:
         parser.error("--simulate requires --dry-run")
+    if args.show_thrashing and not args.dry_run:
+        parser.error("--show-thrashing requires --dry-run")
     asyncio.run(
         perform_autoscale(
             dry_run=args.dry_run,
@@ -2727,5 +2844,6 @@ if __name__ == "__main__":
             dry_run_csv=args.csv,
             refresh_multipliers=args.refresh_multipliers,
             simulate_scores=args.simulate,
+            show_thrashing=args.show_thrashing,
         )
     )

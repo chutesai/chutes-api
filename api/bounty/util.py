@@ -9,6 +9,7 @@ from metasync.constants import (
     BOUNTY_BOOST_MAX,
     BOUNTY_BOOST_RAMP_MINUTES,
 )
+from api.constants import BOUNTY_COOLDOWN_SECONDS
 
 
 # Key prefix for bounty timestamps (v2 format: plain timestamp string)
@@ -80,9 +81,6 @@ async def set_chute_disabled(chute_id: str, disabled: bool):
         logger.warning(f"Failed to set chute disabled state: {exc}")
 
 
-BOUNTY_COOLDOWN_SECONDS = 600  # 10 minutes between bounty creations per chute
-
-
 async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> bool:
     """
     Create a bounty timestamp if one doesn't already exist.
@@ -127,6 +125,7 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
 async def claim_bounty(chute_id: str) -> Optional[dict]:
     """
     Atomically claim a bounty. Returns dict with bounty info including age for boost calculation.
+    Also sets the cooldown to prevent immediate bounty recreation.
     """
     key = _bounty_key(chute_id)
     try:
@@ -137,6 +136,19 @@ async def claim_bounty(chute_id: str) -> Optional[dict]:
         )
         if not data:
             return None
+
+        # Set cooldown immediately after consuming bounty to prevent race conditions
+        # where a new bounty gets created while instances are still spinning up
+        cooldown_key = f"bounty_cooldown:{chute_id}"
+        try:
+            await settings.lite_redis_client.set(
+                cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS
+            )
+            # Extra delete in case there was a brief race condition
+            await settings.lite_redis_client.delete(key)
+        except Exception as exc:
+            logger.warning(f"Failed to set bounty cooldown after claim: {exc}")
+
         created_at = _parse_timestamp(data)
         if created_at is None:
             return None

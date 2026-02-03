@@ -2,13 +2,13 @@ SCORING_INTERVAL = "7 days"
 
 # Dynamic bounty boost based on bounty age at claim time (maxes out at 3 hours)
 BOUNTY_BOOST_MIN = 1.5
-BOUNTY_BOOST_MAX = 4.0
+BOUNTY_BOOST_MAX = 2.5
 BOUNTY_BOOST_RAMP_MINUTES = 180
 
 # After claiming, instance compute_multiplier gradually adjusts toward
 # the current chute target (base * urgency * TEE, etc.) over this many hours.
 # The bounty boost component decays to 1.0, but other factors remain.
-BOUNTY_BOOST_DECAY_HOURS = 8
+BOUNTY_BOOST_DECAY_HOURS = 5
 
 # GPU inventory (and unique chute GPU).
 INVENTORY_HISTORY_QUERY = """

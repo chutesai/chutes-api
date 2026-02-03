@@ -864,9 +864,7 @@ async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
     return total_removed
 
 
-# Thrash detection constants
-THRASH_WINDOW_HOURS = 3
-THRASH_PENALTY_HOURS = 3
+from api.constants import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
 
 
 async def is_thrashing_miner(

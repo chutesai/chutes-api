@@ -65,6 +65,15 @@ SCALE_DOWN_LOOKBACK_MINUTES = 90
 # Can't drop more than this ratio below the rolling average target count.
 SCALE_DOWN_MAX_DROP_RATIO = 0.6
 
+# Thrash detection: prevents miners from gaming bounty/urgency boosts by
+# repeatedly deleting and recreating instances of the same chute.
+# Window to check for prior deleted active instances before new instance creation.
+THRASH_WINDOW_HOURS = 3
+# Duration of penalty period after activation where boosts are not applied.
+THRASH_PENALTY_HOURS = 3
+# Cooldown between bounty creations per chute to prevent race conditions.
+BOUNTY_COOLDOWN_SECONDS = 600
+
 # Maximum size of VLM asset (video/image).
 VLM_MAX_SIZE = 100 * 1024 * 1024
 
