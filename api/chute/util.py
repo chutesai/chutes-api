@@ -930,14 +930,6 @@ async def _invoke_one(
                 if manager and manager.mean_count is not None:
                     metrics["mc"] = manager.mean_count
 
-                # Log cache hit info.
-                if cached_tokens > 0 and prompt_tokens > 0:
-                    cache_hit_rate = round(cached_tokens / prompt_tokens * 100, 1)
-                    logger.info(
-                        f"Cache hit: model={chute.name} prompt_tokens={prompt_tokens} "
-                        f"cached_tokens={cached_tokens} hit_rate={cache_hit_rate}% discount={DEFAULT_CACHE_DISCOUNT}"
-                    )
-
                 # Moving average performance tracking to keep compute units immutable.
                 ma_updates = await PERF_TRACKER.update_invocation_metrics(
                     chute_id=chute.chute_id,
@@ -1132,14 +1124,6 @@ async def _invoke_one(
                     metrics["tt"] = round(total_time, 3)
                     if manager and manager.mean_count is not None:
                         metrics["mc"] = manager.mean_count
-
-                    # Log cache hit info.
-                    if cached_tokens > 0 and prompt_tokens > 0:
-                        cache_hit_rate = round(cached_tokens / prompt_tokens * 100, 1)
-                        logger.info(
-                            f"Cache hit: model={chute.name} prompt_tokens={prompt_tokens} "
-                            f"cached_tokens={cached_tokens} hit_rate={cache_hit_rate}% discount={DEFAULT_CACHE_DISCOUNT}"
-                        )
 
                     # Moving average performance tracking to keep compute units immutable.
                     ma_updates = await PERF_TRACKER.update_invocation_metrics(
@@ -1343,6 +1327,14 @@ async def invoke(
                             + output_tokens / 1000000.0 * per_million_out
                         )
                         override_applied = True
+
+                        # Log cache hit info.
+                        if cached_tokens > 0 and prompt_tokens > 0:
+                            cache_hit_rate = round(cached_tokens / prompt_tokens * 100, 1)
+                            logger.info(
+                                f"Cache hit: model={chute.name} prompt_tokens={prompt_tokens} "
+                                f"cached_tokens={cached_tokens} hit_rate={cache_hit_rate}% discount={cache_discount}"
+                            )
 
                     elif (
                         price_override := await PriceOverride.get(user_id, chute.chute_id)

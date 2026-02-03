@@ -48,6 +48,7 @@ from api.chute.util import (
     calculate_effective_compute_multiplier,
     get_manual_boosts,
     invalidate_chute_cache,
+    update_usage_data,
 )
 from api.bounty.util import (
     get_bounty_info,
@@ -1299,14 +1300,13 @@ async def _deploy_chute(
             f"DEPLOYMENTFEE: {deployment_fee} for {current_user.username=} with "
             f"{chute_args.node_selector=} of {chute_args.name=}, new balance={current_user.balance - deployment_fee}"
         )
-        pipeline = settings.redis_client.pipeline()
-        chute_id = str(
-            uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{chute_args.name}")
+        await update_usage_data(
+            current_user.user_id,
+            chute.chute_id,
+            deployment_fee,
+            metrics=None,
+            compute_time=0.0,
         )
-        key = f"balance:{current_user.user_id}:{chute_id}"
-        pipeline.hincrbyfloat(key, "amount", deployment_fee)
-        pipeline.hset(key, "timestamp", int(time.time()))
-        await pipeline.execute()
 
     if old_version:
         if use_rolling_update:
