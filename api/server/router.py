@@ -3,7 +3,7 @@ FastAPI routes for server management and TDX attestation.
 """
 
 from typing import List, Dict, Any
-from fastapi import APIRouter, Depends, HTTPException, Request, status, Header
+from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
@@ -28,7 +28,9 @@ from api.server.service import (
     create_nonce,
     process_boot_attestation,
     register_server,
+    check_server_ownership,
     get_server_by_name,
+    get_server_by_name_or_id,
     update_server_name,
     process_runtime_attestation,
     get_server_attestation_status,
@@ -272,6 +274,7 @@ async def list_user_servers(
 
         return [
             {
+                "server_id": server.server_id,
                 "name": server.name,
                 "ip": server.ip,
                 "created_at": server.created_at.isoformat(),
@@ -289,8 +292,8 @@ async def list_user_servers(
 
 @router.patch("/{server_id}", response_model=Dict[str, Any])
 async def patch_server_name(
-    server_name: str,
     server_id: str,
+    server_name: str = Query(..., description="New VM name to set"),
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
@@ -298,9 +301,8 @@ async def patch_server_name(
     ),
 ):
     """
-    Update vm_name for an existing server. Provide the new name in the path and the
-    existing server_id as a query param; the server row is updated when hotkey and
-    server_id match. Use this to sync names for servers that existed before vm_name.
+    Update name for an existing server. Path is server_id; query param is the new name.
+    The server row is updated when hotkey and server_id match.
     """
     if not hotkey:
         raise HTTPException(
@@ -327,9 +329,9 @@ async def patch_server_name(
         )
 
 
-@router.get("/{server_name}", response_model=Dict[str, Any])
+@router.get("/{server_id}", response_model=Dict[str, Any])
 async def get_server_details(
-    server_name: str,
+    server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
@@ -337,12 +339,13 @@ async def get_server_details(
     ),
 ):
     """
-    Get details for a specific server by miner hotkey and VM name.
+    Get details for a specific server by miner hotkey and server id.
     """
     try:
-        server = await get_server_by_name(db, hotkey, server_name)
+        server = await check_server_ownership(db, server_id, hotkey)
 
         return {
+            "server_id": server.server_id,
             "name": server.name,
             "ip": server.ip,
             "created_at": server.created_at.isoformat(),
@@ -360,9 +363,9 @@ async def get_server_details(
         )
 
 
-@router.delete("/{server_name}", response_model=Dict[str, str])
+@router.delete("/{server_name_or_id}", response_model=Dict[str, str])
 async def remove_server(
-    server_name: str,
+    server_name_or_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
@@ -370,13 +373,13 @@ async def remove_server(
     ),
 ):
     """
-    Remove a server by miner hotkey and VM name.
+    Remove a server by miner hotkey and server id or VM name (path param server_name_or_id).
     """
     try:
-        server = await get_server_by_name(db, hotkey, server_name)
+        server = await get_server_by_name_or_id(db, hotkey, server_name_or_id)
         await delete_server(db, server.server_id, hotkey)
 
-        return {"name": server_name, "message": "Server removed successfully"}
+        return {"name": server.name, "message": "Server removed successfully"}
 
     except ServerNotFoundError as e:
         raise e
@@ -392,10 +395,10 @@ async def remove_server(
 # Runtime Attestation Endpoints (Post-registration)
 
 
-@router.get("{server_name}/nonce", response_model=NonceResponse)
+@router.get("/{server_id}/nonce", response_model=NonceResponse)
 async def get_runtime_nonce(
     request: Request,
-    server_name: str,
+    server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
@@ -406,7 +409,7 @@ async def get_runtime_nonce(
     Generate a nonce for runtime attestation.
     """
     try:
-        server = await get_server_by_name(db, hotkey, server_name)
+        server = await check_server_ownership(db, server_id, hotkey)
 
         actual_ip = extract_ip(request)
         if server.ip != actual_ip:
@@ -427,10 +430,10 @@ async def get_runtime_nonce(
         )
 
 
-@router.post("/{server_name}/attestation", response_model=RuntimeAttestationResponse)
+@router.post("/{server_id}/attestation", response_model=RuntimeAttestationResponse)
 async def verify_runtime_attestation(
     request: Request,
-    server_name: str,
+    server_id: str,
     args: RuntimeAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
@@ -444,7 +447,7 @@ async def verify_runtime_attestation(
     Verify runtime attestation with full measurement validation.
     """
     try:
-        server = await get_server_by_name(db, hotkey, server_name)
+        server = await check_server_ownership(db, server_id, hotkey)
         actual_ip = extract_ip(request)
         result = await process_runtime_attestation(
             db, server.server_id, actual_ip, args, hotkey, nonce, expected_cert_hash
@@ -474,9 +477,9 @@ async def verify_runtime_attestation(
 
 
 # ToDo: Also likely to remove this
-@router.get("/{vm_name}/attestation/status", response_model=Dict[str, Any])
+@router.get("/{server_id}/attestation/status", response_model=Dict[str, Any])
 async def get_attestation_status(
-    server_name: str,
+    server_id: str,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
@@ -484,12 +487,12 @@ async def get_attestation_status(
     ),
 ):
     """
-    Get current attestation status for a server by miner hotkey and VM name.
+    Get current attestation status for a server by miner hotkey and server id.
     """
     try:
-        server = await get_server_by_name(db, hotkey, server_name)
+        server = await check_server_ownership(db, server_id, hotkey)
         status_info = await get_server_attestation_status(db, server.server_id, hotkey)
-        status_info["vm_name"] = server.vm_name
+        status_info["name"] = server.name
         return status_info
 
     except ServerNotFoundError as e:

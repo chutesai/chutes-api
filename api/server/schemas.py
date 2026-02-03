@@ -84,7 +84,8 @@ class ServerArgs(BaseModel):
     """Request model for server registration."""
 
     host: str = Field(..., description="Public IP address or DNS Name of the server")
-    name: str = Field(..., description="VM name (stable identity for LUKS linkage)")
+    id: str = Field(..., description="Server ID (e.g. k8s node uid)")
+    name: str = Field(..., description="Server name ")
     gpus: list[NodeArgs] = Field(..., description="GPU info for this server")
 
 
@@ -113,7 +114,7 @@ class Server(Base):
 
     __tablename__ = "servers"
 
-    server_id = Column(String, primary_key=True, default=generate_uuid)
+    server_id = Column(String, primary_key=True)  # Provided by client (e.g. k8s node uid)
     ip = Column(String, nullable=False)  # Links to boot attestations
     miner_hotkey = Column(String, nullable=False)
     name = Column(String, nullable=False)  # Stable identity for LUKS linkage (unique with miner_hotkey)

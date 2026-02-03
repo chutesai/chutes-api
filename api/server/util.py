@@ -466,14 +466,19 @@ async def delete_luks_passphrases_for_server(
 
 async def _track_server(
     db: AsyncSession,
+    server_id: str,
     name: str,
     host: str,
     miner_hotkey: str,
     is_tee: bool = False,
 ):
-    # Add server and nodes to DB
+    # Add server and nodes to DB (server_id provided by client)
     server = Server(
-        name=name, ip=host, miner_hotkey=miner_hotkey, is_tee=is_tee
+        server_id=server_id,
+        name=name,
+        ip=host,
+        miner_hotkey=miner_hotkey,
+        is_tee=is_tee,
     )
 
     db.add(server)

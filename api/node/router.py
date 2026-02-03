@@ -209,6 +209,7 @@ async def create_nodes(
     try:
         await _track_server(
             db,
+            args.server_id,
             args.server_name,
             args.nodes[0].verification_host,
             hotkey,

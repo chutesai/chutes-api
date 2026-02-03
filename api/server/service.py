@@ -10,7 +10,7 @@ import tempfile
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
-from sqlalchemy import select, func
+from sqlalchemy import or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -358,7 +358,7 @@ async def process_boot_attestation(
 
 async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
     try:
-        server = await _track_server(db, args.name, args.host, miner_hotkey, is_tee=True)
+        server = await _track_server(db, args.id, args.name, args.host, miner_hotkey, is_tee=True)
 
         # Set the attributes we can't get from pynvml
         for gpu in args.gpus:
@@ -551,6 +551,37 @@ async def get_server_by_name(
     server = result.scalar_one_or_none()
     if not server:
         raise ServerNotFoundError(f"{server_name}")
+    return server
+
+
+async def get_server_by_name_or_id(
+    db: AsyncSession, miner_hotkey: str, server_name_or_id: str
+) -> Server:
+    """
+    Get a server by miner hotkey and either VM name or server id.
+
+    Args:
+        db: Database session
+        miner_hotkey: Miner hotkey (must match authenticated user)
+        server_name_or_id: VM name or server_id
+
+    Returns:
+        Server object
+
+    Raises:
+        ServerNotFoundError: If server not found
+    """
+    query = select(Server).where(
+        Server.miner_hotkey == miner_hotkey,
+        or_(
+            Server.name == server_name_or_id,
+            Server.server_id == server_name_or_id,
+        ),
+    )
+    result = await db.execute(query)
+    server = result.scalar_one_or_none()
+    if not server:
+        raise ServerNotFoundError(server_name_or_id)
     return server
 
 
