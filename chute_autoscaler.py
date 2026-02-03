@@ -827,7 +827,8 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
 
         # Identify instances in thrash penalty period (single query for efficiency)
         thrash_penalty_result = await session.execute(
-            text("""
+            text(
+                """
                 SELECT i.instance_id
                 FROM instances i
                 WHERE i.chute_id = ANY(:chute_ids)
@@ -845,8 +846,10 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
                         AND ia.deleted_at > i.created_at - INTERVAL ':window_hours hours'
                         AND ia.deleted_at <= i.created_at
                   )
-            """.replace(":penalty_hours", str(THRASH_PENALTY_HOURS))
-               .replace(":window_hours", str(THRASH_WINDOW_HOURS))),
+            """.replace(":penalty_hours", str(THRASH_PENALTY_HOURS)).replace(
+                    ":window_hours", str(THRASH_WINDOW_HOURS)
+                )
+            ),
             {"chute_ids": list(chutes.keys())},
         )
         thrash_penalty_instances = {row.instance_id for row in thrash_penalty_result}
@@ -919,7 +922,8 @@ async def _log_thrashing_instances():
 
         # Find all instances in thrash penalty period with details about the prior deletion
         result = await session.execute(
-            text("""
+            text(
+                """
                 SELECT
                     i.instance_id,
                     i.chute_id,
@@ -956,8 +960,10 @@ async def _log_thrashing_instances():
                   AND i.activated_at IS NOT NULL
                   AND i.activated_at + INTERVAL ':penalty_hours hours' > NOW()
                 ORDER BY penalty_minutes_remaining ASC
-            """.replace(":penalty_hours", str(THRASH_PENALTY_HOURS))
-               .replace(":window_hours", str(THRASH_WINDOW_HOURS)))
+            """.replace(":penalty_hours", str(THRASH_PENALTY_HOURS)).replace(
+                    ":window_hours", str(THRASH_WINDOW_HOURS)
+                )
+            )
         )
         rows = result.fetchall()
 
@@ -1391,7 +1397,12 @@ async def perform_autoscale(
     try:
         async with autoscaler_lock(soft_mode=soft_mode, skip_lock=dry_run):
             await _perform_autoscale_impl(
-                dry_run, soft_mode, dry_run_csv, refresh_multipliers, simulate_scores, show_thrashing
+                dry_run,
+                soft_mode,
+                dry_run_csv,
+                refresh_multipliers,
+                simulate_scores,
+                show_thrashing,
             )
     except LockNotAcquired:
         # Soft mode couldn't acquire lock, exit quietly

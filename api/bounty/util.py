@@ -113,9 +113,7 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
         )
         if result:
             # Set cooldown to prevent rapid bounty recreation
-            await settings.lite_redis_client.set(
-                cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS
-            )
+            await settings.lite_redis_client.set(cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS)
         return bool(result)
     except Exception as exc:
         logger.warning(f"Failed to create bounty: {exc}")
@@ -141,9 +139,7 @@ async def claim_bounty(chute_id: str) -> Optional[dict]:
         # where a new bounty gets created while instances are still spinning up
         cooldown_key = f"bounty_cooldown:{chute_id}"
         try:
-            await settings.lite_redis_client.set(
-                cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS
-            )
+            await settings.lite_redis_client.set(cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS)
             # Extra delete in case there was a brief race condition
             await settings.lite_redis_client.delete(key)
         except Exception as exc:

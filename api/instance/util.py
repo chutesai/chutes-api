@@ -21,6 +21,8 @@ from api.constants import (
     CASCADE_FAILURE_THRESHOLD,
     CASCADE_DETECTION_DELAY,
     CASCADE_PENDING_TTL,
+    THRASH_WINDOW_HOURS,
+    THRASH_PENALTY_HOURS,
 )
 from api.exceptions import InfraOverload
 from api.chute.schemas import Chute
@@ -862,9 +864,6 @@ async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
 
     logger.success(f"Finished cleanup_expired_connections() loop, total_removed={total_removed}")
     return total_removed
-
-
-from api.constants import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
 
 
 async def is_thrashing_miner(
