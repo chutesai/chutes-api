@@ -2,6 +2,7 @@
 Routes for chutes.
 """
 
+import asyncio
 import re
 import random
 import string
@@ -71,6 +72,7 @@ from api.constants import (
 from api.util import (
     semcomp,
     limit_deployments,
+    extract_hf_model_name,
     get_current_hf_commit,
     is_registered_to_subnet,
     notify_deleted,
@@ -78,6 +80,7 @@ from api.util import (
 )
 from api.affine import check_affine_code
 from api.guesser import guesser
+from aiocache import cached, Cache
 
 router = APIRouter()
 
@@ -672,6 +675,43 @@ async def get_chute_code(
             detail="Chute not found, or does not belong to you",
         )
     return Response(content=chute.code, media_type="text/plain")
+
+
+HF_INFO_CACHE_TTL = 300  # 5 minutes
+
+
+@cached(ttl=HF_INFO_CACHE_TTL, cache=Cache.MEMORY, skip_cache_func=lambda r: r is None)
+async def _get_chute_hf_info(chute_id: str):
+    """
+    Load repo_id and revision for a chute. Returns None if chute not found or has no HF model.
+    Cached by chute_id via aiocache.
+    """
+    chute = await get_one(chute_id)
+    if not chute:
+        return None
+    repo_id = extract_hf_model_name(chute.chute_id, chute.code)
+    if not repo_id:
+        return None
+    revision = await asyncio.to_thread(get_current_hf_commit, repo_id)
+    return {"repo_id": repo_id, "revision": revision}
+
+
+@router.get("/{chute_id}/hf_info")
+async def get_chute_hf_info(
+    chute_id: str,
+    _: User = Depends(get_current_user(purpose="cache", registered_to=settings.netuid)),
+):
+    """
+    Return Hugging Face repo_id and revision for a chute so miners can predownload the model.
+    Miner-only; responses are cached by chute_id via aiocache.
+    """
+    result = await _get_chute_hf_info(chute_id)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Chute not found or does not use a Hugging Face model",
+        )
+    return result
 
 
 @router.get("/warmup/{chute_id_or_name:path}")
