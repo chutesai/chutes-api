@@ -100,7 +100,7 @@ class BootAttestation(Base):
     verification_error = Column(String, nullable=True)
     measurement_version = Column(
         String, nullable=True
-    )  # Matched TEE measurement config version (audit trail)
+    )  # Matched TEE measurement config version (audit trail); NULL if verification failed
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -155,7 +155,7 @@ class ServerAttestation(Base):
     verification_error = Column(String, nullable=True)
     measurement_version = Column(
         String, nullable=True
-    )  # Matched TEE measurement config version (audit trail)
+    )  # Matched TEE measurement config version (audit trail); NULL if verification failed
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
