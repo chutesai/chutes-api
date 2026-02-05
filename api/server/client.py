@@ -108,7 +108,7 @@ class TeeServerClient:
             GetEvidenceError: If evidence retrieval fails
         """
         try:
-            url = urljoin(self._url, f"service/chute-service-{deployment_id}/_tee_evidence")
+            url = urljoin(self._url, f"service/chute-service-{deployment_id}/verify")
             # Sign the request with purpose="attest" to match the proxy's authorize dependency
             headers, _ = self._sign_request(purpose="attest")
             async with self._attestation_session() as session:
