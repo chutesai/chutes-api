@@ -17,9 +17,21 @@ from sqlalchemy import (
     ForeignKeyConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from typing import Dict, Any, List, Optional, List, Optional
+from typing import Dict, Any, List, Optional
 from api.database import Base, generate_uuid
 from api.node.schemas import NodeArgs
+
+
+class TeeInstanceEvidence(BaseModel):
+    """TEE evidence for a single instance: TDX quote, GPU evidence (per-GPU dicts), and server certificate."""
+
+    quote: str = Field(..., description="Base64-encoded TDX quote")
+    gpu_evidence: List[Dict[str, Any]] = Field(
+        ...,
+        description="Per-GPU evidence: list of dicts (each GPU's evidence/certificate already structured; evidence fields are base64 where applicable)",
+    )
+    instance_id: Optional[str] = Field(None, description="Instance ID (present when part of a chute's evidence list)")
+    certificate: str = Field(..., description="Base64-encoded DER format TLS certificate from the server")
 
 
 class NonceResponse(BaseModel):
@@ -89,18 +101,10 @@ class ServerArgs(BaseModel):
     gpus: list[NodeArgs] = Field(..., description="GPU info for this server")
 
 
-class TdxQuoteResponse(BaseModel):
-    """Response model for TDX quote retrieval."""
+class TeeChuteEvidence(BaseModel):
+    """TEE evidence for a chute: list of evidence per instance (from instance evidence endpoints)."""
 
-    quote: str = Field(..., description="Base64-encoded TDX quote")
-    instance_id: Optional[str] = Field(None, description="Instance ID (for bulk responses)")
-    certificate: str = Field(..., description="Base64-encoded DER format TLS certificate from the server")
-
-
-class TdxQuotesResponse(BaseModel):
-    """Response model for bulk TDX quote retrieval."""
-
-    quotes: List[TdxQuoteResponse] = Field(..., description="Array of quotes")
+    evidence: List[TeeInstanceEvidence] = Field(..., description="TEE evidence for each instance of the chute")
 
 
 class BootAttestation(Base):

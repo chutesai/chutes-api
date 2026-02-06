@@ -51,11 +51,8 @@ from api.chute.util import (
     invalidate_chute_cache,
     update_usage_data,
 )
-from api.server.service import get_chute_instance_quotes
-from api.server.schemas import TdxQuotesResponse
-from api.server.exceptions import ChuteNotTeeError, GetEvidenceError
-from api.server.service import get_chute_instance_quotes
-from api.server.schemas import TdxQuotesResponse
+from api.server.service import get_chute_instances_evidence
+from api.server.schemas import TeeChuteEvidence
 from api.server.exceptions import ChuteNotTeeError, GetEvidenceError
 from api.bounty.util import (
     get_bounty_info,
@@ -838,22 +835,22 @@ async def get_chute_utilization(request: Request):
         return utilization_data
 
 
-@router.get("/{chute_id_or_name:path}/quotes", response_model=TdxQuotesResponse)
-async def get_chute_quotes(
+@router.get("/{chute_id_or_name:path}/evidence", response_model=TeeChuteEvidence)
+async def get_tee_chute_evidence(
     chute_id_or_name: str,
     nonce: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="chutes", raise_not_found=False)),
 ):
     """
-    Get TDX quotes for all instances of a chute.
+    Get TEE evidence for all instances of a chute (TDX quote, GPU evidence, certificate per instance).
 
     Args:
         chute_id_or_name: Chute ID or name
         nonce: User-provided nonce (64 hex characters, 32 bytes)
 
     Returns:
-        TdxQuotesResponse with array of quotes
+        TeeChuteEvidence with array of TEE instance evidence per instance
 
     Raises:
         404: Chute not found
@@ -886,15 +883,15 @@ async def get_chute_quotes(
         )
 
     try:
-        quotes = await get_chute_instance_quotes(db, chute.chute_id, nonce)
-        return TdxQuotesResponse(quotes=quotes)
+        evidence_list = await get_chute_instances_evidence(db, chute.chute_id, nonce)
+        return TeeChuteEvidence(evidence=evidence_list)
     except ChuteNotTeeError as e:
         raise e
     except GetEvidenceError as e:
-        logger.error(f"Failed to get quotes for chute {chute.chute_id}: {str(e)}")
+        logger.error(f"Failed to get evidence for chute {chute.chute_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve quotes from servers",
+            detail="Failed to retrieve TEE evidence from servers",
         )
 
 

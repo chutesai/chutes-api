@@ -69,9 +69,9 @@ from api.instance.util import (
 from api.server.service import (
     validate_request_nonce,
     create_nonce,
-    get_instance_quote,
+    get_instance_evidence,
 )
-from api.server.schemas import TdxQuoteResponse
+from api.server.schemas import TeeInstanceEvidence
 from api.server.exceptions import (
     InstanceNotFoundError,
     ChuteNotTeeError,
@@ -1967,22 +1967,22 @@ async def get_token(salt: str = None, request: Request = None):
     return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
 
 
-@router.get("/{instance_id}/quote", response_model=TdxQuoteResponse)
-async def get_instance_quote(
+@router.get("/{instance_id}/evidence", response_model=TeeInstanceEvidence)
+async def get_tee_instance_evidence(
     instance_id: str,
     nonce: str,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
-    Get TDX quote for a specific instance.
+    Get TEE evidence for a specific instance (TDX quote, GPU evidence, certificate).
 
     Args:
         instance_id: Instance ID
         nonce: User-provided nonce (64 hex characters, 32 bytes)
 
     Returns:
-        TdxQuoteResponse with quote and certificate
+        TeeInstanceEvidence with quote, gpu_evidence, and certificate
 
     Raises:
         404: Instance not found
@@ -2019,19 +2019,15 @@ async def get_instance_quote(
             )
 
     try:
-        quote_base64, cert_base64 = await get_instance_quote(db, instance_id, nonce)
-        return TdxQuoteResponse(
-            quote=quote_base64,
-            instance_id=None,  # Not needed for single instance response
-            certificate=cert_base64,
-        )
+        evidence = await get_instance_evidence(db, instance_id, nonce)
+        return evidence
     except (InstanceNotFoundError, ChuteNotTeeError, NonceError) as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail)
     except GetEvidenceError as e:
-        logger.error(f"Failed to get quote for instance {instance_id}: {str(e)}")
+        logger.error(f"Failed to get evidence for instance {instance_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve quote from server",
+            detail="Failed to retrieve TEE evidence from server",
         )
 
 

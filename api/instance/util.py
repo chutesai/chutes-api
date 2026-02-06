@@ -42,6 +42,7 @@ from api.server.client import TeeServerClient
 from api.server.schemas import Server
 from api.server.exceptions import GetEvidenceError
 from api.server.service import verify_quote, verify_gpu_evidence
+from api.server.util import get_public_key_hash
 
 # Define an alias for the Instance model to use in a subquery
 InstanceAlias = aliased(Instance)
@@ -907,8 +908,9 @@ async def verify_tee_chute(
         # Use the TeeServerClient to get evidence from the chute proxy
         client = TeeServerClient(server)
 
-        # Get quote, GPU evidence, and cert hash from the chute proxy
-        quote, gpu_evidence, expected_cert_hash = await client.get_chute_evidence(deployment_id)
+        # Get quote, GPU evidence, cert from chute verify endpoint (no nonce; chute uses stored nonce)
+        quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id)
+        expected_cert_hash = get_public_key_hash(cert)
 
         # Verify the quote against the expected nonce and cert hash
         await verify_quote(quote, expected_nonce, expected_cert_hash)

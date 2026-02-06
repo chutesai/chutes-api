@@ -62,7 +62,7 @@ from api.chute.schemas import Chute
 from api.node.schemas import Node
 from sqlalchemy.orm import joinedload
 from typing import List, Tuple
-from api.server.schemas import TdxQuoteResponse
+from api.server.schemas import TeeInstanceEvidence
 from api.node.schemas import NodeArgs
 from api.util import extract_ip
 
@@ -433,7 +433,7 @@ async def verify_server(
         logger.info(
             f"Verifying server server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} with nonce {nonce}"
         )
-        quote, gpu_evidence, cert = await client.get_evidence(nonce)
+        quote, gpu_evidence, cert = await client.get_verification_evidence(nonce)
         expected_cert_hash = get_public_key_hash(cert)
 
         # Verify quote measurements (matches by full MRTD + RTMRs; multiple configs may share RTMR0)
@@ -923,82 +923,43 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> Server:
     return server
 
 
-async def _get_quote_from_server(server: Server, nonce: str) -> Tuple[str, str]:
+async def _get_instance_evidence(
+    server: Server, instance_id: str, nonce: str
+) -> TeeInstanceEvidence:
     """
-    Get TDX quote from a server.
-
-    Args:
-        server: Server object
-        nonce: User-provided nonce (64 hex characters)
-
-    Returns:
-        Tuple of (base64_encoded_quote, base64_der_certificate)
-
-    Raises:
-        GetEvidenceError: If quote retrieval fails
+    Get TEE instance evidence via the chute's evidence endpoint (third-party flow).
+    Caller supplies nonce; we call chute-service-{instance_id}/evidence?nonce=...
+    Verification flow (no caller nonce) uses get_chute_evidence(deployment_id) → verify endpoint.
     """
-    # Get quote from server
     client = TeeServerClient(server)
-    quote, gpu_evidence, cert = await client.get_evidence(nonce)
+    quote, gpu_evidence, cert = await client.get_chute_evidence(instance_id, nonce=nonce)
 
-    # Convert quote and cert to base64 strings
     quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
     cert_base64 = cert_to_base64_der(cert)
 
-    return quote_base64, cert_base64
+    return TeeInstanceEvidence(quote=quote_base64, gpu_evidence=gpu_evidence, certificate=cert_base64)
 
 
-async def get_instance_quote(
+async def get_instance_evidence(
     db: AsyncSession, instance_id: str, nonce: str
-) -> Tuple[str, str]:
+) -> TeeInstanceEvidence:
     """
-    Get TDX quote for a specific instance.
-
-    Args:
-        db: Database session
-        instance_id: Instance ID
-        nonce: User-provided nonce (64 hex characters)
-
-    Returns:
-        Tuple of (base64_encoded_quote, base64_der_certificate)
-
-    Raises:
-        InstanceNotFoundError: If instance not found
-        ChuteNotTeeError: If the instance's chute is not TEE-enabled
-        GetEvidenceError: If quote retrieval fails
+    Get TEE evidence for a specific instance (instance evidence endpoint flow).
     """
-    # Validate nonce
     validate_user_nonce(nonce)
-
-    # Get server
     server = await get_instance_server(db, instance_id)
-
-    # Get quote from server
-    return await _get_quote_from_server(server, nonce)
+    return await _get_instance_evidence(server, instance_id, nonce)  # instance_id used as chute-service id
 
 
-async def get_chute_instance_quotes(
+async def get_chute_instances_evidence(
     db: AsyncSession, chute_id: str, nonce: str
-) -> List[TdxQuoteResponse]:
+) -> List[TeeInstanceEvidence]:
     """
-    Get TDX quotes for all instances of a chute.
-
-    Args:
-        db: Database session
-        chute_id: Chute ID
-        nonce: User-provided nonce (64 hex characters)
-
-    Returns:
-        List of TdxQuoteResponse objects
-
-    Raises:
-        ChuteNotTeeError: If chute is not TEE-enabled
-        GetEvidenceError: If quote retrieval fails for any instance
+    Get TEE evidence for all instances of a chute (chute evidence endpoint flow).
+    Returns a list of TeeInstanceEvidence, one per instance.
     """
-    # Validate nonce
     validate_user_nonce(nonce)
 
-    # Check if chute is TEE-enabled
     query = select(Chute).where(Chute.chute_id == chute_id)
     result = await db.execute(query)
     chute = result.scalar_one_or_none()
@@ -1011,7 +972,6 @@ async def get_chute_instance_quotes(
     if not chute.tee:
         raise ChuteNotTeeError(chute_id)
 
-    # Load all active/verified instances for chute
     instances_query = (
         select(Instance)
         .where(
@@ -1024,26 +984,22 @@ async def get_chute_instance_quotes(
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
-    quotes = []
+    evidence_list = []
     for instance in instances:
         try:
-            # Instance always has nodes, get server from first node
-            # Since chute is TEE-enabled, all instances have TEE servers
             node = instance.nodes[0]
             server = node.server
-
-            # Get quote from server (already loaded, no extra query needed)
-            quote_base64, cert_base64 = await _get_quote_from_server(server, nonce)
-            quotes.append(
-                TdxQuoteResponse(
-                    quote=quote_base64,
+            evidence = await _get_instance_evidence(server, instance.instance_id, nonce)
+            evidence_list.append(
+                TeeInstanceEvidence(
+                    quote=evidence.quote,
+                    gpu_evidence=evidence.gpu_evidence,
                     instance_id=instance.instance_id,
-                    certificate=cert_base64,
+                    certificate=evidence.certificate,
                 )
             )
         except GetEvidenceError as e:
-            # Log but continue with other instances
-            logger.error(f"Failed to get quote for instance {instance.instance_id}: {str(e)}")
+            logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
             continue
 
-    return quotes
+    return evidence_list
