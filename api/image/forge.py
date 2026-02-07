@@ -244,7 +244,7 @@ ARG PS_OP
 ENV LD_PRELOAD=""
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN rm -rf does_not_exist.py does_not_exist
-RUN PS_OP="${PS_OP}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
+RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
 USER root
@@ -998,7 +998,7 @@ ARG PS_OP
 ENV LD_PRELOAD=""
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN rm -rf does_not_exist.py does_not_exist
-RUN PS_OP="${PS_OP}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
+RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 COPY cfsv /cfsv
 RUN CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
 USER root
