@@ -49,6 +49,7 @@ from api.secret.schemas import Secret
 from api.image.schemas import Image  # noqa
 from api.instance.schemas import (
     LaunchConfigArgs,
+    LegacyTeeLaunchConfigArgs,
     TeeLaunchConfigArgs,
     Instance,
     instance_nodes,
@@ -70,6 +71,7 @@ from api.server.service import (
     validate_request_nonce,
     create_nonce,
     get_instance_evidence,
+    verify_gpu_evidence,
 )
 from api.server.schemas import TeeInstanceEvidence
 from api.server.exceptions import (
@@ -1306,6 +1308,101 @@ async def claim_tee_launch_config(
         response["validator_pubkey"] = validator_pubkey
 
     return response
+
+
+@router.post("/launch_config/{config_id}/attest")
+async def validate_tee_launch_config_instance(
+    config_id: str,
+    args: LegacyTeeLaunchConfigArgs,
+    request: Request,
+    db: AsyncSession = Depends(get_db_session),
+    authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
+    expected_nonce: str = Depends(validate_request_nonce(NoncePurpose.BOOT)),
+):
+    # TODO: Remove endpoint once all TEE VMs are upgraded to 0.2.0
+    # and once all TEE chutes are upgraded to 0.6.0
+    launch_config, nodes, instance, _ = await _validate_tee_launch_config_instance(
+        config_id, args, request, db, authorization
+    )
+
+    _validate_launch_config_not_expired(launch_config)
+
+    # Enforce rint_pubkey for chutes >= 0.5.1
+    if semcomp(instance.chutes_version or "0.0.0", "0.5.1") >= 0:
+        if not instance.rint_pubkey or not instance.rint_nonce:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="rint_pubkey and rint_nonce required for chutes >= 0.5.1",
+            )
+
+    # Generate ECDH session key if miner provided rint_pubkey
+    validator_pubkey = None
+    if instance.rint_pubkey and instance.rint_nonce:
+        try:
+            validator_pubkey, session_key = derive_ecdh_session_key(
+                instance.rint_pubkey, instance.rint_nonce
+            )
+            instance.rint_session_key = session_key
+            logger.info(
+                f"Derived ECDH session key for TEE instance {instance.instance_id} "
+                f"validator_pubkey={validator_pubkey[:16]}..."
+            )
+        except Exception as exc:
+            logger.error(f"ECDH session key derivation failed for TEE: {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"ECDH session key derivation failed: {exc}",
+            )
+
+    # Store the launch config
+    await db.commit()
+    await db.refresh(launch_config)
+
+    async with get_session() as session:
+        await session.execute(
+            text("UPDATE launch_configs SET retrieved_at = NOW() WHERE config_id = :config_id"),
+            {"config_id": config_id},
+        )
+
+    # Send event.
+    await db.refresh(instance)
+    gpu_count = len(nodes)
+    gpu_type = nodes[0].gpu_identifier
+    asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
+
+    await verify_gpu_evidence(args.gpu_evidence, expected_nonce)
+
+    request_body = await request.json()
+
+    # Reload instance with chute relationship for filesystem validation
+    # Lazy load fails
+    stmt = (
+        select(Instance)
+        .where(Instance.instance_id == instance.instance_id)
+        .options(
+            joinedload(Instance.chute).joinedload(Chute.image),
+            joinedload(Instance.job),
+        )
+    )
+    instance = (await db.execute(stmt)).scalar_one()
+
+    # Filesystem integrity checks for < 0.3.1
+    await _validate_legacy_filesystem(db, instance, launch_config, request_body)
+
+    # Everything checks out.
+    launch_config.verified_at = func.now()
+    await _verify_job_ports(db, instance)
+    await _mark_instance_verified(db, instance, launch_config)
+    return_value = await _build_launch_config_verified_response(db, instance, launch_config)
+    return_value["symmetric_key"] = instance.symmetric_key
+
+    # Include validator pubkey if ECDH was used (for miner to derive session key)
+    if validator_pubkey:
+        return_value["validator_pubkey"] = validator_pubkey
+
+    await db.refresh(instance)
+    asyncio.create_task(notify_verified(instance))
+    return return_value
 
 
 @router.post("/launch_config/{config_id}/graval")

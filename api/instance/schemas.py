@@ -72,6 +72,8 @@ class LaunchConfigArgs(BaseModel):
 class TeeLaunchConfigArgs(LaunchConfigArgs):
     deployment_id: str
 
+class LegacyTeeLaunchConfigArgs(LaunchConfigArgs):
+    gpu_evidence: list[dict]
 
 class Instance(Base):
     __tablename__ = "instances"
