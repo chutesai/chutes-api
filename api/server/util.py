@@ -130,16 +130,16 @@ def validate_user_nonce(nonce: str) -> str:
     """
     if not nonce:
         raise NonceError("Nonce is required")
-    
+
     if len(nonce) != 64:
         raise NonceError(f"Nonce must be exactly 64 hex characters (32 bytes), got {len(nonce)}")
-    
+
     try:
         # Validate it's valid hex
         int(nonce, 16)
     except ValueError:
         raise NonceError("Nonce must be a valid hexadecimal string")
-    
+
     return nonce
 
 

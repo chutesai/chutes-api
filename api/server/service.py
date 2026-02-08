@@ -61,7 +61,6 @@ from api.instance.schemas import Instance
 from api.chute.schemas import Chute
 from api.node.schemas import Node
 from sqlalchemy.orm import joinedload
-from typing import List, Tuple
 from api.server.schemas import TeeInstanceEvidence
 from api.node.schemas import NodeArgs
 from api.util import extract_ip, semcomp
@@ -901,10 +900,7 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     query = (
         select(Instance)
         .where(Instance.instance_id == instance_id)
-        .options(
-            joinedload(Instance.chute),
-            joinedload(Instance.nodes).joinedload(Node.server)
-        )
+        .options(joinedload(Instance.chute), joinedload(Instance.nodes).joinedload(Node.server))
     )
     result = await db.execute(query)
     instance = result.unique().scalar_one_or_none()
@@ -937,7 +933,9 @@ async def _get_instance_evidence(
     quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
     cert_base64 = cert_to_base64_der(cert)
 
-    return TeeInstanceEvidence(quote=quote_base64, gpu_evidence=gpu_evidence, certificate=cert_base64)
+    return TeeInstanceEvidence(
+        quote=quote_base64, gpu_evidence=gpu_evidence, certificate=cert_base64
+    )
 
 
 async def get_instance_evidence(
@@ -996,8 +994,8 @@ async def get_chute_instances_evidence(
         select(Instance)
         .where(
             Instance.chute_id == chute_id,
-            Instance.active == True,
-            Instance.verified == True,
+            Instance.active.is_(True),
+            Instance.verified.is_(True),
         )
         .options(joinedload(Instance.nodes).joinedload(Node.server))
     )

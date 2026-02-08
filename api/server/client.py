@@ -78,7 +78,7 @@ class TeeServerClient:
         try:
             url = urljoin(self._url, "server/attest")
             headers, _ = self._sign_request(purpose="attest")
-            async with self._attestation_session() as session:  
+            async with self._attestation_session() as session:
                 async with session.get(
                     url,
                     headers=headers,

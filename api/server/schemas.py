@@ -30,8 +30,12 @@ class TeeInstanceEvidence(BaseModel):
         ...,
         description="Per-GPU evidence: list of dicts (each GPU's evidence/certificate already structured; evidence fields are base64 where applicable)",
     )
-    instance_id: Optional[str] = Field(None, description="Instance ID (present when part of a chute's evidence list)")
-    certificate: str = Field(..., description="Base64-encoded DER format TLS certificate from the server")
+    instance_id: Optional[str] = Field(
+        None, description="Instance ID (present when part of a chute's evidence list)"
+    )
+    certificate: str = Field(
+        ..., description="Base64-encoded DER format TLS certificate from the server"
+    )
 
 
 class NonceResponse(BaseModel):
@@ -104,7 +108,9 @@ class ServerArgs(BaseModel):
 class TeeChuteEvidence(BaseModel):
     """TEE evidence for a chute: list of evidence per instance (from instance evidence endpoints)."""
 
-    evidence: List[TeeInstanceEvidence] = Field(..., description="TEE evidence for each instance of the chute")
+    evidence: List[TeeInstanceEvidence] = Field(
+        ..., description="TEE evidence for each instance of the chute"
+    )
     failed_instance_ids: List[str] = Field(
         default_factory=list,
         description="Instance IDs for which evidence could not be retrieved (instances still exist but evidence fetch failed)",

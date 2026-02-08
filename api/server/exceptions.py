@@ -129,6 +129,7 @@ class ChuteNotTeeError(HTTPException):
             detail=f"Chute {chute_id} is not TEE-enabled",
         )
 
+
 class InstanceNotFoundError(HTTPException):
     """Raised when an instance is not found."""
 
