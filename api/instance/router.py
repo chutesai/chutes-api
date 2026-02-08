@@ -1302,6 +1302,10 @@ async def claim_tee_launch_config(
     # Verify TEE attestation evidence
     await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
 
+    instance.deployment_id = args.deployment_id
+    await db.commit()
+    await db.refresh(instance)
+
     response = {"symmetric_key": instance.symmetric_key}
 
     if validator_pubkey:

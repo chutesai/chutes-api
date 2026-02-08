@@ -105,6 +105,11 @@ class Instance(Base):
         nullable=True,
         unique=True,
     )
+    # Chute deployment ID; set when instance claims TEE launch config and is verified.
+    deployment_id = Column(
+        String,
+        nullable=True,
+    )
     cacert = Column(String, nullable=True)
     port_mappings = Column(JSONB, nullable=True)
     inspecto = Column(String, nullable=True)

@@ -882,16 +882,16 @@ async def process_luks_passphrase_request(
     return result
 
 
-async def get_instance_server(db: AsyncSession, instance_id: str) -> Server:
+async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Server, Instance]:
     """
-    Get the TEE server associated with an instance via its nodes.
+    Get the TEE server and instance for evidence/attestation (instance has chute, nodes, server loaded).
 
     Args:
         db: Database session
         instance_id: Instance ID
 
     Returns:
-        Server object
+        (Server, Instance). Use instance.deployment_id or instance.instance_id for proxy routing.
 
     Raises:
         InstanceNotFoundError: If instance not found
@@ -920,19 +920,19 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> Server:
     node = instance.nodes[0]
     server = node.server
 
-    return server
+    return (server, instance)
 
 
 async def _get_instance_evidence(
-    server: Server, instance_id: str, nonce: str
+    server: Server, deployment_id: str, nonce: str
 ) -> TeeInstanceEvidence:
     """
     Get TEE instance evidence via the chute's evidence endpoint (third-party flow).
-    Caller supplies nonce; we call chute-service-{instance_id}/evidence?nonce=...
+    Caller supplies nonce; we call chute-service-{deployment_id}/evidence?nonce=...
     Verification flow (no caller nonce) uses get_chute_evidence(deployment_id) → verify endpoint.
     """
     client = TeeServerClient(server)
-    quote, gpu_evidence, cert = await client.get_chute_evidence(instance_id, nonce=nonce)
+    quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id, nonce=nonce)
 
     quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
     cert_base64 = cert_to_base64_der(cert)
@@ -945,10 +945,16 @@ async def get_instance_evidence(
 ) -> TeeInstanceEvidence:
     """
     Get TEE evidence for a specific instance (instance evidence endpoint flow).
+    Requires instance.deployment_id (set when TEE launch config is claimed and verified).
     """
     validate_user_nonce(nonce)
-    server = await get_instance_server(db, instance_id)
-    return await _get_instance_evidence(server, instance_id, nonce)  # instance_id used as chute-service id
+    server, instance = await get_instance_server(db, instance_id)
+    if not instance.deployment_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Instance has no deployment_id; evidence is only available after TEE verification",
+        )
+    return await _get_instance_evidence(server, instance.deployment_id, nonce)
 
 
 async def get_chute_instances_evidence(
@@ -988,10 +994,13 @@ async def get_chute_instances_evidence(
     evidence_list: list[TeeInstanceEvidence] = []
     failed_instance_ids: list[str] = []
     for instance in instances:
+        if not instance.deployment_id:
+            failed_instance_ids.append(instance.instance_id)
+            continue
         try:
             node = instance.nodes[0]
             server = node.server
-            evidence = await _get_instance_evidence(server, instance.instance_id, nonce)
+            evidence = await _get_instance_evidence(server, instance.deployment_id, nonce)
             evidence_list.append(
                 TeeInstanceEvidence(
                     quote=evidence.quote,
