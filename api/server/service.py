@@ -953,10 +953,11 @@ async def get_instance_evidence(
 
 async def get_chute_instances_evidence(
     db: AsyncSession, chute_id: str, nonce: str
-) -> List[TeeInstanceEvidence]:
+) -> tuple[list[TeeInstanceEvidence], list[str]]:
     """
     Get TEE evidence for all instances of a chute (chute evidence endpoint flow).
-    Returns a list of TeeInstanceEvidence, one per instance.
+    Returns (evidence_list, failed_instance_ids). Failed instance IDs are included
+    so the user knows those instances still exist; access is already enforced at this point.
     """
     validate_user_nonce(nonce)
 
@@ -984,7 +985,8 @@ async def get_chute_instances_evidence(
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
-    evidence_list = []
+    evidence_list: list[TeeInstanceEvidence] = []
+    failed_instance_ids: list[str] = []
     for instance in instances:
         try:
             node = instance.nodes[0]
@@ -1000,6 +1002,6 @@ async def get_chute_instances_evidence(
             )
         except GetEvidenceError as e:
             logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
-            continue
+            failed_instance_ids.append(instance.instance_id)
 
-    return evidence_list
+    return (evidence_list, failed_instance_ids)

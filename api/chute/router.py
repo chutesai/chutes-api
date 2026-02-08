@@ -883,8 +883,8 @@ async def get_tee_chute_evidence(
         )
 
     try:
-        evidence_list = await get_chute_instances_evidence(db, chute.chute_id, nonce)
-        return TeeChuteEvidence(evidence=evidence_list)
+        evidence_list, failed_instance_ids = await get_chute_instances_evidence(db, chute.chute_id, nonce)
+        return TeeChuteEvidence(evidence=evidence_list, failed_instance_ids=failed_instance_ids)
     except ChuteNotTeeError as e:
         raise e
     except GetEvidenceError as e:

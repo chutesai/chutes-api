@@ -105,6 +105,10 @@ class TeeChuteEvidence(BaseModel):
     """TEE evidence for a chute: list of evidence per instance (from instance evidence endpoints)."""
 
     evidence: List[TeeInstanceEvidence] = Field(..., description="TEE evidence for each instance of the chute")
+    failed_instance_ids: List[str] = Field(
+        default_factory=list,
+        description="Instance IDs for which evidence could not be retrieved (instances still exist but evidence fetch failed)",
+    )
 
 
 class BootAttestation(Base):
