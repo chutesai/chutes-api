@@ -74,14 +74,17 @@ class TeeServerClient:
         async with aiohttp.ClientSession(connector=connector, raise_for_status=True) as session:
             yield session
 
-    async def get_verification_evidence(self) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
+    async def get_server_evidence(self, nonce: str) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
         try:
             url = urljoin(self._url, "server/attest")
             headers, _ = self._sign_request(purpose="attest")
-            async with self._attestation_session() as session:
+            async with self._attestation_session() as session:  
                 async with session.get(
                     url,
-                    headers=headers
+                    headers=headers,
+                    params={
+                        "nonce": nonce,
+                    },
                 ) as resp:
                     cert = _get_server_certificate(resp)
                     data = await resp.json()

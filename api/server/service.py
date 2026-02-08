@@ -433,7 +433,7 @@ async def verify_server(
         logger.info(
             f"Verifying server server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} with nonce {nonce}"
         )
-        quote, gpu_evidence, cert = await client.get_verification_evidence(nonce)
+        quote, gpu_evidence, cert = await client.get_server_evidence(nonce)
         expected_cert_hash = get_public_key_hash(cert)
 
         # Verify quote measurements (matches by full MRTD + RTMRs; multiple configs may share RTMR0)
