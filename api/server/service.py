@@ -64,7 +64,7 @@ from sqlalchemy.orm import joinedload
 from typing import List, Tuple
 from api.server.schemas import TeeInstanceEvidence
 from api.node.schemas import NodeArgs
-from api.util import extract_ip
+from api.util import extract_ip, semcomp
 
 
 async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
@@ -946,9 +946,15 @@ async def get_instance_evidence(
     """
     Get TEE evidence for a specific instance (instance evidence endpoint flow).
     Requires instance.deployment_id (set when TEE launch config is claimed and verified).
+    Runtime evidence is only supported for chutes_version >= 0.6.0.
     """
     validate_user_nonce(nonce)
     server, instance = await get_instance_server(db, instance_id)
+    if semcomp(instance.chutes_version or "0.0.0", "0.6.0") < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Instances requires chutes_version >= 0.6.0 to retrieve evidence.",
+        )
     if not instance.deployment_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -964,6 +970,7 @@ async def get_chute_instances_evidence(
     Get TEE evidence for all instances of a chute (chute evidence endpoint flow).
     Returns (evidence_list, failed_instance_ids). Failed instance IDs are included
     so the user knows those instances still exist; access is already enforced at this point.
+    Runtime evidence is only supported for chutes_version >= 0.6.0.
     """
     validate_user_nonce(nonce)
 
@@ -978,6 +985,12 @@ async def get_chute_instances_evidence(
 
     if not chute.tee:
         raise ChuteNotTeeError(chute_id)
+
+    if semcomp(chute.chutes_version or "0.0.0", "0.6.0") < 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Instances requires chutes_version >= 0.6.0 to retrieve evidence.",
+        )
 
     instances_query = (
         select(Instance)
