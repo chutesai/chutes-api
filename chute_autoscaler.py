@@ -1936,6 +1936,8 @@ async def _perform_autoscale_impl(
     for ctx in contexts.values():
         if ctx.chute_id in sponsored_chute_ids:
             ctx.boost = 1.0
+        elif not ctx.public and ctx.current_count >= ctx.max_instances:
+            ctx.boost = 1.0
         elif ctx.upscale_amount > 0:
             # Base boost from SMOOTHED individual urgency (stable across runs)
             normalized_urgency = min(ctx.smoothed_urgency / URGENCY_MAX_FOR_BOOST, 1.0)
