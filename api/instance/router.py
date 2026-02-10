@@ -288,8 +288,8 @@ async def _check_scalable_private(db, chute, miner):
           AND ia.activated_at <= NOW() - INTERVAL '7 days'
     """)
     public_result = (
-        await db.execute(public_history_query, {"hotkey": miner.hotkey})
-    ).mappings().first()
+        (await db.execute(public_history_query, {"hotkey": miner.hotkey})).mappings().first()
+    )
     if not public_result or public_result["public_count"] == 0:
         logger.warning(
             f"PRIVATE_GATE: miner {miner.hotkey} denied private chute {chute_id}: "

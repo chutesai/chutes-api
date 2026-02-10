@@ -1515,6 +1515,11 @@ async def _perform_autoscale_impl(
     if not dry_run:
         previous_smoothed = await get_smoothed_metrics(all_chute_ids)
 
+    # Load sponsored chute IDs (no demand boost for sponsored chutes)
+    from api.invocation.util import get_all_sponsored_chute_ids
+
+    sponsored_chute_ids = await get_all_sponsored_chute_ids()
+
     # 1. Initialize Contexts and Calculate Urgency
     contexts: Dict[str, AutoScaleContext] = {}
     starving_chutes: List[AutoScaleContext] = []
@@ -1929,7 +1934,9 @@ async def _perform_autoscale_impl(
         max_urgency = 0
 
     for ctx in contexts.values():
-        if ctx.upscale_amount > 0:
+        if ctx.chute_id in sponsored_chute_ids:
+            ctx.boost = 1.0
+        elif ctx.upscale_amount > 0:
             # Base boost from SMOOTHED individual urgency (stable across runs)
             normalized_urgency = min(ctx.smoothed_urgency / URGENCY_MAX_FOR_BOOST, 1.0)
             base_boost = URGENCY_BOOST_MIN + (

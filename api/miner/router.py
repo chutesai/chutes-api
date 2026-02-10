@@ -617,7 +617,9 @@ async def get_thrash_cooldowns(
             "chute_id": row.chute_id,
             "chute_name": row.chute_name,
             "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
-            "cooldown_expires_at": row.cooldown_expires_at.isoformat() if row.cooldown_expires_at else None,
+            "cooldown_expires_at": row.cooldown_expires_at.isoformat()
+            if row.cooldown_expires_at
+            else None,
         }
         for row in result.fetchall()
     ]

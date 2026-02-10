@@ -8,6 +8,7 @@ import aiohttp
 import orjson as json
 from datetime import datetime, timezone
 from typing import Dict
+from async_lru import alru_cache
 from loguru import logger
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.config import settings
@@ -28,6 +29,53 @@ ORDER BY date DESC, name;
 """
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
+
+
+@alru_cache(maxsize=500, ttl=1200)
+async def get_sponsored_chute_ids(user_id: str) -> frozenset[str]:
+    """Get the set of chute IDs with active sponsorships for a given user."""
+    redis_key = f"sponsored_chutes:{user_id}"
+    cached = await settings.redis_client.get(redis_key)
+    if cached is not None:
+        return frozenset(json.loads(cached))
+
+    query = text("""
+        SELECT sc.chute_id
+        FROM inference_sponsorships isp
+        JOIN sponsorship_chutes sc ON isp.id = sc.sponsorship_id
+        WHERE isp.user_id = :user_id
+        AND isp.start_date <= CURRENT_DATE
+        AND (isp.end_date IS NULL OR isp.end_date >= CURRENT_DATE)
+    """)
+    async with get_session(readonly=True) as session:
+        result = await session.execute(query, {"user_id": user_id})
+        chute_ids = frozenset(row[0] for row in result)
+
+    await settings.redis_client.set(redis_key, json.dumps(list(chute_ids)), ex=1200)
+    return chute_ids
+
+
+@alru_cache(maxsize=1, ttl=1200)
+async def get_all_sponsored_chute_ids() -> frozenset[str]:
+    """Get the set of all chute IDs with any active sponsorship."""
+    redis_key = "all_sponsored_chutes"
+    cached = await settings.redis_client.get(redis_key)
+    if cached is not None:
+        return frozenset(json.loads(cached))
+
+    query = text("""
+        SELECT DISTINCT sc.chute_id
+        FROM inference_sponsorships isp
+        JOIN sponsorship_chutes sc ON isp.id = sc.sponsorship_id
+        WHERE isp.start_date <= CURRENT_DATE
+        AND (isp.end_date IS NULL OR isp.end_date >= CURRENT_DATE)
+    """)
+    async with get_session(readonly=True) as session:
+        result = await session.execute(query)
+        chute_ids = frozenset(row[0] for row in result)
+
+    await settings.redis_client.set(redis_key, json.dumps(list(chute_ids)), ex=1200)
+    return chute_ids
 
 
 async def query_prometheus(

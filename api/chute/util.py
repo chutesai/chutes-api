@@ -394,8 +394,16 @@ async def calculate_effective_compute_multiplier(
             factors["private"] = PRIVATE_INSTANCE_BONUS
             total *= PRIVATE_INSTANCE_BONUS
 
-    # Urgency boost from autoscaler.
-    if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
+    # Urgency boost from autoscaler (skip for sponsored chutes).
+    from api.invocation.util import get_all_sponsored_chute_ids
+
+    sponsored = await get_all_sponsored_chute_ids()
+    if (
+        chute.chute_id not in sponsored
+        and chute.boost is not None
+        and chute.boost > 0
+        and chute.boost <= 20
+    ):
         factors["urgency_boost"] = chute.boost
         total *= chute.boost
 

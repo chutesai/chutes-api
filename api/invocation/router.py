@@ -39,7 +39,7 @@ from api.user.service import get_current_user, chutes_user_id, subnet_role_acces
 from api.report.schemas import Report, ReportArgs
 from api.database import get_db_session, get_session, get_inv_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
-from api.invocation.util import get_prompt_prefix_hashes
+from api.invocation.util import get_prompt_prefix_hashes, get_sponsored_chute_ids
 from api.util import validate_tool_call_arguments
 from api.permissions import Permissioning
 
@@ -363,14 +363,8 @@ async def _invoke(
                         detail="Free models limit reached for today - maintain >= $10 balance or upgrade subscription to pro to unlock more.",
                     )
     elif current_user.user_id == settings.or_free_user_id:
-        if chute.chute_id not in [
-            "4fa0c7f5-82f7-59d1-8996-661bb778893d",
-            "aef797d4-f375-5beb-9986-3ad245947469",
-            "689d2caa-01c1-5de1-ba69-39c5398be0c6",
-            "3048cf8d-67de-5a6d-9fdd-18ac9c560c05",
-            "391c8d5f-0d84-51fe-85cf-984ea6d7e49e",
-            "6d5ac865-d053-56b6-bd56-b1919f743be4",
-        ]:
+        sponsored_chutes = await get_sponsored_chute_ids(current_user.user_id)
+        if chute.chute_id not in sponsored_chutes:
             logger.warning(
                 f"Attempt to invoke {chute.chute_id=} {chute.name=} from openrouter free account."
             )
