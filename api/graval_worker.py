@@ -42,6 +42,7 @@ from api.instance.schemas import Instance
 from api.image.schemas import Image
 from sqlalchemy import update, func
 from sqlalchemy.future import select
+from taskiq import TaskiqEvents
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from watchtower import get_expected_command, verify_expected_command, is_kubernetes_env, get_dump
 import api.miner_client as miner_client
@@ -87,7 +88,7 @@ async def _redis_ping_loop():
         await asyncio.sleep(REDIS_PING_INTERVAL)
 
 
-@broker.on_event("startup")
+@broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _start_health_check(state):
     server = HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
