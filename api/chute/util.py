@@ -746,6 +746,11 @@ async def _invoke_one(
 
         response.raise_for_status()
 
+        # Stash instance-reported utilization for prometheus gauges.
+        if manager:
+            manager._last_instance_utilization = response.headers.get("X-Chutes-Conn-Utilization")
+            manager._last_conn_used = response.headers.get("X-Chutes-Conn-Used")
+
         # All good, send back the response.
         if stream:
             last_chunk = None
@@ -1319,6 +1324,18 @@ async def invoke(
 
                 # Update capacity tracking.
                 track_request_completed(chute.chute_id)
+                try:
+                    instance_util = getattr(manager, "_last_instance_utilization", None)
+                    if instance_util is not None:
+                        instance_util = float(instance_util)
+                    await track_capacity(
+                        chute.chute_id,
+                        manager.mean_count or 0,
+                        chute.concurrency or 1,
+                        instance_utilization=instance_util,
+                    )
+                except Exception:
+                    pass
 
                 # Calculate the credits used and deduct from user's balance asynchronously.
                 # For LLMs and Diffusion chutes, we use custom per token/image step pricing,

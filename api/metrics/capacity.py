@@ -35,25 +35,43 @@ requests_rate_limited = Counter(
 )
 
 
-def _track_capacity(chute_id: str, mean_conn: float, chute_concurrency: int):
+def _track_capacity(
+    chute_id: str,
+    mean_conn: float,
+    chute_concurrency: int,
+    instance_utilization: float = None,
+):
     """
     Track connection capacity metrics per chute.
+    If instance_utilization is provided (from X-Chutes-Conn-Utilization header),
+    use it directly instead of calculating from mean_conn/concurrency.
     """
     mean_connections.labels(chute_id=chute_id).set(mean_conn)
     concurrency.labels(chute_id=chute_id).set(chute_concurrency)
-    if chute_concurrency > 0:
+    if instance_utilization is not None:
+        utilization.labels(chute_id=chute_id).set(instance_utilization)
+    elif chute_concurrency > 0:
         util_ratio = mean_conn / chute_concurrency
         utilization.labels(chute_id=chute_id).set(util_ratio)
     else:
         utilization.labels(chute_id=chute_id).set(0.0)
 
 
-async def track_capacity(chute_id: str, mean_conn: float, chute_concurrency: int) -> None:
+async def track_capacity(
+    chute_id: str,
+    mean_conn: float,
+    chute_concurrency: int,
+    instance_utilization: float = None,
+) -> None:
     """
     Async wrapper around the gauge updates for capacity.
     """
     await asyncio.to_thread(
-        _track_capacity, chute_id=chute_id, mean_conn=mean_conn, chute_concurrency=chute_concurrency
+        _track_capacity,
+        chute_id=chute_id,
+        mean_conn=mean_conn,
+        chute_concurrency=chute_concurrency,
+        instance_utilization=instance_utilization,
     )
 
 

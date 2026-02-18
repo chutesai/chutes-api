@@ -307,6 +307,8 @@ class LeastConnManager:
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.mean_count = None
+        self._last_instance_utilization = None
+        self._last_conn_used = None
         self.lock = asyncio.Lock()
 
     async def get_connection_counts(self, instance_ids: list[str]) -> dict[str, int]:
