@@ -52,7 +52,6 @@ from api.server.util import (
     verify_quote_signature,
     verify_result,
     sync_server_luks_passphrases,
-    delete_luks_passphrases_for_server,
     get_public_key_hash,
     cert_to_base64_der,
     validate_user_nonce,
@@ -824,7 +823,6 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     """
     server = await check_server_ownership(db, server_id, miner_hotkey)
 
-    await delete_luks_passphrases_for_server(db, server.miner_hotkey, server.name)
     await db.delete(server)
     await db.commit()
 

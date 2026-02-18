@@ -806,23 +806,14 @@ async def test_list_servers_empty(mock_db_session):
 
 @pytest.mark.asyncio
 async def test_delete_server_success(mock_db_session, sample_server):
-    """Test successful server deletion (clears LUKS config then deletes server)."""
+    """Test successful server deletion (preserves LUKS config for potential reboot)."""
     server_id = "test-server-123"
     miner_hotkey = "5FTestHotkey123"
 
-    with (
-        patch("api.server.service.check_server_ownership", return_value=sample_server),
-        patch(
-            "api.server.service.delete_luks_passphrases_for_server",
-            new_callable=AsyncMock,
-        ) as mock_delete_luks,
-    ):
+    with patch("api.server.service.check_server_ownership", return_value=sample_server):
         result = await delete_server(mock_db_session, server_id, miner_hotkey)
 
         assert result is True
-        mock_delete_luks.assert_called_once_with(
-            mock_db_session, sample_server.miner_hotkey, sample_server.name
-        )
         mock_db_session.delete.assert_called_once()
         mock_db_session.commit.assert_called_once()
 
