@@ -165,11 +165,6 @@ async def lifespan(_: FastAPI):
     # else:
     #    logger.error(f"failed to run db migrations returncode={process.returncode}")
 
-    # Start a background task to keep the prom gauges updated.
-    from api.metrics.util import keep_gauges_fresh
-
-    asyncio.create_task(keep_gauges_fresh())
-
     yield
 
 

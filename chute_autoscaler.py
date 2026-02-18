@@ -39,7 +39,8 @@ from api.user.service import chutes_user_id
 from api.util import has_legacy_private_billing, notify_deleted
 from api.chute.schemas import Chute, NodeSelector, RollingUpdate
 from api.instance.schemas import Instance, LaunchConfig
-from api.instance.util import invalidate_instance_cache, cleanup_expired_connections
+from api.instance.util import invalidate_instance_cache
+from api.metrics.util import reconcile_connection_counts
 from api.capacity_log.schemas import CapacityLog
 from watchtower import purge, purge_and_notify  # noqa
 from api.constants import (
@@ -1434,7 +1435,13 @@ async def _perform_autoscale_impl(
     if not dry_run:
         logger.info("Performing instance cleanup...")
         await instance_cleanup()
-        await cleanup_expired_connections()
+
+    # Reconcile connection counts from instance ground truth before scaling decisions.
+    logger.info("Reconciling connection counts...")
+    try:
+        await asyncio.wait_for(reconcile_connection_counts(), timeout=30.0)
+    except Exception as exc:
+        logger.warning(f"Connection count reconciliation failed: {exc}")
 
     logger.info("Fetching metrics from Prometheus and database...")
     chute_metrics = await get_all_chute_metrics()

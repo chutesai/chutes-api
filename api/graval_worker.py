@@ -19,6 +19,9 @@ import backoff
 import secrets
 import orjson as json
 import pkg_resources
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from redis.asyncio import Redis
 from typing import List, Tuple
 from pydantic import BaseModel
 from loguru import logger
@@ -46,6 +49,50 @@ import api.miner_client as miner_client
 broker = ListQueueBroker(url=settings.redis_url, queue_name="graval").with_result_backend(
     RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
 )
+
+# Health check: ping Redis through the broker's own connection pool.
+# If the VIP moved, these stale TCP connections will fail.
+_health = {"last_redis_ok": time.time()}
+HEALTH_PORT = int(os.getenv("GRAVAL_HEALTH_PORT", "8080"))
+REDIS_PING_INTERVAL = 10
+HEALTH_MAX_AGE = 60
+
+
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        age = time.time() - _health["last_redis_ok"]
+        healthy = age < HEALTH_MAX_AGE
+        code = 200 if healthy else 503
+        body = json.dumps(
+            {"status": "ok" if healthy else "unhealthy", "redis_ping_age": round(age, 1)}
+        )
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        pass
+
+
+async def _redis_ping_loop():
+    """Ping Redis using the broker's connection pool to detect stale connections."""
+    while True:
+        try:
+            async with Redis(connection_pool=broker.connection_pool) as conn:
+                await asyncio.wait_for(conn.ping(), timeout=5)
+            _health["last_redis_ok"] = time.time()
+        except Exception as exc:
+            logger.warning(f"Redis health ping failed (broker pool): {exc}")
+        await asyncio.sleep(REDIS_PING_INTERVAL)
+
+
+@broker.on_event("startup")
+async def _start_health_check(state):
+    server = HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    logger.info(f"Graval worker health check listening on :{HEALTH_PORT}")
+    asyncio.get_event_loop().create_task(_redis_ping_loop())
 
 
 class CipherChallenge(BaseModel):

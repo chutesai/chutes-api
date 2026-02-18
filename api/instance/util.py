@@ -299,63 +299,26 @@ class LeastConnManager:
         chute_id: str,
         concurrency: int,
         instances: list[Instance],
-        connection_expiry: int = 600,
+        connection_expiry: int = 3600,
     ):
         self.concurrency = concurrency or 1
         self.chute_id = chute_id
-        _u_idx = uuid.UUID(self.chute_id).int % len(settings.cm_redis_client)
-        self.redis_client = settings.cm_redis_client[_u_idx]
-        self.redis_client_index = _u_idx
+        self.redis_client = settings.redis_client
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.mean_count = None
-
-        # Pre-register Lua scripts for better performance
-        self._register_lua_scripts()
-
         self.lock = asyncio.Lock()
-
-    def _register_lua_scripts(self):
-        # Track new connection.
-        self.lua_add_connection = """
-        local key = KEYS[1]
-        local conn_id = ARGV[1]
-        local now = tonumber(ARGV[2])
-        local expiry = tonumber(ARGV[3])
-        redis.call('ZADD', key, now, conn_id)
-        redis.call('EXPIRE', key, expiry)
-        return redis.call('ZCOUNT', key, now - expiry, now)
-        """
-
-        # Remove "completed" connection.
-        self.lua_remove_connection = """
-        local key = KEYS[1]
-        local conn_id = ARGV[1]
-        local now = tonumber(ARGV[2])
-        local expiry = tonumber(ARGV[3])
-        local removed = redis.call('ZREM', key, conn_id)
-        local expired = redis.call('ZRANGEBYSCORE', key, 0, now - expiry, 'LIMIT', 0, 10)
-        if #expired > 0 then
-            redis.call('ZREM', key, unpack(expired))
-        end
-        return removed
-        """
 
     async def get_connection_counts(self, instance_ids: list[str]) -> dict[str, int]:
         """
-        Get current valid connection counts for instances.
+        Get current connection counts for instances via MGET.
         """
-        now = time.time()
-        cutoff = now - self.connection_expiry
-        pipe = self.redis_client.pipeline()
-        for instance_id in instance_ids:
-            key = f"conn:{self.chute_id}:{instance_id}"
-            pipe.zcount(key, cutoff, now)
+        keys = [f"cc:{self.chute_id}:{iid}" for iid in instance_ids]
         try:
-            counts = await pipe.execute()
-            if not counts:
+            values = await self.redis_client.client.mget(keys)
+            if not values:
                 return {iid: 0 for iid in instance_ids}
-            return dict(zip(instance_ids, counts))
+            return {iid: int(v or 0) for iid, v in zip(instance_ids, values)}
         except Exception as e:
             logger.error(f"Error getting connection counts: {e}")
             return {iid: 0 for iid in instance_ids}
@@ -461,9 +424,21 @@ class LeastConnManager:
 
         return result
 
+    async def _track_active(self, instance_id: str):
+        """Fire-and-forget tracking of active chutes/instances for gauge enumeration."""
+        try:
+            pipe = self.redis_client.client.pipeline()
+            pipe.sadd("active_chutes", self.chute_id)
+            pipe.expire("active_chutes", self.connection_expiry)
+            pipe.sadd(f"cc_inst:{self.chute_id}", instance_id)
+            pipe.expire(f"cc_inst:{self.chute_id}", self.connection_expiry)
+            pipe.set(f"cc_conc:{self.chute_id}", self.concurrency, ex=self.connection_expiry)
+            await pipe.execute()
+        except Exception as e:
+            logger.error(f"Error tracking active chute/instance: {e}")
+
     @asynccontextmanager
     async def get_target(self, avoid=[], prefixes=None):
-        conn_id = str(uuid.uuid4())
         instance = None
         try:
             targets = await asyncio.wait_for(
@@ -484,28 +459,26 @@ class LeastConnManager:
                 yield None, "infra_overload"
                 return
 
+            key = f"cc:{self.chute_id}:{instance.instance_id}"
             try:
-                key = f"conn:{self.chute_id}:{instance.instance_id}"
-                _ = await asyncio.wait_for(
-                    self.redis_client.eval(
-                        self.lua_add_connection,
-                        1,
-                        key,
-                        conn_id,
-                        int(time.time()),
-                        self.connection_expiry,
-                    ),
+                await asyncio.wait_for(
+                    self.redis_client.client.incr(key),
                     timeout=3.0,
                 )
+                await self.redis_client.expire(key, self.connection_expiry)
             except asyncio.TimeoutError:
                 logger.warning(
-                    f"Timeout adding connection to {self.redis_client_index=} {instance.instance_id}, proceeding anyway"
+                    f"Timeout incrementing connection count for {instance.instance_id}, proceeding anyway"
                 )
             except Exception as e:
                 logger.error(f"Error tracking connection: {e}")
+
+            # Track active chute/instance for gauge enumeration (fire-and-forget)
+            asyncio.create_task(self._track_active(instance.instance_id))
+
             yield instance, None
         except asyncio.TimeoutError:
-            logger.error(f"Timeout getting targets on {self.redis_client_index=}")
+            logger.error("Timeout getting targets")
             # Fallback to random instance
             available = [inst for iid, inst in self.instances.items() if iid not in avoid]
             if available:
@@ -523,23 +496,18 @@ class LeastConnManager:
         finally:
             if instance:
                 try:
-                    key = f"conn:{self.chute_id}:{instance.instance_id}"
-                    await asyncio.shield(
-                        self.redis_client.eval(
-                            self.lua_remove_connection,
-                            1,
-                            key,
-                            conn_id,
-                            int(time.time()),
-                            self.connection_expiry,
-                        )
-                    )
+                    key = f"cc:{self.chute_id}:{instance.instance_id}"
+
+                    async def _decr():
+                        val = await self.redis_client.client.decr(key)
+                        if val < 0:
+                            await self.redis_client.client.set(key, 0, ex=self.connection_expiry)
+
+                    await asyncio.shield(_decr())
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        f"Timeout cleaning up connection {conn_id} on {self.redis_client_index=}"
-                    )
+                    logger.warning(f"Timeout cleaning up connection for {instance.instance_id}")
                 except Exception as e:
-                    logger.error(f"Error cleaning up connection {conn_id}: {e}")
+                    logger.error(f"Error cleaning up connection for {instance.instance_id}: {e}")
 
 
 async def get_chute_target_manager(
@@ -839,38 +807,6 @@ async def update_shutdown_timestamp(instance_id: str):
             await settings.redis_client.delete(key)
         except Exception:
             pass
-
-
-async def cleanup_expired_connections(connection_expiry: int = 1800) -> int:
-    """
-    Global cleanup of expired connection entries across all cm_redis_client shards.
-    """
-    cutoff = time.time() - connection_expiry
-    total_removed = 0
-
-    for idx, redis_client in enumerate(settings.cm_redis_client):
-        logger.info(f"Cleaning up cm_redis_client[{idx}]...")
-        cursor = 0
-        pattern = "conn:*:*"
-
-        while True:
-            cursor, keys = await redis_client.client.scan(cursor, match=pattern, count=1000)
-            if not keys:
-                if cursor == 0:
-                    break
-                continue
-
-            pipe = redis_client.pipeline()
-            for key in keys:
-                pipe.zremrangebyscore(key, 0, cutoff)
-            results = await pipe.execute()
-            total_removed += sum(results)
-
-            if cursor == 0:
-                break
-
-    logger.success(f"Finished cleanup_expired_connections() loop, total_removed={total_removed}")
-    return total_removed
 
 
 async def verify_tee_chute(
