@@ -42,30 +42,45 @@ from api.instance.schemas import Instance
 from api.image.schemas import Image
 from sqlalchemy import update, func
 from sqlalchemy.future import select
-from taskiq import TaskiqEvents
+from taskiq import TaskiqEvents, TaskiqMiddleware
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from watchtower import get_expected_command, verify_expected_command, is_kubernetes_env, get_dump
 import api.miner_client as miner_client
 
-broker = ListQueueBroker(url=settings.redis_url, queue_name="graval").with_result_backend(
-    RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600)
-)
-
 # Health check: ping Redis through the broker's own connection pool.
 # If the VIP moved, these stale TCP connections will fail.
-_health = {"last_redis_ok": time.time()}
+_health = {"last_redis_ok": time.time(), "last_task_at": time.time()}
+
+
+class _ActivityMiddleware(TaskiqMiddleware):
+    def post_execute(self, message, result):
+        _health["last_task_at"] = time.time()
+
+
+broker = (
+    ListQueueBroker(url=settings.redis_url, queue_name="graval")
+    .with_result_backend(RedisAsyncResultBackend(redis_url=settings.redis_url, result_ex_time=3600))
+    .with_middlewares(_ActivityMiddleware())
+)
 HEALTH_PORT = int(os.getenv("GRAVAL_HEALTH_PORT", "8080"))
 REDIS_PING_INTERVAL = 10
 HEALTH_MAX_AGE = 60
+IDLE_RECONNECT_SECS = 900  # 15 minutes
 
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
-        age = time.time() - _health["last_redis_ok"]
-        healthy = age < HEALTH_MAX_AGE
+        now = time.time()
+        ping_age = now - _health["last_redis_ok"]
+        idle_secs = now - _health["last_task_at"]
+        healthy = ping_age < HEALTH_MAX_AGE
         code = 200 if healthy else 503
         body = json.dumps(
-            {"status": "ok" if healthy else "unhealthy", "redis_ping_age": round(age, 1)}
+            {
+                "status": "ok" if healthy else "unhealthy",
+                "redis_ping_age": round(ping_age, 1),
+                "idle_secs": round(idle_secs, 1),
+            }
         )
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -85,6 +100,17 @@ async def _redis_ping_loop():
             _health["last_redis_ok"] = time.time()
         except Exception as exc:
             logger.warning(f"Redis health ping failed (broker pool): {exc}")
+
+        # If idle too long, reconnect the broker's Redis pool to avoid stale connections.
+        idle_secs = time.time() - _health["last_task_at"]
+        if idle_secs > IDLE_RECONNECT_SECS:
+            logger.warning(f"Worker idle for {idle_secs:.0f}s, reconnecting broker Redis pool")
+            try:
+                await broker.connection_pool.disconnect()
+            except Exception as exc:
+                logger.warning(f"Error disconnecting broker pool: {exc}")
+            _health["last_task_at"] = time.time()  # reset so we don't spam reconnects
+
         await asyncio.sleep(REDIS_PING_INTERVAL)
 
 
