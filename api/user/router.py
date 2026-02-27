@@ -761,6 +761,88 @@ async def chute_quota_usage(
     return {"quota": quota, "used": used}
 
 
+@router.get("/me/subscription_usage")
+async def my_subscription_usage(
+    current_user: User = Depends(get_current_user()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get current subscription usage and caps for the authenticated user.
+    Returns monthly and 4-hour window usage vs limits.
+    """
+    from api.config import (
+        get_subscription_tier,
+        SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER,
+        SUBSCRIPTION_4H_CAP_MULTIPLIER,
+        FOUR_HOUR_CHUNKS_PER_MONTH,
+    )
+
+    quota = await InvocationQuota.get(current_user.user_id, "*")
+    monthly_price = get_subscription_tier(quota)
+    if monthly_price is None:
+        return {"subscription": False}
+
+    monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+    four_hour_cap = (monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH) * SUBSCRIPTION_4H_CAP_MULTIPLIER
+
+    now = datetime.now()
+    month_suffix = now.strftime("%Y%m")
+    four_hour_bucket = int(time.time()) // (4 * 3600)
+
+    # Try Redis first for both, fall back to DB.
+    monthly_usage = None
+    four_hour_usage = None
+
+    month_key = f"sub_cap_m:{month_suffix}:{current_user.user_id}"
+    four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{current_user.user_id}"
+    cached_month = await settings.redis_client.get(month_key)
+    cached_4h = await settings.redis_client.get(four_hour_key)
+
+    if cached_month is not None:
+        monthly_usage = float(
+            cached_month.decode() if isinstance(cached_month, bytes) else cached_month
+        )
+    if cached_4h is not None:
+        four_hour_usage = float(cached_4h.decode() if isinstance(cached_4h, bytes) else cached_4h)
+
+    if monthly_usage is None or four_hour_usage is None:
+        result = await db.execute(
+            text("""
+                SELECT
+                    GREATEST(COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0), 0) AS monthly,
+                    GREATEST(
+                        COALESCE(SUM(CASE WHEN bucket >= now() - interval '4 hours' THEN paygo_amount ELSE 0 END), 0)
+                        - COALESCE(SUM(CASE WHEN bucket >= now() - interval '4 hours' THEN amount ELSE 0 END), 0),
+                        0
+                    ) AS four_hour
+                FROM usage_data
+                WHERE user_id = :user_id
+                AND bucket >= date_trunc('month', now())
+            """),
+            {"user_id": current_user.user_id},
+        )
+        row = result.one()
+        if monthly_usage is None:
+            monthly_usage = float(row.monthly)
+        if four_hour_usage is None:
+            four_hour_usage = float(row.four_hour)
+
+    return {
+        "subscription": True,
+        "monthly_price": monthly_price,
+        "monthly": {
+            "usage": monthly_usage,
+            "cap": monthly_cap,
+            "remaining": max(monthly_cap - monthly_usage, 0.0),
+        },
+        "four_hour": {
+            "usage": four_hour_usage,
+            "cap": four_hour_cap,
+            "remaining": max(four_hour_cap - four_hour_usage, 0.0),
+        },
+    }
+
+
 @router.delete("/me")
 async def delete_my_user(
     db: AsyncSession = Depends(get_db_session),

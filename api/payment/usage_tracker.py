@@ -30,7 +30,7 @@ import asyncio
 import orjson as json
 import api.database.orms  # noqa
 import uvicorn
-from datetime import datetime, timedelta
+from datetime import datetime
 from fastapi import FastAPI, Response, status
 from collections import defaultdict
 from sqlalchemy import text
@@ -199,14 +199,7 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
         # Recompute totals from DB for full period and SET (overwrite) the cache keys.
         now = datetime.now()
         month_suffix = now.strftime("%Y%m")
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        month_end = (month_start + timedelta(days=32)).replace(day=1)
-        month_ttl = min(max(int((month_end - now).total_seconds()), 60), 35 * 86400)
-
         four_hour_bucket = int(time.time()) // (4 * 3600)
-        four_hour_start = datetime.fromtimestamp(four_hour_bucket * 4 * 3600)
-        four_hour_end = datetime.fromtimestamp((four_hour_bucket + 1) * 4 * 3600)
-        four_hour_ttl = min(max(int((four_hour_end - now).total_seconds()), 60), 5 * 3600)
 
         sub_user_list = list(sub_users)
         async with get_session(readonly=True) as session:
@@ -215,10 +208,10 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
                     SELECT user_id, GREATEST(COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0), 0)
                     FROM usage_data
                     WHERE user_id = ANY(:user_ids)
-                    AND bucket >= :start_ts AND bucket < :end_ts
+                    AND bucket >= date_trunc('month', now())
                     GROUP BY user_id
                 """),
-                {"user_ids": sub_user_list, "start_ts": month_start, "end_ts": month_end},
+                {"user_ids": sub_user_list},
             )
             month_totals = {row[0]: float(row[1]) for row in month_result}
 
@@ -227,10 +220,10 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
                     SELECT user_id, GREATEST(COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0), 0)
                     FROM usage_data
                     WHERE user_id = ANY(:user_ids)
-                    AND bucket >= :start_ts AND bucket < :end_ts
+                    AND bucket >= now() - interval '4 hours'
                     GROUP BY user_id
                 """),
-                {"user_ids": sub_user_list, "start_ts": four_hour_start, "end_ts": four_hour_end},
+                {"user_ids": sub_user_list},
             )
             four_hour_totals = {row[0]: float(row[1]) for row in four_hour_result}
 
@@ -238,8 +231,8 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
         for user_id in sub_users:
             month_key = f"sub_cap_m:{month_suffix}:{user_id}"
             four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
-            pipeline.set(month_key, str(month_totals.get(user_id, 0.0)), ex=month_ttl)
-            pipeline.set(four_hour_key, str(four_hour_totals.get(user_id, 0.0)), ex=four_hour_ttl)
+            pipeline.set(month_key, str(month_totals.get(user_id, 0.0)), ex=35 * 86400)
+            pipeline.set(four_hour_key, str(four_hour_totals.get(user_id, 0.0)), ex=5 * 3600)
         await pipeline.execute()
         logger.info(f"Reconciled subscription cap cache for {len(sub_users)} users")
     except Exception as exc:

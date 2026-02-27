@@ -295,36 +295,35 @@ async def report_invocation(
 
 
 async def get_subscription_usage(
-    user_id: str, period: str, start_ts: datetime, end_ts: datetime
+    user_id: str, period: str, since_expr: str, cache_ttl: int
 ) -> float:
     """
     Get accumulated paygo-equivalent usage covered by subscription (not already paid via paygo).
     Tries Redis cache first, falls back to usage_data table query.
     period: cache key suffix, e.g. "m:202602" or "4h:123456"
+    since_expr: SQL expression for the start bound, e.g. "date_trunc('month', now())"
+    cache_ttl: TTL in seconds for the Redis cache entry
     """
     cache_key = f"sub_cap_{period}:{user_id}"
     cached = await settings.redis_client.get(cache_key)
     if cached is not None:
         return float(cached.decode() if isinstance(cached, bytes) else cached)
 
-    # Cache miss — query usage_data table
+    # Cache miss — query usage_data table using DB-relative time
     # Cap usage = total paygo equivalent - what they actually paid
     async with get_session(readonly=True) as session:
         result = await session.execute(
-            text("""
+            text(f"""
                 SELECT COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0)
                 FROM usage_data
                 WHERE user_id = :user_id
-                AND bucket >= :start_ts
-                AND bucket < :end_ts
+                AND bucket >= {since_expr}
             """),
-            {"user_id": user_id, "start_ts": start_ts, "end_ts": end_ts},
+            {"user_id": user_id},
         )
         usage = max(float(result.scalar() or 0.0), 0.0)
 
-    # Populate cache with appropriate TTL
-    ttl = max(int((end_ts - datetime.now()).total_seconds()), 60)
-    await settings.redis_client.set(cache_key, str(usage), ex=min(ttl, 35 * 86400))
+    await settings.redis_client.set(cache_key, str(usage), ex=cache_ttl)
     return usage
 
 
@@ -522,19 +521,20 @@ async def _invoke(
                 pass  # Proceed as paygo — don't set free_invocation
             elif (monthly_price := get_subscription_tier(quota)) is not None:
                 now = datetime.now()
-                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                next_month = (month_start + timedelta(days=32)).replace(day=1)
                 monthly_usage = await get_subscription_usage(
-                    current_user.user_id, f"m:{now.strftime('%Y%m')}", month_start, next_month
+                    current_user.user_id,
+                    f"m:{now.strftime('%Y%m')}",
+                    "date_trunc('month', now())",
+                    35 * 86400,  # 35 days TTL
                 )
                 monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
 
-                four_hour_seconds = 4 * 3600
-                four_hour_bucket = int(time.time()) // four_hour_seconds
-                bucket_start = datetime.fromtimestamp(four_hour_bucket * four_hour_seconds)
-                bucket_end = bucket_start + timedelta(hours=4)
+                four_hour_bucket = int(time.time()) // (4 * 3600)
                 four_hour_usage = await get_subscription_usage(
-                    current_user.user_id, f"4h:{four_hour_bucket}", bucket_start, bucket_end
+                    current_user.user_id,
+                    f"4h:{four_hour_bucket}",
+                    "now() - interval '4 hours'",
+                    5 * 3600,  # 5 hours TTL
                 )
                 four_hour_cap = (
                     monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH
