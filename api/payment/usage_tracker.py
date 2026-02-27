@@ -161,32 +161,32 @@ async def get_stale_processing_buckets(redis) -> list[str]:
 
 async def _warm_sub_cap_cache(aggregated: dict) -> None:
     """
-    Update subscription cap Redis keys with the paygo-equivalent usage covered
-    by subscription (paygo_amount - amount) for users in this bucket.
+    Reconcile subscription cap Redis keys from DB (source of truth).
+    Overwrites any existing values so drift from the real-time INCRBYFLOAT
+    path is corrected every ~60s.
     Runs as a background task to avoid blocking the main processing loop.
     """
     try:
-        # Accumulate per-user cap usage: paygo_amount - amount (what the subscription covered).
-        user_cap_usage = defaultdict(float)
+        # Identify users with cap-eligible usage (paygo_amount > amount).
+        sub_candidate_users = set()
         for (user_id, chute_id), m in aggregated.items():
-            covered = m["p"] - m["a"]
-            if covered > 0:
-                user_cap_usage[user_id] += covered
+            if m["p"] - m["a"] > 0:
+                sub_candidate_users.add(user_id)
 
-        if not user_cap_usage:
+        if not sub_candidate_users:
             return
 
-        # Batch-query which users have subscription quotas.
+        # Batch-query which of these users have subscription quotas.
         async with get_session(readonly=True) as session:
             result = await session.execute(
                 text("""
-                    SELECT user_id, quota FROM invocation_quotas
+                    SELECT user_id FROM invocation_quotas
                     WHERE user_id = ANY(:user_ids)
                     AND chute_id = '*'
                     AND quota = ANY(:sub_quotas)
                 """),
                 {
-                    "user_ids": list(user_cap_usage.keys()),
+                    "user_ids": list(sub_candidate_users),
                     "sub_quotas": list(SUBSCRIPTION_TIERS.keys())
                     + [q + 1 for q in SUBSCRIPTION_TIERS.keys()],
                 },
@@ -196,30 +196,54 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
         if not sub_users:
             return
 
+        # Recompute totals from DB for full period and SET (overwrite) the cache keys.
         now = datetime.now()
         month_suffix = now.strftime("%Y%m")
-        month_end = (
-            now.replace(day=1, hour=0, minute=0, second=0, microsecond=0) + timedelta(days=32)
-        ).replace(day=1)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        month_end = (month_start + timedelta(days=32)).replace(day=1)
         month_ttl = min(max(int((month_end - now).total_seconds()), 60), 35 * 86400)
 
         four_hour_bucket = int(time.time()) // (4 * 3600)
+        four_hour_start = datetime.fromtimestamp(four_hour_bucket * 4 * 3600)
         four_hour_end = datetime.fromtimestamp((four_hour_bucket + 1) * 4 * 3600)
         four_hour_ttl = min(max(int((four_hour_end - now).total_seconds()), 60), 5 * 3600)
 
+        sub_user_list = list(sub_users)
+        async with get_session(readonly=True) as session:
+            month_result = await session.execute(
+                text("""
+                    SELECT user_id, GREATEST(COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0), 0)
+                    FROM usage_data
+                    WHERE user_id = ANY(:user_ids)
+                    AND bucket >= :start_ts AND bucket < :end_ts
+                    GROUP BY user_id
+                """),
+                {"user_ids": sub_user_list, "start_ts": month_start, "end_ts": month_end},
+            )
+            month_totals = {row[0]: float(row[1]) for row in month_result}
+
+            four_hour_result = await session.execute(
+                text("""
+                    SELECT user_id, GREATEST(COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0), 0)
+                    FROM usage_data
+                    WHERE user_id = ANY(:user_ids)
+                    AND bucket >= :start_ts AND bucket < :end_ts
+                    GROUP BY user_id
+                """),
+                {"user_ids": sub_user_list, "start_ts": four_hour_start, "end_ts": four_hour_end},
+            )
+            four_hour_totals = {row[0]: float(row[1]) for row in four_hour_result}
+
         pipeline = settings.redis_client.pipeline()
         for user_id in sub_users:
-            amount = user_cap_usage[user_id]
             month_key = f"sub_cap_m:{month_suffix}:{user_id}"
             four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
-            pipeline.incrbyfloat(month_key, amount)
-            pipeline.expire(month_key, month_ttl)
-            pipeline.incrbyfloat(four_hour_key, amount)
-            pipeline.expire(four_hour_key, four_hour_ttl)
+            pipeline.set(month_key, str(month_totals.get(user_id, 0.0)), ex=month_ttl)
+            pipeline.set(four_hour_key, str(four_hour_totals.get(user_id, 0.0)), ex=four_hour_ttl)
         await pipeline.execute()
-        logger.info(f"Warmed subscription cap cache for {len(sub_users)} users")
+        logger.info(f"Reconciled subscription cap cache for {len(sub_users)} users")
     except Exception as exc:
-        logger.warning(f"Failed to warm subscription cap cache: {exc}")
+        logger.warning(f"Failed to reconcile subscription cap cache: {exc}")
 
 
 async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) -> None:

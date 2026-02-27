@@ -468,22 +468,24 @@ async def _invoke(
             quota = 0
 
         # Quota-200 users (one-time $5 payment) cannot use TEE models without balance.
+        # $3/mo sub users (quota 300 or 301) cannot use premium chutes without balance.
+        # In both cases, if the user has balance, force paygo (never free_invocation).
+        force_paygo = False
         if quota == 200 and chute.tee:
             if effective_balance <= 0:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail="TEE models require an active subscription or positive balance.",
                 )
-            # Has balance — let it through as paygo (don't mark free_invocation)
+            force_paygo = True
 
-        # $3/mo sub users (quota 300 or 301) cannot use premium chutes without balance.
         if get_subscription_tier(quota) == 3.0 and chute.chute_id in settings.premium_chute_ids:
             if effective_balance <= 0:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail="This model requires a higher subscription tier or positive balance.",
                 )
-            # Has balance — paygo
+            force_paygo = True
 
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
@@ -515,8 +517,10 @@ async def _invoke(
                 raise HTTPException(**error_kwargs)
         else:
             # When within the quota, check subscription caps before marking as free.
-            monthly_price = get_subscription_tier(quota)
-            if monthly_price is not None:
+            # force_paygo skips free_invocation entirely (TEE/premium restrictions).
+            if force_paygo:
+                pass  # Proceed as paygo — don't set free_invocation
+            elif (monthly_price := get_subscription_tier(quota)) is not None:
                 now = datetime.now()
                 month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
                 next_month = (month_start + timedelta(days=32)).replace(day=1)
