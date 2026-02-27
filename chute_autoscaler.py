@@ -1931,7 +1931,7 @@ async def _perform_autoscale_impl(
     # hit max boost, while chutes with only historical issues get modest boost.
     URGENCY_MAX_FOR_BOOST = 300
     URGENCY_BOOST_MIN = 1.0
-    URGENCY_BOOST_MAX = 2.5
+    URGENCY_BOOST_MAX = 1.5
     RELATIVE_ADJUSTMENT_MAX = 0.2  # ±20% adjustment based on relative urgency
 
     # Collect SMOOTHED urgency scores for chutes wanting to scale up
