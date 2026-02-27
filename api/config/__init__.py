@@ -425,5 +425,31 @@ class Settings(BaseSettings):
     # OpenRouter free usage settings.
     or_free_user_id: str = os.getenv("OR_FREE_USER_ID", "replaceme")
 
+    # Premium chute IDs (restricted from $3/mo sub users without balance).
+    premium_chute_ids: list = json.loads(os.getenv("PREMIUM_CHUTE_IDS", "[]"))
+
+
+# Subscription tier: quota -> monthly price in USD (canonical values only).
+SUBSCRIPTION_TIERS = {
+    300: 3.0,
+    2000: 10.0,
+    5000: 20.0,
+}
+SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER = 5.0
+SUBSCRIPTION_4H_CAP_MULTIPLIER = 20.0
+FOUR_HOUR_CHUNKS_PER_MONTH = 180  # 30 days * 24 hours / 4 hours
+
+
+def get_subscription_tier(quota: int) -> float | None:
+    """
+    Get the monthly price for a subscription quota value.
+    Handles off-by-one quotas (e.g., 301, 2001, 5001) used for free/comped subs.
+    """
+    if quota in SUBSCRIPTION_TIERS:
+        return SUBSCRIPTION_TIERS[quota]
+    if quota - 1 in SUBSCRIPTION_TIERS:
+        return SUBSCRIPTION_TIERS[quota - 1]
+    return None
+
 
 settings = Settings()

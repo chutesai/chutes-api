@@ -23,7 +23,13 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
 from starlette.responses import StreamingResponse
 from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from api.config import settings
+from api.config import (
+    settings,
+    get_subscription_tier,
+    SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER,
+    SUBSCRIPTION_4H_CAP_MULTIPLIER,
+    FOUR_HOUR_CHUNKS_PER_MONTH,
+)
 from api.chute.util import (
     invoke,
     get_one,
@@ -288,6 +294,40 @@ async def report_invocation(
     }
 
 
+async def get_subscription_usage(
+    user_id: str, period: str, start_ts: datetime, end_ts: datetime
+) -> float:
+    """
+    Get accumulated paygo-equivalent usage covered by subscription (not already paid via paygo).
+    Tries Redis cache first, falls back to usage_data table query.
+    period: cache key suffix, e.g. "m:202602" or "4h:123456"
+    """
+    cache_key = f"sub_cap_{period}:{user_id}"
+    cached = await settings.redis_client.get(cache_key)
+    if cached is not None:
+        return float(cached.decode() if isinstance(cached, bytes) else cached)
+
+    # Cache miss — query usage_data table
+    # Cap usage = total paygo equivalent - what they actually paid
+    async with get_session(readonly=True) as session:
+        result = await session.execute(
+            text("""
+                SELECT COALESCE(SUM(paygo_amount), 0) - COALESCE(SUM(amount), 0)
+                FROM usage_data
+                WHERE user_id = :user_id
+                AND bucket >= :start_ts
+                AND bucket < :end_ts
+            """),
+            {"user_id": user_id, "start_ts": start_ts, "end_ts": end_ts},
+        )
+        usage = max(float(result.scalar() or 0.0), 0.0)
+
+    # Populate cache with appropriate TTL
+    ttl = max(int((end_ts - datetime.now()).total_seconds()), 60)
+    await settings.redis_client.set(cache_key, str(usage), ex=min(ttl, 35 * 86400))
+    return usage
+
+
 async def _invoke(
     request: Request,
     current_user: User,
@@ -427,6 +467,24 @@ async def _invoke(
         ):
             quota = 0
 
+        # Quota-200 users (one-time $5 payment) cannot use TEE models without balance.
+        if quota == 200 and chute.tee:
+            if effective_balance <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="TEE models require an active subscription or positive balance.",
+                )
+            # Has balance — let it through as paygo (don't mark free_invocation)
+
+        # $3/mo sub users (quota 300 or 301) cannot use premium chutes without balance.
+        if get_subscription_tier(quota) == 3.0 and chute.chute_id in settings.premium_chute_ids:
+            if effective_balance <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="This model requires a higher subscription tier or positive balance.",
+                )
+            # Has balance — paygo
+
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
             if effective_balance <= 0 and not request.state.free_invocation:
@@ -456,8 +514,40 @@ async def _invoke(
 
                 raise HTTPException(**error_kwargs)
         else:
-            # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
-            request.state.free_invocation = True
+            # When within the quota, check subscription caps before marking as free.
+            monthly_price = get_subscription_tier(quota)
+            if monthly_price is not None:
+                now = datetime.now()
+                month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                next_month = (month_start + timedelta(days=32)).replace(day=1)
+                monthly_usage = await get_subscription_usage(
+                    current_user.user_id, f"m:{now.strftime('%Y%m')}", month_start, next_month
+                )
+                monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+
+                four_hour_seconds = 4 * 3600
+                four_hour_bucket = int(time.time()) // four_hour_seconds
+                bucket_start = datetime.fromtimestamp(four_hour_bucket * four_hour_seconds)
+                bucket_end = bucket_start + timedelta(hours=4)
+                four_hour_usage = await get_subscription_usage(
+                    current_user.user_id, f"4h:{four_hour_bucket}", bucket_start, bucket_end
+                )
+                four_hour_cap = (
+                    monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH
+                ) * SUBSCRIPTION_4H_CAP_MULTIPLIER
+
+                if monthly_usage >= monthly_cap or four_hour_usage >= four_hour_cap:
+                    # Cap exceeded — switch to paygo for remainder
+                    if effective_balance <= 0:
+                        raise HTTPException(
+                            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                            detail="Subscription usage cap exceeded. Please add balance to continue.",
+                        )
+                    # Has balance — proceed as paygo (don't set free_invocation=True)
+                else:
+                    request.state.free_invocation = True
+            else:
+                request.state.free_invocation = True
 
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None

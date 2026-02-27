@@ -9,6 +9,7 @@ import re
 import uuid
 import io
 import time
+from datetime import datetime
 import traceback
 import orjson as json
 import pybase64 as base64
@@ -155,13 +156,18 @@ ON CONFLICT (invocation_id, started_at)
 
 
 async def update_usage_data(
-    user_id: str, chute_id: str, balance_used: float, metrics: dict, compute_time: float = 0.0
+    user_id: str,
+    chute_id: str,
+    balance_used: float,
+    metrics: dict,
+    compute_time: float = 0.0,
+    paygo_amount: float = 0.0,
 ) -> None:
     """
     Push usage data metrics to redis for async processing.
 
     Uses compact format to minimize network/storage overhead:
-    - Short keys: u=user_id, c=chute_id, a=amount, i=input_tokens, o=output_tokens, x=cached_tokens, t=compute_time, s=timestamp
+    - Short keys: u=user_id, c=chute_id, a=amount, i=input_tokens, o=output_tokens, x=cached_tokens, t=compute_time, p=paygo_amount, s=timestamp
     - compute_time rounded to 4 decimal places (0.1ms precision)
     - count omitted (always 1, handled by consumer)
     """
@@ -179,6 +185,7 @@ async def update_usage_data(
             "o": metrics.get("ot", 0) if metrics else 0,
             "x": metrics.get("ct", 0) if metrics else 0,
             "t": round(compute_time, 4),
+            "p": paygo_amount,
             "s": int(time.time()),
         }
     ).decode()
@@ -1370,7 +1377,7 @@ async def invoke(
                 # otherwise it's just based on time used.
                 balance_used = 0.0
                 override_applied = False
-                if compute_units and not request.state.free_invocation:
+                if compute_units:
                     hourly_price = await selector_hourly_price(chute.node_selector)
 
                     # Per megatoken pricing.
@@ -1500,6 +1507,31 @@ async def invoke(
                 ):
                     balance_used = 0
 
+                # Always track paygo equivalent for subscription cap tracking.
+                paygo_equivalent = balance_used
+
+                # If free invocation, the actual charge is 0, but we track paygo equivalent.
+                if request.state.free_invocation:
+                    balance_used = 0
+
+                # Track subscription caps in Redis.
+                if request.state.free_invocation and paygo_equivalent > 0:
+                    from api.config import get_subscription_tier
+
+                    sub_quota = await InvocationQuota.get(user_id, chute.chute_id)
+                    if get_subscription_tier(sub_quota) is not None:
+                        month_key = f"sub_cap_m:{datetime.now().strftime('%Y%m')}:{user_id}"
+                        four_hour_bucket = int(time.time()) // (4 * 3600)
+                        four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
+                        asyncio.create_task(
+                            settings.redis_client.incrbyfloat(month_key, paygo_equivalent)
+                        )
+                        asyncio.create_task(settings.redis_client.expire(month_key, 35 * 86400))
+                        asyncio.create_task(
+                            settings.redis_client.incrbyfloat(four_hour_key, paygo_equivalent)
+                        )
+                        asyncio.create_task(settings.redis_client.expire(four_hour_key, 5 * 3600))
+
                 # Add balance_used to metrics for persistence (key 'b' for compactness)
                 if metrics is None:
                     metrics = {}
@@ -1534,6 +1566,7 @@ async def invoke(
                         balance_used,
                         metrics if chute.standard_template == "vllm" else None,
                         compute_time=duration,
+                        paygo_amount=paygo_equivalent,
                     )
                 )
 
