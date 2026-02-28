@@ -70,6 +70,7 @@ class UsageData(Base):
     input_tokens = Column(Numeric, nullable=True)
     output_tokens = Column(Numeric, nullable=True)
     compute_time = Column(Double, nullable=True)
+    paygo_amount = Column(Double, nullable=True)
 
 
 class AdminBalanceChange(Base):

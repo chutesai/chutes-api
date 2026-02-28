@@ -30,11 +30,12 @@ import asyncio
 import orjson as json
 import api.database.orms  # noqa
 import uvicorn
+from datetime import datetime
 from fastapi import FastAPI, Response, status
 from collections import defaultdict
 from sqlalchemy import text
 from loguru import logger
-from api.config import settings
+from api.config import settings, SUBSCRIPTION_TIERS
 from api.permissions import Permissioning
 from api.database import get_session
 
@@ -104,6 +105,7 @@ async def increment_bucket(redis, record: dict) -> None:
     output_tokens = int(record.get("o", 0))
     cached_tokens = int(record.get("x", 0))
     compute_time = float(record.get("t", 0))
+    paygo_amount = float(record.get("p", 0))
 
     pipeline = redis.pipeline()
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:a", amount)
@@ -112,6 +114,7 @@ async def increment_bucket(redis, record: dict) -> None:
     pipeline.hincrby(bucket_key, f"{field_prefix}:o", output_tokens)
     pipeline.hincrby(bucket_key, f"{field_prefix}:x", cached_tokens)
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", compute_time)
+    pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:p", paygo_amount)
     await pipeline.execute()
 
 
@@ -156,6 +159,104 @@ async def get_stale_processing_buckets(redis) -> list[str]:
     return keys
 
 
+async def _warm_sub_cap_cache(aggregated: dict) -> None:
+    """
+    Reconcile subscription cap Redis keys from DB (source of truth).
+    Overwrites any existing values so drift from the real-time INCRBYFLOAT
+    path is corrected every ~60s.
+    Runs as a background task to avoid blocking the main processing loop.
+    """
+    try:
+        # Identify users with cap-eligible usage (paygo_amount > amount).
+        sub_candidate_users = set()
+        for (user_id, chute_id), m in aggregated.items():
+            if m["p"] - m["a"] > 0:
+                sub_candidate_users.add(user_id)
+
+        if not sub_candidate_users:
+            return
+
+        # Batch-query which of these users have subscription quotas.
+        async with get_session(readonly=True) as session:
+            result = await session.execute(
+                text("""
+                    SELECT user_id FROM invocation_quotas
+                    WHERE user_id = ANY(:user_ids)
+                    AND chute_id = '*'
+                    AND quota = ANY(:sub_quotas)
+                """),
+                {
+                    "user_ids": list(sub_candidate_users),
+                    "sub_quotas": list(SUBSCRIPTION_TIERS.keys())
+                    + [q + 1 for q in SUBSCRIPTION_TIERS.keys()],
+                },
+            )
+            sub_users = {row[0] for row in result}
+
+        if not sub_users:
+            return
+
+        # Recompute totals from DB for full period and SET (overwrite) the cache keys.
+        now = datetime.now()
+        month_suffix = now.strftime("%Y%m")
+        four_hour_bucket = int(time.time()) // (4 * 3600)
+
+        sub_user_list = list(sub_users)
+        async with get_session(readonly=True) as session:
+            month_result = await session.execute(
+                text("""
+                    SELECT
+                        ud.user_id,
+                        COALESCE(
+                            SUM(
+                                GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
+                            ),
+                            0
+                        )
+                    FROM usage_data ud
+                    JOIN chutes c ON c.chute_id = ud.chute_id
+                    WHERE ud.user_id = ANY(:user_ids)
+                    AND ud.bucket >= date_trunc('month', now())
+                    AND c.public IS TRUE
+                    GROUP BY ud.user_id
+                """),
+                {"user_ids": sub_user_list},
+            )
+            month_totals = {row[0]: float(row[1]) for row in month_result}
+
+            four_hour_result = await session.execute(
+                text("""
+                    SELECT
+                        ud.user_id,
+                        COALESCE(
+                            SUM(
+                                GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
+                            ),
+                            0
+                        )
+                    FROM usage_data ud
+                    JOIN chutes c ON c.chute_id = ud.chute_id
+                    WHERE ud.user_id = ANY(:user_ids)
+                    AND ud.bucket >= now() - interval '4 hours'
+                    AND c.public IS TRUE
+                    GROUP BY ud.user_id
+                """),
+                {"user_ids": sub_user_list},
+            )
+            four_hour_totals = {row[0]: float(row[1]) for row in four_hour_result}
+
+        pipeline = settings.redis_client.pipeline()
+        for user_id in sub_users:
+            month_key = f"sub_cap_m:{month_suffix}:{user_id}"
+            four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
+            pipeline.set(month_key, str(month_totals.get(user_id, 0.0)), ex=35 * 86400)
+            pipeline.set(four_hour_key, str(four_hour_totals.get(user_id, 0.0)), ex=5 * 3600)
+        await pipeline.execute()
+        logger.info(f"Reconciled subscription cap cache for {len(sub_users)} users")
+    except Exception as exc:
+        logger.warning(f"Failed to reconcile subscription cap cache: {exc}")
+
+
 async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) -> None:
     """
     Process a completed minute bucket to the database.
@@ -195,6 +296,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
             "o": 0,  # output_tokens
             "x": 0,  # cached_tokens
             "t": 0.0,  # compute_time
+            "p": 0.0,  # paygo_amount
         }
     )
 
@@ -226,6 +328,8 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                 aggregated[key]["x"] = int(value_str)
             elif metric == "t":
                 aggregated[key]["t"] = float(value_str)
+            elif metric == "p":
+                aggregated[key]["p"] = float(value_str)
 
             field_count += 1
 
@@ -239,7 +343,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
     logger.info(f"Scanned {field_count} fields from {bucket_key} (processing as {processing_key})")
     for (user_id, chute_id), m in aggregated.items():
         logger.info(
-            f"  {user_id}:{chute_id} -> amt={m['a']:.6f} n={m['n']} it={m['i']} ot={m['o']} ct={m['x']} t={m['t']:.4f}s"
+            f"  {user_id}:{chute_id} -> amt={m['a']:.6f} n={m['n']} it={m['i']} ot={m['o']} ct={m['x']} t={m['t']:.4f}s p={m['p']:.6f}"
         )
 
     # Calculate user totals for balance deduction
@@ -268,6 +372,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                     "output_tokens": m["o"],
                     "cached_tokens": m["x"],
                     "compute_time": m["t"],
+                    "paygo_amount": m["p"],
                 }
                 for (user_id, chute_id), m in sorted_items
             ]
@@ -277,7 +382,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
             for i in range(0, len(usage_params), batch_size):
                 batch = usage_params[i : i + batch_size]
                 stmt = text("""
-                    INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time)
+                    INSERT INTO usage_data (user_id, bucket, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time, paygo_amount)
                     SELECT
                         u.user_id,
                         to_timestamp(:hour_bucket),
@@ -287,7 +392,8 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         d.input_tokens,
                         d.output_tokens,
                         d.cached_tokens,
-                        d.compute_time
+                        d.compute_time,
+                        d.paygo_amount
                     FROM unnest(
                         CAST(:user_ids AS text[]),
                         CAST(:chute_ids AS text[]),
@@ -296,8 +402,9 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         CAST(:input_tokens AS bigint[]),
                         CAST(:output_tokens AS bigint[]),
                         CAST(:cached_tokens AS bigint[]),
-                        CAST(:compute_times AS double precision[])
-                    ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time)
+                        CAST(:compute_times AS double precision[]),
+                        CAST(:paygo_amounts AS double precision[])
+                    ) AS d(user_id, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time, paygo_amount)
                     JOIN users u ON u.user_id = d.user_id
                     ON CONFLICT (user_id, chute_id, bucket)
                     DO UPDATE SET
@@ -306,7 +413,8 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         input_tokens = (usage_data.input_tokens + EXCLUDED.input_tokens),
                         output_tokens = (usage_data.output_tokens + EXCLUDED.output_tokens),
                         cached_tokens = (COALESCE(usage_data.cached_tokens, 0) + EXCLUDED.cached_tokens),
-                        compute_time = (COALESCE(usage_data.compute_time, 0) + EXCLUDED.compute_time)
+                        compute_time = (COALESCE(usage_data.compute_time, 0) + EXCLUDED.compute_time),
+                        paygo_amount = (COALESCE(usage_data.paygo_amount, 0) + EXCLUDED.paygo_amount)
                 """)
                 await session.execute(
                     stmt,
@@ -320,6 +428,7 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
                         "output_tokens": [p["output_tokens"] for p in batch],
                         "cached_tokens": [p["cached_tokens"] for p in batch],
                         "compute_times": [p["compute_time"] for p in batch],
+                        "paygo_amounts": [p["paygo_amount"] for p in batch],
                     },
                 )
 
@@ -384,6 +493,9 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
 
             await session.commit()
 
+        # Warm subscription cap cache in the background so it doesn't slow down the main loop.
+        asyncio.create_task(_warm_sub_cap_cache(aggregated))
+
         logger.info(
             f"Processed bucket {bucket_key}: "
             f"{len(aggregated)} user/chute combos, "
@@ -429,7 +541,9 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
     # minute_ts -> user_id -> chute_id -> metrics
     updates = defaultdict(
         lambda: defaultdict(
-            lambda: defaultdict(lambda: {"a": 0.0, "n": 0, "i": 0, "o": 0, "x": 0, "t": 0.0})
+            lambda: defaultdict(
+                lambda: {"a": 0.0, "n": 0, "i": 0, "o": 0, "x": 0, "t": 0.0, "p": 0.0}
+            )
         )
     )
 
@@ -450,6 +564,7 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
             output_tokens = int(record.get("o", 0))
             cached_tokens = int(record.get("x", 0))
             compute_time = float(record.get("t", 0))
+            paygo_amount = float(record.get("p", 0))
 
             agg = updates[minute_ts][user_id][chute_id]
             agg["a"] += amount
@@ -458,6 +573,7 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
             agg["o"] += output_tokens
             agg["x"] += cached_tokens
             agg["t"] += compute_time
+            agg["p"] += paygo_amount
 
             count += 1
         except Exception as exc:
@@ -483,6 +599,8 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
                         pipeline.hincrby(bucket_key, f"{field_prefix}:x", m["x"])
                     if m["t"] != 0:
                         pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", m["t"])
+                    if m["p"] != 0:
+                        pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:p", m["p"])
         await pipeline.execute()
     if count < batch_size:
         await asyncio.sleep(1)

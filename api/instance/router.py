@@ -471,6 +471,62 @@ async def _check_scalable_private(db, chute, miner):
     """
     chute_id = chute.chute_id
 
+    # Prevent highly unstable miners from deploying private chutes.
+    unstable_query = text("""
+        SELECT
+          COUNT(*) FILTER (
+            WHERE valid_termination IS TRUE
+               OR deletion_reason IN (
+                    'job has been terminated due to insufficient user balance',
+                    'user-defined/private chute instance has not been used since shutdown_after_seconds',
+                    'user has zero/negative balance (private chute)'
+                  )
+               OR deletion_reason LIKE '%%has an old version%%'
+               OR deleted_at IS NULL
+          ) AS valid_terminations,
+          COUNT(*) FILTER (
+            WHERE valid_termination IS NOT TRUE
+              AND deletion_reason NOT IN (
+                    'job has been terminated due to insufficient user balance',
+                    'user-defined/private chute instance has not been used since shutdown_after_seconds',
+                    'user has zero/negative balance (private chute)'
+                  )
+              AND deletion_reason NOT LIKE '%%has an old version%%'
+              AND deleted_at IS NOT NULL
+          ) AS invalid_terminations,
+          ROUND(
+            COUNT(*) FILTER (
+              WHERE valid_termination IS NOT TRUE
+                AND deletion_reason NOT IN (
+                      'job has been terminated due to insufficient user balance',
+                      'user-defined/private chute instance has not been used since shutdown_after_seconds',
+                      'user has zero/negative balance (private chute)'
+                    )
+                AND deletion_reason NOT LIKE '%%has an old version%%'
+                AND deleted_at IS NOT NULL
+            )::numeric
+            / NULLIF(COUNT(*), 0),
+            4
+          ) AS invalid_ratio
+        FROM instance_audit
+        WHERE billed_to IS NOT NULL
+          AND activated_at IS NOT NULL
+          AND activated_at >= NOW() - INTERVAL '7 days'
+          AND miner_hotkey = :hotkey
+    """)
+    result = await db.execute(unstable_query, {"hotkey": miner.hotkey})
+    row = result.mappings().one()
+    if (
+        row["valid_terminations"] + row["invalid_terminations"] >= 10
+        and row["invalid_ratio"] >= 0.3
+    ):
+        message = f"UNSTABLE MINER: miner {miner.hotkey} denied private chute {chute_id} due to instability: {row}"
+        logger.warning(message)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=message,
+        )
+
     ## Require the miner to have at least one activated public chute instance
     ## from one week ago or older before allowing private chute instances.
     # public_history_query = text("""

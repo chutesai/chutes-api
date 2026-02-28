@@ -5,6 +5,7 @@ Helpers for invocations.
 import os
 import asyncio
 import hashlib
+import time
 import aiohttp
 import orjson as json
 from datetime import date, datetime, timedelta, timezone
@@ -13,7 +14,13 @@ from async_lru import alru_cache
 from loguru import logger
 from fastapi import HTTPException, status
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
-from api.config import settings
+from api.config import (
+    settings,
+    get_subscription_tier,
+    SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER,
+    SUBSCRIPTION_4H_CAP_MULTIPLIER,
+    FOUR_HOUR_CHUNKS_PER_MONTH,
+)
 from api.database import get_session, get_inv_session
 from api.chute.schemas import NodeSelector
 from api.permissions import Permissioning
@@ -315,11 +322,52 @@ def build_response_headers(request, base_headers=None):
     return headers
 
 
+async def get_subscription_usage(
+    user_id: str, period: str, since_expr: str, cache_ttl: int
+) -> float:
+    """
+    Get accumulated paygo-equivalent usage covered by subscription (not already paid via paygo).
+    Tries Redis cache first, falls back to usage_data table query.
+    period: cache key suffix, e.g. "m:202602" or "4h:123456"
+    since_expr: SQL expression for the start bound, e.g. "date_trunc('month', now())"
+    cache_ttl: TTL in seconds for the Redis cache entry
+    """
+    cache_key = f"sub_cap_{period}:{user_id}"
+    cached = await settings.redis_client.get(cache_key)
+    if cached is not None:
+        return float(cached.decode() if isinstance(cached, bytes) else cached)
+
+    # Cache miss — query usage_data table using DB-relative time
+    # Cap usage = total paygo equivalent - what they actually paid
+    async with get_session(readonly=True) as session:
+        result = await session.execute(
+            text(f"""
+                SELECT COALESCE(
+                    SUM(
+                        GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
+                    ),
+                    0
+                )
+                FROM usage_data ud
+                JOIN chutes c ON c.chute_id = ud.chute_id
+                WHERE ud.user_id = :user_id
+                AND ud.bucket >= {since_expr}
+                AND c.public IS TRUE
+            """),
+            {"user_id": user_id},
+        )
+        usage = max(float(result.scalar() or 0.0), 0.0)
+
+    await settings.redis_client.set(cache_key, str(usage), ex=cache_ttl)
+    return usage
+
+
 async def check_quota_and_balance(request, current_user, chute):
     """
     Enforce free-model limits, private chute owner balance, and subscriber
-    invocation quotas.  Sets request.state.free_invocation and quota state
-    used by build_response_headers().
+    invocation quotas (including subscription caps).  Sets
+    request.state.free_invocation and quota state used by
+    build_response_headers().
 
     Must be called AFTER resolve_rate_limit_headers().
     """
@@ -430,6 +478,26 @@ async def check_quota_and_balance(request, current_user, chute):
         ):
             quota = 0
 
+        # Quota-200 users (one-time $5 payment) cannot use TEE models without balance.
+        # $3/mo sub users (quota 300 or 301) cannot use premium chutes without balance.
+        # In both cases, if the user has balance, force paygo (never free_invocation).
+        force_paygo = False
+        if quota == 200 and chute.tee:
+            if effective_balance <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="TEE models require an active subscription or positive balance.",
+                )
+            force_paygo = True
+
+        if get_subscription_tier(quota) == 3.0 and chute.chute_id in settings.premium_chute_ids:
+            if effective_balance <= 0:
+                raise HTTPException(
+                    status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                    detail="This model requires a higher subscription tier or positive balance.",
+                )
+            force_paygo = True
+
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
             if effective_balance <= 0 and not request.state.free_invocation:
@@ -459,8 +527,52 @@ async def check_quota_and_balance(request, current_user, chute):
 
                 raise HTTPException(**error_kwargs)
         else:
-            # When within the quota, mark the invocation as "free" so no balance is deducted when finished.
-            request.state.free_invocation = True
+            # When within the quota, check subscription caps before marking as free.
+            # force_paygo skips free_invocation entirely (TEE/premium restrictions).
+            if force_paygo:
+                pass  # Proceed as paygo — don't set free_invocation
+            elif (monthly_price := get_subscription_tier(quota)) is not None:
+                now = datetime.now()
+                monthly_usage = await get_subscription_usage(
+                    current_user.user_id,
+                    f"m:{now.strftime('%Y%m')}",
+                    "date_trunc('month', now())",
+                    35 * 86400,  # 35 days TTL
+                )
+                monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+
+                four_hour_bucket = int(time.time()) // (4 * 3600)
+                four_hour_usage = await get_subscription_usage(
+                    current_user.user_id,
+                    f"4h:{four_hour_bucket}",
+                    "now() - interval '4 hours'",
+                    5 * 3600,  # 5 hours TTL
+                )
+                four_hour_cap = (
+                    monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH
+                ) * SUBSCRIPTION_4H_CAP_MULTIPLIER
+
+                if monthly_usage >= monthly_cap or four_hour_usage >= four_hour_cap:
+                    # Cap exceeded — switch to paygo for remainder
+                    exceeded = []
+                    if monthly_usage >= monthly_cap:
+                        exceeded.append(f"monthly ({monthly_usage:.4f}/{monthly_cap:.4f})")
+                    if four_hour_usage >= four_hour_cap:
+                        exceeded.append(f"4h ({four_hour_usage:.4f}/{four_hour_cap:.4f})")
+                    logger.warning(
+                        f"Subscription cap exceeded for {current_user.user_id} "
+                        f"[{current_user.username}]: {', '.join(exceeded)}"
+                    )
+                    if effective_balance <= 0:
+                        raise HTTPException(
+                            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                            detail="Subscription usage cap exceeded. Please add balance to continue.",
+                        )
+                    # Has balance — proceed as paygo (don't set free_invocation=True)
+                else:
+                    request.state.free_invocation = True
+            else:
+                request.state.free_invocation = True
 
         # Store quota info for response headers.
         request.state.quota_total = quota

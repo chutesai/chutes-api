@@ -11,10 +11,11 @@ import random
 import traceback
 import httpx
 import orjson as json
+from datetime import datetime
 from loguru import logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, Response
-from api.config import settings
+from api.config import settings, get_subscription_tier
 from api.user.service import get_current_user
 from api.user.schemas import User, PriceOverride, InvocationDiscount, InvocationQuota
 from api.chute.util import (
@@ -500,7 +501,7 @@ async def _do_billing(
     override_applied = False
     free_invocation = getattr(request.state, "free_invocation", False)
 
-    if compute_units and not free_invocation:
+    if compute_units:
         hourly_price = await selector_hourly_price(chute.node_selector)
 
         # Per megatoken pricing for vLLM chutes.
@@ -559,6 +560,25 @@ async def _do_billing(
     ):
         balance_used = 0
 
+    # Always track paygo-equivalent usage for subscription cap accounting.
+    paygo_equivalent = balance_used
+
+    # Free invocations are not charged but still count against subscription caps.
+    if free_invocation:
+        balance_used = 0
+
+    # Keep subscription cap cache warm for near-real-time gating.
+    if free_invocation and paygo_equivalent > 0:
+        sub_quota = await InvocationQuota.get(user_id, chute.chute_id)
+        if get_subscription_tier(sub_quota) is not None:
+            month_key = f"sub_cap_m:{datetime.now().strftime('%Y%m')}:{user_id}"
+            four_hour_bucket = int(time.time()) // (4 * 3600)
+            four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
+            asyncio.create_task(settings.redis_client.incrbyfloat(month_key, paygo_equivalent))
+            asyncio.create_task(settings.redis_client.expire(month_key, 35 * 86400))
+            asyncio.create_task(settings.redis_client.incrbyfloat(four_hour_key, paygo_equivalent))
+            asyncio.create_task(settings.redis_client.expire(four_hour_key, 5 * 3600))
+
     if metrics is None:
         metrics = {}
     metrics["b"] = balance_used
@@ -592,6 +612,7 @@ async def _do_billing(
             balance_used,
             metrics if chute.standard_template == "vllm" else None,
             compute_time=duration,
+            paygo_amount=paygo_equivalent,
         )
     )
 

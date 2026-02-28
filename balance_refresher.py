@@ -101,7 +101,7 @@ async def shutdown_stale_instances():
             await session.delete(instance)
             await session.execute(
                 text(
-                    "UPDATE instance_audit SET deletion_reason = "
+                    "UPDATE instance_audit SET valid_termination = true, deletion_reason = "
                     "'user-defined/private chute instance has not been used since shutdown_after_seconds' "
                     "WHERE instance_id = :instance_id"
                 ),

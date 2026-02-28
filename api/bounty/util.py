@@ -164,7 +164,7 @@ def calculate_bounty_boost(age_seconds: int) -> float:
     """
     Calculate compute multiplier boost based on bounty age.
 
-    The boost ramps up from BOUNTY_BOOST_MIN (1.5x) to BOUNTY_BOOST_MAX (4x)
+    The boost ramps up from BOUNTY_BOOST_MIN (1.5x) to BOUNTY_BOOST_MAX (2.5x)
     over BOUNTY_BOOST_RAMP_MINUTES (180 minutes).
 
     This incentivizes miners to respond to older/more urgent bounties.
@@ -325,7 +325,7 @@ async def send_bounty_notification(
         chute_id: The chute ID
         bounty: Bounty amount
         effective_multiplier: Total effective compute multiplier for this chute
-        bounty_boost: Current dynamic bounty boost (1.5x-4x based on age)
+        bounty_boost: Current dynamic bounty boost (1.5x-2.5x based on age)
         urgency: Optional urgency level ("cold", "scaling", "critical")
     """
     try:

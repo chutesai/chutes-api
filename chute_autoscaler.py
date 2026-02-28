@@ -221,21 +221,15 @@ STARVING_HISTORY_KEY_PREFIX = "starving:"
 # Higher min instance counts for some chutes...
 LIMIT_OVERRIDES = {}
 FAILSAFE = {
-    "0d7184a2-32a3-53e0-9607-058c37edaab5": 40,
-    "722df757-203b-58df-b54b-22130fd1fc53": 20,
+    "0d7184a2-32a3-53e0-9607-058c37edaab5": 30,
+    "722df757-203b-58df-b54b-22130fd1fc53": 16,
     "398651e1-5f85-5e50-a513-7c5324e8e839": 15,
-    "08a7a60f-6956-5a9e-9983-5603c3ac5a38": 15,
-    "79684471-cf46-56f8-9cdf-d4f2a4de75cf": 10,
     "e51e818e-fa63-570d-9f68-49d7d1b4d12f": 10,
-    "9976df15-f78f-55ee-bfc7-89d7abbbecc8": 10,
-    "6320ab82-9e94-5d63-8e38-d136f61dc157": 10,
-    "579ca543-dda4-51d0-83ef-5667d1a5ed5f": 8,
-    "1aec6931-3bb8-5f5e-a61c-b112276ed140": 8,
-    "572bd930-0438-520c-a4a4-56874be296f8": 8,
-    "2ff25e81-4586-5ec8-b892-3a6f342693d7": 8,
-    "8f3bb827-b9e6-5487-88bc-ee8f0c6f5810": 8,
-    "4f82321e-3e58-55da-ba44-051686ddbfe5": 8,
-    "bbb7f19b-45e4-5172-ae38-6088612c9889": 4,
+    "08a7a60f-6956-5a9e-9983-5603c3ac5a38": 10,
+    "2ff25e81-4586-5ec8-b892-3a6f342693d7": 6,
+    "8f3bb827-b9e6-5487-88bc-ee8f0c6f5810": 6,
+    "6320ab82-9e94-5d63-8e38-d136f61dc157": 3,
+    "bbb7f19b-45e4-5172-ae38-6088612c9889": 3,
 }
 
 
@@ -1937,7 +1931,7 @@ async def _perform_autoscale_impl(
     # hit max boost, while chutes with only historical issues get modest boost.
     URGENCY_MAX_FOR_BOOST = 300
     URGENCY_BOOST_MIN = 1.0
-    URGENCY_BOOST_MAX = 2.5
+    URGENCY_BOOST_MAX = 1.5
     RELATIVE_ADJUSTMENT_MAX = 0.2  # ±20% adjustment based on relative urgency
 
     # Collect SMOOTHED urgency scores for chutes wanting to scale up
