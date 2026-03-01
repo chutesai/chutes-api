@@ -10,7 +10,7 @@ from api.chute.schemas import Chute
 from api.chute.util import get_one
 from api.database import get_session
 from api.instance.util import load_chute_target_ids, cm_redis_shard
-from api.metrics.perf import otps_tracker, ptps_tracker
+from api.metrics.perf import otps_tracker, ptps_tracker, ttft_tracker
 from api.model_alias.schemas import ModelAlias
 
 
@@ -100,13 +100,15 @@ async def check_chute_availability(chute_id: str) -> bool:
 
 async def get_chute_perf(chute_id: str) -> dict[str, float | None]:
     """
-    Get current otps and ptps EMA values for a chute.
+    Get current otps, ptps, and ttft EMA values for a chute.
     """
     otps_info = await otps_tracker().get_info(chute_id)
     ptps_info = await ptps_tracker().get_info(chute_id)
+    ttft_info = await ttft_tracker().get_info(chute_id)
     return {
         "otps": otps_info["ema"] if otps_info and otps_info.get("ready") else None,
         "ptps": ptps_info["ema"] if ptps_info and ptps_info.get("ready") else None,
+        "ttft": ttft_info["ema"] if ttft_info and ttft_info.get("ema") is not None else None,
     }
 
 
@@ -145,16 +147,17 @@ async def _rank_failover(chute_ids: list[str], chutes_map: dict[str, Chute]) -> 
 
 
 async def _rank_by_metric(
-    chute_ids: list[str], chutes_map: dict[str, Chute], metric: str
+    chute_ids: list[str],
+    chutes_map: dict[str, Chute],
+    metric: str,
+    ascending: bool = False,
 ) -> list[Chute]:
     """
-    Rank chutes by metric value (descending) among available chutes.
-    metric is "otps" for throughput, "ptps" for latency.
-    The other metric is used as tiebreaker.
+    Rank chutes by metric value among available chutes.
+    ascending=True for lower-is-better metrics (ttft), False for higher-is-better (otps).
     Chutes without metrics are appended in original order after ranked ones.
     """
-    tiebreaker = "ptps" if metric == "otps" else "otps"
-    scored: list[tuple[float, float, Chute]] = []
+    scored: list[tuple[float, Chute]] = []
     unscored: list[Chute] = []
 
     for cid in chute_ids:
@@ -168,11 +171,10 @@ async def _rank_by_metric(
         if score is None:
             unscored.append(chute)
         else:
-            tie = perf.get(tiebreaker) or 0.0
-            scored.append((score, tie, chute))
+            scored.append((score, chute))
 
-    scored.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    ranked = [chute for _, _, chute in scored] + unscored
+    scored.sort(key=lambda x: x[0], reverse=not ascending)
+    ranked = [chute for _, chute in scored] + unscored
 
     # If nothing was available, fall back to failover ordering.
     if not ranked:
@@ -256,7 +258,7 @@ async def resolve_model_parameter(
     if routing_mode == "throughput":
         ranked = await _rank_by_metric(valid_ids, valid_map, "otps")
     elif routing_mode == "latency":
-        ranked = await _rank_by_metric(valid_ids, valid_map, "ptps")
+        ranked = await _rank_by_metric(valid_ids, valid_map, "ttft", ascending=True)
     else:
         ranked = await _rank_failover(valid_ids, valid_map)
 

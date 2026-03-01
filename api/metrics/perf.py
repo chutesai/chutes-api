@@ -19,6 +19,11 @@ def otps_tracker():
     return AdaptiveEMA(key_prefix="otps")
 
 
+@lru_cache()
+def ttft_tracker():
+    return AdaptiveEMA(key_prefix="ttft")
+
+
 class PerfTracker:
     """
     Keep a rolling moving average of seconds per token (for LLMs)
@@ -85,6 +90,12 @@ class PerfTracker:
             # which we can only actually track for streamed requests, which means it
             # has a non-null TTFT.
             if metrics.get("ttft"):
+                # Track TTFT directly.
+                try:
+                    await ttft_tracker().update(chute_id, metrics["ttft"])
+                except Exception as exc:
+                    logger.warning(f"Failed to update adaptive EMA for TTFT: {exc}")
+
                 # Prompt tokens.
                 pema = None
                 oema = None
