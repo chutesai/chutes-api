@@ -73,6 +73,14 @@ def _get_ssl_and_cn(instance) -> tuple[ssl.SSLContext, str]:
     return ctx, cn
 
 
+async def _graceful_close(client: httpx.AsyncClient) -> None:
+    """Close an httpx client gracefully, giving HTTP/2 GOAWAY + TLS close_notify time."""
+    try:
+        await asyncio.wait_for(client.aclose(), timeout=5.0)
+    except Exception:
+        pass
+
+
 def evict_instance_ssl(instance_id: str):
     """Remove cached SSL context and client when an instance is destroyed."""
     iid = str(instance_id)
@@ -81,7 +89,7 @@ def evict_instance_ssl(instance_id: str):
     if client and not client.is_closed:
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(client.aclose())
+            loop.create_task(_graceful_close(client))
         except RuntimeError:
             pass
 
@@ -208,11 +216,16 @@ async def get_instance_client(instance, timeout: int = 600) -> tuple[httpx.Async
     if instance.cacert:
         ssl_ctx, cn = _get_ssl_and_cn(instance)
         # Build httpcore pool with our custom resolver that maps CN → IP.
+        # keepalive_expiry=75 matches the chute-side idle timeouts and avoids
+        # httpcore silently dropping connections after 5s (the default), which
+        # causes SSL shutdown timeouts on the peer because close_notify is
+        # never sent for idle-evicted connections.
         pool = httpcore.AsyncConnectionPool(
             ssl_context=ssl_ctx,
             http2=True,
             network_backend=_InstanceNetworkBackend(hostname=cn, ip=instance.host),
             socket_options=_KEEPALIVE_SOCK_OPTS,
+            keepalive_expiry=75,
         )
         client = httpx.AsyncClient(
             transport=_CoreTransport(pool),
@@ -232,7 +245,7 @@ async def get_instance_client(instance, timeout: int = 600) -> tuple[httpx.Async
             if evicted and not evicted.is_closed:
                 try:
                     loop = asyncio.get_running_loop()
-                    loop.create_task(evicted.aclose())
+                    loop.create_task(_graceful_close(evicted))
                 except RuntimeError:
                     pass
 
