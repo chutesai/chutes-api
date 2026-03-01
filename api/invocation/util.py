@@ -19,6 +19,7 @@ from api.config import (
     get_subscription_tier,
     SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER,
     SUBSCRIPTION_4H_CAP_MULTIPLIER,
+    SUBSCRIPTION_PAYGO_DISCOUNTS,
     FOUR_HOUR_CHUNKS_PER_MONTH,
 )
 from api.database import get_session, get_inv_session
@@ -531,7 +532,10 @@ async def check_quota_and_balance(request, current_user, chute):
             # When within the quota, check subscription caps before marking as free.
             # force_paygo skips free_invocation entirely (TEE/premium restrictions).
             if force_paygo:
-                pass  # Proceed as paygo — don't set free_invocation
+                if (fp_monthly_price := get_subscription_tier(quota)) is not None:
+                    request.state.subscriber_paygo_discount = SUBSCRIPTION_PAYGO_DISCOUNTS.get(
+                        fp_monthly_price, 0.0
+                    )
             elif (monthly_price := get_subscription_tier(quota)) is not None:
                 now = datetime.now()
                 monthly_usage = await get_subscription_usage(
@@ -569,7 +573,10 @@ async def check_quota_and_balance(request, current_user, chute):
                             status_code=status.HTTP_402_PAYMENT_REQUIRED,
                             detail="Subscription usage cap exceeded. Please add balance to continue.",
                         )
-                    # Has balance — proceed as paygo (don't set free_invocation=True)
+                    # Has balance — proceed as paygo with subscriber discount
+                    request.state.subscriber_paygo_discount = SUBSCRIPTION_PAYGO_DISCOUNTS.get(
+                        monthly_price, 0.0
+                    )
                 else:
                     request.state.free_invocation = True
             else:

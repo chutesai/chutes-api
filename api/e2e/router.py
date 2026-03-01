@@ -555,6 +555,11 @@ async def _do_billing(
             if user_discount:
                 balance_used -= balance_used * user_discount
 
+    # Subscriber paygo discount (when quota exceeded).
+    sub_paygo_discount = getattr(request.state, "subscriber_paygo_discount", 0.0)
+    if balance_used and sub_paygo_discount and not override_applied:
+        balance_used -= balance_used * sub_paygo_discount
+
     # Don't charge for private instances.
     if (
         not chute.public

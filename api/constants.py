@@ -58,7 +58,7 @@ DEFAULT_CACHE_DISCOUNT = 0.5
 # Likewise, for diffusion models, we allow different node selectors and step
 # counts, so we can't really have a fixed "per image" pricing, just a price
 # that varies based on the node selector and the number of steps requested.
-DIFFUSION_PRICE_MULT_PER_STEP = 0.005
+DIFFUSION_PRICE_MULT_PER_STEP = 0.002
 
 # Minimum utilization of a chute before additional instances can be added.
 UTILIZATION_SCALE_UP = 0.5
