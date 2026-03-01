@@ -383,7 +383,7 @@ async def check_llm_weights(chute, instances):
     max_durations = {"model.safetensors.index.json": 90}
     weight_map = None
     for target_path in target_paths:
-        max_duration = max_durations.get(target_path) or 25.0
+        max_duration = max_durations.get(target_path) or 35.0
         incorrect = []
         digest_counts = {}
         expected_digest, expected_content = await get_hf_content(model_name, revision, target_path)
@@ -566,7 +566,7 @@ async def increment_soft_fail(instance, chute):
     fail_key = f"watchtower:fail:{instance.instance_id}"
     fail_count = await settings.redis_client.incr(fail_key)
     await settings.redis_client.expire(fail_key, 3600)
-    if fail_count and fail_count >= 3:
+    if fail_count and fail_count >= 4:
         logger.warning(
             f"Instance {instance.instance_id} "
             f"miner {instance.miner_hotkey} "
@@ -923,6 +923,9 @@ async def check_chute(chute_id):
             )
             await session.execute(stmt)
             await session.commit()
+        for inst in to_update:
+            fail_key = f"watchtower:fail:{inst.instance_id}"
+            await settings.redis_client.delete(fail_key)
 
 
 async def check_all_chutes():
