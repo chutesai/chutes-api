@@ -817,11 +817,10 @@ async def _invoke_one(
             headers["X-Chutes-Serialized"] = "true"
 
         if stream:
-            # Use streaming request for streaming responses.
-            # .send() doesn't accept timeout= kwarg; set it on the client directly.
-            session.timeout = req_timeout
             stream_response = await session.send(
-                session.build_request("POST", f"/{path}", content=payload_string, headers=headers),
+                session.build_request(
+                    "POST", f"/{path}", content=payload_string, headers=headers, timeout=req_timeout
+                ),
                 stream=True,
             )
             response = stream_response

@@ -907,26 +907,31 @@ async def hostname_invocation(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"model not found: {model}",
                 )
-            chute = ranked_chutes[0]
-            fallback_chutes = ranked_chutes[1:]
+            # Filter ranked chutes to only those accessible to this user.
+            accessible = []
+            for candidate in ranked_chutes:
+                if candidate.standard_template != template:
+                    continue
+                if (
+                    not candidate.public
+                    and candidate.user_id != current_user.user_id
+                    and not await is_shared(candidate.chute_id, current_user.user_id)
+                    and not subnet_role_accessible(candidate, current_user)
+                ):
+                    continue
+                accessible.append(candidate)
+
+            if not accessible:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"model not found: {model}",
+                )
+            chute = accessible[0]
+            fallback_chutes = accessible[1:]
             if fallback_chutes or routing_mode:
                 payload["model"] = chute.name
-
-            if chute is not None:
-                if chute.standard_template != template or (
-                    not chute.public
-                    and (
-                        chute.user_id != current_user.user_id
-                        and not await is_shared(chute.chute_id, current_user.user_id)
-                    )
-                    and not subnet_role_accessible(chute, current_user)
-                ):
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail=f"model not found: {model}",
-                    )
-                request.state.chute_id = chute.chute_id
-                request.state.auth_object_id = chute.chute_id
+            request.state.chute_id = chute.chute_id
+            request.state.auth_object_id = chute.chute_id
 
     # Try invocation with cross-chute failover for multi-model routing.
     if fallback_chutes:
@@ -938,17 +943,8 @@ async def hostname_invocation(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
             ):
                 raise
-            # Try each fallback chute on infra_overload.
+            # Try each fallback chute on infra_overload (already access-filtered).
             for fallback in fallback_chutes:
-                if fallback.standard_template != template or (
-                    not fallback.public
-                    and (
-                        fallback.user_id != current_user.user_id
-                        and not await is_shared(fallback.chute_id, current_user.user_id)
-                    )
-                    and not subnet_role_accessible(fallback, current_user)
-                ):
-                    continue
                 request.state.chute_id = fallback.chute_id
                 request.state.auth_object_id = fallback.chute_id
                 payload["model"] = fallback.name

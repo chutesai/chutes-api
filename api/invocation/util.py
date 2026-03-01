@@ -402,7 +402,8 @@ async def check_quota_and_balance(request, current_user, chute):
                         tomorrow = datetime.combine(quota_date, datetime.min.time()) + timedelta(
                             days=1
                         )
-                        exp = max(int((tomorrow - datetime.now()).total_seconds()), 1)  # noqa
+                        exp = max(int((tomorrow - datetime.now()).total_seconds()), 1)
+                        await settings.redis_client.expire(qkey, exp)
                 except Exception as exc:
                     logger.warning(
                         f"Error checking free usage for {current_user.user_id=}: {str(exc)}"

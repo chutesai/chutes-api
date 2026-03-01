@@ -575,7 +575,7 @@ async def increment_soft_fail(instance, chute):
         await purge_and_notify(instance)
 
 
-def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool = False):
+def get_expected_command(chute, miner_hotkey: str, seed: int = None):
     """
     Get the command line for a given instance.
     """
@@ -614,15 +614,13 @@ def get_expected_command(chute, miner_hotkey: str, seed: int = None, tls: bool =
     ).strip()
 
 
-async def verify_expected_command(
-    dump: dict, chute: Chute, miner_hotkey: str, seed: int = None, tls: bool = False
-):
+async def verify_expected_command(dump: dict, chute: Chute, miner_hotkey: str, seed: int = None):
     process = dump["all_processes"][0]
     assert process["pid"] == 1, "Failed to find chutes comman as PID 1"
     assert process["username"] == "chutes", "Not running as chutes user"
     command_line = re.sub(r"([^ ]+/)?python3?(\.[0-9]+)?", "python", process["cmdline"]).strip()
     command_line = re.sub(r"([^ ]+/)?chutes\b", "chutes", command_line)
-    expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed, tls=tls)
+    expected = get_expected_command(chute, miner_hotkey=miner_hotkey, seed=seed)
     assert command_line == expected, f"Unexpected command: {command_line=} vs {expected=}"
     logger.success(f"Verified command line: {miner_hotkey=} {command_line=}")
 
@@ -834,7 +832,6 @@ async def check_chute(chute_id):
                         chute,
                         miner_hotkey=instance.miner_hotkey,
                         seed=instance.nodes[0].seed,
-                        tls=semcomp(instance.chutes_version or "0.0.0", "0.5.5") >= 0,
                     )
                 except AssertionError as exc:
                     logger.error(f"{log_prefix} failed running command check: {exc=}")

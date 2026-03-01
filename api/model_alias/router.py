@@ -56,14 +56,14 @@ async def create_or_update_alias(
     await db.commit()
 
     # Invalidate cache.
-    cache_key = f"malias:{current_user.user_id}:{body.alias.lower()}"
+    cache_key = f"malias:v2:{current_user.user_id}:{body.alias.lower()}"
     await settings.redis_client.delete(cache_key)
 
     # Re-fetch the row.
     result = await db.execute(
         select(ModelAlias).where(
             ModelAlias.user_id == current_user.user_id,
-            func.lower(ModelAlias.alias) == body.alias,
+            ModelAlias.alias == body.alias,
         )
     )
     return result.scalar_one()
@@ -88,5 +88,5 @@ async def delete_alias(
         )
     await db.commit()
 
-    cache_key = f"malias:{current_user.user_id}:{alias.lower()}"
+    cache_key = f"malias:v2:{current_user.user_id}:{alias.lower()}"
     await settings.redis_client.delete(cache_key)

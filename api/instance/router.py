@@ -1062,8 +1062,13 @@ async def _validate_launch_config_instance(
         # NetNanny / Aegis verification (match egress config and hash).
         nn_valid = True
         if semcomp(chute.chutes_version or "0.0.0", "0.5.5") >= 0:
-            # v4 (aegis): netnanny_hash comes from aegis-verify
-            if not args.netnanny_hash:
+            # v4 (aegis): netnanny_hash comes from aegis-verify; also verify egress config.
+            if chute.allow_external_egress != args.egress:
+                logger.error(
+                    f"{log_prefix} egress mismatch for v4 instance: {chute.allow_external_egress=} vs {args.egress=}"
+                )
+                nn_valid = False
+            elif not args.netnanny_hash:
                 nn_valid = False
             elif AEGIS_VERIFY is not None:
                 if not AEGIS_VERIFY.verify(
@@ -1973,14 +1978,15 @@ async def delayed_instance_tls_check(instance_id: str):
             )
             logger.error(reason)
             await session.delete(instance)
-            await asyncio.create_task(notify_deleted(instance))
             await session.execute(
                 text(
                     "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
                 ),
                 {"instance_id": instance.instance_id, "reason": reason},
             )
+            await session.commit()
             await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
+            asyncio.create_task(notify_deleted(instance))
         else:
             logger.success(
                 f"Live TLS cert verification passed: {instance.instance_id=} on {instance.host}:{instance.port}"
@@ -2005,13 +2011,14 @@ async def delayed_instance_fs_check(instance_id: str):
             )
             logger.warning(reason)
             await session.delete(instance)
-            await asyncio.create_task(notify_deleted(instance))
             await session.execute(
                 text(
                     "UPDATE instance_audit SET deletion_reason = :reason WHERE instance_id = :instance_id"
                 ),
                 {"instance_id": instance.instance_id, "reason": reason},
             )
+            await session.commit()
+            asyncio.create_task(notify_deleted(instance))
         else:
             logger.success(
                 f"Successfully verified FS hash {instance.instance_id=} {instance.miner_hotkey=} {instance.chute_id=}"
@@ -2706,33 +2713,13 @@ async def stream_logs(
         log_port = next(p for p in instance.port_mappings if p["internal_port"] == 8001)[
             "external_port"
         ]
-        # Build a temporary client for the log port (different from main port).
+        # Build a temporary client for the log port (always plain HTTP, even for v4/TLS instances).
         import httpx as _httpx
-        import httpcore as _httpcore
 
-        if instance.cacert:
-            from api.instance.connection import (
-                _get_ssl_and_cn,
-                _InstanceNetworkBackend,
-                _CoreTransport,
-            )
-
-            ssl_ctx, cn = _get_ssl_and_cn(instance)
-            pool = _httpcore.AsyncConnectionPool(
-                ssl_context=ssl_ctx,
-                http2=True,
-                network_backend=_InstanceNetworkBackend(hostname=cn, ip=instance.host),
-            )
-            client = _httpx.AsyncClient(
-                transport=_CoreTransport(pool),
-                base_url=f"https://{cn}:{log_port}",
-                timeout=_httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
-            )
-        else:
-            client = _httpx.AsyncClient(
-                base_url=f"http://{instance.host}:{log_port}",
-                timeout=_httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
-            )
+        client = _httpx.AsyncClient(
+            base_url=f"http://{instance.host}:{log_port}",
+            timeout=_httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
+        )
 
         headers, _ = miner_client.sign_request(instance.miner_hotkey, purpose="chutes")
         try:
@@ -2757,7 +2744,7 @@ async def stream_logs(
     )
 
 
-@router.get("/{chute_id}/{instance_id}/disable")
+@router.post("/{chute_id}/{instance_id}/disable")
 async def disable_instance_endpoint(
     chute_id: str,
     instance_id: str,

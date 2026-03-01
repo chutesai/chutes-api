@@ -445,8 +445,10 @@ class LeastConnManager:
             logger.error(f"Error getting connection counts: {e}")
             return {iid: 0 for iid in instance_ids}
 
-    async def get_targets(self, avoid=[], prefixes=None):
+    async def get_targets(self, avoid=None, prefixes=None):
         # Get instances not in avoid list
+        if avoid is None:
+            avoid = []
         available_instances = [iid for iid in self.instances.keys() if iid not in avoid]
         if not available_instances:
             return []
@@ -556,19 +558,49 @@ class LeastConnManager:
             logger.error(f"Error tracking active chute/instance: {e}")
 
     @asynccontextmanager
-    async def get_target(self, avoid=[], prefixes=None):
-        # Single-instance fast path: skip connection counting, just check disabled.
+    async def get_target(self, avoid=None, prefixes=None):
+        if avoid is None:
+            avoid = []
+        # Single-instance fast path: check disabled and track connections.
         if len(self.instances) == 1:
             instance = next(iter(self.instances.values()))
             if instance.instance_id in avoid:
                 yield None, "No infrastructure available to serve request"
-            else:
-                disabled_ids = await batch_check_disabled([instance.instance_id])
-                if instance.instance_id in disabled_ids:
-                    yield None, "infra_overload"
-                else:
-                    asyncio.create_task(self._track_active(instance.instance_id))
-                    yield instance, None
+                return
+            disabled_ids = await batch_check_disabled([instance.instance_id])
+            if instance.instance_id in disabled_ids:
+                yield None, "infra_overload"
+                return
+
+            key = f"cc:{self.chute_id}:{instance.instance_id}"
+            try:
+                pipe = self.redis_client.client.pipeline()
+                pipe.incr(key)
+                pipe.expire(key, self.connection_expiry)
+                await asyncio.wait_for(pipe.execute(), timeout=3.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Timeout incrementing connection count for {instance.instance_id}, proceeding anyway"
+                )
+            except Exception as e:
+                logger.error(f"Error tracking connection: {e}")
+
+            asyncio.create_task(self._track_active(instance.instance_id))
+            try:
+                yield instance, None
+            finally:
+                try:
+
+                    async def _decr():
+                        val = await self.redis_client.client.decr(key)
+                        if val < 0:
+                            await self.redis_client.client.set(key, 0, ex=self.connection_expiry)
+
+                    await asyncio.shield(_decr())
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout cleaning up connection for {instance.instance_id}")
+                except Exception as e:
+                    logger.error(f"Error cleaning up connection for {instance.instance_id}: {e}")
             return
 
         instance = None

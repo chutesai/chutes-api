@@ -3,7 +3,7 @@ Multi-model routing: failover, latency-based, and throughput-based selection.
 """
 
 import time
-import pickle
+import orjson as json
 from sqlalchemy import select, func
 from api.config import settings
 from api.chute.schemas import Chute
@@ -48,12 +48,12 @@ async def get_user_alias(user_id: str, alias: str) -> list[str] | None:
     Look up a user's model alias. Redis-cached with 120s TTL.
     Returns ordered list of chute_ids, or None if alias doesn't exist.
     """
-    cache_key = f"malias:{user_id}:{alias.lower()}"
+    cache_key = f"malias:v2:{user_id}:{alias.lower()}"
     cached = await settings.redis_client.get(cache_key)
     if cached is not None:
         if cached == b"__none__":
             return None
-        return pickle.loads(cached)
+        return json.loads(cached)
 
     async with get_session() as session:
         result = await session.execute(
@@ -65,7 +65,7 @@ async def get_user_alias(user_id: str, alias: str) -> list[str] | None:
         row = result.scalar_one_or_none()
 
     if row is not None:
-        await settings.redis_client.set(cache_key, pickle.dumps(row), ex=120)
+        await settings.redis_client.set(cache_key, json.dumps(row), ex=120)
         return row
     else:
         await settings.redis_client.set(cache_key, b"__none__", ex=120)

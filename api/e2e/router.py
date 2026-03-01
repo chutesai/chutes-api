@@ -260,6 +260,7 @@ async def e2e_invoke(
     session = None
     pooled = True
     response = None
+    streaming_started = False
     try:
         # Send to instance.
         session, pooled = await get_miner_session(instance, timeout=1800)
@@ -272,12 +273,13 @@ async def e2e_invoke(
 
         e2e_timeout = httpx.Timeout(connect=10.0, read=1800.0, write=30.0, pool=10.0)
         if is_stream:
-            # Use streaming request for streaming responses.
-            # .send() doesn't accept timeout= kwarg; set it on the client directly.
-            session.timeout = e2e_timeout
             response = await session.send(
                 session.build_request(
-                    "POST", f"/{encrypted_path}", content=payload_string, headers=headers
+                    "POST",
+                    f"/{encrypted_path}",
+                    content=payload_string,
+                    headers=headers,
+                    timeout=e2e_timeout,
                 ),
                 stream=True,
             )
@@ -321,6 +323,7 @@ async def e2e_invoke(
             multiplier *= chute.boost
 
         if is_stream:
+            streaming_started = True
             return StreamingResponse(
                 _stream_e2e_response(
                     response,
@@ -380,7 +383,7 @@ async def e2e_invoke(
         logger.error(f"E2E invoke error: {exc}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal error during E2E invocation")
     finally:
-        if not is_stream:
+        if not streaming_started:
             # For streaming, cleanup happens in the generator.
             await _cleanup(session, response, manager, chute_id, instance_id, conn_id, pooled)
 
@@ -619,7 +622,7 @@ async def _do_billing(
     # Increment quota usage value.
     if (
         free_invocation
-        and chute.discount < 1.0
+        and (chute.discount or 0) < 1.0
         and (
             chute.public
             or has_legacy_private_billing(chute)

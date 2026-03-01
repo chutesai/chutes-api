@@ -523,16 +523,12 @@ def chacha20_poly1305_decrypt(ciphertext: bytes, key_hex: str) -> bytes:
     """
     Decrypt ChaCha20-Poly1305 ciphertext.
     Format: nonce (12 bytes) || ciphertext || tag (16 bytes)
-    Ciphertext may be base64-encoded.
+    Ciphertext is base64-encoded.
     """
     key = bytes.fromhex(key_hex)
     if isinstance(ciphertext, str):
         ciphertext = ciphertext.encode()
-    # Try base64 decode if it looks like base64
-    try:
-        raw = base64.b64decode(ciphertext)
-    except Exception:
-        raw = ciphertext
+    raw = base64.b64decode(ciphertext)
     if len(raw) < 28:  # 12 nonce + 16 tag minimum
         raise ValueError("Ciphertext too short for ChaCha20-Poly1305")
     nonce = raw[:12]
