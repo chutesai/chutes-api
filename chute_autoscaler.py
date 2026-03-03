@@ -1240,6 +1240,50 @@ async def manage_rolling_updates(
                 await notify_deleted(instance, message=reason)
                 await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
 
+        # Cleanup orphaned version-mismatched instances that have no rolling update record.
+        # This catches instances that slip through when a rolling update record is deleted
+        # before all old-version instances are cleaned up.
+        orphaned = (
+            await session.execute(
+                text("""
+                    SELECT i.instance_id, i.chute_id, i.version, c.version AS current_version
+                    FROM instances i
+                    JOIN chutes c ON c.chute_id = i.chute_id
+                    WHERE i.active = true
+                      AND i.version != c.version
+                      AND NOT EXISTS (
+                          SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = i.chute_id
+                      )
+                """)
+            )
+        ).fetchall()
+
+        if orphaned:
+            orphan_ids = [row.instance_id for row in orphaned]
+            logger.warning(
+                f"Found {len(orphan_ids)} orphaned version-mismatched instances with no rolling update, purging: "
+                f"{[(row.instance_id, row.version, row.current_version) for row in orphaned]}"
+            )
+            await session.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason, valid_termination = true "
+                    "WHERE instance_id = ANY(:ids)"
+                ),
+                {"reason": "Orphaned version mismatch (no rolling update)", "ids": orphan_ids},
+            )
+            # Load and delete instances individually so the delete trigger fires for ICH.
+            orphan_instances = (
+                await session.execute(
+                    select(Instance).where(Instance.instance_id.in_(orphan_ids))
+                )
+            ).scalars().all()
+            for instance in orphan_instances:
+                await session.delete(instance)
+            await session.commit()
+            for instance in orphan_instances:
+                await notify_deleted(instance, message="Orphaned version mismatch (no rolling update)")
+                await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
+
 
 async def query_prometheus_batch(
     queries: Dict[str, str], prometheus_url: str = PROMETHEUS_URL
