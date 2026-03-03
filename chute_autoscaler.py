@@ -1273,15 +1273,21 @@ async def manage_rolling_updates(
             )
             # Load and delete instances individually so the delete trigger fires for ICH.
             orphan_instances = (
-                await session.execute(
-                    select(Instance).where(Instance.instance_id.in_(orphan_ids))
+                (
+                    await session.execute(
+                        select(Instance).where(Instance.instance_id.in_(orphan_ids))
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
             for instance in orphan_instances:
                 await session.delete(instance)
             await session.commit()
             for instance in orphan_instances:
-                await notify_deleted(instance, message="Orphaned version mismatch (no rolling update)")
+                await notify_deleted(
+                    instance, message="Orphaned version mismatch (no rolling update)"
+                )
                 await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
 
 
