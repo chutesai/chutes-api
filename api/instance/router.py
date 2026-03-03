@@ -2369,8 +2369,6 @@ async def _build_launch_config_verified_response(
     if semcomp(instance.chutes_version or "0.0.0", "0.5.11") >= 0:
         return_value["secrets"]["HF_HUB_DISABLE_XET"] = "1"
         return_value["secrets"]["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
-        return_value["secrets"]["SGL_DG_USE_NVRTC"] = "1"
-        return_value["secrets"]["SGLANG_DG_USE_NVRTC"] = "1"
     return_value["activation_url"] = (
         f"https://api.{settings.base_domain}/instances/launch_config/{launch_config.config_id}/activate"
     )
