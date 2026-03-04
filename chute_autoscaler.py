@@ -1111,7 +1111,6 @@ async def manage_rolling_updates(
     Manage rolling updates by replacing old-version instances with new-version capacity.
     Enforces a hard 3-hour cap; after that, all remaining old instances are deleted.
     """
-    max_duration = timedelta(hours=12)
     async with get_session() as session:
         await session.execute(text("SET LOCAL statement_timeout = '10s'"))
         result = await session.execute(select(RollingUpdate))
@@ -1134,6 +1133,9 @@ async def manage_rolling_updates(
                 await session.delete(rolling_update)
                 await session.commit()
                 continue
+            max_duration = timedelta(hours=12)
+            if not chute.public:
+                max_duration = timedelta(hours=2)
 
             current_version = chute.version
             old_instances = (
@@ -1163,7 +1165,7 @@ async def manage_rolling_updates(
             if elapsed >= max_duration:
                 to_delete = old_instances
                 logger.warning(
-                    f"Rolling update exceeded 3h cap for {rolling_update.chute_id=}, forcing cleanup"
+                    f"Rolling update exceeded time cap for {rolling_update.chute_id=}, forcing cleanup"
                 )
             else:
                 permitted_capacity = None
@@ -1217,7 +1219,7 @@ async def manage_rolling_updates(
                 continue
 
             reason = (
-                "Rolling update timeout (3h cap)"
+                "Rolling update timeout"
                 if elapsed >= max_duration
                 else "Rolling update replacement"
             )
