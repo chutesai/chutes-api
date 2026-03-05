@@ -10,7 +10,7 @@ import tempfile
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
-from sqlalchemy import or_, select, func
+from sqlalchemy import delete, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
@@ -396,7 +396,10 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
 
     except AttestationError as e:
-        # Preserve the specific error message from the AttestationError
+        # Clean up orphan server: _track_server committed before verify_server failed.
+        await db.rollback()
+        await db.execute(delete(Server).where(Server.server_id == args.id))
+        await db.commit()
         error_detail = e.detail if hasattr(e, "detail") else str(e)
         logger.error(
             f"Server registration failed - attestation error: name={args.name or args.id} host={args.host} miner_hotkey={miner_hotkey} error={error_detail}"
@@ -404,6 +407,10 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         raise ServerRegistrationError(f"Server registration failed - {error_detail}")
     except IntegrityError as e:
         await db.rollback()
+        # Clean up orphan server when IntegrityError came from _track_nodes.
+        # If from _track_server (duplicate server), this is a no-op.
+        await db.execute(delete(Server).where(Server.server_id == args.id))
+        await db.commit()
         logger.error(
             f"Server registration failed - IntegrityError: name={args.name or args.id} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}"
         )
@@ -412,6 +419,9 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
         )
     except Exception as e:
         await db.rollback()
+        # Clean up orphan server if failure occurred after _track_server.
+        await db.execute(delete(Server).where(Server.server_id == args.id))
+        await db.commit()
         logger.error(
             f"Unexpected error during server registration: name={args.name or args.id} host={args.host} miner_hotkey={miner_hotkey} error={str(e)}",
             exc_info=True,

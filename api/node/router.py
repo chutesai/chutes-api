@@ -9,13 +9,15 @@ from typing import Optional
 from collections import defaultdict
 from taskiq_redis.exceptions import ResultIsMissingError
 from fastapi import APIRouter, Depends, HTTPException, status, Header, Request
-from sqlalchemy import select, func, text
+from sqlalchemy import delete, select, func, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from api.database import get_db_session
 from api.config import settings
 from api.node.util import _track_nodes, check_node_inventory
 from api.miner.util import is_miner_blacklisted
+from api.server.schemas import Server
 from api.server.util import _track_server
 from api.util import is_valid_host
 from api.gpu import SUPPORTED_GPUS
@@ -150,6 +152,9 @@ async def create_nodes(
     nodes_args = args.nodes
 
     if len(nodes_args) > 10:
+        logger.warning(
+            f"POST /nodes 400: exceeded GPU limit {len(nodes_args)=} {hotkey=} {args.server_id=}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Limit is 10 GPUs per server.",
@@ -201,6 +206,10 @@ async def create_nodes(
     nodes = []
     verified_at = func.now() if settings.skip_gpu_verification else None
     if not all(await asyncio.gather(*[is_valid_host(n.verification_host) for n in args.nodes])):
+        hosts = set([n.verification_host for n in args.nodes])
+        logger.warning(
+            f"POST /nodes 400: invalid verification_hosts {hotkey=} {args.server_id=} {hosts=} "
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="One or more invalid verification_hosts provided.",
@@ -216,7 +225,25 @@ async def create_nodes(
             is_tee=False,
         )
         nodes = await _track_nodes(db, hotkey, args.server_id, args.nodes, seed, verified_at)
+    except IntegrityError:
+        await db.rollback()
+        # Clean up orphan server when IntegrityError came from _track_nodes (duplicate nodes).
+        # If it came from _track_server (duplicate server), this is a no-op.
+        await db.execute(delete(Server).where(Server.server_id == args.server_id))
+        await db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Server/Nodes already exist.",
+        )
     except ValueError as exc:
+        await db.rollback()
+        # Clean up orphan server: _track_server already committed before _track_nodes failed.
+        # Without this, client retries would hit duplicate server error (500).
+        await db.execute(delete(Server).where(Server.server_id == args.server_id))
+        await db.commit()
+        logger.warning(
+            f"POST /nodes 400: GPU validation error {exc!r} {hotkey=} {args.server_id=}"
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"GPU parameter validation error: {exc}",
