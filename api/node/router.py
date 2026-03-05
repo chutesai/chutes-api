@@ -241,9 +241,7 @@ async def create_nodes(
         # Without this, client retries would hit duplicate server error (500).
         await db.execute(delete(Server).where(Server.server_id == args.server_id))
         await db.commit()
-        logger.warning(
-            f"POST /nodes 400: GPU validation error {exc!r} {hotkey=} {args.server_id=}"
-        )
+        logger.warning(f"POST /nodes 400: GPU validation error {exc!r} {hotkey=} {args.server_id=}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"GPU parameter validation error: {exc}",
