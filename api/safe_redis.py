@@ -1,6 +1,7 @@
 import socket
 import asyncio
 import inspect
+import time
 import traceback
 import concurrent.futures
 from typing import Any, Optional
@@ -70,8 +71,9 @@ def pool_stats(pool) -> str:
         return "pool_stats_unavailable"
 
 
-def wrap_pipeline(pipe, default=None, timeout: float = 0.5):
-    """Make pipeline.execute() fail-open."""
+def wrap_pipeline(pipe, default=None, timeout: float = 0.5, owner=None):
+    """Make pipeline.execute() fail-open. If owner (SafeRedis) is provided,
+    pipeline failures/successes contribute to failover tracking."""
     loop = asyncio.get_running_loop()
     start = loop.time()
     orig_execute = pipe.execute
@@ -81,13 +83,19 @@ def wrap_pipeline(pipe, default=None, timeout: float = 0.5):
         try:
             value = await asyncio.wait_for(asyncio.shield(task), timeout)
             elapsed = loop.time() - start
+            if owner is not None:
+                owner._record_success()
             if elapsed > 0.25:
                 logger.debug(f"SafeRedis: slow pipleine elapsed={elapsed * 1000:.1f}ms")
             return value
         except asyncio.TimeoutError:
             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            if owner is not None:
+                owner._record_failure()
             logger.error("SafeRedis: pipeline.execute fail-open wait_for asyncio.TimeoutError")
         except FAIL_OPEN_EXCEPTIONS as exc:
+            if owner is not None:
+                owner._record_failure()
             error_detail = str(exc)
             if not error_detail.strip():
                 error_detail = traceback.format_exc()
@@ -161,11 +169,25 @@ class SafeRedis:
         health_check_interval: int = 30,
         retry_on_timeout: bool = False,
         retry: Any = None,
+        consecutive_failure_limit: int = 5,
+        pool_reset_cooldown: float = 5.0,
+        fallback_host: Optional[str] = None,
+        primary_probe_interval: float = 30.0,
         **kwargs,
     ):
         self.default = default
         self.timeout = op_timeout
-        self.client = redis.Redis(
+        self._consecutive_failures = 0
+        self._consecutive_failure_limit = consecutive_failure_limit
+        self._pool_reset_cooldown = pool_reset_cooldown
+        self._last_pool_reset: float = 0.0
+        self._primary_host = host
+        self._fallback_host = fallback_host
+        self._active_host = host
+        self._on_primary = True
+        self._primary_probe_interval = primary_probe_interval
+        self._primary_probe_task: Optional[asyncio.Task] = None
+        self._redis_kwargs = dict(
             host=host,
             port=port,
             db=db,
@@ -179,12 +201,131 @@ class SafeRedis:
             retry=retry,
             **kwargs,
         )
+        self.client = redis.Redis(**self._redis_kwargs)
+
+    def _record_success(self):
+        if self._consecutive_failures > 0:
+            logger.info(
+                f"SafeRedis: connection recovered on host={self._active_host} "
+                f"after {self._consecutive_failures} consecutive failures"
+            )
+            self._consecutive_failures = 0
+
+    def _record_failure(self):
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._consecutive_failure_limit:
+            self._maybe_reset_pool()
+
+    def _maybe_reset_pool(self):
+        now = time.monotonic()
+        if now - self._last_pool_reset < self._pool_reset_cooldown:
+            return
+        self._last_pool_reset = now
+        port = self._redis_kwargs.get("port", "?")
+        db = self._redis_kwargs.get("db", "?")
+
+        # Decide which host to reconnect to.
+        if self._on_primary and self._fallback_host:
+            new_host = self._fallback_host
+            self._on_primary = False
+            logger.warning(
+                f"SafeRedis: {self._consecutive_failures} consecutive failures on "
+                f"primary={self._primary_host} port={port} db={db}, "
+                f"failing over to fallback={new_host}"
+            )
+        elif not self._on_primary:
+            # Already on fallback and still failing — try primary again.
+            new_host = self._primary_host
+            self._on_primary = True
+            logger.warning(
+                f"SafeRedis: {self._consecutive_failures} consecutive failures on "
+                f"fallback={self._active_host} port={port} db={db}, "
+                f"trying primary={new_host} again"
+            )
+        else:
+            # No fallback configured, just reset the pool on the same host.
+            new_host = self._active_host
+            logger.warning(
+                f"SafeRedis: {self._consecutive_failures} consecutive failures on "
+                f"host={self._active_host} port={port} db={db}, resetting connection pool"
+            )
+
+        self._active_host = new_host
+        try:
+            old_pool = self.client.connection_pool
+            self.client = redis.Redis(**{**self._redis_kwargs, "host": new_host})
+            asyncio.ensure_future(self._close_old_pool(old_pool))
+        except Exception:
+            logger.error(f"SafeRedis: pool reset failed: {traceback.format_exc()}")
+        self._consecutive_failures = 0
+
+        # If we just moved off primary, start probing for primary recovery.
+        if not self._on_primary and self._fallback_host:
+            self._start_primary_probe()
+
+    def _start_primary_probe(self):
+        if self._primary_probe_task and not self._primary_probe_task.done():
+            return
+        self._primary_probe_task = asyncio.ensure_future(self._probe_primary_loop())
+
+    async def _probe_primary_loop(self):
+        port = self._redis_kwargs.get("port", "?")
+        db = self._redis_kwargs.get("db", "?")
+        logger.info(
+            f"SafeRedis: starting primary probe for {self._primary_host}:{port} db={db} "
+            f"every {self._primary_probe_interval}s"
+        )
+        while not self._on_primary:
+            await asyncio.sleep(self._primary_probe_interval)
+            if self._on_primary:
+                break
+            probe = None
+            try:
+                probe = redis.Redis(
+                    **{
+                        **self._redis_kwargs,
+                        "host": self._primary_host,
+                        "max_connections": 1,
+                    }
+                )
+                pong = await asyncio.wait_for(probe.ping(), timeout=2.0)
+                if pong:
+                    logger.info(
+                        f"SafeRedis: primary {self._primary_host}:{port} db={db} is back, switching over"
+                    )
+                    old_pool = self.client.connection_pool
+                    self._active_host = self._primary_host
+                    self._on_primary = True
+                    self.client = redis.Redis(**{**self._redis_kwargs, "host": self._primary_host})
+                    asyncio.ensure_future(self._close_old_pool(old_pool))
+                    self._consecutive_failures = 0
+                    break
+            except Exception:
+                logger.debug(
+                    f"SafeRedis: primary probe {self._primary_host}:{port} still unreachable"
+                )
+            finally:
+                if probe is not None:
+                    try:
+                        await probe.aclose()
+                    except Exception:
+                        pass
+        logger.info(f"SafeRedis: primary probe loop ended, on_primary={self._on_primary}")
+
+    @staticmethod
+    async def _close_old_pool(pool):
+        try:
+            await pool.disconnect()
+        except Exception:
+            pass
 
     async def get_with_status(self, key):
         try:
             result = await self.client.get(key)
+            self._record_success()
             return True, result
         except FAIL_OPEN_EXCEPTIONS as exc:
+            self._record_failure()
             error_detail = str(exc)
             if not error_detail.strip():
                 error_detail = traceback.format_exc()
@@ -203,6 +344,7 @@ class SafeRedis:
             try:
                 result = attr(*args, **kwargs)
             except FAIL_OPEN_EXCEPTIONS as exc:
+                self._record_failure()
                 error_detail = str(exc)
                 if not error_detail.strip():
                     error_detail = traceback.format_exc()
@@ -212,7 +354,7 @@ class SafeRedis:
                 return self.default
 
             if is_pipeline(result):
-                return wrap_pipeline(result, self.default, timeout=self.timeout * 3)
+                return wrap_pipeline(result, self.default, timeout=self.timeout * 3, owner=self)
 
             if inspect.isawaitable(result):
 
@@ -224,6 +366,7 @@ class SafeRedis:
                     try:
                         value = await asyncio.wait_for(asyncio.shield(task), timeout)
                         elapsed = loop.time() - start
+                        self._record_success()
                         if elapsed > 0.25:
                             logger.debug(
                                 f"SafeRedis: slow call {name} elapsed={elapsed * 1000:.1f}ms "
@@ -232,6 +375,7 @@ class SafeRedis:
                         return value
                     except asyncio.TimeoutError:
                         elapsed = loop.time() - start
+                        self._record_failure()
                         task.add_done_callback(
                             lambda t: t.exception() if not t.cancelled() else None
                         )
@@ -242,6 +386,7 @@ class SafeRedis:
                         return self.default
                     except FAIL_OPEN_EXCEPTIONS as exc:
                         elapsed = loop.time() - start
+                        self._record_failure()
                         error_detail = str(exc)
                         if not error_detail.strip():
                             error_detail = traceback.format_exc()

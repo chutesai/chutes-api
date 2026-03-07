@@ -31,68 +31,68 @@ instance_daily_costs AS (
         -- Calculate hours for this specific day
         CASE
             -- Instance runs through the entire day
-            WHEN DATE(i.activated_at) < d.date 
-                AND DATE(COALESCE(i.stop_billing_at, NOW())) > d.date 
+            WHEN DATE(i.activated_at) < d.date
+                AND DATE(COALESCE(i.stop_billing_at, NOW())) > d.date
             THEN 24.0
-            
+
             -- Instance starts and ends on the same day
-            WHEN DATE(i.activated_at) = d.date 
+            WHEN DATE(i.activated_at) = d.date
                 AND DATE(COALESCE(i.stop_billing_at, NOW())) = d.date
             THEN EXTRACT(EPOCH FROM (
                 COALESCE(i.stop_billing_at, NOW()) - i.activated_at
             )) / 3600.0
-            
+
             -- Instance starts on this day but continues
-            WHEN DATE(i.activated_at) = d.date 
+            WHEN DATE(i.activated_at) = d.date
                 AND DATE(COALESCE(i.stop_billing_at, NOW())) > d.date
             THEN EXTRACT(EPOCH FROM (
                 DATE_TRUNC('day', i.activated_at) + INTERVAL '1 day' - i.activated_at
             )) / 3600.0
-            
+
             -- Instance ends on this day
-            WHEN DATE(i.activated_at) < d.date 
+            WHEN DATE(i.activated_at) < d.date
                 AND DATE(COALESCE(i.stop_billing_at, NOW())) = d.date
             THEN EXTRACT(EPOCH FROM (
                 COALESCE(i.stop_billing_at, NOW()) - DATE_TRUNC('day', COALESCE(i.stop_billing_at, NOW()))
             )) / 3600.0
-            
+
             ELSE 0
         END AS hours_on_day,
-        
+
         -- Calculate the revenue for this day
         CASE
             -- Instance runs through the entire day
-            WHEN DATE(i.activated_at) < d.date 
-                AND DATE(COALESCE(i.stop_billing_at, NOW())) > d.date 
+            WHEN DATE(i.activated_at) < d.date
+                AND DATE(COALESCE(i.stop_billing_at, NOW())) > d.date
             THEN 24.0 * i.hourly_rate
-            
+
             -- Instance starts and ends on the same day
-            WHEN DATE(i.activated_at) = d.date 
+            WHEN DATE(i.activated_at) = d.date
                 AND DATE(COALESCE(i.stop_billing_at, NOW())) = d.date
             THEN EXTRACT(EPOCH FROM (
                 COALESCE(i.stop_billing_at, NOW()) - i.activated_at
             )) / 3600.0 * i.hourly_rate
-            
+
             -- Instance starts on this day but continues
-            WHEN DATE(i.activated_at) = d.date 
+            WHEN DATE(i.activated_at) = d.date
                 AND DATE(COALESCE(i.stop_billing_at, NOW())) > d.date
             THEN EXTRACT(EPOCH FROM (
                 DATE_TRUNC('day', i.activated_at) + INTERVAL '1 day' - i.activated_at
             )) / 3600.0 * i.hourly_rate
-            
+
             -- Instance ends on this day
-            WHEN DATE(i.activated_at) < d.date 
+            WHEN DATE(i.activated_at) < d.date
                 AND DATE(COALESCE(i.stop_billing_at, NOW())) = d.date
             THEN EXTRACT(EPOCH FROM (
                 COALESCE(i.stop_billing_at, NOW()) - DATE_TRUNC('day', COALESCE(i.stop_billing_at, NOW()))
             )) / 3600.0 * i.hourly_rate
-            
+
             ELSE 0
         END AS daily_revenue
-        
+
     FROM date_series d
     CROSS JOIN instance_audit i
-    WHERE 
+    WHERE
         -- Only include instances that are billed and not deleted
         i.billed_to IS NOT NULL
         AND i.deleted_at IS NULL
@@ -128,7 +128,7 @@ FROM (
         sum(case
             when quota = 300 then 3
             when quota = 2000 then 10
-            else 20
+	    when quota = 5000 then 20
         end) as new_subscriber_revenue
     FROM invocation_quotas
     WHERE quota > 200

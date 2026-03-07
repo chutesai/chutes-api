@@ -98,6 +98,9 @@ INTEGRATED_SUBNET_BONUS = 3
 # TEE bonus.
 TEE_BONUS = 2.25
 
+# Last-instance bonus for public TEE chutes (sole active instance gets this multiplier).
+LAST_PUBLIC_TEE_INSTANCE_BONUS = 2.0
+
 # Duration for instance disablement when consecutive errors are hit (increases linearly until max).
 INSTANCE_DISABLE_BASE_TIMEOUT = 90
 

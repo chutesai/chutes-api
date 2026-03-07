@@ -143,7 +143,7 @@ class Settings(BaseSettings):
 
     # Base redis settings.
     redis_host: str = Field(
-        default="172.16.0.100",
+        default="172.16.0.22",
         validation_alias="PRIMARY_REDIS_HOST",
     )
     redis_port: int = Field(
@@ -158,6 +158,8 @@ class Settings(BaseSettings):
     redis_op_timeout: float = float(
         os.getenv("REDIS_OP_TIMEOUT", os.getenv("REDIS_SOCKET_TIMEOUT", "2.5"))
     )
+    redis_fallback_host: Optional[str] = os.getenv("REDIS_FALLBACK_HOST", "172.16.0.23")
+    redis_primary_probe_interval: float = float(os.getenv("REDIS_PRIMARY_PROBE_INTERVAL", "30.0"))
 
     _redis_client: Optional[redis.Redis] = None
     _lite_redis_client: Optional[redis.Redis] = None
@@ -171,6 +173,12 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+
+    def _safe_redis_common_kwargs(self) -> dict:
+        return dict(
+            fallback_host=self.redis_fallback_host,
+            primary_probe_interval=self.redis_primary_probe_interval,
+        )
 
     @property
     def redis_client(self) -> redis.Redis:
@@ -188,6 +196,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                **self._safe_redis_common_kwargs(),
             )
         return self._redis_client
 
@@ -207,6 +216,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                **self._safe_redis_common_kwargs(),
             )
         return self._lite_redis_client
 
@@ -226,6 +236,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                **self._safe_redis_common_kwargs(),
             )
         return self._billing_redis_client
 
@@ -246,6 +257,7 @@ class Settings(BaseSettings):
                     health_check_interval=30,
                     retry_on_timeout=True,
                     retry=Retry(ConstantBackoff(0.5), 2),
+                    **self._safe_redis_common_kwargs(),
                 )
                 for idx in range(self.cm_redis_shard_count)
             ]

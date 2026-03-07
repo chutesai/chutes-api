@@ -915,6 +915,83 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
         else:
             logger.info("No compute_multiplier updates needed")
 
+        # Last-instance bonus for public TEE chutes.
+        # For each public+tee chute, the expected ICH value is:
+        #   instances.compute_multiplier * LAST_PUBLIC_TEE_INSTANCE_BONUS  (if sole active instance)
+        #   instances.compute_multiplier                                   (if >1 active instances)
+        # Compare against the actual open ICH record and update only when they differ.
+        from api.constants import LAST_PUBLIC_TEE_INSTANCE_BONUS
+
+        # Track the latest compute_multiplier for each instance (may have been updated above).
+        updated_multipliers = {iid: mult for iid, mult in updates}
+
+        # Group instances by chute for public+tee chutes.
+        pub_tee_instances = defaultdict(list)
+        for inst in instances:
+            chute = chutes.get(inst.chute_id)
+            if chute and chute.public and chute.tee:
+                pub_tee_instances[inst.chute_id].append(inst)
+
+        if pub_tee_instances:
+            # Batch-load current open ICH values for all relevant instances.
+            all_pub_tee_instance_ids = [
+                inst.instance_id for inst_list in pub_tee_instances.values() for inst in inst_list
+            ]
+            ich_result = await session.execute(
+                text("""
+                    SELECT instance_id, compute_multiplier
+                    FROM instance_compute_history
+                    WHERE instance_id = ANY(:ids) AND ended_at IS NULL
+                """),
+                {"ids": all_pub_tee_instance_ids},
+            )
+            current_ich = {row.instance_id: float(row.compute_multiplier) for row in ich_result}
+
+            ich_updates = 0
+            for chute_id, chute_instances in pub_tee_instances.items():
+                is_sole = len(chute_instances) == 1
+                for inst in chute_instances:
+                    # Use the latest compute_multiplier (from refresh above, or original if not updated).
+                    base = float(
+                        updated_multipliers.get(inst.instance_id, inst.compute_multiplier) or 1.0
+                    )
+                    # Thrash-penalized instances never receive the bonus — force back to base
+                    # so any previously-applied bonus gets reconciled away.
+                    is_thrashing = inst.instance_id in thrash_penalty_instances
+                    expected = (
+                        base * LAST_PUBLIC_TEE_INSTANCE_BONUS
+                        if is_sole and not is_thrashing
+                        else base
+                    )
+                    actual = current_ich.get(inst.instance_id)
+
+                    if actual is not None and abs(actual - expected) > 0.01:
+                        await session.execute(
+                            text("""
+                                WITH closed AS (
+                                    UPDATE instance_compute_history
+                                    SET ended_at = NOW()
+                                    WHERE instance_id = :instance_id AND ended_at IS NULL
+                                    RETURNING instance_id
+                                )
+                                INSERT INTO instance_compute_history (instance_id, compute_multiplier, started_at)
+                                VALUES (:instance_id, :expected, NOW())
+                            """),
+                            {"instance_id": inst.instance_id, "expected": expected},
+                        )
+                        ich_updates += 1
+                        action = "applied" if is_sole else "removed"
+                        logger.info(
+                            f"Last-instance bonus {action} for {inst.instance_id} on chute {chute_id}: "
+                            f"ICH {actual:.2f} -> {expected:.2f}"
+                        )
+
+            if ich_updates:
+                await session.commit()
+                logger.success(
+                    f"Updated ICH for {ich_updates} instances (last-instance bonus adjustments)"
+                )
+
 
 async def _log_thrashing_instances():
     """
@@ -1163,6 +1240,56 @@ async def manage_rolling_updates(
             await session.commit()
             for instance in to_delete:
                 await notify_deleted(instance, message=reason)
+                await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
+
+        # Cleanup orphaned version-mismatched instances that have no rolling update record.
+        # This catches instances that slip through when a rolling update record is deleted
+        # before all old-version instances are cleaned up.
+        orphaned = (
+            await session.execute(
+                text("""
+                    SELECT i.instance_id, i.chute_id, i.version, c.version AS current_version
+                    FROM instances i
+                    JOIN chutes c ON c.chute_id = i.chute_id
+                    WHERE i.active = true
+                      AND i.version != c.version
+                      AND NOT EXISTS (
+                          SELECT 1 FROM rolling_updates ru WHERE ru.chute_id = i.chute_id
+                      )
+                """)
+            )
+        ).fetchall()
+
+        if orphaned:
+            orphan_ids = [row.instance_id for row in orphaned]
+            logger.warning(
+                f"Found {len(orphan_ids)} orphaned version-mismatched instances with no rolling update, purging: "
+                f"{[(row.instance_id, row.version, row.current_version) for row in orphaned]}"
+            )
+            await session.execute(
+                text(
+                    "UPDATE instance_audit SET deletion_reason = :reason, valid_termination = true "
+                    "WHERE instance_id = ANY(:ids)"
+                ),
+                {"reason": "Orphaned version mismatch (no rolling update)", "ids": orphan_ids},
+            )
+            # Load and delete instances individually so the delete trigger fires for ICH.
+            orphan_instances = (
+                (
+                    await session.execute(
+                        select(Instance).where(Instance.instance_id.in_(orphan_ids))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for instance in orphan_instances:
+                await session.delete(instance)
+            await session.commit()
+            for instance in orphan_instances:
+                await notify_deleted(
+                    instance, message="Orphaned version mismatch (no rolling update)"
+                )
                 await invalidate_instance_cache(instance.chute_id, instance_id=instance.instance_id)
 
 
@@ -1997,7 +2124,12 @@ async def _perform_autoscale_impl(
     # Calculate effective compute multiplier for each chute (for CSV export and logging)
     # This mirrors the logic in api/chute/util.py:calculate_effective_compute_multiplier
     # but uses ctx.boost (which may not be saved to DB yet in dry-run mode)
-    from api.constants import PRIVATE_INSTANCE_BONUS, INTEGRATED_SUBNET_BONUS, TEE_BONUS
+    from api.constants import (
+        PRIVATE_INSTANCE_BONUS,
+        INTEGRATED_SUBNET_BONUS,
+        TEE_BONUS,
+        LAST_PUBLIC_TEE_INSTANCE_BONUS,
+    )
     from api.chute.util import INTEGRATED_SUBNETS
 
     for ctx in contexts.values():
@@ -2037,6 +2169,10 @@ async def _perform_autoscale_impl(
         # TEE bonus
         if ctx.tee:
             total *= TEE_BONUS
+
+        # Last-instance bonus (sole active instance of public TEE chute)
+        if ctx.public and ctx.tee and ctx.current_count == 1:
+            total *= LAST_PUBLIC_TEE_INSTANCE_BONUS
 
         ctx.effective_multiplier = total
         ctx.cm_delta_ratio = total / base_mult if base_mult > 0 else 1.0

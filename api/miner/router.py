@@ -265,14 +265,16 @@ async def list_active_instances(
     """
     query = text("""
         SELECT
-            instance_id,
-            miner_hotkey,
-            chute_id,
-            activated_at,
-            COALESCE(compute_multiplier, 1.0) as compute_multiplier
-        FROM instances
-        WHERE active = true
-        AND verified = true
+            i.instance_id,
+            i.miner_hotkey,
+            i.chute_id,
+            i.activated_at,
+            COALESCE(ich.compute_multiplier, i.compute_multiplier, 1.0) as compute_multiplier
+        FROM instances i
+        LEFT JOIN instance_compute_history ich
+            ON ich.instance_id = i.instance_id AND ich.ended_at IS NULL
+        WHERE i.active = true
+        AND i.verified = true
     """)
     result = await session.execute(query)
     return [
