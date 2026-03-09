@@ -88,7 +88,9 @@ def get_subscription_cycle_start(
 def get_subscription_cycle_end(
     anchor_date: datetime | None, now: datetime | None = None
 ) -> datetime:
-    return _shift_months_capped(get_subscription_cycle_start(anchor_date, now), 1)
+    """Renewal timestamp based on the raw anchor, unaffected by the usage floor."""
+    anchor = _as_utc_timestamp(anchor_date)
+    return _shift_months_capped(anchor, 1)
 
 
 def build_subscription_periods(anchor_date: datetime | None, now: datetime | None = None) -> dict:
