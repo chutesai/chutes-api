@@ -11,7 +11,6 @@ import re
 import uuid
 import io
 import time
-from datetime import datetime
 import traceback
 import orjson as json
 import pybase64 as base64
@@ -1717,12 +1716,25 @@ async def invoke(
                 # Track subscription caps in Redis.
                 if request.state.free_invocation and paygo_equivalent > 0:
                     from api.config import get_subscription_tier
+                    from api.invocation.util import (
+                        build_subscription_periods,
+                        SUBSCRIPTION_CACHE_PREFIX,
+                    )
 
-                    sub_quota = await InvocationQuota.get(user_id, chute.chute_id)
+                    (
+                        sub_quota,
+                        subscription_anchor,
+                        _,
+                        _,
+                    ) = await InvocationQuota.get_subscription_record(user_id)
                     if get_subscription_tier(sub_quota) is not None:
-                        month_key = f"sub_cap_m:{datetime.now().strftime('%Y%m')}:{user_id}"
-                        four_hour_bucket = int(time.time()) // (4 * 3600)
-                        four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
+                        periods = build_subscription_periods(subscription_anchor)
+                        month_key = (
+                            f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{user_id}"
+                        )
+                        four_hour_key = (
+                            f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{user_id}"
+                        )
                         asyncio.create_task(
                             settings.redis_client.incrbyfloat(month_key, paygo_equivalent)
                         )

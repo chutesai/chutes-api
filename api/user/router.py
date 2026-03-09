@@ -10,7 +10,7 @@ import secrets
 import hashlib
 import orjson as json
 from loguru import logger
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from pydantic import BaseModel
 from collections import defaultdict
@@ -36,6 +36,7 @@ from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
 from api.payment.schemas import AdminBalanceChange
 from api.logo.schemas import Logo
+from api.invocation.util import build_subscription_periods, SUBSCRIPTION_CACHE_PREFIX
 from sqlalchemy import func, or_, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
@@ -75,6 +76,15 @@ class BalanceRequest(BaseModel):
 class BalanceTransferRequest(BaseModel):
     user_id: str  # target user_id (uuid) or username
     amount: Optional[float] = None  # defaults to entire balance
+
+
+class QuotaConfigRequest(BaseModel):
+    quota: int
+    effective_date: Optional[datetime] = None
+
+
+class EffectiveDateRequest(BaseModel):
+    effective_date: Optional[datetime] = None
 
 
 class SubnetRoleRequest(BaseModel):
@@ -739,13 +749,35 @@ async def admin_quotas_change(
         )
 
     # Validate payload.
-    quotas = await request.json()
-    for key, value in quotas.items():
-        if not isinstance(value, int) or value < 0:
+    raw_quotas = await request.json()
+    quotas = {}
+    for key, value in raw_quotas.items():
+        if isinstance(value, int):
+            parsed = QuotaConfigRequest(quota=value, effective_date=None)
+        elif isinstance(value, dict):
+            try:
+                parsed = QuotaConfigRequest(**value)
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid quota payload {key=} {value=}",
+                )
+        else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid quota value {key=} {value=}",
             )
+        if parsed.quota < 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid quota value {key=} {value=}",
+            )
+        if parsed.effective_date and parsed.effective_date.tzinfo is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"effective_date must be a UTC timestamp for {key=}",
+            )
+        quotas[key] = parsed
         if key == "*":
             continue
         try:
@@ -778,13 +810,91 @@ async def admin_quotas_change(
     for chute_id in deleted_chute_ids:
         key = f"qta:{user_id}:{chute_id}"
         await settings.redis_client.delete(key)
+    await settings.redis_client.delete(f"subq:{user_id}")
 
     # Add the new values.
-    for key, quota in quotas.items():
-        db.add(InvocationQuota(user_id=user_id, chute_id=key, quota=quota))
+    for key, quota_config in quotas.items():
+        effective_date = quota_config.effective_date
+        if effective_date is not None:
+            effective_date = effective_date.astimezone(timezone.utc).replace(tzinfo=None)
+        db.add(
+            InvocationQuota(
+                user_id=user_id,
+                chute_id=key,
+                quota=quota_config.quota,
+                effective_date=effective_date,
+            )
+        )
     await db.commit()
-    logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {quotas=}")
-    return quotas
+    response = {
+        key: {
+            "quota": value.quota,
+            "effective_date": value.effective_date.isoformat() if value.effective_date else None,
+        }
+        for key, value in quotas.items()
+    }
+    logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {response=}")
+    return response
+
+
+@router.put("/{user_id}/quotas/{chute_id}/effective_date")
+async def admin_quota_effective_date_change(
+    user_id: str,
+    chute_id: str,
+    body: EffectiveDateRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+
+    if chute_id != "*":
+        try:
+            uuid.UUID(chute_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid chute_id specified: {chute_id}",
+            )
+
+    if body.effective_date and body.effective_date.tzinfo is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="effective_date must be a UTC timestamp.",
+        )
+
+    result = await db.execute(
+        select(InvocationQuota)
+        .where(InvocationQuota.user_id == user_id)
+        .where(InvocationQuota.chute_id == chute_id)
+    )
+    quota = result.scalar_one_or_none()
+    if quota is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Quota row not found for {user_id=} {chute_id=}",
+        )
+
+    quota.effective_date = (
+        body.effective_date.astimezone(timezone.utc).replace(tzinfo=None)
+        if body.effective_date is not None
+        else None
+    )
+    await db.commit()
+    await settings.redis_client.delete(f"qta:{user_id}:{chute_id}")
+    if chute_id == "*":
+        await settings.redis_client.delete(f"subq:{user_id}")
+
+    return {
+        "user_id": user_id,
+        "chute_id": chute_id,
+        "quota": quota.quota,
+        "effective_date": body.effective_date.isoformat() if body.effective_date else None,
+        "updated_at": quota.updated_at.isoformat() if quota.updated_at else None,
+    }
 
 
 @router.post("/{user_id}/discounts")
@@ -1054,7 +1164,12 @@ async def my_subscription_usage(
         FOUR_HOUR_CHUNKS_PER_MONTH,
     )
 
-    quota = await InvocationQuota.get(current_user.user_id, "*")
+    (
+        quota,
+        subscription_anchor,
+        effective_date,
+        updated_at,
+    ) = await InvocationQuota.get_subscription_record(current_user.user_id)
     monthly_price = get_subscription_tier(quota)
     if monthly_price is None:
         return {"subscription": False}
@@ -1062,16 +1177,16 @@ async def my_subscription_usage(
     monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
     four_hour_cap = (monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH) * SUBSCRIPTION_4H_CAP_MULTIPLIER
 
-    now = datetime.now()
-    month_suffix = now.strftime("%Y%m")
-    four_hour_bucket = int(time.time()) // (4 * 3600)
+    periods = build_subscription_periods(subscription_anchor)
 
     # Try Redis first for both, fall back to DB.
     monthly_usage = None
     four_hour_usage = None
 
-    month_key = f"sub_cap_m:{month_suffix}:{current_user.user_id}"
-    four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{current_user.user_id}"
+    month_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{current_user.user_id}"
+    four_hour_key = (
+        f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{current_user.user_id}"
+    )
     cached_month = await settings.redis_client.get(month_key)
     cached_4h = await settings.redis_client.get(four_hour_key)
 
@@ -1088,14 +1203,18 @@ async def my_subscription_usage(
                 SELECT
                     COALESCE(
                         SUM(
-                            GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
+                            CASE
+                                WHEN ud.bucket >= :cycle_start
+                                THEN GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
+                                ELSE 0
+                            END
                         ),
                         0
                     ) AS monthly,
                     COALESCE(
                         SUM(
                             CASE
-                                WHEN ud.bucket >= now() - interval '4 hours'
+                                WHEN ud.bucket >= :four_hour_start
                                 THEN GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
                                 ELSE 0
                             END
@@ -1105,10 +1224,16 @@ async def my_subscription_usage(
                 FROM usage_data ud
                 JOIN chutes c ON c.chute_id = ud.chute_id
                 WHERE ud.user_id = :user_id
-                AND ud.bucket >= date_trunc('month', now())
+                AND ud.bucket >= :cycle_start
                 AND c.public IS TRUE
             """),
-            {"user_id": current_user.user_id},
+            {
+                "user_id": current_user.user_id,
+                # usage_data.bucket is stored as a naive UTC timestamp.
+                "cycle_start": periods["cycle_start"].replace(tzinfo=None),
+                # usage_data.bucket is stored as a naive UTC timestamp.
+                "four_hour_start": periods["four_hour_start"].replace(tzinfo=None),
+            },
         )
         row = result.one()
         if monthly_usage is None:
@@ -1119,15 +1244,20 @@ async def my_subscription_usage(
     return {
         "subscription": True,
         "monthly_price": monthly_price,
+        "anchor_date": subscription_anchor.isoformat() if subscription_anchor else None,
+        "effective_date": effective_date.isoformat() if effective_date else None,
+        "updated_at": updated_at.isoformat() if updated_at else None,
         "monthly": {
             "usage": monthly_usage,
             "cap": monthly_cap,
             "remaining": max(monthly_cap - monthly_usage, 0.0),
+            "reset_at": periods["cycle_end"].isoformat(),
         },
         "four_hour": {
             "usage": four_hour_usage,
             "cap": four_hour_cap,
             "remaining": max(four_hour_cap - four_hour_usage, 0.0),
+            "reset_at": periods["four_hour_end"].isoformat(),
         },
     }
 

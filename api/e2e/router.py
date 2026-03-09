@@ -11,7 +11,6 @@ import random
 import traceback
 import httpx
 import orjson as json
-from datetime import datetime
 from loguru import logger
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import StreamingResponse, Response
@@ -609,11 +608,15 @@ async def _do_billing(
 
     # Keep subscription cap cache warm for near-real-time gating.
     if free_invocation and paygo_equivalent > 0:
-        sub_quota = await InvocationQuota.get(user_id, chute.chute_id)
+        from api.invocation.util import build_subscription_periods, SUBSCRIPTION_CACHE_PREFIX
+
+        sub_quota, subscription_anchor, _, _ = await InvocationQuota.get_subscription_record(
+            user_id
+        )
         if get_subscription_tier(sub_quota) is not None:
-            month_key = f"sub_cap_m:{datetime.now().strftime('%Y%m')}:{user_id}"
-            four_hour_bucket = int(time.time()) // (4 * 3600)
-            four_hour_key = f"sub_cap_4h:{four_hour_bucket}:{user_id}"
+            periods = build_subscription_periods(subscription_anchor)
+            month_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{user_id}"
+            four_hour_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{user_id}"
             asyncio.create_task(settings.redis_client.incrbyfloat(month_key, paygo_equivalent))
             asyncio.create_task(settings.redis_client.expire(month_key, 35 * 86400))
             asyncio.create_task(settings.redis_client.incrbyfloat(four_hour_key, paygo_equivalent))

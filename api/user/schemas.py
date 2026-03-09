@@ -171,6 +171,7 @@ class InvocationQuota(Base):
     chute_id = Column(String, primary_key=True)
     is_default = Column(Boolean, default=True)
     payment_refresh_date = Column(DateTime, nullable=True)
+    effective_date = Column(DateTime, nullable=True)
     updated_at = Column(DateTime, nullable=False, server_default=func.now())
     quota = Column(BigInteger, nullable=False, default=settings.default_quotas.get("*", 200))
 
@@ -197,6 +198,74 @@ class InvocationQuota(Base):
             )
             await settings.redis_client.set(key, str(default_quota), ex=60)
             return default_quota
+
+    @staticmethod
+    async def get_subscription_record(
+        user_id: str,
+    ) -> tuple[int, datetime.datetime | None, datetime.datetime | None, datetime.datetime | None]:
+        """
+        Load the wildcard subscription quota row with its anchor timestamps.
+        Returns quota, anchor_date, effective_date, updated_at.
+        """
+        key = f"subq:{user_id}"
+        cached = await settings.redis_client.get(key)
+        if cached is not None:
+            payload = json.loads(cached)
+            return (
+                int(payload["quota"]),
+                datetime.datetime.fromisoformat(payload["anchor_date"])
+                if payload.get("anchor_date")
+                else None,
+                datetime.datetime.fromisoformat(payload["effective_date"])
+                if payload.get("effective_date")
+                else None,
+                datetime.datetime.fromisoformat(payload["updated_at"])
+                if payload.get("updated_at")
+                else None,
+            )
+
+        async with get_session(readonly=True) as session:
+            result = await session.execute(
+                select(
+                    InvocationQuota.quota,
+                    InvocationQuota.effective_date,
+                    InvocationQuota.updated_at,
+                )
+                .where(InvocationQuota.user_id == user_id)
+                .where(InvocationQuota.chute_id == "*")
+                .limit(1)
+            )
+            row = result.first()
+
+        anchor_date = None
+        quota = int(settings.default_quotas.get("*", 200))
+        effective_date = None
+        updated_at = None
+        if row:
+            quota = int(row.quota)
+            effective_date = row.effective_date
+            updated_at = row.updated_at
+            anchor_date = effective_date or updated_at
+
+        payload = {
+            "quota": quota,
+            "anchor_date": anchor_date.isoformat() if anchor_date else None,
+            "effective_date": effective_date.isoformat() if effective_date else None,
+            "updated_at": updated_at.isoformat() if updated_at else None,
+        }
+        await settings.redis_client.set(key, json.dumps(payload), ex=60)
+        return (
+            quota,
+            datetime.datetime.fromisoformat(payload["anchor_date"])
+            if payload["anchor_date"]
+            else None,
+            datetime.datetime.fromisoformat(payload["effective_date"])
+            if payload["effective_date"]
+            else None,
+            datetime.datetime.fromisoformat(payload["updated_at"])
+            if payload["updated_at"]
+            else None,
+        )
 
     @staticmethod
     async def quota_key(user_id: str, chute_id: str):
