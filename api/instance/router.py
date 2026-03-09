@@ -1561,9 +1561,7 @@ async def _validate_tee_launch_config_instance(
     return launch_config, nodes, instance, validator_pubkey
 
 
-async def _verify_tee_version_support(
-    db: AsyncSession, chute: Chute, hotkey: str | None
-) -> None:
+async def _verify_tee_version_support(db: AsyncSession, chute: Chute, hotkey: str | None) -> None:
     """
     Reject launch config for TEE chutes (>= 0.6.0) when miner has legacy TEE servers (< 0.2.1).
     Raises HTTPException with server names if any TEE servers need upgrading.
@@ -1586,9 +1584,7 @@ async def _verify_tee_version_support(
     )
     result = await db.execute(stmt)
     legacy_server_names = [
-        row[0]
-        for row in result.all()
-        if row[1] is None or semcomp(row[1], "0.2.1") < 0
+        row[0] for row in result.all() if row[1] is None or semcomp(row[1], "0.2.1") < 0
     ]
     if legacy_server_names:
         raise HTTPException(
