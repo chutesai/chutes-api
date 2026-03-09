@@ -1582,7 +1582,7 @@ async def _verify_tee_version_support(
         select(Server.name, latest_boot.c.measurement_version)
         .select_from(Server)
         .outerjoin(latest_boot, true())
-        .where(Server.miner_hotkey == hotkey, Server.is_tee == True)
+        .where(Server.miner_hotkey == hotkey, Server.is_tee.is_(True))
     )
     result = await db.execute(stmt)
     legacy_server_names = [
