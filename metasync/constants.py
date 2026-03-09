@@ -25,7 +25,7 @@ latest_chute_config AS (
     chute_id,
     (node_selector->>'gpu_count')::integer AS gpu_count
   FROM chute_history
-  ORDER BY chute_id, created_at DESC
+  ORDER BY chute_id, updated_at DESC
 ),
 -- ALL active instances with GPU counts
 active_instances_with_gpu AS (
