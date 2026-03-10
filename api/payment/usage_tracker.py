@@ -39,6 +39,7 @@ from api.permissions import Permissioning
 from api.database import get_session
 from api.invocation.util import (
     build_subscription_periods,
+    get_fixed_four_hour_bucket_start,
     SUBSCRIPTION_CACHE_PREFIX,
     SUBSCRIPTION_USAGE_FLOOR,
 )
@@ -224,14 +225,7 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
                     SELECT
                         iq.user_id,
                         COALESCE(
-                            SUM(
-                                CASE
-                                    WHEN c.public IS TRUE
-                                    AND ud.bucket >= period.cycle_start
-                                    THEN GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
-                                    ELSE 0
-                                END
-                            ),
+                            SUM(GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)),
                             0
                         )
                     FROM invocation_quotas iq
@@ -241,8 +235,10 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
                             COALESCE(iq.effective_date, iq.updated_at),
                             :usage_floor
                         )
-                        AND ud.bucket >= now() - interval '35 days'
-                    LEFT JOIN chutes c ON c.chute_id = ud.chute_id
+                        AND EXISTS (
+                            SELECT 1 FROM chutes c
+                            WHERE c.chute_id = ud.chute_id AND c.public IS TRUE
+                        )
                     WHERE iq.user_id = ANY(:user_ids)
                     AND iq.chute_id = '*'
                     AND iq.quota = ANY(:sub_quotas)
@@ -257,47 +253,41 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
             )
             month_totals = {row[0]: float(row[1]) for row in month_result}
 
+            four_hour_bucket_start = get_fixed_four_hour_bucket_start()
             four_hour_result = await session.execute(
                 text("""
                     SELECT
                         iq.user_id,
                         COALESCE(
-                            SUM(
-                                CASE
-                                    WHEN c.public IS TRUE
-                                    AND ud.bucket >= (
-                                        date_trunc('day', timezone('utc', now()))
-                                        + floor(extract(hour from timezone('utc', now())) / 4) * interval '4 hours'
-                                    )
-                                    THEN GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)
-                                    ELSE 0
-                                END
-                            ),
+                            SUM(GREATEST(COALESCE(ud.paygo_amount, 0) - COALESCE(ud.amount, 0), 0)),
                             0
                         )
                     FROM invocation_quotas iq
                     LEFT JOIN usage_data ud ON ud.user_id = iq.user_id
-                    LEFT JOIN chutes c ON c.chute_id = ud.chute_id
+                        AND ud.bucket >= :four_hour_start
+                        AND EXISTS (
+                            SELECT 1 FROM chutes c
+                            WHERE c.chute_id = ud.chute_id AND c.public IS TRUE
+                        )
                     WHERE iq.user_id = ANY(:user_ids)
                     AND iq.chute_id = '*'
                     AND iq.quota = ANY(:sub_quotas)
-                    AND (
-                        ud.bucket IS NULL
-                        OR ud.bucket >= date_trunc('day', timezone('utc', now()))
-                    )
                     GROUP BY iq.user_id
                 """),
                 {
                     "user_ids": sub_user_list,
                     "sub_quotas": list(SUBSCRIPTION_TIERS.keys())
                     + [q + 1 for q in SUBSCRIPTION_TIERS.keys()],
+                    "four_hour_start": four_hour_bucket_start.replace(tzinfo=None),
                 },
             )
             four_hour_totals = {row[0]: float(row[1]) for row in four_hour_result}
 
         pipeline = settings.redis_client.pipeline()
         for user_id in sub_users:
-            periods = build_subscription_periods(subscription_anchors.get(user_id))
+            if user_id not in subscription_anchors:
+                continue
+            periods = build_subscription_periods(subscription_anchors[user_id])
             month_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{user_id}"
             four_hour_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{user_id}"
             pipeline.set(month_key, str(month_totals.get(user_id, 0.0)), ex=35 * 86400)

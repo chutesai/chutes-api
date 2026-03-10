@@ -401,8 +401,8 @@ async def get_subscription_usage(
     """
     Get accumulated paygo-equivalent usage covered by subscription (not already paid via paygo).
     Tries Redis cache first, falls back to usage_data table query.
-    period: cache key suffix, e.g. "m:202602" or "4h:123456"
-    since_expr: SQL expression for the start bound, e.g. "date_trunc('month', now())"
+    period: cache key suffix, e.g. "m2:1709337600" or "4h2:1709337600"
+    since_expr: SQL parameter placeholder for the start bound, e.g. ":cycle_start"
     cache_ttl: TTL in seconds for the Redis cache entry
     """
     cache_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{period}:{user_id}"

@@ -1223,7 +1223,7 @@ async def my_subscription_usage(
                     ) AS four_hour
                 FROM usage_data ud
                 WHERE ud.user_id = :user_id
-                AND ud.bucket >= :cycle_start
+                AND ud.bucket >= LEAST(:cycle_start, :four_hour_start)
                 AND EXISTS (
                     SELECT 1
                     FROM chutes c
@@ -1233,9 +1233,7 @@ async def my_subscription_usage(
             """),
             {
                 "user_id": current_user.user_id,
-                # usage_data.bucket is stored as a naive UTC timestamp.
                 "cycle_start": periods["cycle_start"].replace(tzinfo=None),
-                # usage_data.bucket is stored as a naive UTC timestamp.
                 "four_hour_start": periods["four_hour_start"].replace(tzinfo=None),
             },
         )

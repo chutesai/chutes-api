@@ -254,18 +254,7 @@ class InvocationQuota(Base):
             "updated_at": updated_at.isoformat() if updated_at else None,
         }
         await settings.redis_client.set(key, json.dumps(payload), ex=60)
-        return (
-            quota,
-            datetime.datetime.fromisoformat(payload["anchor_date"])
-            if payload["anchor_date"]
-            else None,
-            datetime.datetime.fromisoformat(payload["effective_date"])
-            if payload["effective_date"]
-            else None,
-            datetime.datetime.fromisoformat(payload["updated_at"])
-            if payload["updated_at"]
-            else None,
-        )
+        return (quota, anchor_date, effective_date, updated_at)
 
     @staticmethod
     async def quota_key(user_id: str, chute_id: str):
