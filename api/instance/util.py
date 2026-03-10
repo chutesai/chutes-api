@@ -1019,7 +1019,7 @@ async def verify_tee_chute(
         quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id)
         expected_cert_hash = get_public_key_hash(cert)
 
-        # For chutes >= 0.6.0, report_data first half is sha256(nonce + e2e_pubkey); else raw nonce
+        # For chutes >= 0.6.0, report_data and GPU evidence use sha256(nonce + e2e_pubkey); else raw nonce
         if semcomp(instance.chutes_version or "0.0.0", "0.6.0") >= 0:
             e2e_pubkey = (instance.extra or {}).get("e2e_pubkey")
             if not e2e_pubkey:
@@ -1031,11 +1031,10 @@ async def verify_tee_chute(
                 (expected_nonce + e2e_pubkey).encode()
             ).hexdigest().lower()
             await verify_quote(quote, expected_report_data, expected_cert_hash)
+            await verify_gpu_evidence(gpu_evidence, expected_report_data)
         else:
             await verify_quote(quote, expected_nonce, expected_cert_hash)
-
-        # Verify GPU attestation evidence with expected nonce
-        await verify_gpu_evidence(gpu_evidence, expected_nonce)
+            await verify_gpu_evidence(gpu_evidence, expected_nonce)
 
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
     except GetEvidenceError as exc:

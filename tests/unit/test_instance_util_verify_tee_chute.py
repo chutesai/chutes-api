@@ -110,7 +110,7 @@ async def test_verify_tee_chute_chutes_060_uses_e2e_pubkey_hash(
         mock_verify_quote.assert_called_once_with(
             sample_quote, expected_report_data, EXPECTED_CERT_HASH
         )
-        mock_verify_gpu.assert_called_once()
+        mock_verify_gpu.assert_called_once_with([], expected_report_data)
 
 
 @pytest.mark.asyncio
@@ -140,6 +140,7 @@ async def test_verify_tee_chute_chutes_059_uses_raw_nonce(
         mock_verify_quote.assert_called_once_with(
             sample_quote, EXPECTED_NONCE, EXPECTED_CERT_HASH
         )
+        mock_verify_gpu.assert_called_once_with([], EXPECTED_NONCE)
 
 
 @pytest.mark.asyncio
