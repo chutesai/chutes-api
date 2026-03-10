@@ -27,7 +27,7 @@ from sqlalchemy import and_, or_, text, exists, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
-from api.config import settings
+from api.config import settings, get_subscription_tier
 from api.permissions import Permissioning
 from api.constants import (
     LLM_MIN_PRICE_IN,
@@ -1715,7 +1715,6 @@ async def invoke(
 
                 # Track subscription caps in Redis.
                 if request.state.free_invocation and paygo_equivalent > 0:
-                    from api.config import get_subscription_tier
                     from api.invocation.util import (
                         build_subscription_periods,
                         SUBSCRIPTION_CACHE_PREFIX,

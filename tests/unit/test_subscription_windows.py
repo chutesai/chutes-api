@@ -87,3 +87,41 @@ def test_cycle_end_uses_raw_anchor_not_floor() -> None:
     assert periods["cycle_start"] == datetime(2026, 3, 1, 0, 0, 0, tzinfo=timezone.utc)
     # Renewal is based on the raw anchor date.
     assert periods["cycle_end"] == datetime(2026, 3, 24, 18, 47, 43, tzinfo=timezone.utc)
+
+
+def test_subscription_cycle_crosses_year_boundary() -> None:
+    updated_at = datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+    now = datetime(2027, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+
+    periods = build_subscription_periods(updated_at, now)
+
+    assert periods["cycle_start"] == datetime(2026, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
+    assert periods["cycle_end"] == datetime(2027, 1, 31, 23, 59, 59, tzinfo=timezone.utc)
+
+
+def test_subscription_cycle_handles_leap_day_anchor() -> None:
+    updated_at = datetime(2028, 2, 29, 6, 15, 0, tzinfo=timezone.utc)
+    now = datetime(2028, 3, 10, 12, 0, 0, tzinfo=timezone.utc)
+
+    periods = build_subscription_periods(updated_at, now)
+
+    assert periods["cycle_start"] == datetime(2028, 2, 29, 6, 15, 0, tzinfo=timezone.utc)
+    assert periods["cycle_end"] == datetime(2028, 3, 29, 6, 15, 0, tzinfo=timezone.utc)
+
+
+def test_subscription_cycle_end_caps_from_leap_year_to_non_leap_year() -> None:
+    updated_at = datetime(2028, 1, 31, 6, 15, 0, tzinfo=timezone.utc)
+    now = datetime(2028, 2, 20, 12, 0, 0, tzinfo=timezone.utc)
+
+    assert get_subscription_cycle_end(updated_at, now) == datetime(
+        2028, 2, 29, 6, 15, 0, tzinfo=timezone.utc
+    )
+
+
+def test_fixed_four_hour_bucket_across_midnight_utc() -> None:
+    now = datetime(2026, 3, 10, 0, 0, 1, tzinfo=timezone.utc)
+
+    periods = build_subscription_periods(datetime(2026, 3, 9, 18, 0, 0, tzinfo=timezone.utc), now)
+
+    assert periods["four_hour_start"] == datetime(2026, 3, 10, 0, 0, 0, tzinfo=timezone.utc)
+    assert periods["four_hour_end"] == datetime(2026, 3, 10, 4, 0, 0, tzinfo=timezone.utc)

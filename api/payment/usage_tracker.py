@@ -235,20 +235,17 @@ async def _warm_sub_cap_cache(aggregated: dict) -> None:
                             0
                         )
                     FROM invocation_quotas iq
-                    LEFT JOIN LATERAL (
-                        SELECT
-                            CASE
-                                WHEN timezone('utc', now()) >= :usage_floor
-                                THEN GREATEST(COALESCE(iq.effective_date, iq.updated_at), :usage_floor)
-                                ELSE COALESCE(iq.effective_date, iq.updated_at)
-                            END AS cycle_start
-                    ) period ON TRUE
-                    LEFT JOIN usage_data ud ON ud.user_id = iq.user_id
+                    LEFT JOIN usage_data ud
+                        ON ud.user_id = iq.user_id
+                        AND ud.bucket >= GREATEST(
+                            COALESCE(iq.effective_date, iq.updated_at),
+                            :usage_floor
+                        )
+                        AND ud.bucket >= now() - interval '35 days'
                     LEFT JOIN chutes c ON c.chute_id = ud.chute_id
                     WHERE iq.user_id = ANY(:user_ids)
                     AND iq.chute_id = '*'
                     AND iq.quota = ANY(:sub_quotas)
-                    AND (ud.bucket IS NULL OR ud.bucket >= now() - interval '35 days')
                     GROUP BY iq.user_id
                 """),
                 {

@@ -422,10 +422,14 @@ async def get_subscription_usage(
                     0
                 )
                 FROM usage_data ud
-                JOIN chutes c ON c.chute_id = ud.chute_id
                 WHERE ud.user_id = :user_id
                 AND ud.bucket >= {since_expr}
-                AND c.public IS TRUE
+                AND EXISTS (
+                    SELECT 1
+                    FROM chutes c
+                    WHERE c.chute_id = ud.chute_id
+                    AND c.public IS TRUE
+                )
             """),
             {"user_id": user_id, **(query_params or {})},
         )
