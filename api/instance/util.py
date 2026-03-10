@@ -1027,9 +1027,9 @@ async def verify_tee_chute(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="e2e_pubkey required for chute attestation (chutes >= 0.6.0)",
                 )
-            expected_report_data = hashlib.sha256(
-                (expected_nonce + e2e_pubkey).encode()
-            ).hexdigest().lower()
+            expected_report_data = (
+                hashlib.sha256((expected_nonce + e2e_pubkey).encode()).hexdigest().lower()
+            )
             await verify_quote(quote, expected_report_data, expected_cert_hash)
             await verify_gpu_evidence(gpu_evidence, expected_report_data)
         else:
