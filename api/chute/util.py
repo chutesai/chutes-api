@@ -1144,6 +1144,13 @@ async def _invoke_one(
                 metrics["tt"] = round(total_time, 3)
                 if manager and manager.mean_count is not None:
                     metrics["mc"] = manager.mean_count
+                if manager:
+                    _inst_util = getattr(manager, "_last_instance_utilization", None)
+                    if _inst_util is not None:
+                        try:
+                            metrics["ur"] = round(float(_inst_util), 4)
+                        except (ValueError, TypeError):
+                            pass
 
                 # Moving average performance tracking to keep compute units immutable.
                 ma_updates = await PERF_TRACKER.update_invocation_metrics(
@@ -1369,6 +1376,13 @@ async def _invoke_one(
                     metrics["tt"] = round(total_time, 3)
                     if manager and manager.mean_count is not None:
                         metrics["mc"] = manager.mean_count
+                    if manager:
+                        _inst_util = getattr(manager, "_last_instance_utilization", None)
+                        if _inst_util is not None:
+                            try:
+                                metrics["ur"] = round(float(_inst_util), 4)
+                            except (ValueError, TypeError):
+                                pass
 
                     # Moving average performance tracking to keep compute units immutable.
                     ma_updates = await PERF_TRACKER.update_invocation_metrics(

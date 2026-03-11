@@ -2,6 +2,7 @@
 Helper functions for instances.
 """
 
+import hashlib
 import jwt
 import time
 import uuid
@@ -30,7 +31,7 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
-from api.util import has_legacy_private_billing, notify_deleted
+from api.util import has_legacy_private_billing, notify_deleted, semcomp
 from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.future import select
@@ -1018,11 +1019,22 @@ async def verify_tee_chute(
         quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id)
         expected_cert_hash = get_public_key_hash(cert)
 
-        # Verify the quote against the expected nonce and cert hash
-        await verify_quote(quote, expected_nonce, expected_cert_hash)
-
-        # Verify GPU attestation evidence with expected nonce
-        await verify_gpu_evidence(gpu_evidence, expected_nonce)
+        # For chutes >= 0.6.0, report_data and GPU evidence use sha256(nonce + e2e_pubkey); else raw nonce
+        if semcomp(instance.chutes_version or "0.0.0", "0.6.0") >= 0:
+            e2e_pubkey = (instance.extra or {}).get("e2e_pubkey")
+            if not e2e_pubkey:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="e2e_pubkey required for chute attestation (chutes >= 0.6.0)",
+                )
+            expected_report_data = (
+                hashlib.sha256((expected_nonce + e2e_pubkey).encode()).hexdigest().lower()
+            )
+            await verify_quote(quote, expected_report_data, expected_cert_hash)
+            await verify_gpu_evidence(gpu_evidence, expected_report_data)
+        else:
+            await verify_quote(quote, expected_nonce, expected_cert_hash)
+            await verify_gpu_evidence(gpu_evidence, expected_nonce)
 
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
     except GetEvidenceError as exc:
