@@ -10,7 +10,7 @@ import secrets
 import hashlib
 import orjson as json
 from loguru import logger
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from pydantic import BaseModel
 from collections import defaultdict
@@ -96,6 +96,29 @@ class SubnetRoleRequest(BaseModel):
 class SubnetRoleRevokeRequest(BaseModel):
     user: str
     netuid: int
+
+
+def _normalize_effective_date_input(
+    effective_date: Optional[datetime], detail: str
+) -> Optional[datetime]:
+    if effective_date is None:
+        return None
+    if effective_date.tzinfo is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=detail,
+        )
+
+    normalized = effective_date.astimezone(timezone.utc)
+    now = datetime.now(timezone.utc)
+    if normalized > now:
+        normalized = now
+    elif normalized < now - timedelta(days=31):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="effective_date cannot be older than 31 days.",
+        )
+    return normalized
 
 
 @router.get("/growth")
@@ -772,11 +795,10 @@ async def admin_quotas_change(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid quota value {key=} {value=}",
             )
-        if parsed.effective_date and parsed.effective_date.tzinfo is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"effective_date must be a UTC timestamp for {key=}",
-            )
+        parsed.effective_date = _normalize_effective_date_input(
+            parsed.effective_date,
+            f"effective_date must be a UTC timestamp for {key=}",
+        )
         quotas[key] = parsed
         if key == "*":
             continue
@@ -816,7 +838,7 @@ async def admin_quotas_change(
     for key, quota_config in quotas.items():
         effective_date = quota_config.effective_date
         if effective_date is not None:
-            effective_date = effective_date.astimezone(timezone.utc).replace(tzinfo=None)
+            effective_date = effective_date.replace(tzinfo=None)
         db.add(
             InvocationQuota(
                 user_id=user_id,
@@ -860,11 +882,10 @@ async def admin_quota_effective_date_change(
                 detail=f"Invalid chute_id specified: {chute_id}",
             )
 
-    if body.effective_date and body.effective_date.tzinfo is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="effective_date must be a UTC timestamp.",
-        )
+    normalized_effective_date = _normalize_effective_date_input(
+        body.effective_date,
+        "effective_date must be a UTC timestamp.",
+    )
 
     result = await db.execute(
         select(InvocationQuota)
@@ -879,8 +900,8 @@ async def admin_quota_effective_date_change(
         )
 
     quota.effective_date = (
-        body.effective_date.astimezone(timezone.utc).replace(tzinfo=None)
-        if body.effective_date is not None
+        normalized_effective_date.replace(tzinfo=None)
+        if normalized_effective_date is not None
         else None
     )
     await db.commit()
@@ -892,7 +913,9 @@ async def admin_quota_effective_date_change(
         "user_id": user_id,
         "chute_id": chute_id,
         "quota": quota.quota,
-        "effective_date": body.effective_date.isoformat() if body.effective_date else None,
+        "effective_date": normalized_effective_date.isoformat()
+        if normalized_effective_date
+        else None,
         "updated_at": quota.updated_at.isoformat() if quota.updated_at else None,
     }
 
