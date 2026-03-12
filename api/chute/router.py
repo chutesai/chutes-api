@@ -335,6 +335,12 @@ async def make_public(
     """
     Promote subnet chutes to public visibility, owned by the calling subnet admin user.
     """
+    if not args.chutes:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Must provide at least one chute ID",
+        )
+
     # Auth: require subnet_admin_assign role.
     if not current_user.has_role(Permissioning.subnet_admin_assign):
         raise HTTPException(
@@ -446,48 +452,9 @@ async def make_public(
         .all()
     )
 
-    # Detect stale public chutes (only for the requested subnet).
-    # Scoped to chutes owned by subnet admin users only — never the chutes system user.
-    stale_chutes = []
-    new_source_ids = set(args.chutes)
-    for sn in chutes_by_subnet:
-        info = user_subnets[sn]
-        existing_public = (
-            (
-                await db.execute(
-                    select(Chute).where(
-                        Chute.user_id.in_(subnet_admin_user_ids),
-                        Chute.public.is_(True),
-                        Chute.name.ilike(f"%{info['model_substring']}%"),
-                    )
-                )
-            )
-            .unique()
-            .scalars()
-            .all()
-        )
-        for existing in existing_public:
-            is_in_new_list = any(
-                existing.chute_id == str(uuid.uuid5(uuid.NAMESPACE_OID, f"public::{src_id}"))
-                for src_id in new_source_ids
-            )
-            if not is_in_new_list:
-                logger.warning(
-                    f"Stale public chute detected for subnet {sn}: "
-                    f"{existing.chute_id} ({existing.name}) - not in new make_public list"
-                )
-                stale_chutes.append(
-                    {
-                        "chute_id": existing.chute_id,
-                        "name": existing.name,
-                        "slug": existing.slug,
-                        "created_at": str(existing.created_at) if existing.created_at else None,
-                        "updated_at": str(existing.updated_at) if existing.updated_at else None,
-                        "status": "stale",
-                    }
-                )
-
     # Fields to copy from source to public chute.
+    # Note: max_instances, scaling_threshold, and shutdown_after_seconds are
+    # intentionally excluded — public chutes should not inherit private scaling knobs.
     COPY_FIELDS = [
         "name",
         "tagline",
@@ -504,9 +471,6 @@ async def make_public(
         "node_selector",
         "concurrency",
         "revision",
-        "max_instances",
-        "scaling_threshold",
-        "shutdown_after_seconds",
         "allow_external_egress",
         "encrypted_fs",
         "tee",
@@ -522,6 +486,7 @@ async def make_public(
     results = []
     notifications = []  # (reason, chute_id, version, job_only) to publish after commit
     new_bounty_ids = []
+    kept_public_ids = set()  # track chute_ids we create or keep, for stale cleanup
     for source in [c for chutes in chutes_by_subnet.values() for c in chutes]:
         public_tagline = f"{PUBLIC_COPY_PREFIX}{source.chute_id}"
 
@@ -539,6 +504,8 @@ async def make_public(
         # 3. name contains the subnet's model_substring
         # 4. owned by a subnet admin user (not the chutes system user)
         # 5. immutable == True (only make_public chutes are created immutable)
+        # LIMIT 1 in case multiple copies exist from different admins —
+        # stale cleanup will reconcile the extras.
         existing_public = (
             (
                 await db.execute(
@@ -551,6 +518,7 @@ async def make_public(
                         Chute.immutable.is_(True),
                     )
                     .options(selectinload(Chute.instances))
+                    .limit(1)
                 )
             )
             .unique()
@@ -559,16 +527,7 @@ async def make_public(
 
         if existing_public:
             # Check if anything changed.
-            is_identical = (
-                existing_public.version == new_version
-                and existing_public.node_selector
-                == (
-                    source.node_selector.model_dump()
-                    if hasattr(source.node_selector, "model_dump")
-                    else source.node_selector
-                )
-            )
-            if is_identical:
+            if existing_public.version == new_version:
                 results.append(
                     {
                         "chute_id": existing_public.chute_id,
@@ -585,6 +544,7 @@ async def make_public(
                         "status": "unchanged",
                     }
                 )
+                kept_public_ids.add(existing_public.chute_id)
                 continue
 
             # Update in-place (this endpoint bypasses immutable for its own chutes).
@@ -598,6 +558,9 @@ async def make_public(
             existing_public.tagline = public_tagline
             existing_public.version = new_version
             existing_public.user_id = current_user.user_id
+            existing_public.max_instances = None
+            existing_public.scaling_threshold = None
+            existing_public.shutdown_after_seconds = None
             existing_public.updated_at = func.now()
             notifications.append(
                 ("chute_updated", existing_public.chute_id, new_version, not existing_public.cords)
@@ -616,6 +579,7 @@ async def make_public(
                     "status": "updated",
                 }
             )
+            kept_public_ids.add(existing_public.chute_id)
         else:
             # Create new public chute.
             try:
@@ -678,6 +642,70 @@ async def make_public(
                     "status": "created",
                 }
             )
+            kept_public_ids.add(public_chute_id)
+
+    # Delete stale PUBLIC_COPY chutes for this subnet that we didn't just create/update.
+    # Scoped tightly: public, immutable, tagline starts with PUBLIC_COPY:,
+    # owned by subnet admin users, name matches subnet model_substring.
+    # Safety: skip entirely if kept_public_ids is empty (should never happen due to
+    # validation, but NOT IN with empty set matches everything in SQLAlchemy).
+    deleted_chutes = []
+    if not kept_public_ids:
+        logger.error(
+            "make_public: kept_public_ids is empty after processing, skipping stale cleanup"
+        )
+    else:
+        stale_public = (
+            (
+                await db.execute(
+                    select(Chute)
+                    .where(
+                        Chute.user_id.in_(subnet_admin_user_ids),
+                        Chute.public.is_(True),
+                        Chute.immutable.is_(True),
+                        Chute.tagline.startswith(PUBLIC_COPY_PREFIX),
+                        Chute.name.ilike(f"%{model_substring}%"),
+                        ~Chute.chute_id.in_(kept_public_ids),
+                    )
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+        for stale in stale_public:
+            logger.warning(
+                f"Deleting stale public chute for subnet {subnet_name}: "
+                f"{stale.chute_id} ({stale.name})"
+            )
+            instance_ids = [inst.instance_id for inst in stale.instances]
+            if instance_ids:
+                await db.execute(
+                    text(
+                        "UPDATE instance_audit SET valid_termination = true, "
+                        "deletion_reason = 'stale make_public chute removed' "
+                        "WHERE instance_id = ANY(:instance_ids)"
+                    ),
+                    {"instance_ids": instance_ids},
+                )
+                await db.execute(
+                    text("DELETE FROM instances WHERE instance_id = ANY(:instance_ids)"),
+                    {"instance_ids": instance_ids},
+                )
+            deleted_chutes.append(
+                {
+                    "chute_id": stale.chute_id,
+                    "name": stale.name,
+                    "slug": stale.slug,
+                    "version": stale.version,
+                    "created_at": str(stale.created_at) if stale.created_at else None,
+                    "updated_at": str(stale.updated_at) if stale.updated_at else None,
+                    "status": "deleted",
+                }
+            )
+            await delete_bounty(stale.chute_id)
+            await db.delete(stale)
 
     # Single atomic commit for all changes.
     await db.commit()
@@ -700,11 +728,26 @@ async def make_public(
     for bounty_id in new_bounty_ids:
         await create_bounty_if_not_exists(bounty_id)
 
+    # Post-commit: notify miners about deleted stale chutes.
+    for deleted in deleted_chutes:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_deleted",
+                    "data": {
+                        "chute_id": deleted["chute_id"],
+                        "version": deleted["version"],
+                    },
+                }
+            ).decode(),
+        )
+
     # Set the daily rate limit after successful completion.
     await settings.redis_client.set(rate_limit_key, "1", ex=86400)
 
     logger.success(f"make_public completed by {current_user.username}: {results}")
-    return {"chutes": results, "stale": stale_chutes}
+    return {"chutes": results, "deleted": deleted_chutes}
 
 
 @router.get("/boosted")
