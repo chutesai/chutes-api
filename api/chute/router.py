@@ -435,10 +435,11 @@ async def make_public(
             detail="Could not find 'chutes' system user",
         )
 
-    # Log stale public chutes (only for the requested subnet, not all user subnets).
+    # Detect stale public chutes (only for the requested subnet).
+    stale_chutes = []
     new_source_ids = set(args.chutes)
-    for subnet_name in chutes_by_subnet:
-        info = user_subnets[subnet_name]
+    for sn in chutes_by_subnet:
+        info = user_subnets[sn]
         existing_public = (
             (
                 await db.execute(
@@ -454,19 +455,24 @@ async def make_public(
             .all()
         )
         for existing in existing_public:
-            # Reverse the deterministic UUID to check if source is in new list.
-            # We can't reverse uuid5, so instead check if this chute's ID matches
-            # any of the new source chutes' deterministic public IDs.
-            is_in_new_list = False
-            for src_id in new_source_ids:
-                expected_public_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"public::{src_id}"))
-                if existing.chute_id == expected_public_id:
-                    is_in_new_list = True
-                    break
+            is_in_new_list = any(
+                existing.chute_id == str(uuid.uuid5(uuid.NAMESPACE_OID, f"public::{src_id}"))
+                for src_id in new_source_ids
+            )
             if not is_in_new_list:
                 logger.warning(
-                    f"Stale public chute detected for subnet {subnet_name}: "
+                    f"Stale public chute detected for subnet {sn}: "
                     f"{existing.chute_id} ({existing.name}) - not in new make_public list"
+                )
+                stale_chutes.append(
+                    {
+                        "chute_id": existing.chute_id,
+                        "name": existing.name,
+                        "slug": existing.slug,
+                        "created_at": str(existing.created_at) if existing.created_at else None,
+                        "updated_at": str(existing.updated_at) if existing.updated_at else None,
+                        "status": "stale",
+                    }
                 )
 
     # Fields to copy from source to public chute.
@@ -536,7 +542,22 @@ async def make_public(
                 and existing_public.jobs == source.jobs
             )
             if is_identical:
-                results.append({"chute_id": public_chute_id, "status": "unchanged"})
+                results.append(
+                    {
+                        "chute_id": public_chute_id,
+                        "source_chute_id": source.chute_id,
+                        "name": existing_public.name,
+                        "slug": existing_public.slug,
+                        "version": existing_public.version,
+                        "created_at": str(existing_public.created_at)
+                        if existing_public.created_at
+                        else None,
+                        "updated_at": str(existing_public.updated_at)
+                        if existing_public.updated_at
+                        else None,
+                        "status": "unchanged",
+                    }
+                )
                 continue
 
             # Update in-place.
@@ -550,7 +571,20 @@ async def make_public(
             notifications.append(
                 ("chute_updated", public_chute_id, new_version, not existing_public.cords)
             )
-            results.append({"chute_id": public_chute_id, "status": "updated"})
+            results.append(
+                {
+                    "chute_id": public_chute_id,
+                    "source_chute_id": source.chute_id,
+                    "name": source.name,
+                    "slug": existing_public.slug,
+                    "version": new_version,
+                    "created_at": str(existing_public.created_at)
+                    if existing_public.created_at
+                    else None,
+                    "updated_at": None,  # will be set by func.now() on commit
+                    "status": "updated",
+                }
+            )
         else:
             # Create new public chute.
             try:
@@ -598,7 +632,18 @@ async def make_public(
                 ("chute_created", public_chute_id, new_version, not public_chute.cords)
             )
             new_bounty_ids.append(public_chute_id)
-            results.append({"chute_id": public_chute_id, "status": "created"})
+            results.append(
+                {
+                    "chute_id": public_chute_id,
+                    "source_chute_id": source.chute_id,
+                    "name": source.name,
+                    "slug": public_chute.slug,
+                    "version": new_version,
+                    "created_at": None,  # will be set by server_default on commit
+                    "updated_at": None,
+                    "status": "created",
+                }
+            )
 
     # Single atomic commit for all changes.
     await db.commit()
@@ -625,7 +670,7 @@ async def make_public(
     await settings.redis_client.set(rate_limit_key, "1", ex=86400)
 
     logger.success(f"make_public completed by {current_user.username}: {results}")
-    return results
+    return {"chutes": results, "stale": stale_chutes}
 
 
 @router.get("/boosted")
