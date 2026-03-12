@@ -333,7 +333,7 @@ async def make_public(
     current_user: User = Depends(get_current_user()),
 ):
     """
-    Promote subnet chutes to public visibility under the "chutes" system user.
+    Promote subnet chutes to public visibility, owned by the calling subnet admin user.
     """
     # Auth: require subnet_admin_assign role.
     if not current_user.has_role(Permissioning.subnet_admin_assign):
@@ -427,15 +427,27 @@ async def make_public(
             detail=f"make_public can only be called once per day per subnet. Try again in ~{hours_left}h.",
         )
 
-    # Get the "chutes" system user.
-    target_user_id = await chutes_user_id()
-    if not target_user_id:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Could not find 'chutes' system user",
+    # Find all subnet admin users for stale detection:
+    # has subnet_admin_assign, does NOT have chutes_support, and is NOT the chutes system user.
+    chutes_uid = await chutes_user_id()
+    admin_assign_bit = Permissioning.subnet_admin_assign.bitmask
+    support_bit = Permissioning.chutes_support.bitmask
+    subnet_admin_user_ids = (
+        (
+            await db.execute(
+                select(User.user_id).where(
+                    (User.permissions_bitmask.op("&")(admin_assign_bit) == admin_assign_bit),
+                    (User.permissions_bitmask.op("&")(support_bit) != support_bit),
+                    User.user_id != chutes_uid,
+                )
+            )
         )
+        .scalars()
+        .all()
+    )
 
     # Detect stale public chutes (only for the requested subnet).
+    # Scoped to chutes owned by subnet admin users only — never the chutes system user.
     stale_chutes = []
     new_source_ids = set(args.chutes)
     for sn in chutes_by_subnet:
@@ -444,7 +456,7 @@ async def make_public(
             (
                 await db.execute(
                     select(Chute).where(
-                        Chute.user_id == target_user_id,
+                        Chute.user_id.in_(subnet_admin_user_ids),
                         Chute.public.is_(True),
                         Chute.name.ilike(f"%{info['model_substring']}%"),
                     )
@@ -502,10 +514,17 @@ async def make_public(
         "chutes_version",
     ]
 
+    # The tagline format used to mark make_public chutes and link back to their source.
+    PUBLIC_COPY_PREFIX = "PUBLIC_COPY:"
+    target_subnet_info = user_subnets[next(iter(chutes_by_subnet))]
+    model_substring = target_subnet_info["model_substring"]
+
     results = []
     notifications = []  # (reason, chute_id, version, job_only) to publish after commit
     new_bounty_ids = []
     for source in [c for chutes in chutes_by_subnet.values() for c in chutes]:
+        public_tagline = f"{PUBLIC_COPY_PREFIX}{source.chute_id}"
+
         public_chute_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"public::{source.chute_id}"))
         new_version = str(
             uuid.uuid5(
@@ -514,11 +533,23 @@ async def make_public(
             )
         )
 
+        # Find existing public copy: must match ALL of:
+        # 1. tagline == "PUBLIC_COPY:{source_chute_id}" (exact match, links to source)
+        # 2. public == True
+        # 3. name contains the subnet's model_substring
+        # 4. owned by a subnet admin user (not the chutes system user)
+        # 5. immutable == True (only make_public chutes are created immutable)
         existing_public = (
             (
                 await db.execute(
                     select(Chute)
-                    .where(Chute.chute_id == public_chute_id)
+                    .where(
+                        Chute.tagline == public_tagline,
+                        Chute.public.is_(True),
+                        Chute.name.ilike(f"%{model_substring}%"),
+                        Chute.user_id.in_(subnet_admin_user_ids),
+                        Chute.immutable.is_(True),
+                    )
                     .options(selectinload(Chute.instances))
                 )
             )
@@ -530,21 +561,17 @@ async def make_public(
             # Check if anything changed.
             is_identical = (
                 existing_public.version == new_version
-                and existing_public.code == source.code
-                and existing_public.image_id == source.image_id
                 and existing_public.node_selector
                 == (
                     source.node_selector.model_dump()
                     if hasattr(source.node_selector, "model_dump")
                     else source.node_selector
                 )
-                and existing_public.cords == source.cords
-                and existing_public.jobs == source.jobs
             )
             if is_identical:
                 results.append(
                     {
-                        "chute_id": public_chute_id,
+                        "chute_id": existing_public.chute_id,
                         "source_chute_id": source.chute_id,
                         "name": existing_public.name,
                         "slug": existing_public.slug,
@@ -560,20 +587,24 @@ async def make_public(
                 )
                 continue
 
-            # Update in-place.
+            # Update in-place (this endpoint bypasses immutable for its own chutes).
             for field in COPY_FIELDS:
+                if field == "tagline":
+                    continue
                 val = getattr(source, field)
                 if hasattr(val, "model_dump"):
                     val = val.model_dump()
                 setattr(existing_public, field, val)
+            existing_public.tagline = public_tagline
             existing_public.version = new_version
+            existing_public.user_id = current_user.user_id
             existing_public.updated_at = func.now()
             notifications.append(
-                ("chute_updated", public_chute_id, new_version, not existing_public.cords)
+                ("chute_updated", existing_public.chute_id, new_version, not existing_public.cords)
             )
             results.append(
                 {
-                    "chute_id": public_chute_id,
+                    "chute_id": existing_public.chute_id,
                     "source_chute_id": source.chute_id,
                     "name": source.name,
                     "slug": existing_public.slug,
@@ -590,9 +621,11 @@ async def make_public(
             try:
                 public_chute = Chute(
                     chute_id=public_chute_id,
-                    user_id=target_user_id,
+                    user_id=current_user.user_id,
                     public=True,
+                    immutable=True,
                     version=new_version,
+                    tagline=public_tagline,
                     **{
                         field: (
                             getattr(source, field).model_dump()
@@ -600,6 +633,7 @@ async def make_public(
                             else getattr(source, field)
                         )
                         for field in COPY_FIELDS
+                        if field != "tagline"
                     },
                 )
             except ValueError as exc:
@@ -612,7 +646,7 @@ async def make_public(
             public_chute.slug = re.sub(
                 r"[^a-z0-9-]+$",
                 "-",
-                slugify(f"chutes-{source.name}", max_length=58).lower(),
+                slugify(f"{current_user.username}-{source.name}", max_length=58).lower(),
             )
             base_slug = public_chute.slug
             already_exists = (
