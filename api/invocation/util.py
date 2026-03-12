@@ -18,6 +18,7 @@ from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.config import (
     settings,
     get_subscription_tier,
+    is_custom_subscription,
     SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER,
     SUBSCRIPTION_4H_CAP_MULTIPLIER,
     SUBSCRIPTION_PAYGO_DISCOUNTS,
@@ -619,18 +620,24 @@ async def check_quota_and_balance(request, current_user, chute):
                         fp_monthly_price, 0.0
                     )
             elif (monthly_price := get_subscription_tier(subscription_quota)) is not None:
+                custom_sub = is_custom_subscription(subscription_quota)
                 periods = build_subscription_periods(subscription_anchor)
-                monthly_usage = await get_subscription_usage(
-                    current_user.user_id,
-                    periods["monthly_period"],
-                    ":cycle_start",
-                    35 * 86400,  # 35 days TTL
-                    {
-                        # usage_data.bucket is stored as a naive UTC timestamp.
-                        "cycle_start": periods["cycle_start"].replace(tzinfo=None)
-                    },
-                )
-                monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+
+                # Custom subs only enforce 4h burst caps, not monthly.
+                monthly_exceeded = False
+                if not custom_sub:
+                    monthly_usage = await get_subscription_usage(
+                        current_user.user_id,
+                        periods["monthly_period"],
+                        ":cycle_start",
+                        35 * 86400,  # 35 days TTL
+                        {
+                            # usage_data.bucket is stored as a naive UTC timestamp.
+                            "cycle_start": periods["cycle_start"].replace(tzinfo=None)
+                        },
+                    )
+                    monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+                    monthly_exceeded = monthly_usage >= monthly_cap
 
                 four_hour_usage = await get_subscription_usage(
                     current_user.user_id,
@@ -645,13 +652,14 @@ async def check_quota_and_balance(request, current_user, chute):
                 four_hour_cap = (
                     monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH
                 ) * SUBSCRIPTION_4H_CAP_MULTIPLIER
+                four_hour_exceeded = four_hour_usage >= four_hour_cap
 
-                if monthly_usage >= monthly_cap or four_hour_usage >= four_hour_cap:
+                if monthly_exceeded or four_hour_exceeded:
                     # Cap exceeded — switch to paygo for remainder
                     exceeded = []
-                    if monthly_usage >= monthly_cap:
+                    if monthly_exceeded:
                         exceeded.append(f"monthly ({monthly_usage:.4f}/{monthly_cap:.4f})")
-                    if four_hour_usage >= four_hour_cap:
+                    if four_hour_exceeded:
                         exceeded.append(f"4h ({four_hour_usage:.4f}/{four_hour_cap:.4f})")
                     logger.warning(
                         f"Subscription cap exceeded for {current_user.user_id} "

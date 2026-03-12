@@ -448,13 +448,18 @@ FOUR_HOUR_CHUNKS_PER_MONTH = 180  # 30 days * 24 hours / 4 hours
 def get_subscription_tier(quota: int) -> float | None:
     """
     Get the monthly price for a subscription quota value.
-    Handles off-by-one quotas (e.g., 301, 2001, 5001) used for free/comped subs.
+    Handles off-by-one quotas (e.g., 301, 2001, 5001) used for custom subs.
     """
     if quota in SUBSCRIPTION_TIERS:
         return SUBSCRIPTION_TIERS[quota]
     if quota - 1 in SUBSCRIPTION_TIERS:
         return SUBSCRIPTION_TIERS[quota - 1]
     return None
+
+
+def is_custom_subscription(quota: int) -> bool:
+    """Off-by-one quotas represent custom subscriptions."""
+    return quota not in SUBSCRIPTION_TIERS and quota - 1 in SUBSCRIPTION_TIERS
 
 
 settings = Settings()

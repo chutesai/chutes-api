@@ -57,7 +57,7 @@ from api.user.templater import registration_token_form, registration_token_succe
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
-from sqlalchemy import bindparam, select, text, delete
+from sqlalchemy import bindparam, select, text, delete, update
 from sqlalchemy.dialects.postgresql import JSONB as SA_JSONB
 
 router = APIRouter()
@@ -820,40 +820,69 @@ async def admin_quotas_change(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id}"
         )
 
-    # Delete old quota values.
+    # Remove quotas not in the new payload.
+    incoming_chute_ids = set(quotas.keys())
     result = await db.execute(
         delete(InvocationQuota)
         .where(InvocationQuota.user_id == user_id)
+        .where(InvocationQuota.chute_id.notin_(incoming_chute_ids))
         .returning(InvocationQuota.chute_id)
     )
     deleted_chute_ids = [row[0] for row in result]
 
-    # Purge the cache.
-    for chute_id in deleted_chute_ids:
-        key = f"qta:{user_id}:{chute_id}"
-        await settings.redis_client.delete(key)
-    await settings.redis_client.delete(f"subq:{user_id}")
-
-    # Add the new values.
+    # Upsert incoming quotas.
     for key, quota_config in quotas.items():
         effective_date = quota_config.effective_date
         if effective_date is not None:
             effective_date = effective_date.replace(tzinfo=None)
-        db.add(
-            InvocationQuota(
-                user_id=user_id,
-                chute_id=key,
-                quota=quota_config.quota,
-                effective_date=effective_date,
-            )
+        existing = await db.execute(
+            select(InvocationQuota)
+            .where(InvocationQuota.user_id == user_id)
+            .where(InvocationQuota.chute_id == key)
         )
+        row = existing.scalar_one_or_none()
+        if row:
+            row.quota = quota_config.quota
+            row.updated_at = func.now()
+            if effective_date is not None:
+                row.effective_date = effective_date
+        else:
+            db.add(
+                InvocationQuota(
+                    user_id=user_id,
+                    chute_id=key,
+                    quota=quota_config.quota,
+                    effective_date=effective_date if effective_date is not None else func.now(),
+                )
+            )
     await db.commit()
+
+    # Purge cache for deleted and updated keys.
+    for chute_id in deleted_chute_ids:
+        await settings.redis_client.delete(f"qta:{user_id}:{chute_id}")
+    for chute_id in incoming_chute_ids:
+        await settings.redis_client.delete(f"qta:{user_id}:{chute_id}")
+    await settings.redis_client.delete(f"subq:{user_id}")
+
+    # Read back actual stored values for the response.
+    result = await db.execute(
+        select(InvocationQuota)
+        .where(InvocationQuota.user_id == user_id)
+        .where(InvocationQuota.chute_id.in_(incoming_chute_ids))
+    )
+    stored_rows = {r.chute_id: r for r in result.scalars()}
     response = {
         key: {
-            "quota": value.quota,
-            "effective_date": value.effective_date.isoformat() if value.effective_date else None,
+            "quota": stored_rows[key].quota,
+            "effective_date": stored_rows[key].effective_date.isoformat()
+            if stored_rows[key].effective_date
+            else None,
+            "updated_at": stored_rows[key].updated_at.isoformat()
+            if stored_rows[key].updated_at
+            else None,
         }
-        for key, value in quotas.items()
+        for key in quotas
+        if key in stored_rows
     }
     logger.success(f"Updated quotas for {user.user_id=} [{user.username}] to {response=}")
     return response
@@ -1182,6 +1211,7 @@ async def my_subscription_usage(
     """
     from api.config import (
         get_subscription_tier,
+        is_custom_subscription,
         SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER,
         SUBSCRIPTION_4H_CAP_MULTIPLIER,
         FOUR_HOUR_CHUNKS_PER_MONTH,
@@ -1197,30 +1227,35 @@ async def my_subscription_usage(
     if monthly_price is None:
         return {"subscription": False}
 
-    monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+    custom_sub = is_custom_subscription(quota)
     four_hour_cap = (monthly_price / FOUR_HOUR_CHUNKS_PER_MONTH) * SUBSCRIPTION_4H_CAP_MULTIPLIER
 
     periods = build_subscription_periods(subscription_anchor)
 
-    # Try Redis first for both, fall back to DB.
-    monthly_usage = None
+    # Try Redis first, fall back to DB.
     four_hour_usage = None
-
-    month_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{current_user.user_id}"
     four_hour_key = (
         f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{current_user.user_id}"
     )
-    cached_month = await settings.redis_client.get(month_key)
     cached_4h = await settings.redis_client.get(four_hour_key)
-
-    if cached_month is not None:
-        monthly_usage = float(
-            cached_month.decode() if isinstance(cached_month, bytes) else cached_month
-        )
     if cached_4h is not None:
         four_hour_usage = float(cached_4h.decode() if isinstance(cached_4h, bytes) else cached_4h)
 
-    if monthly_usage is None or four_hour_usage is None:
+    # Custom subs only enforce 4h burst caps, not monthly.
+    monthly_usage = None
+    monthly_cap = None
+    if not custom_sub:
+        monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
+        month_key = (
+            f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{current_user.user_id}"
+        )
+        cached_month = await settings.redis_client.get(month_key)
+        if cached_month is not None:
+            monthly_usage = float(
+                cached_month.decode() if isinstance(cached_month, bytes) else cached_month
+            )
+
+    if (not custom_sub and monthly_usage is None) or four_hour_usage is None:
         result = await db.execute(
             text("""
                 SELECT
@@ -1261,23 +1296,18 @@ async def my_subscription_usage(
             },
         )
         row = result.one()
-        if monthly_usage is None:
+        if not custom_sub and monthly_usage is None:
             monthly_usage = float(row.monthly)
         if four_hour_usage is None:
             four_hour_usage = float(row.four_hour)
 
-    return {
+    response = {
         "subscription": True,
+        "custom": custom_sub,
         "monthly_price": monthly_price,
         "anchor_date": subscription_anchor.isoformat() if subscription_anchor else None,
         "effective_date": effective_date.isoformat() if effective_date else None,
         "updated_at": updated_at.isoformat() if updated_at else None,
-        "monthly": {
-            "usage": monthly_usage,
-            "cap": monthly_cap,
-            "remaining": max(monthly_cap - monthly_usage, 0.0),
-            "reset_at": periods["cycle_end"].isoformat(),
-        },
         "four_hour": {
             "usage": four_hour_usage,
             "cap": four_hour_cap,
@@ -1285,6 +1315,16 @@ async def my_subscription_usage(
             "reset_at": periods["four_hour_end"].isoformat(),
         },
     }
+    if custom_sub:
+        response["monthly"] = {"uncapped": True}
+    else:
+        response["monthly"] = {
+            "usage": monthly_usage,
+            "cap": monthly_cap,
+            "remaining": max(monthly_cap - monthly_usage, 0.0),
+            "reset_at": periods["cycle_end"].isoformat(),
+        }
+    return response
 
 
 @router.delete("/me")
