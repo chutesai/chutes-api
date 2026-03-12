@@ -57,7 +57,7 @@ from api.user.templater import registration_token_form, registration_token_succe
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
-from sqlalchemy import bindparam, select, text, delete, update
+from sqlalchemy import bindparam, select, text, delete
 from sqlalchemy.dialects.postgresql import JSONB as SA_JSONB
 
 router = APIRouter()

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.dialects.postgresql import insert
-from typing import Optional, Annotated
+from typing import Optional, Annotated, List
 from api.chute.schemas import (
     Chute,
     ChuteArgs,
@@ -96,8 +96,13 @@ from api.affine import check_affine_code
 from api.guesser import guesser
 from aiocache import cached, Cache
 from api.chute.teeify import transform_for_tee
+from pydantic import BaseModel as PydanticBaseModel
 
 router = APIRouter()
+
+
+class MakePublicArgs(PydanticBaseModel):
+    chutes: List[str]  # list of chute UUIDs
 
 
 async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse):
@@ -319,6 +324,308 @@ async def unshare_chute(
     return {
         "status": f"Successfully unshared {chute.name=} with {user.username=} (if share exists)"
     }
+
+
+@router.post("/make_public")
+async def make_public(
+    args: MakePublicArgs,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Promote subnet chutes to public visibility under the "chutes" system user.
+    """
+    # Auth: require subnet_admin_assign role.
+    if not current_user.has_role(Permissioning.subnet_admin_assign):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requires subnet_admin_assign role",
+        )
+
+    # Determine which subnets the user has access to.
+    user_subnets = {}
+    for subnet, info in INTEGRATED_SUBNETS.items():
+        if current_user.netuids and info["netuid"] in current_user.netuids:
+            user_subnets[subnet] = info
+
+    if not user_subnets:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not associated with any integrated subnet",
+        )
+
+    # Load and validate each source chute, group by subnet.
+    chutes_by_subnet = {}  # subnet_name -> list of chute objects
+    for chute_id_str in args.chutes:
+        try:
+            uuid.UUID(chute_id_str)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid chute UUID: {chute_id_str}",
+            )
+        source = (
+            (
+                await db.execute(
+                    select(Chute)
+                    .where(Chute.chute_id == chute_id_str)
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+        if not source:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Chute not found: {chute_id_str}",
+            )
+
+        # Match chute to one of the user's subnets.
+        matched_subnet = None
+        for subnet_name, info in user_subnets.items():
+            if info["model_substring"] in source.name.lower():
+                matched_subnet = subnet_name
+                break
+        if not matched_subnet:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Chute {chute_id_str} ({source.name}) does not match any of your subnets",
+            )
+        chutes_by_subnet.setdefault(matched_subnet, []).append(source)
+
+    # All chutes must belong to a single subnet.
+    if len(chutes_by_subnet) > 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"All chutes must belong to the same subnet, but found chutes spanning: "
+                f"{', '.join(chutes_by_subnet.keys())}"
+            ),
+        )
+
+    # Validate count per subnet.
+    for subnet_name, subnet_chutes in chutes_by_subnet.items():
+        max_allowed = user_subnets[subnet_name]["max_public_chutes"]
+        if len(subnet_chutes) > max_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    f"Subnet {subnet_name} allows max {max_allowed} public chutes, "
+                    f"but {len(subnet_chutes)} were provided"
+                ),
+            )
+
+    # Rate limit: once per day per subnet (shared across all admins).
+    subnet_name = next(iter(chutes_by_subnet))
+    rate_limit_key = f"make_public:{subnet_name}"
+    if await settings.redis_client.exists(rate_limit_key):
+        ttl = await settings.redis_client.ttl(rate_limit_key)
+        hours_left = max(1, ttl // 3600)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"make_public can only be called once per day per subnet. Try again in ~{hours_left}h.",
+        )
+
+    # Get the "chutes" system user.
+    target_user_id = await chutes_user_id()
+    if not target_user_id:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not find 'chutes' system user",
+        )
+
+    # Log stale public chutes (only for the requested subnet, not all user subnets).
+    new_source_ids = set(args.chutes)
+    for subnet_name in chutes_by_subnet:
+        info = user_subnets[subnet_name]
+        existing_public = (
+            (
+                await db.execute(
+                    select(Chute).where(
+                        Chute.user_id == target_user_id,
+                        Chute.public.is_(True),
+                        Chute.name.ilike(f"%{info['model_substring']}%"),
+                    )
+                )
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+        for existing in existing_public:
+            # Reverse the deterministic UUID to check if source is in new list.
+            # We can't reverse uuid5, so instead check if this chute's ID matches
+            # any of the new source chutes' deterministic public IDs.
+            is_in_new_list = False
+            for src_id in new_source_ids:
+                expected_public_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"public::{src_id}"))
+                if existing.chute_id == expected_public_id:
+                    is_in_new_list = True
+                    break
+            if not is_in_new_list:
+                logger.warning(
+                    f"Stale public chute detected for subnet {subnet_name}: "
+                    f"{existing.chute_id} ({existing.name}) - not in new make_public list"
+                )
+
+    # Fields to copy from source to public chute.
+    COPY_FIELDS = [
+        "name",
+        "tagline",
+        "readme",
+        "tool_description",
+        "logo_id",
+        "image_id",
+        "code",
+        "filename",
+        "ref_str",
+        "standard_template",
+        "cords",
+        "jobs",
+        "node_selector",
+        "concurrency",
+        "revision",
+        "max_instances",
+        "scaling_threshold",
+        "shutdown_after_seconds",
+        "allow_external_egress",
+        "encrypted_fs",
+        "tee",
+        "lock_modules",
+        "chutes_version",
+    ]
+
+    results = []
+    notifications = []  # (reason, chute_id, version, job_only) to publish after commit
+    new_bounty_ids = []
+    for source in [c for chutes in chutes_by_subnet.values() for c in chutes]:
+        public_chute_id = str(uuid.uuid5(uuid.NAMESPACE_OID, f"public::{source.chute_id}"))
+        new_version = str(
+            uuid.uuid5(
+                uuid.NAMESPACE_OID,
+                f"{source.image_id}:{source.image.patch_version}:{source.code}",
+            )
+        )
+
+        existing_public = (
+            (
+                await db.execute(
+                    select(Chute)
+                    .where(Chute.chute_id == public_chute_id)
+                    .options(selectinload(Chute.instances))
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+
+        if existing_public:
+            # Check if anything changed.
+            is_identical = (
+                existing_public.version == new_version
+                and existing_public.code == source.code
+                and existing_public.image_id == source.image_id
+                and existing_public.node_selector
+                == (
+                    source.node_selector.model_dump()
+                    if hasattr(source.node_selector, "model_dump")
+                    else source.node_selector
+                )
+                and existing_public.cords == source.cords
+                and existing_public.jobs == source.jobs
+            )
+            if is_identical:
+                results.append({"chute_id": public_chute_id, "status": "unchanged"})
+                continue
+
+            # Update in-place.
+            for field in COPY_FIELDS:
+                val = getattr(source, field)
+                if hasattr(val, "model_dump"):
+                    val = val.model_dump()
+                setattr(existing_public, field, val)
+            existing_public.version = new_version
+            existing_public.updated_at = func.now()
+            notifications.append(
+                ("chute_updated", public_chute_id, new_version, not existing_public.cords)
+            )
+            results.append({"chute_id": public_chute_id, "status": "updated"})
+        else:
+            # Create new public chute.
+            try:
+                public_chute = Chute(
+                    chute_id=public_chute_id,
+                    user_id=target_user_id,
+                    public=True,
+                    version=new_version,
+                    **{
+                        field: (
+                            getattr(source, field).model_dump()
+                            if hasattr(getattr(source, field), "model_dump")
+                            else getattr(source, field)
+                        )
+                        for field in COPY_FIELDS
+                    },
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Validation failure creating public chute from {source.chute_id}: {exc}",
+                )
+
+            # Generate slug.
+            public_chute.slug = re.sub(
+                r"[^a-z0-9-]+$",
+                "-",
+                slugify(f"chutes-{source.name}", max_length=58).lower(),
+            )
+            base_slug = public_chute.slug
+            already_exists = (
+                await db.execute(select(exists().where(Chute.slug == public_chute.slug)))
+            ).scalar()
+            while already_exists:
+                suffix = "".join(
+                    random.choice(string.ascii_lowercase + string.digits) for _ in range(5)
+                )
+                public_chute.slug = f"{base_slug}-{suffix}"
+                already_exists = (
+                    await db.execute(select(exists().where(Chute.slug == public_chute.slug)))
+                ).scalar()
+
+            db.add(public_chute)
+            notifications.append(
+                ("chute_created", public_chute_id, new_version, not public_chute.cords)
+            )
+            new_bounty_ids.append(public_chute_id)
+            results.append({"chute_id": public_chute_id, "status": "created"})
+
+    # Single atomic commit for all changes.
+    await db.commit()
+
+    # Post-commit: publish Redis notifications and create bounties.
+    for reason, chute_id, version, job_only in notifications:
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": reason,
+                    "data": {
+                        "chute_id": chute_id,
+                        "version": version,
+                        "job_only": job_only,
+                    },
+                }
+            ).decode(),
+        )
+    for bounty_id in new_bounty_ids:
+        await create_bounty_if_not_exists(bounty_id)
+
+    # Set the daily rate limit after successful completion.
+    await settings.redis_client.set(rate_limit_key, "1", ex=86400)
+
+    logger.success(f"make_public completed by {current_user.username}: {results}")
+    return results
 
 
 @router.get("/boosted")

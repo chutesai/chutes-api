@@ -1102,19 +1102,19 @@ async def _invoke_one(
                         claimed_prompt_tokens = usage.get("prompt_tokens")
 
                         # Sanity check on prompt token counts.
-                        if claimed_prompt_tokens > prompt_tokens * 10:
+                        if claimed_prompt_tokens > prompt_tokens * 50:
                             logger.warning(
                                 f"Prompt tokens exceeded expectations [stream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens} "
                                 f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
                             )
                         else:
-                            prompt_tokens = min(claimed_prompt_tokens, prompt_tokens)
+                            prompt_tokens = claimed_prompt_tokens
 
                         # Sanity check on completion token counts.
                         claimed_completion_tokens = usage.get("completion_tokens")
                         if claimed_completion_tokens is not None:
                             # Some chutes do multi-token prediction, but even so let's make sure people don't do shenanigans.
-                            if claimed_completion_tokens > completion_tokens * 10:
+                            if claimed_completion_tokens > completion_tokens * 50:
                                 logger.warning(
                                     f"Completion tokens exceeded expectations [stream]: {claimed_completion_tokens=} vs estimated={completion_tokens} "
                                     f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
@@ -1333,7 +1333,7 @@ async def _invoke_one(
                     cached_tokens = 0
                     if (usage := json_data.get("usage")) is not None:
                         if claimed_completion_tokens := usage.get("completion_tokens", 0):
-                            if claimed_completion_tokens > completion_tokens * 10:
+                            if claimed_completion_tokens > completion_tokens * 50:
                                 logger.warning(
                                     f"Completion tokens exceeded expectations [nostream]: {claimed_completion_tokens=} vs estimated={completion_tokens} "
                                     f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"
@@ -1341,7 +1341,7 @@ async def _invoke_one(
                             else:
                                 completion_tokens = claimed_completion_tokens
                         if claimed_prompt_tokens := usage.get("prompt_tokens", 0):
-                            if claimed_prompt_tokens > prompt_tokens * 10:
+                            if claimed_prompt_tokens > prompt_tokens * 50:
                                 logger.warning(
                                     f"Prompt tokens exceeded expectations [nostream]: {claimed_prompt_tokens=} vs estimated={prompt_tokens} "
                                     f"hotkey={target.miner_hotkey} instance_id={target.instance_id} chute={chute.name}"

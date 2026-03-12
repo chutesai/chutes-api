@@ -126,22 +126,27 @@ INTEGRATED_SUBNETS = {
     "affine": {
         "netuid": 120,
         "model_substring": "affine",
+        "max_public_chutes": 3,
     },
     "babelbit": {
         "netuid": 59,
         "model_substring": "babelbit",
+        "max_public_chutes": 3,
     },
     "leoma": {
         "netuid": 99,
         "model_substring": "leoma",
+        "max_public_chutes": 3,
     },
     "score": {
         "netuid": 44,
         "model_substring": "turbovision",
+        "max_public_chutes": 3,
     },
     "vocence": {
         "netuid": 102,
         "model_substring": "vocence",
+        "max_public_chutes": 3,
     },
 }
 
