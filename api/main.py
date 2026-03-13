@@ -44,8 +44,6 @@ from api.database import Base, engine, get_session
 from api.config import settings
 from api.metrics.util import keep_gauges_fresh
 from api.instance.util import start_instance_invalidation_listener
-
-
 async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2):
     """
     Very lightweight event-loop lag monitor.
@@ -338,6 +336,23 @@ async def host_router_middleware(request: Request, call_next):
             inv_match = re.match(r"^/chutes/([^/]+)/(.+)$", request.url.path, re.I)
             if inv_match:
                 chute_id = inv_match.group(1)
+                request.state.auth_method = "invoke"
+                request.state.chute_id = chute_id
+                request.state.auth_object_id = chute_id
+                request.state.auth_object_type = "chutes"
+
+        if request.state.auth_method != "invoke":
+            # Treat the E2EE endpoints as chute invocations so OAuth scope checks
+            # match the chute the proxy is trying to invoke.
+            e2e_instances_match = re.match(r"^/e2e/instances/([^/]+)$", request.url.path, re.I)
+            if e2e_instances_match:
+                chute_id = e2e_instances_match.group(1)
+                request.state.auth_method = "invoke"
+                request.state.chute_id = chute_id
+                request.state.auth_object_id = chute_id
+                request.state.auth_object_type = "chutes"
+            elif request.method.lower() == "post" and request.url.path == "/e2e/invoke":
+                chute_id = request.headers.get("x-chute-id") or "__list_or_invalid__"
                 request.state.auth_method = "invoke"
                 request.state.chute_id = chute_id
                 request.state.auth_object_id = chute_id
