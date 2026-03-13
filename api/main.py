@@ -44,6 +44,8 @@ from api.database import Base, engine, get_session
 from api.config import settings
 from api.metrics.util import keep_gauges_fresh
 from api.instance.util import start_instance_invalidation_listener
+
+
 async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2):
     """
     Very lightweight event-loop lag monitor.
