@@ -224,11 +224,14 @@ async def exchange_authorization_code(
             await session.flush()
             # Load app relationship for refresh token lifetime
             await session.refresh(auth, ["app"])
-        elif auth.revoked:
-            # Re-enable if previously revoked
-            auth.revoked = False
-            auth.revoked_at = None
-            auth.scopes = auth_code.scopes
+        else:
+            # Re-consent should replace the stored authorization scopes so the
+            # token family reflects the scopes the user just approved.
+            if auth.revoked:
+                auth.revoked = False
+                auth.revoked_at = None
+            if auth.scopes != auth_code.scopes:
+                auth.scopes = auth_code.scopes
 
         # Create access token with embedded token_id for O(1) lookup
         access_token_id = str(uuid.uuid4())
