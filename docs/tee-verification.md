@@ -261,7 +261,9 @@ e2e_response = requests.get(
     f"https://api.chutes.ai/e2e/instances/{CHUTE_ID}",
     headers={"Authorization": f"Bearer {API_KEY}"},
 )
-e2e_response.raise_for_status()
+if not e2e_response.ok:
+    print(f"Error {e2e_response.status_code}: {e2e_response.text}")
+    raise SystemExit(1)
 e2e_data = e2e_response.json()
 
 # Build a map of instance_id -> e2e_pubkey
@@ -290,7 +292,9 @@ evidence_response = requests.get(
     params={"nonce": nonce},
     headers={"Authorization": f"Bearer {API_KEY}"},
 )
-evidence_response.raise_for_status()
+if not evidence_response.ok:
+    print(f"Error {evidence_response.status_code}: {evidence_response.text}")
+    raise SystemExit(1)
 data = evidence_response.json()
 ```
 
@@ -506,7 +510,9 @@ def main():
         f"{API_BASE}/e2e/instances/{chute_id}",
         headers={"Authorization": f"Bearer {api_key}"},
     )
-    e2e_response.raise_for_status()
+    if not e2e_response.ok:
+        print(f"Error fetching E2E instances: {e2e_response.status_code} {e2e_response.text}")
+        sys.exit(1)
     pubkeys = {
         inst["instance_id"]: inst["e2e_pubkey"]
         for inst in e2e_response.json()["instances"]
@@ -519,7 +525,9 @@ def main():
         params={"nonce": nonce},
         headers={"Authorization": f"Bearer {api_key}"},
     )
-    evidence_response.raise_for_status()
+    if not evidence_response.ok:
+        print(f"Error fetching evidence: {evidence_response.status_code} {evidence_response.text}")
+        sys.exit(1)
     chute_evidence = evidence_response.json()
 
     print(f"Received evidence for {len(chute_evidence['evidence'])} instance(s)")
