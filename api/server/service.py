@@ -794,28 +794,6 @@ async def get_server_attestation_status(
     return status
 
 
-async def list_servers(db: AsyncSession, miner_hotkey: str) -> list[Server]:
-    """
-    List all servers for a miner.
-
-    Args:
-        db: Database session
-        miner_hotkey: Authenticated miner hotkey
-
-    Returns:
-        List of server objects
-    """
-    query = (
-        select(Server).where(Server.miner_hotkey == miner_hotkey).order_by(Server.created_at.desc())
-    )
-
-    result = await db.execute(query)
-    servers = result.scalars().all()
-
-    logger.info(f"Found {len(servers)} servers for miner: {miner_hotkey}")
-    return servers
-
-
 async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> bool:
     """
     Delete a server.

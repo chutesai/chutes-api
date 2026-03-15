@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Header, status, HTTPException, Response,
 from starlette.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.future import select
-from sqlalchemy.orm import class_mapper
+from sqlalchemy.orm import class_mapper, joinedload
 from typing import Any, Optional
 from pydantic.fields import ComputedFieldInfo
 import api.database.orms  # noqa
@@ -21,6 +21,8 @@ from api.bounty.util import get_bounty_infos
 from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance
+from api.server.schemas import Server
+from api.miner.schemas import MinerServersResponse
 from api.job.schemas import Job
 from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
@@ -139,6 +141,29 @@ async def list_nodes(
     return StreamingResponse(
         _stream_items(Node, selector=select(Node).where(Node.miner_hotkey == hotkey))
     )
+
+
+@router.get("/servers/", response_model=MinerServersResponse)
+async def list_servers(
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    db: AsyncSession = Depends(get_db_session),
+    _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
+):
+    """
+    List all servers for the authenticated miner, with nested GPU info.
+    Provides full visibility into server inventory (including servers with no GPUs,
+    duplicate IPs, or name collisions).
+    """
+    query = (
+        select(Server)
+        .where(Server.miner_hotkey == hotkey)
+        .options(joinedload(Server.nodes))
+        .order_by(Server.created_at.desc())
+    )
+    result = await db.execute(query)
+    servers = result.unique().scalars().all()
+
+    return MinerServersResponse.from_servers(servers)
 
 
 @router.get("/instances/")

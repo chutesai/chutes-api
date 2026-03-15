@@ -4,6 +4,7 @@ FastAPI routes for server management and TDX attestation.
 
 from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
@@ -19,6 +20,7 @@ from api.server.schemas import (
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
+    Server,
     NonceResponse,
     BootAttestationResponse,
     RuntimeAttestationResponse,
@@ -33,7 +35,6 @@ from api.server.service import (
     update_server_name,
     process_runtime_attestation,
     get_server_attestation_status,
-    list_servers,
     delete_server,
     validate_request_nonce,
     process_luks_passphrase_request,
@@ -281,6 +282,21 @@ async def create_server(
                 detail="Invalid verification host provided.",
             )
 
+        # TEE servers must have unique IPs (shared IPs for non-TEE are allowed)
+        existing_tee = (
+            await db.execute(
+                select(Server).where(
+                    Server.ip == args.host,
+                    Server.is_tee == True,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing_tee:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"IP {args.host} is already registered to TEE server {existing_tee.server_id} ({existing_tee.name}). Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory.",
+            )
+
         await register_server(db, args, hotkey)
 
         return {"message": "Server registered successfully."}
@@ -311,39 +327,6 @@ async def create_server(
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server registration failed"
-        )
-
-
-# ToDo: Maybe don't need to expose this
-@router.get("/", response_model=List[Dict[str, Any]])
-async def list_user_servers(
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(
-        get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
-    ),
-):
-    """
-    List all servers for the authenticated miner.
-    """
-    try:
-        servers = await list_servers(db, hotkey)
-
-        return [
-            {
-                "server_id": server.server_id,
-                "name": server.name,
-                "ip": server.ip,
-                "created_at": server.created_at.isoformat(),
-                "updated_at": server.updated_at.isoformat() if server.updated_at else None,
-            }
-            for server in servers
-        ]
-
-    except Exception as e:
-        logger.error(f"Failed to list servers: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to list servers"
         )
 
 

@@ -36,6 +36,7 @@ from api.user.service import chutes_user_id
 from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
 from sqlalchemy.future import select
 from sqlalchemy import text, func
+from sqlalchemy.exc import MultipleResultsFound
 from sqlalchemy.orm import aliased, joinedload
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -1027,7 +1028,13 @@ async def verify_tee_chute(
         server_query = select(Server).where(
             Server.ip == instance.host, Server.miner_hotkey == launch_config.miner_hotkey
         )
-        server = (await db.execute(server_query)).scalar_one_or_none()
+        try:
+            server = (await db.execute(server_query)).scalar_one_or_none()
+        except MultipleResultsFound:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Multiple TEE servers share IP {instance.host} for miner {launch_config.miner_hotkey}. Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory and remove duplicate servers.",
+            )
         if not server:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

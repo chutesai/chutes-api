@@ -23,7 +23,6 @@ from api.server.service import (
     get_server_by_name,
     update_server_name,
     get_server_attestation_status,
-    list_servers,
     delete_server,
     process_luks_passphrase_request,
 )
@@ -750,57 +749,6 @@ async def test_get_server_attestation_status_no_attestation(mock_db_session, sam
         assert result["last_attestation"] is None
 
 
-# Server Listing Tests
-
-
-@pytest.mark.asyncio
-async def test_list_servers_success(mock_db_session):
-    """Test successful server listing."""
-    miner_hotkey = "5FTestHotkey123"
-
-    servers = [
-        Server(
-            server_id="server-1",
-            ip=TEST_SERVER_IP,
-            miner_hotkey=miner_hotkey,
-            name="vm-1",
-            created_at=datetime.now(timezone.utc),
-            updated_at=None,
-        ),
-        Server(
-            server_id="server-2",
-            ip="192.168.0.2",
-            miner_hotkey=miner_hotkey,
-            name="vm-2",
-            created_at=datetime.now(timezone.utc),
-            updated_at=None,
-        ),
-    ]
-
-    mock_result = Mock()
-    mock_result.scalars.return_value.all.return_value = servers
-    mock_db_session.execute.return_value = mock_result
-
-    result = await list_servers(mock_db_session, miner_hotkey)
-
-    assert len(result) == 2
-    assert result == servers
-
-
-@pytest.mark.asyncio
-async def test_list_servers_empty(mock_db_session):
-    """Test server listing with no servers."""
-    miner_hotkey = "5FTestHotkey123"
-
-    mock_result = Mock()
-    mock_result.scalars.return_value.all.return_value = []
-    mock_db_session.execute.return_value = mock_result
-
-    result = await list_servers(mock_db_session, miner_hotkey)
-
-    assert len(result) == 0
-
-
 # Server Deletion Tests
 
 
@@ -1185,7 +1133,7 @@ async def test_full_runtime_flow_end_to_end(
 async def test_server_lifecycle_flow(
     mock_db_session, sample_server, server_args, sample_runtime_quote
 ):
-    """Test complete server lifecycle: register -> list -> delete."""
+    """Test complete server lifecycle: register -> check ownership -> delete."""
     miner_hotkey = "5FTestHotkey123"
 
     def mock_refresh(obj):
@@ -1224,16 +1172,7 @@ async def test_server_lifecycle_flow(
     mock_db_session.add.assert_called()
     mock_db_session.commit.assert_called()
 
-    # Step 2: List servers
-    mock_result = Mock()
-    mock_result.scalars.return_value.all.return_value = [sample_server]
-    mock_db_session.execute.return_value = mock_result
-
-    servers = await list_servers(mock_db_session, miner_hotkey)
-    assert len(servers) == 1
-    assert servers[0] == sample_server
-
-    # Step 3: Check ownership
+    # Step 2: Check ownership
     mock_ownership_result = Mock()
     mock_ownership_result.scalar_one_or_none.return_value = sample_server
     mock_db_session.execute.return_value = mock_ownership_result
@@ -1241,7 +1180,7 @@ async def test_server_lifecycle_flow(
     owned_server = await check_server_ownership(mock_db_session, "test-server-123", miner_hotkey)
     assert owned_server == sample_server
 
-    # Step 4: Delete server
+    # Step 3: Delete server
     with patch("api.server.service.check_server_ownership", return_value=sample_server):
         deleted = await delete_server(mock_db_session, "test-server-123", miner_hotkey)
         assert deleted is True
