@@ -1031,14 +1031,20 @@ async def verify_tee_chute(
         try:
             server = (await db.execute(server_query)).scalar_one_or_none()
         except MultipleResultsFound:
+            logger.error(
+                f"Multiple TEE servers share IP {instance.host} for miner {launch_config.miner_hotkey}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Multiple TEE servers share IP {instance.host} for miner {launch_config.miner_hotkey}. Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory and remove duplicate servers.",
+                detail="Multiple TEE servers share the same IP. Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory and remove duplicate servers.",
             )
         if not server:
+            logger.error(
+                f"Server not found for IP {instance.host} and miner {launch_config.miner_hotkey}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Server not found for IP {instance.host} and miner {launch_config.miner_hotkey}",
+                detail="Server not found for this instance.",
             )
 
         # Use the TeeServerClient to get evidence from the chute proxy

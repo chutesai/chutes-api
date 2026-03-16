@@ -292,10 +292,17 @@ async def create_server(
             )
         ).scalar_one_or_none()
         if existing_tee:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"IP {args.host} is already registered to TEE server {existing_tee.server_id} ({existing_tee.name}). Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory.",
+            logger.error(
+                f"TEE server registration rejected: IP {args.host} already registered to server_id={existing_tee.server_id} name={existing_tee.name} miner_hotkey={existing_tee.miner_hotkey}; requesting miner_hotkey={hotkey}"
             )
+            if existing_tee.miner_hotkey == hotkey:
+                detail = (
+                    f"IP {args.host} is already registered to your server {existing_tee.server_id} ({existing_tee.name}). "
+                    "Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory."
+                )
+            else:
+                detail = "Conflict with an existing server. Please contact support to resolve."
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
         await register_server(db, args, hotkey)
 
