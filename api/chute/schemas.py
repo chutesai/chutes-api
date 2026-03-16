@@ -26,7 +26,7 @@ from api.gpu import (
 )
 from api.fmv.fetcher import get_fetcher
 from pydantic import BaseModel, Field, computed_field, validator, constr, field_validator
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Union
 
 
 class ChuteUpdateArgs(BaseModel):
@@ -81,6 +81,7 @@ class NodeSelector(BaseModel):
     exclude: Optional[List[str]] = None
     include: Optional[List[str]] = None
     dynamic: Optional[bool] = False
+    max_hourly_price_per_gpu: Optional[float] = None
 
     def __init__(self, **data):
         """
@@ -167,6 +168,13 @@ class NodeSelector(BaseModel):
                 if SUPPORTED_GPUS[gpu]["memory"] >= self.min_vram_gb_per_gpu
             )
 
+        if self.max_hourly_price_per_gpu is not None:
+            allowed_gpus = set(
+                gpu
+                for gpu in allowed_gpus
+                if SUPPORTED_GPUS[gpu]["hourly_rate"] <= self.max_hourly_price_per_gpu
+            )
+
         # Cap price spread to avoid mixing wildly different GPU classes
         # (e.g., RTX 3090 support should automatically exclude B200)
         if not self.include and allowed_gpus:
@@ -198,7 +206,7 @@ class ChuteArgs(BaseModel):
     filename: str
     ref_str: str
     standard_template: Optional[str] = None
-    node_selector: NodeSelector
+    node_selector: Union[NodeSelector, List[NodeSelector]]
     cords: Optional[List[Cord]] = []
     jobs: Optional[List[Job]] = []
     concurrency: Optional[int] = Field(None, gte=0, le=256)

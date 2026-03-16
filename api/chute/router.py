@@ -1545,14 +1545,18 @@ async def _deploy_chute(
 
     if not chute_args.node_selector:
         chute_args.node_selector = {"gpu_count": 1}
-    if isinstance(chute_args.node_selector, dict):
-        chute_args.node_selector = NodeSelector(**chute_args.node_selector)
-    if len(chute_args.node_selector.exclude or []) > 5:
+    if isinstance(chute_args.node_selector, list):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Maximum of 5 GPUs can be included in the `exclude` field",
+            detail="Multiple node selectors are not supported yet. Please provide a single node selector.",
         )
-
+    if isinstance(chute_args.node_selector, dict):
+        chute_args.node_selector = NodeSelector(**chute_args.node_selector)
+    if not chute_args.node_selector.supported_gpus:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No supported GPUs match your node selector criteria (check min_vram_gb_per_gpu, include/exclude, and max_hourly_price_per_gpu).",
+        )
     allowed_gpus = set(chute_args.node_selector.supported_gpus)
     if not allowed_gpus - set(["5090", "3090", "4090"]):
         raise HTTPException(
