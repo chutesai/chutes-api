@@ -282,23 +282,18 @@ async def create_server(
                 detail="Invalid verification host provided.",
             )
 
-        # TEE servers must have unique IPs (shared IPs for non-TEE are allowed)
-        existing_tee = (
-            await db.execute(
-                select(Server).where(
-                    Server.ip == args.host,
-                    Server.is_tee.is_(True),
-                )
-            )
+        # TEE servers require globally unique IPs (across TEE and non-TEE)
+        existing_server = (
+            await db.execute(select(Server).where(Server.ip == args.host))
         ).scalar_one_or_none()
-        if existing_tee:
+        if existing_server:
             logger.error(
-                f"TEE server registration rejected: IP {args.host} already registered to server_id={existing_tee.server_id} name={existing_tee.name} miner_hotkey={existing_tee.miner_hotkey}; requesting miner_hotkey={hotkey}"
+                f"TEE server registration rejected: IP {args.host} already registered to server_id={existing_server.server_id} name={existing_server.name} miner_hotkey={existing_server.miner_hotkey}; requesting miner_hotkey={hotkey}"
             )
-            if existing_tee.miner_hotkey == hotkey:
+            if existing_server.miner_hotkey == hotkey:
                 detail = (
-                    f"IP {args.host} is already registered to your server {existing_tee.server_id} ({existing_tee.name}). "
-                    "Each TEE server must have a unique IP. Use GET /miner/servers to review your inventory."
+                    f"IP {args.host} is already registered to your server {existing_server.server_id} ({existing_server.name}). "
+                    "IPs must be unique across all servers. Use GET /miner/servers to review your inventory."
                 )
             else:
                 detail = "Conflict with an existing server. Please contact support to resolve."
