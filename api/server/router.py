@@ -2,7 +2,7 @@
 FastAPI routes for server management and TDX attestation.
 """
 
-from typing import List, Dict, Any
+from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -287,7 +287,7 @@ async def create_server(
             await db.execute(
                 select(Server).where(
                     Server.ip == args.host,
-                    Server.is_tee == True,
+                    Server.is_tee.is_(True),
                 )
             )
         ).scalar_one_or_none()
