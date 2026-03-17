@@ -6,7 +6,7 @@ from typing import Dict, Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError, DatabaseError
+from sqlalchemy.exc import IntegrityError, DatabaseError, MultipleResultsFound
 from loguru import logger
 
 from api.database import get_db_session
@@ -283,9 +283,18 @@ async def create_server(
             )
 
         # TEE servers require globally unique IPs (across TEE and non-TEE)
-        existing_server = (
-            await db.execute(select(Server).where(Server.ip == args.host))
-        ).scalar_one_or_none()
+        try:
+            existing_server = (
+                await db.execute(select(Server).where(Server.ip == args.host))
+            ).scalar_one_or_none()
+        except MultipleResultsFound:
+            logger.error(
+                f"TEE server registration rejected: multiple servers share IP {args.host}; requesting miner_hotkey={hotkey}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Conflict with an existing server. Please contact support to resolve.",
+            )
         if existing_server:
             logger.error(
                 f"TEE server registration rejected: IP {args.host} already registered to server_id={existing_server.server_id} name={existing_server.name} miner_hotkey={existing_server.miner_hotkey}; requesting miner_hotkey={hotkey}"
