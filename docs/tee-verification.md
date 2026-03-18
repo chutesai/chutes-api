@@ -2,7 +2,7 @@
 
 ## Overview
 
-Chutes runs workloads inside Intel TDX (Trust Domain Extensions) Confidential VMs with NVIDIA GPUs in a TEE environment where the host cannot access VM or GPU memory. Chutes verifies all servers and chute instances on its network as part of normal operations. The evidence endpoints documented here exist so that **third parties can independently verify TEE integrity without having to trust Chutes**.
+Chutes runs workloads inside Intel TDX (Trust Domain Extensions) confidential VMs. NVIDIA GPUs are attached via passthrough with hardware-enforced memory isolation, ensuring the host cannot access either VM or GPU memory. GPU attestation is integrated into the overall TEE verification process. Chutes verifies all servers and chute instances on its network as part of normal operations. The evidence endpoints documented here exist so that **third parties can independently verify TEE integrity without having to trust Chutes.**
 
 A caller supplies a cryptographic nonce and receives attestation evidence proving that a specific instance is running on genuine TEE hardware. This evidence can be verified directly against Intel and NVIDIA verification infrastructure.
 
@@ -412,7 +412,7 @@ Without attestation, a man-in-the-middle could substitute their own public key f
 
 ### Client Library
 
-The [chutes-e2ee-transport](https://github.com/chutesai/chutes-e2ee-transport) package provides an OpenAI-compatible client plugin. Drop it in and your existing code gains full E2E encryption with no changes beyond initialization.
+The [chutes-e2ee-transport](https://github.com/chutesai/chutes-e2ee-transport) package provides an OpenAI-compatible client plugin. Drop it in and your existing code gains full E2E encryption with no changes beyond initialization. Alternatively, [e2ee-proxy](https://github.com/chutesai/e2ee-proxy) offers a simple proxy-based option for E2E encryption.
 
 ## Complete Example
 
@@ -433,7 +433,7 @@ import base64
 import hashlib
 import json
 import secrets
-import syschy
+import sys
 
 import requests
 from dcap_qvl import get_collateral_and_verify
