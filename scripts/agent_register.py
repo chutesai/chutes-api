@@ -204,7 +204,7 @@ def _poll_and_setup(
         elif reg_status == "expired":
             raise RuntimeError(
                 "Registration expired. Funds sent to expired registrations are not recoverable. "
-                "You must use a different hotkey to register again."
+                "Each hotkey can only be used for one registration attempt — you must use a new hotkey."
             )
         else:
             received = status_resp.get("received_amount", 0)

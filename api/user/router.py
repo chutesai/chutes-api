@@ -1454,6 +1454,14 @@ async def check_username(
     existing_user = await db.execute(select(User).where(User.username.ilike(username)))
     if existing_user.first() is not None:
         return {"valid": True, "available": False}
+    existing_agent = await db.execute(
+        select(AgentRegistration).where(
+            AgentRegistration.username.ilike(username),
+            AgentRegistration.deleted_at.is_(None),
+        )
+    )
+    if existing_agent.first() is not None:
+        return {"valid": True, "available": False}
     return {"valid": True, "available": True}
 
 
@@ -2211,7 +2219,7 @@ async def agent_registration(
             detail="This hotkey is already registered to a user.",
         )
 
-    # Check hotkey not in active agent registrations.
+    # Check hotkey not in any agent registration (pending, expired, or completed).
     existing_reg = (
         await db.execute(
             select(AgentRegistration).where(
@@ -2225,9 +2233,10 @@ async def agent_registration(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This hotkey already has a pending agent registration.",
             )
-        # Expired/completed registration — delete the old row to free the unique constraint.
-        await db.delete(existing_reg)
-        await db.flush()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This hotkey has already been used for agent registration. A new hotkey is required.",
+        )
 
     # Handle username: validate if provided, auto-generate if not.
     if args.username:
