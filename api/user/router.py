@@ -59,6 +59,7 @@ from api.agent_registration.schemas import (
     AgentRegistrationRequest,
     AgentRegistrationResponse,
     AgentRegistrationStatusResponse,
+    AgentSetupRequest,
     AgentSetupResponse,
 )
 from api.payment.schemas import UsageData
@@ -2374,11 +2375,13 @@ async def get_agent_registration_status(
 )
 async def agent_setup(
     user_id: str,
+    args: AgentSetupRequest,
     db: AsyncSession = Depends(get_db_session),
 ):
     """
     One-time setup endpoint for agent-registered users.
-    Returns fingerprint, API key, and config.ini template.
+    Requires hotkey signature to prove ownership.
+    Returns API key and config.ini template.
     """
     # Validate: user exists and was created from agent registration.
     user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
@@ -2401,6 +2404,25 @@ async def agent_setup(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This user was not created via agent registration.",
+        )
+
+    # Authenticate: verify hotkey signature.
+    # Message format: "chutes_setup:{user_id}", signed by the registration hotkey.
+    if args.hotkey != user.hotkey:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Hotkey does not match the registered hotkey for this user.",
+        )
+    signing_message = f"chutes_setup:{user_id}"
+    try:
+        signature_bytes = bytes.fromhex(args.signature.removeprefix("0x"))
+        keypair = Keypair(args.hotkey)
+        if not keypair.verify(signing_message, signature_bytes):
+            raise ValueError("Invalid signature")
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid signature. Message must be 'chutes_setup:{user_id}' signed by the hotkey.",
         )
 
     # One-time gate via Redis.

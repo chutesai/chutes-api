@@ -120,9 +120,16 @@ def _api_poll_status(api_base: str, hotkey_ss58: str) -> dict:
     return resp.json()
 
 
-def _api_setup(api_base: str, user_id: str) -> dict:
-    """POST /users/{user_id}/agent_setup — returns setup response dict."""
-    resp = requests.post(f"{api_base}/users/{user_id}/agent_setup", timeout=30)
+def _api_setup(api_base: str, user_id: str, hotkey_keypair) -> dict:
+    """POST /users/{user_id}/agent_setup — returns setup response dict.
+    Requires hotkey signature for authentication."""
+    signing_message = f"chutes_setup:{user_id}"
+    signature = hotkey_keypair.sign(signing_message.encode()).hex()
+    payload = {
+        "hotkey": hotkey_keypair.ss58_address,
+        "signature": signature,
+    }
+    resp = requests.post(f"{api_base}/users/{user_id}/agent_setup", json=payload, timeout=30)
     if resp.status_code == 409:
         raise RuntimeError("Agent setup has already been completed for this user (one-time only).")
     if resp.status_code != 200:
@@ -272,7 +279,7 @@ async def register_agent(
 
     # Step 4: Setup.
     logger.info("Calling agent setup endpoint...")
-    setup = _api_setup(api_base, user_id)
+    setup = _api_setup(api_base, user_id, hotkey_keypair)
 
     # Replace hotkey seed placeholder in config.
     hotkey_seed_hex = hotkey_seed or hotkey_keypair.seed_hex

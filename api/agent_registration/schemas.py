@@ -4,7 +4,7 @@ ORM and Pydantic models for agent registration.
 
 from typing import Optional
 from pydantic import BaseModel
-from sqlalchemy import Column, String, Double, DateTime, func
+from sqlalchemy import Column, String, Double, BigInteger, DateTime, func
 from api.database import Base, generate_uuid
 
 
@@ -19,6 +19,7 @@ class AgentRegistration(Base):
     payment_address = Column(String, nullable=False)
     wallet_secret = Column(String, nullable=False)
     received_amount = Column(Double, default=0.0)
+    received_rao = Column(BigInteger, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     deleted_at = Column(DateTime(timezone=True), nullable=True)
@@ -57,6 +58,11 @@ class AgentRegistrationStatusResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+class AgentSetupRequest(BaseModel):
+    hotkey: str
+    signature: str
 
 
 class AgentSetupResponse(BaseModel):

@@ -455,8 +455,9 @@ class PaymentMonitor:
             )
             session.add(payment)
 
-            # Update received amount.
+            # Update received amount (USD and rao).
             registration.received_amount = (registration.received_amount or 0) + delta
+            registration.received_rao = (registration.received_rao or 0) + amount
 
             try:
                 await session.commit()
@@ -478,12 +479,12 @@ class PaymentMonitor:
             threshold = settings.agent_registration_threshold
             tolerance = settings.agent_registration_tolerance
             if registration.received_amount >= threshold * (1 - tolerance):
-                await self._convert_agent_to_user(registration, amount)
+                await self._convert_agent_to_user(registration)
 
-    async def _convert_agent_to_user(self, registration: AgentRegistration, latest_rao_amount: int):
+    async def _convert_agent_to_user(self, registration: AgentRegistration):
         """
         Convert a completed agent registration into a real user account.
-        After user creation, queue autostaking for the triggering payment.
+        After user creation, queue autostaking for all accumulated rao.
         """
         async with get_session() as session:
             # Re-fetch the registration within this session.
@@ -551,14 +552,16 @@ class PaymentMonitor:
                 f"username={reg.username} hotkey={reg.hotkey} balance=${reg.received_amount}"
             )
 
-            # Now that the user exists, queue autostaking for the triggering payment.
-            await upsert_pending_stake(
-                user_id=reg.user_id,
-                wallet_address=reg.payment_address,
-                netuid=0,
-                amount_rao=latest_rao_amount,
-                source_hotkey="",
-            )
+            # Now that the user exists, queue autostaking for all accumulated rao.
+            total_rao = reg.received_rao or 0
+            if total_rao > 0:
+                await upsert_pending_stake(
+                    user_id=reg.user_id,
+                    wallet_address=reg.payment_address,
+                    netuid=0,
+                    amount_rao=total_rao,
+                    source_hotkey="",
+                )
 
     async def _get_state(self) -> Tuple[int, str]:
         """
