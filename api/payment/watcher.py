@@ -21,11 +21,12 @@ from loguru import logger
 from typing import Tuple
 from api.fmv.fetcher import get_fetcher
 import api.database.orms  # noqa: F401
-from api.user.schemas import User
+from api.user.schemas import User, InvocationQuota
 from api.payment.schemas import Payment, PaymentMonitorState
 from api.config import settings
 from api.database import get_session, engine, Base
 from api.autostaker import upsert_pending_stake
+from api.agent_registration.schemas import AgentRegistration
 
 
 class PaymentMonitor:
@@ -35,9 +36,12 @@ class PaymentMonitor:
         self.lock_timeout = timedelta(minutes=5)
         self.max_recover_blocks = 32
         self._payment_addresses = set()
+        self._agent_payment_addresses = set()
         self._is_running = False
         self.instance_id = str(uuid.uuid4())
         self._user_refresh_timestamp = None
+        self._agent_refresh_timestamp = None
+        self._block_counter = 0
 
     async def initialize(self):
         """
@@ -183,6 +187,50 @@ class PaymentMonitor:
             # Advance timestamp to now (minus buffer) so next query only gets truly new users
             self._user_refresh_timestamp = db_now
 
+            # Load active agent registration addresses.
+            agent_query = select(
+                AgentRegistration.payment_address, AgentRegistration.updated_at
+            ).where(AgentRegistration.deleted_at.is_(None))
+            if self._agent_refresh_timestamp is not None:
+                lookback = self._agent_refresh_timestamp - timedelta(minutes=2)
+                agent_query = agent_query.where(AgentRegistration.updated_at > lookback)
+            agent_query = agent_query.order_by(AgentRegistration.updated_at.asc())
+            agent_result = await session.execute(agent_query)
+            for payment_address, _ in agent_result:
+                self._agent_payment_addresses.add(payment_address)
+            self._agent_refresh_timestamp = db_now
+
+            # Periodically clean up stale agent registrations (every ~100 blocks / ~20 min).
+            self._block_counter += 1
+            if self._block_counter % 100 == 0:
+                await self._cleanup_stale_registrations(session)
+
+    async def _cleanup_stale_registrations(self, session):
+        """
+        Mark expired agent registrations as deleted and remove their addresses.
+        """
+        ttl_cutoff = func.now() - timedelta(hours=settings.agent_registration_ttl_hours)
+        stale = (
+            (
+                await session.execute(
+                    select(AgentRegistration).where(
+                        AgentRegistration.deleted_at.is_(None),
+                        AgentRegistration.created_at < ttl_cutoff,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if stale:
+            for reg in stale:
+                reg.deleted_at = func.now()
+                self._agent_payment_addresses.discard(reg.payment_address)
+                logger.info(
+                    f"Cleaned up stale agent registration: {reg.registration_id} hotkey={reg.hotkey}"
+                )
+            await session.commit()
+
     async def _handle_payment(
         self,
         to_address: str,
@@ -201,7 +249,13 @@ class PaymentMonitor:
                 await session.execute(select(User).where(User.payment_address == to_address))
             ).scalar_one_or_none()
             if not user:
-                logger.warning(f"Failed to find user with payment address {to_address}")
+                # Check if this is an agent registration payment.
+                if to_address in self._agent_payment_addresses:
+                    await self._handle_agent_payment(
+                        to_address, from_address, amount, block, block_hash, fmv, extrinsic_idx
+                    )
+                else:
+                    logger.warning(f"Failed to find user with payment address {to_address}")
                 return
 
             # Store the payment record.
@@ -335,6 +389,177 @@ class PaymentMonitor:
                 source_hotkey=hotkey_address,
             )
 
+    async def _handle_agent_payment(
+        self,
+        to_address: str,
+        from_address: str,
+        amount: int,
+        block: int,
+        block_hash: str,
+        fmv: float,
+        extrinsic_idx: int,
+    ):
+        """
+        Process a payment to an agent registration address.
+        """
+        async with get_session() as session:
+            registration = (
+                await session.execute(
+                    select(AgentRegistration).where(
+                        AgentRegistration.payment_address == to_address,
+                        AgentRegistration.deleted_at.is_(None),
+                    )
+                )
+            ).scalar_one_or_none()
+            if not registration:
+                # Race condition: registration may have been converted to a user between
+                # the address set check and this query. Fall back to normal user payment.
+                user = (
+                    await session.execute(select(User).where(User.payment_address == to_address))
+                ).scalar_one_or_none()
+                if user:
+                    logger.info(
+                        f"Agent registration already converted for {to_address}, "
+                        f"redirecting to normal user payment for user_id={user.user_id}"
+                    )
+                    await session.close()
+                    await self._handle_payment(
+                        to_address, from_address, amount, block, block_hash, fmv, extrinsic_idx
+                    )
+                else:
+                    logger.warning(
+                        f"Agent registration not found and no user for payment address {to_address}"
+                    )
+                return
+
+            delta = amount * fmv / 1e9
+            if amount < 7000000:
+                logger.warning("Dust was sent to agent registration wallet, ignoring...")
+                return
+
+            # Store the payment record using the pre-generated user_id.
+            payment_id = str(
+                uuid.uuid5(uuid.NAMESPACE_OID, f"{block}:{to_address}:{from_address}:{amount}")
+            )
+            payment = Payment(
+                payment_id=payment_id,
+                user_id=registration.user_id,
+                source_address=from_address,
+                block=block,
+                rao_amount=amount,
+                usd_amount=delta,
+                fmv=fmv,
+                transaction_hash=block_hash,
+                extrinsic_idx=extrinsic_idx,
+                purpose="agent_registration",
+            )
+            session.add(payment)
+
+            # Update received amount.
+            registration.received_amount = (registration.received_amount or 0) + delta
+
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                if "UniqueViolationError" in str(exc):
+                    logger.warning(f"Skipping (apparent) duplicate agent payment: {payment_id=}")
+                    await session.rollback()
+                    return
+                else:
+                    raise
+
+            logger.success(
+                f"Agent registration payment [reg_id={registration.registration_id} hotkey={registration.hotkey}]: "
+                f"{amount} rao @ ${fmv} FMV = ${delta}, total received: ${registration.received_amount}"
+            )
+
+            # Check if threshold met — convert to user first, then autostake.
+            # We must create the user before autostaking because PendingStake has a FK to users.
+            threshold = settings.agent_registration_threshold
+            tolerance = settings.agent_registration_tolerance
+            if registration.received_amount >= threshold * (1 - tolerance):
+                await self._convert_agent_to_user(registration, amount)
+
+    async def _convert_agent_to_user(self, registration: AgentRegistration, latest_rao_amount: int):
+        """
+        Convert a completed agent registration into a real user account.
+        After user creation, queue autostaking for the triggering payment.
+        """
+        async with get_session() as session:
+            # Re-fetch the registration within this session.
+            reg = (
+                await session.execute(
+                    select(AgentRegistration).where(
+                        AgentRegistration.registration_id == registration.registration_id
+                    )
+                )
+            ).scalar_one()
+
+            # Double-check not already converted.
+            if reg.deleted_at is not None:
+                logger.warning(
+                    f"Agent registration {reg.registration_id} already converted, skipping."
+                )
+                return
+
+            # Create user with the pre-generated user_id.
+            import hashlib
+            from api.util import gen_random_token
+
+            fingerprint = gen_random_token(k=32)
+            fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
+
+            user = User(
+                user_id=reg.user_id,
+                username=reg.username,
+                hotkey=reg.hotkey,
+                coldkey=reg.coldkey,
+                payment_address=reg.payment_address,
+                wallet_secret=reg.wallet_secret,
+                balance=reg.received_amount,
+                fingerprint_hash=fingerprint_hash,
+            )
+            session.add(user)
+
+            # Create wildcard quota row.
+            quota = InvocationQuota(
+                user_id=reg.user_id,
+                chute_id="*",
+                quota=0.0,
+                is_default=True,
+                payment_refresh_date=None,
+                updated_at=None,
+            )
+            session.add(quota)
+
+            # Mark registration as converted.
+            reg.deleted_at = func.now()
+
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                logger.error(f"Failed to convert agent registration {reg.registration_id}: {exc}")
+                await session.rollback()
+                return
+
+            # Add to user payment addresses so future payments go to the user directly.
+            self._payment_addresses.add(reg.payment_address)
+            self._agent_payment_addresses.discard(reg.payment_address)
+
+            logger.success(
+                f"Converted agent registration to user: user_id={reg.user_id} "
+                f"username={reg.username} hotkey={reg.hotkey} balance=${reg.received_amount}"
+            )
+
+            # Now that the user exists, queue autostaking for the triggering payment.
+            await upsert_pending_stake(
+                user_id=reg.user_id,
+                wallet_address=reg.payment_address,
+                netuid=0,
+                amount_rao=latest_rao_amount,
+                source_hotkey="",
+            )
+
     async def _get_state(self) -> Tuple[int, str]:
         """
         Get current state from database.
@@ -438,7 +663,10 @@ class PaymentMonitor:
                                 )
                                 to_address = ss58_encode(bytes(to_address[0]).hex(), ss58_format=42)
                             amount = attributes["amount"]
-                            if to_address in self._payment_addresses:
+                            if (
+                                to_address in self._payment_addresses
+                                or to_address in self._agent_payment_addresses
+                            ):
                                 await self._handle_payment(
                                     to_address,
                                     from_address,

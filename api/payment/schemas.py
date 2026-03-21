@@ -21,7 +21,7 @@ from api.database import Base, generate_uuid
 class Payment(Base):
     __tablename__ = "payments"
     payment_id = Column(String, nullable=False, primary_key=True)
-    user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
+    user_id = Column(String, nullable=False)
     block = Column(BigInteger, nullable=False)
     rao_amount = Column(BigInteger, nullable=False)
     fmv = Column(Double, nullable=False)

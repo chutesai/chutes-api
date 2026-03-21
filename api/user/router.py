@@ -54,6 +54,13 @@ from api.api_key.schemas import APIKey, APIKeyArgs
 from api.api_key.response import APIKeyCreationResponse
 from api.user.util import validate_the_username, generate_payment_address
 from api.user.templater import registration_token_form, registration_token_success, error_page
+from api.agent_registration.schemas import (
+    AgentRegistration,
+    AgentRegistrationRequest,
+    AgentRegistrationResponse,
+    AgentRegistrationStatusResponse,
+    AgentSetupResponse,
+)
 from api.payment.schemas import UsageData
 from bittensor_wallet.keypair import Keypair
 from scalecodec.utils.ss58 import is_valid_ss58_address
@@ -2148,3 +2155,301 @@ async def get_user_info(
     ur = SelfResponse.from_orm(user)
     ur.balance = user.current_balance.effective_balance if user.current_balance else 0.0
     return ur
+
+
+@router.post(
+    "/agent_registration",
+    response_model=AgentRegistrationResponse,
+)
+async def agent_registration(
+    args: AgentRegistrationRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Register an AI agent programmatically using hotkey/coldkey/signature.
+    Returns a payment address where the agent must send TAO to complete registration.
+    """
+    # Validate signature: message = "chutes_signup:{hotkey}:{coldkey}", signed by hotkey.
+    signing_message = f"chutes_signup:{args.hotkey}:{args.coldkey}"
+    try:
+        signature_bytes = bytes.fromhex(args.signature.removeprefix("0x"))
+        keypair = Keypair(args.hotkey)
+        if not keypair.verify(signing_message, signature_bytes):
+            raise ValueError("Invalid signature")
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid signature. Message must be 'chutes_signup:{hotkey}:{coldkey}' signed by the hotkey.",
+        )
+
+    # Validate hotkey format.
+    if not is_valid_ss58_address(args.hotkey) or not is_valid_ss58_address(args.coldkey):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid hotkey or coldkey SS58 address.",
+        )
+
+    # Check hotkey not already registered as a user.
+    existing_user = (
+        await db.execute(select(User).where(User.hotkey == args.hotkey))
+    ).scalar_one_or_none()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This hotkey is already registered to a user.",
+        )
+
+    # Check hotkey not in active agent registrations.
+    existing_reg = (
+        await db.execute(
+            select(AgentRegistration).where(
+                AgentRegistration.hotkey == args.hotkey,
+                AgentRegistration.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if existing_reg:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This hotkey already has a pending agent registration.",
+        )
+
+    # Handle username: validate if provided, auto-generate if not.
+    if args.username:
+        await _validate_username(db, args.username)
+        username = args.username
+    else:
+        # Auto-generate unique username.
+        while True:
+            username = f"chuter_{secrets.token_hex(3)}"
+            existing = await db.execute(select(User).where(User.username.ilike(username)))
+            if existing.first() is None:
+                break
+
+    # Pre-generate user_id.
+    user_id = str(uuid.uuid4())
+
+    # Generate payment address.
+    payment_address, wallet_secret = await generate_payment_address()
+
+    # Create registration row.
+    registration = AgentRegistration(
+        registration_id=str(uuid.uuid4()),
+        user_id=user_id,
+        hotkey=args.hotkey,
+        coldkey=args.coldkey,
+        username=username,
+        payment_address=payment_address,
+        wallet_secret=wallet_secret,
+    )
+    db.add(registration)
+    await db.commit()
+    await db.refresh(registration)
+
+    # Fetch current TAO price to calculate required amount.
+    from api.fmv.fetcher import get_fetcher
+
+    fetcher = get_fetcher()
+    tao_price = await fetcher.get_price("tao")
+    required_tao = settings.agent_registration_threshold / tao_price if tao_price > 0 else 0
+
+    return AgentRegistrationResponse(
+        registration_id=registration.registration_id,
+        user_id=registration.user_id,
+        hotkey=registration.hotkey,
+        coldkey=registration.coldkey,
+        payment_address=registration.payment_address,
+        required_amount=round(required_tao, 4),
+        message=f"Send at least {required_tao:.4f} TAO (${settings.agent_registration_threshold} USD) to the payment address. A 10% tolerance is applied for price fluctuations.",
+    )
+
+
+@router.get(
+    "/agent_registration/{hotkey}",
+    response_model=AgentRegistrationStatusResponse,
+)
+async def get_agent_registration_status(
+    hotkey: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Check the status of an agent registration by hotkey.
+    Handles all states: pending payment, completed (converted to user), or expired.
+    """
+    from api.fmv.fetcher import get_fetcher
+
+    fetcher = get_fetcher()
+    tao_price = await fetcher.get_price("tao")
+    threshold_usd = settings.agent_registration_threshold
+    tolerance = settings.agent_registration_tolerance
+    required_tao = threshold_usd / tao_price if tao_price > 0 else 0
+
+    # Check for active (pending) registration first.
+    registration = (
+        await db.execute(
+            select(AgentRegistration).where(
+                AgentRegistration.hotkey == hotkey,
+                AgentRegistration.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if registration:
+        remaining_usd = threshold_usd * (1 - tolerance) - registration.received_amount
+        remaining_tao = remaining_usd / tao_price if tao_price > 0 else 0
+        message = (
+            f"Awaiting payment. Received ${registration.received_amount:.2f} of "
+            f"${threshold_usd:.2f} required. Send ~{remaining_tao:.4f} more TAO to {registration.payment_address}."
+        )
+        return AgentRegistrationStatusResponse(
+            registration_id=registration.registration_id,
+            user_id=registration.user_id,
+            hotkey=registration.hotkey,
+            coldkey=registration.coldkey,
+            payment_address=registration.payment_address,
+            received_amount=registration.received_amount,
+            required_amount=round(required_tao, 4),
+            status="pending_payment",
+            message=message,
+        )
+
+    # Check if already converted to a user.
+    user = (await db.execute(select(User).where(User.hotkey == hotkey))).scalar_one_or_none()
+    if user:
+        # Look up the completed registration for received_amount.
+        completed_reg = (
+            await db.execute(
+                select(AgentRegistration).where(
+                    AgentRegistration.hotkey == hotkey,
+                    AgentRegistration.deleted_at.isnot(None),
+                )
+            )
+        ).scalar_one_or_none()
+
+        return AgentRegistrationStatusResponse(
+            registration_id=completed_reg.registration_id if completed_reg else None,
+            user_id=user.user_id,
+            hotkey=user.hotkey,
+            coldkey=user.coldkey,
+            payment_address=user.payment_address,
+            received_amount=completed_reg.received_amount if completed_reg else 0.0,
+            required_amount=round(required_tao, 4),
+            status="completed",
+            message=(
+                "Registration complete. Your account has been created. "
+                f"Call POST /users/{user.user_id}/agent_setup to get your API key and config."
+            ),
+        )
+
+    # Check if there's an expired (deleted) registration with no corresponding user.
+    expired_reg = (
+        await db.execute(
+            select(AgentRegistration).where(
+                AgentRegistration.hotkey == hotkey,
+                AgentRegistration.deleted_at.isnot(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if expired_reg:
+        return AgentRegistrationStatusResponse(
+            registration_id=expired_reg.registration_id,
+            user_id=expired_reg.user_id,
+            hotkey=expired_reg.hotkey,
+            coldkey=expired_reg.coldkey,
+            payment_address=expired_reg.payment_address,
+            received_amount=expired_reg.received_amount,
+            required_amount=round(required_tao, 4),
+            status="expired",
+            message="Registration expired. Please create a new registration.",
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="No agent registration found for this hotkey.",
+    )
+
+
+@router.post(
+    "/{user_id}/agent_setup",
+    response_model=AgentSetupResponse,
+)
+async def agent_setup(
+    user_id: str,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    One-time setup endpoint for agent-registered users.
+    Returns fingerprint, API key, and config.ini template.
+    """
+    # Validate: user exists and was created from agent registration.
+    user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found. Ensure payment has been received and account was created.",
+        )
+
+    # Verify this user came from an agent registration (check completed registrations).
+    agent_reg = (
+        await db.execute(
+            select(AgentRegistration).where(
+                AgentRegistration.user_id == user_id,
+                AgentRegistration.deleted_at.isnot(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if not agent_reg:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This user was not created via agent registration.",
+        )
+
+    # One-time gate via Redis.
+    redis_key = f"agent_setup_done:{user_id}"
+    already_done = await settings.redis_client.get(redis_key)
+    if already_done:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Agent setup has already been completed for this user. This endpoint is one-time only.",
+        )
+
+    # Create admin API key.
+    api_key, one_time_secret = APIKey.create(user.user_id, APIKeyArgs(name="default", admin=True))
+    db.add(api_key)
+
+    await db.commit()
+
+    # Set Redis gate (no expiry — permanent).
+    await settings.redis_client.set(redis_key, "1")
+
+    # Build config.ini matching the real format.
+    config_ini = f"""[api]
+base_url = https://api.chutes.ai
+
+[auth]
+username = {user.username}
+user_id = {user_id}
+hotkey_seed = REPLACE_WITH_YOUR_HOTKEY_SEED
+hotkey_name = default
+hotkey_ss58address = {user.hotkey}
+
+[payment]
+address = {user.payment_address}
+"""
+
+    setup_instructions = (
+        "Save the config above to ~/.chutes/config.ini and replace "
+        "'REPLACE_WITH_YOUR_HOTKEY_SEED' with your actual hotkey seed (hex). "
+        "The payment address accepts both TAO and subnet alpha tokens to top up your balance. "
+        "Store your API key securely — this endpoint cannot be called again. "
+        "You can use either the API key or hotkey signature for authentication."
+    )
+
+    return AgentSetupResponse(
+        user_id=user_id,
+        api_key=one_time_secret,
+        hotkey_ss58address=user.hotkey,
+        payment_address=user.payment_address,
+        username=user.username,
+        config_ini=config_ini,
+        setup_instructions=setup_instructions,
+    )

@@ -428,6 +428,11 @@ class Settings(BaseSettings):
     # Premium chute IDs (restricted from $3/mo sub users without balance).
     premium_chute_ids: list = json.loads(os.getenv("PREMIUM_CHUTE_IDS", "[]"))
 
+    # Agent registration settings.
+    agent_registration_threshold: float = float(os.getenv("AGENT_REGISTRATION_THRESHOLD", "50.0"))
+    agent_registration_tolerance: float = float(os.getenv("AGENT_REGISTRATION_TOLERANCE", "0.10"))
+    agent_registration_ttl_hours: int = int(os.getenv("AGENT_REGISTRATION_TTL_HOURS", "24"))
+
 
 # Subscription tier: quota -> monthly price in USD (canonical values only).
 SUBSCRIPTION_TIERS = {

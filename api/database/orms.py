@@ -17,3 +17,4 @@ import api.node.events  # noqa: F401
 import api.server.schemas  # noqa: F401
 import api.idp.schemas  # noqa: F401
 import api.model_alias.schemas  # noqa: F401
+import api.agent_registration.schemas  # noqa: F401
