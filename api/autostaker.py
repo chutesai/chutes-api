@@ -188,12 +188,35 @@ async def wait_for_mev_extrinsic(
     return False, "MEV shield timeout - inner extrinsic not found"
 
 
+async def _submit_extrinsic_direct(
+    substrate: AsyncSubstrateInterface,
+    call,
+    keypair: Keypair,
+) -> tuple[bool, Optional[str]]:
+    """Submit an extrinsic directly without MEV protection."""
+    extrinsic = await substrate.create_signed_extrinsic(call=call, keypair=keypair)
+    receipt = await substrate.submit_extrinsic(extrinsic, wait_for_inclusion=True)
+    is_success = await receipt.is_success
+    if not is_success:
+        error_msg = (
+            await receipt.error_message
+            if hasattr(receipt.error_message, "__await__")
+            else receipt.error_message
+        )
+        return False, f"Extrinsic failed: {error_msg}"
+    return True, None
+
+
 async def submit_extrinsic_with_mev(
     substrate: AsyncSubstrateInterface,
     call,
     keypair: Keypair,
 ) -> tuple[bool, Optional[str]]:
-    """Submit an extrinsic with MEV protection (when available)."""
+    """Submit an extrinsic with MEV protection (when available and enabled)."""
+    if not settings.mev_protection_enabled:
+        logger.info("MEV protection disabled, submitting directly")
+        return await _submit_extrinsic_direct(substrate, call, keypair)
+
     # Get the current nonce explicitly via RPC to avoid caching issues
     result = await substrate.rpc_request("system_accountNextIndex", [keypair.ss58_address])
     current_nonce = result["result"]
