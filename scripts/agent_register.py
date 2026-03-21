@@ -5,19 +5,20 @@ Fully programmatic agent registration for Chutes.
 Usable as both a CLI tool and an importable library.
 
 CLI usage:
+    # Full flow (register + pay + poll + setup):
     python scripts/agent_register.py \\
         --hotkey-seed 0xabcdef... \\
         --coldkey-mnemonic "word1 word2 ..." \\
         --api-base https://api.chutes.ai
 
-    # Or with prompts for secrets:
-    python scripts/agent_register.py --hotkey-seed 0xabcdef...
-
     # Or with a bittensor wallet on disk:
     python scripts/agent_register.py \\
         --wallet-name my_wallet \\
-        --wallet-hotkey my_hotkey \\
-        --wallet-path ~/.bittensor/wallets
+        --wallet-hotkey my_hotkey
+
+    # Resume an existing registration (poll + setup only, no new registration):
+    python scripts/agent_register.py --resume \\
+        --hotkey-seed 0xabcdef...
 
 Library usage:
     from scripts.agent_register import register_agent
@@ -175,109 +176,42 @@ async def _send_tao(
         return block_hash
 
 
-async def register_agent(
-    hotkey_seed: Optional[str] = None,
-    coldkey_mnemonic: Optional[str] = None,
-    hotkey_keypair=None,
-    coldkey_keypair=None,
-    username: Optional[str] = None,
-    api_base: str = DEFAULT_API_BASE,
-    subtensor_url: str = DEFAULT_SUBTENSOR_URL,
-    amount_extra_percent: float = 5.0,
-    write_config: bool = False,
-    config_path: str = "~/.chutes/config.ini",
-    poll_interval: int = POLL_INTERVAL_SECONDS,
-    skip_transfer: bool = False,
+def _poll_and_setup(
+    api_base: str,
+    hotkey_ss58: str,
+    hotkey_keypair,
+    hotkey_seed: Optional[str],
+    poll_interval: int,
+    write_config: bool,
+    config_path: str,
 ) -> AgentRegistrationResult:
     """
-    Full agent registration flow: register -> pay -> poll -> setup.
-
-    Provide keys via either:
-      - hotkey_seed + coldkey_mnemonic (strings)
-      - hotkey_keypair + coldkey_keypair (Keypair objects)
-
-    Args:
-        hotkey_seed: Hex seed for the hotkey (e.g. "0xabcdef...")
-        coldkey_mnemonic: Mnemonic phrase for the coldkey
-        hotkey_keypair: Pre-constructed Keypair for the hotkey
-        coldkey_keypair: Pre-constructed Keypair for the coldkey
-        username: Optional username (3-15 alphanum/underscore/dash). Auto-generated if omitted.
-        api_base: Chutes API base URL
-        subtensor_url: Subtensor RPC endpoint
-        amount_extra_percent: Extra % to send above required amount (default 5%)
-        write_config: If True, write config.ini to disk
-        config_path: Path for config.ini (default ~/.chutes/config.ini)
-        poll_interval: Seconds between status polls (default 12, ~1 block)
-        skip_transfer: If True, skip the TAO transfer (for testing or manual payment)
-
-    Returns:
-        AgentRegistrationResult with user_id, api_key, config, etc.
+    Poll registration status until completed, then call setup.
+    Shared by both register_agent() and resume_agent().
     """
-    # Resolve keypairs.
-    if hotkey_keypair is None:
-        if hotkey_seed is None:
-            raise ValueError("Provide either hotkey_seed or hotkey_keypair")
-        hotkey_keypair = _get_keypair_from_seed(hotkey_seed)
-
-    if coldkey_keypair is None:
-        if coldkey_mnemonic is None:
-            if skip_transfer:
-                # If skipping transfer, we still need coldkey SS58 — derive from hotkey's coldkey
-                raise ValueError(
-                    "Provide coldkey_mnemonic or coldkey_keypair (needed for coldkey SS58 address)"
-                )
-            coldkey_keypair = _get_keypair_from_mnemonic(coldkey_mnemonic)
-
-    coldkey_ss58 = coldkey_keypair.ss58_address
-    hotkey_ss58 = hotkey_keypair.ss58_address
-    logger.info(f"Hotkey: {hotkey_ss58}")
-    logger.info(f"Coldkey: {coldkey_ss58}")
-
-    # Step 1: Sign and register.
-    logger.info("Signing registration message...")
-    _, _, signature = _sign_registration(hotkey_keypair, coldkey_ss58)
-
-    logger.info("Submitting registration...")
-    reg = _api_register(api_base, hotkey_ss58, coldkey_ss58, signature, username)
-    user_id = reg["user_id"]
-    payment_address = reg["payment_address"]
-    required_tao = reg["required_amount"]
-    logger.success(f"Registration created: user_id={user_id}")
-    logger.info(f"Payment address: {payment_address}")
-    logger.info(f"Required TAO: {required_tao}")
-
-    # Step 2: Send TAO.
-    if not skip_transfer:
-        # Add a small buffer to account for price fluctuation.
-        send_amount_tao = required_tao * (1 + amount_extra_percent / 100)
-        send_amount_rao = int(send_amount_tao * 1e9)
-        logger.info(f"Sending {send_amount_tao:.4f} TAO ({amount_extra_percent}% buffer)...")
-
-        await _send_tao(coldkey_keypair, payment_address, send_amount_rao, subtensor_url)
-    else:
-        logger.warning(
-            f"Skipping TAO transfer. Send at least {required_tao} TAO to {payment_address} manually."
-        )
-
-    # Step 3: Poll until completed.
     logger.info("Polling registration status...")
+    user_id = None
+    coldkey_ss58 = None
     while True:
         status_resp = _api_poll_status(api_base, hotkey_ss58)
         reg_status = status_resp["status"]
+        user_id = status_resp["user_id"]
+        coldkey_ss58 = status_resp["coldkey"]
 
         if reg_status == "completed":
             logger.success("Payment confirmed, account created!")
             break
         elif reg_status == "expired":
             raise RuntimeError(
-                "Registration expired before payment was confirmed. Please try again."
+                "Registration expired. Funds sent to expired registrations are not recoverable. "
+                "You must use a different hotkey to register again."
             )
         else:
             received = status_resp.get("received_amount", 0)
             logger.info(f"Waiting for payment confirmation... received ${received:.2f}")
             time.sleep(poll_interval)
 
-    # Step 4: Setup.
+    # Setup.
     logger.info("Calling agent setup endpoint...")
     setup = _api_setup(api_base, user_id, hotkey_keypair)
 
@@ -312,6 +246,132 @@ async def register_agent(
     logger.info(f"  Payment Address: {result.payment_address}")
 
     return result
+
+
+async def register_agent(
+    hotkey_seed: Optional[str] = None,
+    coldkey_mnemonic: Optional[str] = None,
+    hotkey_keypair=None,
+    coldkey_keypair=None,
+    username: Optional[str] = None,
+    api_base: str = DEFAULT_API_BASE,
+    subtensor_url: str = DEFAULT_SUBTENSOR_URL,
+    amount_extra_percent: float = 5.0,
+    write_config: bool = False,
+    config_path: str = "~/.chutes/config.ini",
+    poll_interval: int = POLL_INTERVAL_SECONDS,
+) -> AgentRegistrationResult:
+    """
+    Full agent registration flow: register -> pay -> poll -> setup.
+
+    Provide keys via either:
+      - hotkey_seed + coldkey_mnemonic (strings)
+      - hotkey_keypair + coldkey_keypair (Keypair objects)
+
+    Args:
+        hotkey_seed: Hex seed for the hotkey (e.g. "0xabcdef...")
+        coldkey_mnemonic: Mnemonic phrase for the coldkey
+        hotkey_keypair: Pre-constructed Keypair for the hotkey
+        coldkey_keypair: Pre-constructed Keypair for the coldkey
+        username: Optional username (3-15 alphanum/underscore/dash). Auto-generated if omitted.
+        api_base: Chutes API base URL
+        subtensor_url: Subtensor RPC endpoint
+        amount_extra_percent: Extra % to send above required amount (default 5%)
+        write_config: If True, write config.ini to disk
+        config_path: Path for config.ini (default ~/.chutes/config.ini)
+        poll_interval: Seconds between status polls (default 12, ~1 block)
+
+    Returns:
+        AgentRegistrationResult with user_id, api_key, config, etc.
+    """
+    # Resolve keypairs.
+    if hotkey_keypair is None:
+        if hotkey_seed is None:
+            raise ValueError("Provide either hotkey_seed or hotkey_keypair")
+        hotkey_keypair = _get_keypair_from_seed(hotkey_seed)
+
+    if coldkey_keypair is None:
+        if coldkey_mnemonic is None:
+            raise ValueError("Provide coldkey_mnemonic or coldkey_keypair")
+        coldkey_keypair = _get_keypair_from_mnemonic(coldkey_mnemonic)
+
+    coldkey_ss58 = coldkey_keypair.ss58_address
+    hotkey_ss58 = hotkey_keypair.ss58_address
+    logger.info(f"Hotkey: {hotkey_ss58}")
+    logger.info(f"Coldkey: {coldkey_ss58}")
+
+    # Step 1: Sign and register.
+    logger.info("Signing registration message...")
+    _, _, signature = _sign_registration(hotkey_keypair, coldkey_ss58)
+
+    logger.info("Submitting registration...")
+    reg = _api_register(api_base, hotkey_ss58, coldkey_ss58, signature, username)
+    payment_address = reg["payment_address"]
+    required_tao = reg["required_amount"]
+    logger.success(f"Registration created: user_id={reg['user_id']}")
+    logger.info(f"Payment address: {payment_address}")
+    logger.info(f"Required TAO: {required_tao}")
+
+    # Step 2: Send TAO.
+    send_amount_tao = required_tao * (1 + amount_extra_percent / 100)
+    send_amount_rao = int(send_amount_tao * 1e9)
+    logger.info(f"Sending {send_amount_tao:.4f} TAO ({amount_extra_percent}% buffer)...")
+    await _send_tao(coldkey_keypair, payment_address, send_amount_rao, subtensor_url)
+
+    # Step 3+4: Poll and setup.
+    return _poll_and_setup(
+        api_base,
+        hotkey_ss58,
+        hotkey_keypair,
+        hotkey_seed,
+        poll_interval,
+        write_config,
+        config_path,
+    )
+
+
+async def resume_agent(
+    hotkey_seed: Optional[str] = None,
+    hotkey_keypair=None,
+    api_base: str = DEFAULT_API_BASE,
+    write_config: bool = False,
+    config_path: str = "~/.chutes/config.ini",
+    poll_interval: int = POLL_INTERVAL_SECONDS,
+) -> AgentRegistrationResult:
+    """
+    Resume an existing agent registration: poll for completion then setup.
+
+    Use this when you've already created a registration and sent payment manually,
+    or if the script was interrupted after payment.
+
+    Args:
+        hotkey_seed: Hex seed for the hotkey
+        hotkey_keypair: Pre-constructed Keypair for the hotkey
+        api_base: Chutes API base URL
+        write_config: If True, write config.ini to disk
+        config_path: Path for config.ini (default ~/.chutes/config.ini)
+        poll_interval: Seconds between status polls (default 12, ~1 block)
+
+    Returns:
+        AgentRegistrationResult with user_id, api_key, config, etc.
+    """
+    if hotkey_keypair is None:
+        if hotkey_seed is None:
+            raise ValueError("Provide either hotkey_seed or hotkey_keypair")
+        hotkey_keypair = _get_keypair_from_seed(hotkey_seed)
+
+    hotkey_ss58 = hotkey_keypair.ss58_address
+    logger.info(f"Resuming registration for hotkey: {hotkey_ss58}")
+
+    return _poll_and_setup(
+        api_base,
+        hotkey_ss58,
+        hotkey_keypair,
+        hotkey_seed,
+        poll_interval,
+        write_config,
+        config_path,
+    )
 
 
 # --- CLI ---
@@ -381,10 +441,11 @@ async def register_agent(
     help="Path for config.ini output.",
 )
 @click.option(
-    "--skip-transfer",
+    "--resume",
     is_flag=True,
     default=False,
-    help="Skip the TAO transfer (send manually, then re-run without this flag to poll+setup).",
+    help="Resume an existing registration: poll for payment completion and run setup. "
+    "Does not create a new registration or send TAO.",
 )
 def cli(
     hotkey_seed: Optional[str],
@@ -398,7 +459,7 @@ def cli(
     extra_percent: float,
     write_config: bool,
     config_path: str,
-    skip_transfer: bool,
+    resume: bool,
 ):
     """
     Register an AI agent on Chutes programmatically.
@@ -408,6 +469,8 @@ def cli(
     \b
     1. --hotkey-seed + --coldkey-mnemonic (or prompted)
     2. --wallet-name (loads from bittensor wallet on disk)
+
+    Use --resume to poll and setup an existing registration without creating a new one.
     """
     hotkey_kp = None
     coldkey_kp = None
@@ -434,60 +497,69 @@ def cli(
                 logger.error("Hotkey seed is required.")
                 raise SystemExit(1)
 
-        if not coldkey_mnemonic and not skip_transfer:
-            coldkey_mnemonic = getpass("Coldkey mnemonic (will not be echoed): ").strip()
-            if not coldkey_mnemonic:
-                logger.error("Coldkey mnemonic is required for TAO transfer.")
-                raise SystemExit(1)
-
         hotkey_kp = _get_keypair_from_seed(hotkey_seed)
-        if coldkey_mnemonic:
-            coldkey_kp = _get_keypair_from_mnemonic(coldkey_mnemonic)
 
-    if coldkey_kp is None and not skip_transfer:
-        logger.error("Coldkey is required for TAO transfer. Use --skip-transfer to skip.")
-        raise SystemExit(1)
+        if not resume:
+            if not coldkey_mnemonic:
+                coldkey_mnemonic = getpass("Coldkey mnemonic (will not be echoed): ").strip()
+                if not coldkey_mnemonic:
+                    logger.error("Coldkey mnemonic is required for TAO transfer.")
+                    raise SystemExit(1)
+            coldkey_kp = _get_keypair_from_mnemonic(coldkey_mnemonic)
 
     # Show summary and confirm.
     click.echo()
     click.echo("=" * 60)
-    click.echo("CHUTES AGENT REGISTRATION")
+    if resume:
+        click.echo("CHUTES AGENT REGISTRATION (RESUME)")
+    else:
+        click.echo("CHUTES AGENT REGISTRATION")
     click.echo("=" * 60)
     click.echo(f"  Hotkey:       {hotkey_kp.ss58_address}")
     if coldkey_kp:
         click.echo(f"  Coldkey:      {coldkey_kp.ss58_address}")
     click.echo(f"  API:          {api_base}")
-    click.echo(f"  Subtensor:    {subtensor_url}")
-    if username:
-        click.echo(f"  Username:     {username}")
-    click.echo(f"  Extra buffer: {extra_percent}%")
+    if not resume:
+        click.echo(f"  Subtensor:    {subtensor_url}")
+        if username:
+            click.echo(f"  Username:     {username}")
+        click.echo(f"  Extra buffer: {extra_percent}%")
     click.echo(f"  Write config: {write_config}")
-    if skip_transfer:
-        click.echo("  TAO transfer: SKIPPED (manual)")
+    if resume:
+        click.echo("  Mode:         Resume existing registration (poll + setup only)")
     click.echo("=" * 60)
     click.echo()
 
-    if not click.confirm("Proceed with registration?", default=True):
+    if not click.confirm("Proceed?", default=True):
         logger.info("Aborted.")
         raise SystemExit(0)
 
-    async def run():
-        return await register_agent(
-            hotkey_seed=hotkey_seed,
-            coldkey_mnemonic=coldkey_mnemonic,
-            hotkey_keypair=hotkey_kp,
-            coldkey_keypair=coldkey_kp,
-            username=username,
-            api_base=api_base,
-            subtensor_url=subtensor_url,
-            amount_extra_percent=extra_percent,
-            write_config=write_config,
-            config_path=config_path,
-            skip_transfer=skip_transfer,
-        )
-
     try:
-        result = asyncio.run(run())
+        if resume:
+            result = asyncio.run(
+                resume_agent(
+                    hotkey_seed=hotkey_seed,
+                    hotkey_keypair=hotkey_kp,
+                    api_base=api_base,
+                    write_config=write_config,
+                    config_path=config_path,
+                )
+            )
+        else:
+            result = asyncio.run(
+                register_agent(
+                    hotkey_seed=hotkey_seed,
+                    coldkey_mnemonic=coldkey_mnemonic,
+                    hotkey_keypair=hotkey_kp,
+                    coldkey_keypair=coldkey_kp,
+                    username=username,
+                    api_base=api_base,
+                    subtensor_url=subtensor_url,
+                    amount_extra_percent=extra_percent,
+                    write_config=write_config,
+                    config_path=config_path,
+                )
+            )
     except RuntimeError as e:
         logger.error(f"Registration failed: {e}")
         raise SystemExit(1)

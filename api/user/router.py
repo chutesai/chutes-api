@@ -1412,6 +1412,17 @@ async def _validate_username(db, username):
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Username {username} already exists, sorry! Please choose another.",
         )
+    existing_agent_reg = await db.execute(
+        select(AgentRegistration).where(
+            AgentRegistration.username.ilike(username),
+            AgentRegistration.deleted_at.is_(None),
+        )
+    )
+    if existing_agent_reg.first() is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Username {username} is reserved by a pending registration. Please choose another.",
+        )
 
 
 def _registration_response(user, fingerprint):
@@ -2205,26 +2216,37 @@ async def agent_registration(
         await db.execute(
             select(AgentRegistration).where(
                 AgentRegistration.hotkey == args.hotkey,
-                AgentRegistration.deleted_at.is_(None),
             )
         )
     ).scalar_one_or_none()
     if existing_reg:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="This hotkey already has a pending agent registration.",
-        )
+        if existing_reg.deleted_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This hotkey already has a pending agent registration.",
+            )
+        # Expired/completed registration — delete the old row to free the unique constraint.
+        await db.delete(existing_reg)
+        await db.flush()
 
     # Handle username: validate if provided, auto-generate if not.
     if args.username:
         await _validate_username(db, args.username)
         username = args.username
     else:
-        # Auto-generate unique username.
+        # Auto-generate unique username (check both users and active agent registrations).
         while True:
             username = f"chuter_{secrets.token_hex(3)}"
-            existing = await db.execute(select(User).where(User.username.ilike(username)))
-            if existing.first() is None:
+            existing_user = await db.execute(select(User).where(User.username.ilike(username)))
+            if existing_user.first() is not None:
+                continue
+            existing_agent = await db.execute(
+                select(AgentRegistration).where(
+                    AgentRegistration.username.ilike(username),
+                    AgentRegistration.deleted_at.is_(None),
+                )
+            )
+            if existing_agent.first() is None:
                 break
 
     # Pre-generate user_id.
