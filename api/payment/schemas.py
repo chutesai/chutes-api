@@ -73,6 +73,21 @@ class UsageData(Base):
     paygo_amount = Column(Double, nullable=True)
 
 
+class AppUsageData(Base):
+    __tablename__ = "app_usage_data"
+    app_id = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.user_id"), primary_key=True)
+    bucket = Column(DateTime, primary_key=True)
+    chute_id = Column(String, primary_key=True)
+    amount = Column(Double, nullable=False)
+    count = Column(BigInteger, nullable=False)
+    input_tokens = Column(Numeric, nullable=True)
+    output_tokens = Column(Numeric, nullable=True)
+    cached_tokens = Column(Numeric, nullable=True)
+    compute_time = Column(Double, nullable=True)
+    paygo_amount = Column(Double, nullable=True)
+
+
 class AdminBalanceChange(Base):
     __tablename__ = "admin_balance_changes"
     event_id = Column(String, primary_key=True, default=generate_uuid)

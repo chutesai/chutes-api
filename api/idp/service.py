@@ -365,10 +365,17 @@ async def refresh_access_token(
 class TokenValidationResult:
     """Result of token validation including user and scopes."""
 
-    def __init__(self, user: User, scopes: List[str], authorization: OAuthAuthorization = None):
+    def __init__(
+        self,
+        user: User,
+        scopes: List[str],
+        authorization: OAuthAuthorization = None,
+        app_id: str = None,
+    ):
         self.user = user
         self.scopes = scopes or []
         self.authorization = authorization
+        self.app_id = app_id or (authorization.app_id if authorization else None)
 
 
 async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
@@ -397,6 +404,7 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
                         return TokenValidationResult(
                             user=user,
                             scopes=data.get("scopes", []),
+                            app_id=data.get("app_id"),
                         )
             return None
         except Exception:
@@ -458,6 +466,7 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
                     "valid": True,
                     "user_id": auth.user_id,
                     "scopes": token_scopes,
+                    "app_id": auth.app_id,
                 }
             ),
             ex=min(300, max(1, ttl_seconds)),

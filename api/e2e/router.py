@@ -671,6 +671,7 @@ async def _do_billing(
             metrics if chute.standard_template == "vllm" else None,
             compute_time=duration,
             paygo_amount=paygo_equivalent,
+            app_id=getattr(request.state, "oauth_app_id", None),
         )
     )
 

@@ -115,25 +115,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_instance_revenue_date ON daily_insta
 DROP MATERIALIZED VIEW IF EXISTS daily_revenue_summary CASCADE;
 CREATE MATERIALIZED VIEW daily_revenue_summary AS
 SELECT
-    COALESCE(iq.date, ud.date, ir.date, si.date) as date,
-    COALESCE(iq.new_subscriber_count, 0) as new_subscriber_count,
-    COALESCE(iq.new_subscriber_revenue, 0) as new_subscriber_revenue,
+    COALESCE(sh.date, ud.date, ir.date, si.date) as date,
+    COALESCE(sh.new_subscriber_count, 0) as new_subscriber_count,
+    COALESCE(sh.new_subscriber_revenue, 0) as new_subscriber_revenue,
     COALESCE(ud.paygo_revenue, 0) as paygo_revenue,
     COALESCE(ir.instance_revenue, 0) as instance_revenue,
     COALESCE(si.sponsored_inference, 0) as sponsored_inference
 FROM (
     SELECT
-        date(coalesce(effective_date, updated_at)) as date,
+        date(subscription_history.payment_date) as date,
         count(*) as new_subscriber_count,
-        sum(case
-            when quota in (300, 301, 2001) then 3
-            when quota = 2000 then 10
-	    when quota in (5000, 5001) then 20
-        end) as new_subscriber_revenue
-    FROM invocation_quotas
-    WHERE quota IN (300, 301, 2000, 2001, 5000, 5001)
-    GROUP BY date
-) iq
+        sum(subscription_history.amount) as new_subscriber_revenue
+    FROM subscription_history
+    GROUP BY date(subscription_history.payment_date)
+) sh
 FULL OUTER JOIN (
     SELECT
         date(bucket) as date,
@@ -141,13 +136,13 @@ FULL OUTER JOIN (
     FROM usage_data
     WHERE user_id != '5682c3e0-3635-58f7-b7f5-694962450dfc'
     GROUP BY date
-) ud ON iq.date = ud.date
+) ud ON sh.date = ud.date
 FULL OUTER JOIN (
     SELECT
         date,
         instance_revenue
     FROM daily_instance_revenue
-) ir ON COALESCE(iq.date, ud.date) = ir.date
+) ir ON COALESCE(sh.date, ud.date) = ir.date
 FULL OUTER JOIN (
     SELECT
         date(ud.bucket) as date,
@@ -161,7 +156,7 @@ FULL OUTER JOIN (
         ON isp.id = sc.sponsorship_id
         AND ud.chute_id = sc.chute_id
     GROUP BY date(ud.bucket)
-) si ON COALESCE(iq.date, ud.date, ir.date) = si.date
+) si ON COALESCE(sh.date, ud.date, ir.date) = si.date
 ORDER BY date DESC;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_daily_revenue_summary_date ON daily_revenue_summary(date);
 

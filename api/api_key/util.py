@@ -78,6 +78,7 @@ async def get_user_from_oauth_token(token: str, request: Request):
     # Store OAuth context on request state
     request.state.oauth_token = True
     request.state.oauth_scopes = scopes
+    request.state.oauth_app_id = result.app_id
 
     return user, scopes
 

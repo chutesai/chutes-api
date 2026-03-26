@@ -9,38 +9,38 @@ class TestBountyBoostCalculation:
     def test_bounty_boost_at_zero_minutes(self):
         from api.bounty.util import calculate_bounty_boost
 
-        assert calculate_bounty_boost(0) == 1.5
+        assert calculate_bounty_boost(0) == 1.1
 
     def test_bounty_boost_at_90_minutes(self):
         from api.bounty.util import calculate_bounty_boost
 
         boost = calculate_bounty_boost(90 * 60)
-        assert boost == pytest.approx(2.75, rel=0.01)
+        assert boost == pytest.approx(1.3, rel=0.01)
 
     def test_bounty_boost_at_180_minutes(self):
         from api.bounty.util import calculate_bounty_boost
 
-        assert calculate_bounty_boost(180 * 60) == 4.0
+        assert calculate_bounty_boost(180 * 60) == 1.5
 
     def test_bounty_boost_beyond_180_minutes(self):
         from api.bounty.util import calculate_bounty_boost
 
-        assert calculate_bounty_boost(240 * 60) == 4.0
+        assert calculate_bounty_boost(240 * 60) == 1.5
 
     def test_bounty_boost_negative_age(self):
         from api.bounty.util import calculate_bounty_boost
 
-        assert calculate_bounty_boost(-100) == 1.5
+        assert calculate_bounty_boost(-100) == 1.1
 
     @pytest.mark.parametrize(
         "minutes,expected_boost",
         [
-            (0, 1.5),
-            (45, 2.125),
-            (90, 2.75),
-            (135, 3.375),
-            (180, 4.0),
-            (240, 4.0),
+            (0, 1.1),
+            (45, 1.2),
+            (90, 1.3),
+            (135, 1.4),
+            (180, 1.5),
+            (240, 1.5),
         ],
     )
     def test_bounty_boost_curve(self, minutes, expected_boost):
@@ -76,6 +76,7 @@ class TestAutoscaleContext:
         info.has_rolling_update = False
         info.max_instances = 100
         info.public = True
+        info.disabled = False
         info.user_id = "test-user"
         info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
         info.new_chute = False
@@ -152,6 +153,7 @@ class TestScaleDownDecision:
             info.has_rolling_update = False
             info.max_instances = 100
             info.public = True
+            info.disabled = False
             info.user_id = "test-user"
             info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
             info.new_chute = False
@@ -243,6 +245,7 @@ class TestScaleUpDecision:
             info.has_rolling_update = False
             info.max_instances = 100
             info.public = True
+            info.disabled = False
             info.user_id = "test-user"
             info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
             info.new_chute = False
@@ -322,6 +325,7 @@ class TestUrgencyScoring:
         info.has_rolling_update = False
         info.max_instances = 100
         info.public = True
+        info.disabled = False
         info.user_id = "test-user"
         info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
         info.new_chute = False
@@ -360,6 +364,7 @@ class TestUrgencyScoring:
         info.has_rolling_update = False
         info.max_instances = 100
         info.public = True
+        info.disabled = False
         info.user_id = "test-user"
         info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
         info.new_chute = False
@@ -774,6 +779,7 @@ class TestDonorIdentification:
             info.has_rolling_update = False
             info.max_instances = 100
             info.public = public
+            info.disabled = False
             info.user_id = "chutes-user" if is_chutes_user else "other-user"
             info.node_selector = {"gpu_type": "A100", "gpu_count": 1}
             info.new_chute = False

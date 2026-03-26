@@ -47,6 +47,8 @@ from api.invocation.util import (
 QUEUE_KEY = "usage_queue"
 BUCKET_PREFIX = "usage_pending"
 PROCESSING_PREFIX = "usage_processing"
+APP_BUCKET_PREFIX = "app_usage_pending"
+APP_PROCESSING_PREFIX = "app_usage_processing"
 POLL_TIMEOUT = 5
 
 # Health check tracking
@@ -112,6 +114,8 @@ async def increment_bucket(redis, record: dict) -> None:
     compute_time = float(record.get("t", 0))
     paygo_amount = float(record.get("p", 0))
 
+    app_id = record.get("d")
+
     pipeline = redis.pipeline()
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:a", amount)
     pipeline.hincrby(bucket_key, f"{field_prefix}:n", 1)
@@ -120,48 +124,62 @@ async def increment_bucket(redis, record: dict) -> None:
     pipeline.hincrby(bucket_key, f"{field_prefix}:x", cached_tokens)
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", compute_time)
     pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:p", paygo_amount)
+
+    # Track per-app usage in a parallel bucket when app_id is present.
+    if app_id:
+        app_bucket_key = f"{APP_BUCKET_PREFIX}:{minute_ts}"
+        app_field_prefix = f"{app_id}:{user_id}:{chute_id}"
+        pipeline.hincrbyfloat(app_bucket_key, f"{app_field_prefix}:a", amount)
+        pipeline.hincrby(app_bucket_key, f"{app_field_prefix}:n", 1)
+        pipeline.hincrby(app_bucket_key, f"{app_field_prefix}:i", input_tokens)
+        pipeline.hincrby(app_bucket_key, f"{app_field_prefix}:o", output_tokens)
+        pipeline.hincrby(app_bucket_key, f"{app_field_prefix}:x", cached_tokens)
+        pipeline.hincrbyfloat(app_bucket_key, f"{app_field_prefix}:t", compute_time)
+        pipeline.hincrbyfloat(app_bucket_key, f"{app_field_prefix}:p", paygo_amount)
+
     await pipeline.execute()
 
 
-async def get_completed_buckets(redis, current_minute_ts: int) -> list[str]:
-    """
-    Find all bucket keys that are older than the current minute (i.e., complete).
-    """
+async def _scan_keys(redis, pattern: str, filter_before: int = None) -> list[str]:
+    """Scan for Redis keys matching pattern, optionally filtering by timestamp."""
     keys = []
     cursor = 0
-    pattern = f"{BUCKET_PREFIX}:*"
     while True:
         cursor, found_keys = await redis.scan(cursor, pattern, 1000)
         for key in found_keys:
             key_str = key.decode() if isinstance(key, bytes) else key
-            # Extract timestamp from key
-            try:
-                bucket_ts = int(key_str.split(":")[-1])
-                if bucket_ts < current_minute_ts:
-                    keys.append(key_str)
-            except (ValueError, IndexError):
-                logger.warning(f"Invalid bucket key format: {key_str}")
-        if cursor == 0:
-            break
-    return keys
-
-
-async def get_stale_processing_buckets(redis) -> list[str]:
-    """
-    Find any usage_processing:* keys left over from a crashed worker.
-    These need to be processed on startup.
-    """
-    keys = []
-    cursor = 0
-    pattern = f"{PROCESSING_PREFIX}:*"
-    while True:
-        cursor, found_keys = await redis.scan(cursor, pattern, 1000)
-        for key in found_keys:
-            key_str = key.decode() if isinstance(key, bytes) else key
+            if filter_before is not None:
+                try:
+                    bucket_ts = int(key_str.split(":")[-1])
+                    if bucket_ts >= filter_before:
+                        continue
+                except (ValueError, IndexError):
+                    logger.warning(f"Invalid bucket key format: {key_str}")
+                    continue
             keys.append(key_str)
         if cursor == 0:
             break
     return keys
+
+
+async def get_completed_buckets(redis, current_minute_ts: int) -> list[str]:
+    """Find all bucket keys that are older than the current minute (i.e., complete)."""
+    return await _scan_keys(redis, f"{BUCKET_PREFIX}:*", filter_before=current_minute_ts)
+
+
+async def get_completed_app_buckets(redis, current_minute_ts: int) -> list[str]:
+    """Find all app usage bucket keys that are older than the current minute."""
+    return await _scan_keys(redis, f"{APP_BUCKET_PREFIX}:*", filter_before=current_minute_ts)
+
+
+async def get_stale_processing_buckets(redis) -> list[str]:
+    """Find any usage_processing:* keys left over from a crashed worker."""
+    return await _scan_keys(redis, f"{PROCESSING_PREFIX}:*")
+
+
+async def get_stale_app_processing_buckets(redis) -> list[str]:
+    """Find any app_usage_processing:* keys left over from a crashed worker."""
+    return await _scan_keys(redis, f"{APP_PROCESSING_PREFIX}:*")
 
 
 async def _warm_sub_cap_cache(aggregated: dict) -> None:
@@ -550,6 +568,152 @@ async def process_bucket(redis, bucket_key: str, already_claimed: bool = False) 
         raise
 
 
+async def process_app_bucket(redis, bucket_key: str, already_claimed: bool = False) -> None:
+    """
+    Process a completed app usage minute bucket to the database.
+    Same claim/scan/delete pattern as process_bucket but writes to app_usage_data.
+    No balance deduction — app usage is purely analytical.
+    """
+    bucket_ts = bucket_key.split(":")[-1]
+
+    if already_claimed:
+        processing_key = bucket_key
+    else:
+        processing_key = f"{APP_PROCESSING_PREFIX}:{bucket_ts}"
+        try:
+            await redis.rename(bucket_key, processing_key)
+        except Exception as e:
+            logger.info(f"App bucket {bucket_key} already claimed: {e}")
+            return
+
+    hour_bucket = (int(bucket_ts) // 3600) * 3600
+
+    # Fields are: {app_id}:{user_id}:{chute_id}:{metric}
+    aggregated = defaultdict(lambda: {"a": 0.0, "n": 0, "i": 0, "o": 0, "x": 0, "t": 0.0, "p": 0.0})
+
+    cursor = 0
+    while True:
+        cursor, data = await redis.hscan(processing_key, cursor, count=1000)
+        for field, value in data.items():
+            field_str = field.decode() if isinstance(field, bytes) else field
+            value_str = value.decode() if isinstance(value, bytes) else value
+
+            parts = field_str.rsplit(":", 3)
+            if len(parts) != 4:
+                logger.warning(f"Invalid app usage field format: {field_str}")
+                continue
+
+            app_id, user_id, chute_id, metric = parts
+            key = (app_id, user_id, chute_id)
+
+            if metric == "a":
+                aggregated[key]["a"] = float(value_str)
+            elif metric == "n":
+                aggregated[key]["n"] = int(value_str)
+            elif metric == "i":
+                aggregated[key]["i"] = int(value_str)
+            elif metric == "o":
+                aggregated[key]["o"] = int(value_str)
+            elif metric == "x":
+                aggregated[key]["x"] = int(value_str)
+            elif metric == "t":
+                aggregated[key]["t"] = float(value_str)
+            elif metric == "p":
+                aggregated[key]["p"] = float(value_str)
+
+        if cursor == 0:
+            break
+
+    if not aggregated:
+        await redis.delete(processing_key)
+        return
+
+    # Delete from Redis BEFORE commit.
+    await redis.delete(processing_key)
+
+    try:
+        async with get_session() as session:
+            sorted_items = sorted(aggregated.items(), key=lambda x: (x[0][0], x[0][1], x[0][2]))
+            params = [
+                {
+                    "app_id": app_id,
+                    "user_id": user_id,
+                    "chute_id": chute_id,
+                    "amount": m["a"],
+                    "count": m["n"],
+                    "input_tokens": m["i"],
+                    "output_tokens": m["o"],
+                    "cached_tokens": m["x"],
+                    "compute_time": m["t"],
+                    "paygo_amount": m["p"],
+                }
+                for (app_id, user_id, chute_id), m in sorted_items
+            ]
+
+            batch_size = 1000
+            for i in range(0, len(params), batch_size):
+                batch = params[i : i + batch_size]
+                stmt = text("""
+                    INSERT INTO app_usage_data (app_id, user_id, bucket, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time, paygo_amount)
+                    SELECT
+                        d.app_id,
+                        d.user_id,
+                        to_timestamp(:hour_bucket),
+                        d.chute_id,
+                        d.amount,
+                        d.count,
+                        d.input_tokens,
+                        d.output_tokens,
+                        d.cached_tokens,
+                        d.compute_time,
+                        d.paygo_amount
+                    FROM unnest(
+                        CAST(:app_ids AS text[]),
+                        CAST(:user_ids AS text[]),
+                        CAST(:chute_ids AS text[]),
+                        CAST(:amounts AS double precision[]),
+                        CAST(:counts AS bigint[]),
+                        CAST(:input_tokens AS bigint[]),
+                        CAST(:output_tokens AS bigint[]),
+                        CAST(:cached_tokens AS bigint[]),
+                        CAST(:compute_times AS double precision[]),
+                        CAST(:paygo_amounts AS double precision[])
+                    ) AS d(app_id, user_id, chute_id, amount, count, input_tokens, output_tokens, cached_tokens, compute_time, paygo_amount)
+                    ON CONFLICT (app_id, user_id, chute_id, bucket)
+                    DO UPDATE SET
+                        amount = (app_usage_data.amount + EXCLUDED.amount),
+                        count = (app_usage_data.count + EXCLUDED.count),
+                        input_tokens = (COALESCE(app_usage_data.input_tokens, 0) + EXCLUDED.input_tokens),
+                        output_tokens = (COALESCE(app_usage_data.output_tokens, 0) + EXCLUDED.output_tokens),
+                        cached_tokens = (COALESCE(app_usage_data.cached_tokens, 0) + EXCLUDED.cached_tokens),
+                        compute_time = (COALESCE(app_usage_data.compute_time, 0) + EXCLUDED.compute_time),
+                        paygo_amount = (COALESCE(app_usage_data.paygo_amount, 0) + EXCLUDED.paygo_amount)
+                """)
+                await session.execute(
+                    stmt,
+                    {
+                        "hour_bucket": hour_bucket,
+                        "app_ids": [p["app_id"] for p in batch],
+                        "user_ids": [p["user_id"] for p in batch],
+                        "chute_ids": [p["chute_id"] for p in batch],
+                        "amounts": [p["amount"] for p in batch],
+                        "counts": [p["count"] for p in batch],
+                        "input_tokens": [p["input_tokens"] for p in batch],
+                        "output_tokens": [p["output_tokens"] for p in batch],
+                        "cached_tokens": [p["cached_tokens"] for p in batch],
+                        "compute_times": [p["compute_time"] for p in batch],
+                        "paygo_amounts": [p["paygo_amount"] for p in batch],
+                    },
+                )
+
+            await session.commit()
+            logger.info(f"Upserted {len(params)} app_usage_data rows for bucket {bucket_key}")
+
+    except Exception as exc:
+        logger.error(f"DB commit failed for app bucket {bucket_key}: {exc}")
+        raise
+
+
 async def process_queue_items(redis, batch_size: int = 100) -> int:
     """
     Pop items from queue and increment their minute buckets.
@@ -587,6 +751,16 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
             )
         )
     )
+    # Parallel aggregation for app usage: minute_ts -> app_id -> user_id -> chute_id -> metrics
+    app_updates = defaultdict(
+        lambda: defaultdict(
+            lambda: defaultdict(
+                lambda: defaultdict(
+                    lambda: {"a": 0.0, "n": 0, "i": 0, "o": 0, "x": 0, "t": 0.0, "p": 0.0}
+                )
+            )
+        )
+    )
 
     count = 0
     for item in items:
@@ -616,6 +790,17 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
             agg["t"] += compute_time
             agg["p"] += paygo_amount
 
+            app_id = record.get("d")
+            if app_id:
+                app_agg = app_updates[minute_ts][app_id][user_id][chute_id]
+                app_agg["a"] += amount
+                app_agg["n"] += 1
+                app_agg["i"] += input_tokens
+                app_agg["o"] += output_tokens
+                app_agg["x"] += cached_tokens
+                app_agg["t"] += compute_time
+                app_agg["p"] += paygo_amount
+
             count += 1
         except Exception as exc:
             logger.error(f"Failed to process queue item: {exc}, raw={item}")
@@ -642,6 +827,29 @@ async def process_queue_items(redis, batch_size: int = 100) -> int:
                         pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:t", m["t"])
                     if m["p"] != 0:
                         pipeline.hincrbyfloat(bucket_key, f"{field_prefix}:p", m["p"])
+
+        # Push app usage aggregated updates
+        for minute_ts, apps in app_updates.items():
+            app_bucket_key = f"{APP_BUCKET_PREFIX}:{minute_ts}"
+            for app_id, users in apps.items():
+                for user_id, chutes in users.items():
+                    for chute_id, m in chutes.items():
+                        field_prefix = f"{app_id}:{user_id}:{chute_id}"
+                        if m["a"] != 0:
+                            pipeline.hincrbyfloat(app_bucket_key, f"{field_prefix}:a", m["a"])
+                        if m["n"] != 0:
+                            pipeline.hincrby(app_bucket_key, f"{field_prefix}:n", m["n"])
+                        if m["i"] != 0:
+                            pipeline.hincrby(app_bucket_key, f"{field_prefix}:i", m["i"])
+                        if m["o"] != 0:
+                            pipeline.hincrby(app_bucket_key, f"{field_prefix}:o", m["o"])
+                        if m["x"] != 0:
+                            pipeline.hincrby(app_bucket_key, f"{field_prefix}:x", m["x"])
+                        if m["t"] != 0:
+                            pipeline.hincrbyfloat(app_bucket_key, f"{field_prefix}:t", m["t"])
+                        if m["p"] != 0:
+                            pipeline.hincrbyfloat(app_bucket_key, f"{field_prefix}:p", m["p"])
+
         await pipeline.execute()
     if count < batch_size:
         await asyncio.sleep(1)
@@ -685,6 +893,19 @@ async def process_usage_queue(batch_size: int = 100):
             except Exception as exc:
                 logger.error(f"Failed to recover stale processing bucket {processing_key}: {exc}")
 
+    stale_app_processing = await get_stale_app_processing_buckets(redis)
+    if stale_app_processing:
+        logger.warning(
+            f"Recovering {len(stale_app_processing)} stale app processing buckets from crashed worker"
+        )
+        for processing_key in stale_app_processing:
+            try:
+                await process_app_bucket(redis, processing_key, already_claimed=True)
+            except Exception as exc:
+                logger.error(
+                    f"Failed to recover stale app processing bucket {processing_key}: {exc}"
+                )
+
     # And finally, process any completed buckets from before startup.
     logger.info("Checking for completed buckets to recover...")
     completed = await get_completed_buckets(redis, last_minute_ts)
@@ -695,6 +916,15 @@ async def process_usage_queue(batch_size: int = 100):
                 await process_bucket(redis, bucket_key)
             except Exception as exc:
                 logger.error(f"Failed to recover bucket {bucket_key}: {exc}")
+
+    completed_app = await get_completed_app_buckets(redis, last_minute_ts)
+    if completed_app:
+        logger.warning(f"Recovering {len(completed_app)} completed app buckets from previous run")
+        for bucket_key in completed_app:
+            try:
+                await process_app_bucket(redis, bucket_key)
+            except Exception as exc:
+                logger.error(f"Failed to recover app bucket {bucket_key}: {exc}")
 
     logger.info("Starting main processing loop")
 
@@ -709,6 +939,14 @@ async def process_usage_queue(batch_size: int = 100):
                         await process_bucket(redis, bucket_key)
                     except Exception as exc:
                         logger.error(f"Failed to process bucket {bucket_key}: {exc}")
+
+                completed_app = await get_completed_app_buckets(redis, current_minute_ts)
+                for bucket_key in completed_app:
+                    try:
+                        await process_app_bucket(redis, bucket_key)
+                    except Exception as exc:
+                        logger.error(f"Failed to process app bucket {bucket_key}: {exc}")
+
                 last_minute_ts = current_minute_ts
 
             # Process any items in the queue

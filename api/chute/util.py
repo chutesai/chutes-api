@@ -231,12 +231,13 @@ async def update_usage_data(
     metrics: dict,
     compute_time: float = 0.0,
     paygo_amount: float = 0.0,
+    app_id: str = None,
 ) -> None:
     """
     Push usage data metrics to redis for async processing.
 
     Uses compact format to minimize network/storage overhead:
-    - Short keys: u=user_id, c=chute_id, a=amount, i=input_tokens, o=output_tokens, x=cached_tokens, t=compute_time, p=paygo_amount, s=timestamp
+    - Short keys: u=user_id, c=chute_id, a=amount, i=input_tokens, o=output_tokens, x=cached_tokens, t=compute_time, p=paygo_amount, s=timestamp, d=app_id
     - compute_time rounded to 4 decimal places (0.1ms precision)
     - count omitted (always 1, handled by consumer)
     """
@@ -245,19 +246,20 @@ async def update_usage_data(
     # Track in Prometheus for miner metrics endpoint
     track_invocation_usage(chute_id, balance_used, compute_time, paygo_amount)
 
-    record = json.dumps(
-        {
-            "u": user_id,
-            "c": chute_id,
-            "a": balance_used,
-            "i": metrics.get("it", 0) if metrics else 0,
-            "o": metrics.get("ot", 0) if metrics else 0,
-            "x": metrics.get("ct", 0) if metrics else 0,
-            "t": round(compute_time, 4),
-            "p": paygo_amount,
-            "s": int(time.time()),
-        }
-    ).decode()
+    data = {
+        "u": user_id,
+        "c": chute_id,
+        "a": balance_used,
+        "i": metrics.get("it", 0) if metrics else 0,
+        "o": metrics.get("ot", 0) if metrics else 0,
+        "x": metrics.get("ct", 0) if metrics else 0,
+        "t": round(compute_time, 4),
+        "p": paygo_amount,
+        "s": int(time.time()),
+    }
+    if app_id:
+        data["d"] = app_id
+    record = json.dumps(data).decode()
     await settings.billing_redis_client.client.rpush("usage_queue", record)
 
 
@@ -1794,6 +1796,7 @@ async def invoke(
                         metrics if chute.standard_template == "vllm" else None,
                         compute_time=duration,
                         paygo_amount=paygo_equivalent,
+                        app_id=getattr(request.state, "oauth_app_id", None),
                     )
                 )
 
