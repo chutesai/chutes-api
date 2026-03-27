@@ -19,15 +19,46 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Request, Response, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from typing import AsyncIterator
+from sqlalchemy import select
 from api.config import settings
+from api.database import get_session
 from api.chute.util import get_one
+from api.chute.schemas import LLMDetail
 
 router = APIRouter()
+
 
 ALLOWED_DOMAINS = [
     "scoredata.me",
     "s3.hippius.com",
 ]
+
+
+async def _get_llm_root_map() -> dict[str, str]:
+    """
+    Build a cached mapping of HF repo root -> chute name from llm_details.
+    """
+    cache_key = "hf_root_to_chute_name"
+    cached = await settings.redis_client.get(cache_key)
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            await settings.redis_client.delete(cache_key)
+
+    root_map = {}
+    async with get_session() as session:
+        rows = await session.execute(
+            select(LLMDetail.details).where(LLMDetail.details.is_not(None))
+        )
+        for (details,) in rows:
+            root = details.get("root") if isinstance(details, dict) else None
+            name = details.get("id") if isinstance(details, dict) else None
+            if root and name:
+                root_map[root] = name
+
+    await settings.redis_client.set(cache_key, json.dumps(root_map).decode(), ex=300)
+    return root_map
 
 
 def is_url_allowed(url: str) -> bool:
@@ -289,6 +320,13 @@ async def get_hf_repo_info(
         chute = await get_one(f"{repo_id}-TEE")
     if not chute and repo_id == "Qwen/Qwen-Image-2512":
         chute = await get_one("Qwen-Image-2512")
+    if not chute:
+        # The repo_id might be an actual HF repo that differs from our chute name.
+        # Look it up in the llm_details root mapping.
+        root_map = await _get_llm_root_map()
+        chute_name = root_map.get(repo_id)
+        if chute_name:
+            chute = await get_one(chute_name)
     if not chute:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"No chute found for model {repo_id}"
