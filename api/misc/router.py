@@ -26,6 +26,7 @@ router = APIRouter()
 
 ALLOWED_DOMAINS = [
     "scoredata.me",
+    "s3.hippius.com",
 ]
 
 
@@ -140,6 +141,83 @@ async def proxy(
     except Exception as e:
         logger.error(
             f"WHITELIST_PROXY: unhandled exception proxying upstream request: {url=} {stream=} exception={str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Unhandled exception proxying request: {str(e)}",
+        )
+
+
+@router.put("/proxy")
+async def proxy_put(
+    url: str,
+    request: Request,
+):
+    if not url.startswith(("http://", "https://")) or not is_url_allowed(url):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid or unauthorized URL.",
+        )
+
+    headers_to_forward = {}
+    skip_headers = {
+        "host",
+        "connection",
+        "transfer-encoding",
+        "upgrade",
+    }
+    for header_name, header_value in request.headers.items():
+        if header_name.lower() not in skip_headers:
+            headers_to_forward[header_name] = header_value
+
+    body = await request.body()
+    timeout = aiohttp.ClientTimeout(connect=10.0, total=3600.0)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.put(url, headers=headers_to_forward, data=body) as response:
+                content = await response.read()
+
+                response_headers = {}
+                forward_response_headers = [
+                    "content-type",
+                    "content-length",
+                    "etag",
+                    "x-amz-request-id",
+                    "x-amz-id-2",
+                    "x-amz-version-id",
+                    "location",
+                    "cache-control",
+                    "last-modified",
+                    "expires",
+                    "date",
+                ]
+                for header in forward_response_headers:
+                    if header in response.headers:
+                        response_headers[header] = response.headers[header]
+
+                return Response(
+                    content=content, status_code=response.status, headers=response_headers
+                )
+
+    except HTTPException:
+        raise
+    except aiohttp.ClientTimeout:
+        logger.error(f"WHITELIST_PROXY: upstream gateway timeout on PUT: {url=}")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail="Upstream server timeout"
+        )
+    except aiohttp.ClientError as e:
+        logger.error(
+            f"WHITELIST_PROXY: upstream gateway PUT request failed: {url=} exception={str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Upstream server returned error: {str(e)}",
+        )
+    except Exception as e:
+        logger.error(
+            f"WHITELIST_PROXY: unhandled exception proxying PUT request: {url=} exception={str(e)}"
         )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
