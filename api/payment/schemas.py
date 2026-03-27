@@ -62,7 +62,7 @@ class PaymentMonitorState(Base):
 
 class UsageData(Base):
     __tablename__ = "usage_data"
-    user_id = Column(String, ForeignKey("users.user_id"), primary_key=True)
+    user_id = Column(String, primary_key=True)
     bucket = Column(DateTime, primary_key=True)
     chute_id = Column(String, primary_key=True)
     amount = Column(Double, nullable=False)
@@ -76,7 +76,7 @@ class UsageData(Base):
 class AppUsageData(Base):
     __tablename__ = "app_usage_data"
     app_id = Column(String, primary_key=True)
-    user_id = Column(String, ForeignKey("users.user_id"), primary_key=True)
+    user_id = Column(String, primary_key=True)
     bucket = Column(DateTime, primary_key=True)
     chute_id = Column(String, primary_key=True)
     amount = Column(Double, nullable=False)
