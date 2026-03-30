@@ -452,6 +452,19 @@ async def check_quota_and_balance(request, current_user, chute):
     from api.user.schemas import InvocationQuota
     from api.user.service import chutes_user_id
 
+    # Optional client headers to control quota/paygo behavior.
+    # X-Paygo-Only: skip quota, charge directly from balance.
+    # X-Quota-Only: never fall back to paygo if quota/caps are exceeded.
+    paygo_only = request.headers.get("x-paygo-only", "").lower() == "true"
+    quota_only = request.headers.get("x-quota-only", "").lower() == "true"
+    if paygo_only and quota_only:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot set both X-Paygo-Only and X-Quota-Only headers.",
+        )
+    request.state.paygo_only = paygo_only
+    request.state.quota_only = quota_only
+
     quota_date = date.today()
 
     # Fully discounted chutes are free but have usage caps for unprivileged users.
@@ -527,6 +540,13 @@ async def check_quota_and_balance(request, current_user, chute):
             )
         request.state.free_invocation = True
 
+    # X-Paygo-Only: clear free_invocation so the request enters the quota/paygo
+    # path below.  100% discounted chutes (discount == 1.0) are inherently $0 so
+    # there is nothing to charge; private chutes are zeroed out in the billing
+    # layer regardless, so we only override for public, non-free chutes.
+    if paygo_only and request.state.free_invocation and chute.discount < 1.0 and chute.public:
+        request.state.free_invocation = False
+
     # Check account quotas if not free/invoiced.
     quota_date = date.today()
     if not (
@@ -557,6 +577,10 @@ async def check_quota_and_balance(request, current_user, chute):
         ):
             quota = 0
 
+        # X-Paygo-Only: treat quota as 0 so the user always falls through to paygo.
+        if paygo_only:
+            quota = 0
+
         # Quota-200 users (one-time $5 payment) cannot use TEE models without balance.
         # $3/mo sub users (quota 300 or 301) cannot use premium chutes without balance.
         # In both cases, if the user has balance, force paygo (never free_invocation).
@@ -579,6 +603,11 @@ async def check_quota_and_balance(request, current_user, chute):
 
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
+            if quota_only and not request.state.free_invocation:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Quota exceeded and X-Quota-Only is set, paygo fallback disabled.",
+                )
             if effective_balance <= 0 and not request.state.free_invocation:
                 logger.warning(
                     f"Payment required: attempted invocation of {chute.name} "
@@ -665,6 +694,11 @@ async def check_quota_and_balance(request, current_user, chute):
                         f"Subscription cap exceeded for {current_user.user_id} "
                         f"[{current_user.username}]: {', '.join(exceeded)}"
                     )
+                    if quota_only:
+                        raise HTTPException(
+                            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                            detail="Subscription cap exceeded and X-Quota-Only is set, paygo fallback disabled.",
+                        )
                     if effective_balance <= 0:
                         raise HTTPException(
                             status_code=status.HTTP_402_PAYMENT_REQUIRED,

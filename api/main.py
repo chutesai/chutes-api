@@ -282,6 +282,8 @@ async def host_router_middleware(request: Request, call_next):
     request.state.chute_id = None
     request.state.squad_request = False
     request.state.free_invocation = False
+    request.state.paygo_only = False
+    request.state.quota_only = False
     host = request.headers.get("host", "")
     host_parts = re.search(r"^([a-z0-9-]+)\.[a-z0-9-]+", host.lower())
 
