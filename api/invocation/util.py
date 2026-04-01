@@ -648,7 +648,10 @@ async def check_quota_and_balance(request, current_user, chute):
             # X-Paygo-Only subscribers should still receive their paygo discount.
             if paygo_only:
                 (
-                    po_sub_quota, _, _, _,
+                    po_sub_quota,
+                    _,
+                    _,
+                    _,
                 ) = await InvocationQuota.get_subscription_record(current_user.user_id)
                 if (po_price := get_subscription_tier(po_sub_quota)) is not None:
                     request.state.subscriber_paygo_discount = SUBSCRIPTION_PAYGO_DISCOUNTS.get(
