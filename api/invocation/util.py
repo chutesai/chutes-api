@@ -577,15 +577,16 @@ async def check_quota_and_balance(request, current_user, chute):
         ):
             quota = 0
 
-        # X-Paygo-Only: treat quota as 0 so the user always falls through to paygo.
-        if paygo_only:
-            quota = 0
-
         # Quota-200 users (one-time $5 payment) cannot use TEE models without balance.
         # $3/mo sub users (quota 300 or 301) cannot use premium chutes without balance.
         # In both cases, if the user has balance, force paygo (never free_invocation).
         force_paygo = False
         if quota == 200 and chute.tee:
+            if quota_only:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="TEE models require paygo; incompatible with X-Quota-Only.",
+                )
             if effective_balance <= 0:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -594,12 +595,22 @@ async def check_quota_and_balance(request, current_user, chute):
             force_paygo = True
 
         if get_subscription_tier(quota) == 3.0 and chute.chute_id in settings.premium_chute_ids:
+            if quota_only:
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="This premium model requires paygo; incompatible with X-Quota-Only.",
+                )
             if effective_balance <= 0:
                 raise HTTPException(
                     status_code=status.HTTP_402_PAYMENT_REQUIRED,
                     detail="This model requires a higher subscription tier or positive balance.",
                 )
             force_paygo = True
+
+        # X-Paygo-Only: treat quota as 0 so the user always falls through to paygo.
+        # Placed after force_paygo checks so they can evaluate the real quota value.
+        if paygo_only:
+            quota = 0
 
         # Automatically switch to paygo when the quota is exceeded.
         if request_count >= quota:
@@ -634,6 +645,15 @@ async def check_quota_and_balance(request, current_user, chute):
                     error_kwargs["detail"]["quota_reset_timestamp"] = quota_reset
 
                 raise HTTPException(**error_kwargs)
+            # X-Paygo-Only subscribers should still receive their paygo discount.
+            if paygo_only:
+                (
+                    po_sub_quota, _, _, _,
+                ) = await InvocationQuota.get_subscription_record(current_user.user_id)
+                if (po_price := get_subscription_tier(po_sub_quota)) is not None:
+                    request.state.subscriber_paygo_discount = SUBSCRIPTION_PAYGO_DISCOUNTS.get(
+                        po_price, 0.0
+                    )
         else:
             # When within the quota, check subscription caps before marking as free.
             # force_paygo skips free_invocation entirely (TEE/premium restrictions).
