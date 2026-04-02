@@ -101,12 +101,56 @@ from api.util import (
     has_legacy_private_billing,
     extract_ip,
 )
+from api.encrypted_logs.capture import start_encrypted_log_capture
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from watchtower import is_kubernetes_env, verify_expected_command, verify_fs_hash
 
 router = APIRouter()
+
+
+async def _maybe_start_log_capture(instance, config_id: str):
+    """Start encrypted startup log capture for private chute instances."""
+    try:
+        async with get_session(readonly=True) as session:
+            chute = (
+                (await session.execute(select(Chute).where(Chute.chute_id == instance.chute_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not chute or chute.public:
+                return
+            user = (
+                (await session.execute(select(User).where(User.user_id == chute.user_id)))
+                .unique()
+                .scalar_one_or_none()
+            )
+            if not user or not user.hotkey:
+                return
+        # Find the log port from port_mappings
+        if not instance.port_mappings:
+            return
+        try:
+            log_port = next(p for p in instance.port_mappings if p["internal_port"] == 8001)[
+                "external_port"
+            ]
+        except (StopIteration, TypeError, KeyError):
+            return
+        asyncio.create_task(
+            start_encrypted_log_capture(
+                instance_id=instance.instance_id,
+                config_id=config_id,
+                chute_id=instance.chute_id,
+                owner_ss58=user.hotkey,
+                host=instance.host,
+                log_port=log_port,
+                miner_hotkey=instance.miner_hotkey,
+            )
+        )
+    except Exception as exc:
+        logger.debug(f"Failed to start encrypted log capture: {exc}")
+
 
 INSPECTO = load_shared_object("chutes", "chutes-inspecto.so")
 INSPECTO.verify_hash.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p]
@@ -1753,6 +1797,29 @@ async def get_launch_config(
             detail=f"Launch config conflict/unique constraint error: {exc}",
         )
 
+    # Broadcast launch token created event.
+    try:
+        ns = chute.node_selector or {}
+        await settings.redis_client.publish(
+            "events",
+            json.dumps(
+                {
+                    "reason": "launch_token_created",
+                    "message": f"Launch token created for chute {chute_id} by miner {hotkey}",
+                    "data": {
+                        "chute_id": chute_id,
+                        "config_id": config_id,
+                        "miner_hotkey": hotkey,
+                        "gpu_count": ns.get("gpu_count", 1),
+                        "include_gpus": ns.get("include"),
+                        "min_vram_gb": ns.get("min_vram_gb_per_gpu"),
+                    },
+                }
+            ).decode(),
+        )
+    except Exception:
+        ...
+
     # Generate the JWT.
     token = None
     if semcomp(chute.chutes_version or "0.0.0", "0.3.61") >= 0:
@@ -1868,6 +1935,7 @@ async def claim_tee_launch_config(
     gpu_count = len(nodes)
     gpu_type = nodes[0].gpu_identifier
     asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
+    await _maybe_start_log_capture(instance, config_id)
 
     # Verify TEE attestation evidence
     await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
@@ -1924,6 +1992,7 @@ async def validate_tee_launch_config_instance(
     gpu_count = len(nodes)
     gpu_type = nodes[0].gpu_identifier
     asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
+    await _maybe_start_log_capture(instance, config_id)
 
     await verify_gpu_evidence(args.gpu_evidence, expected_nonce)
 
@@ -1956,7 +2025,9 @@ async def validate_tee_launch_config_instance(
         return_value["validator_pubkey"] = validator_pubkey
 
     await db.refresh(instance)
-    asyncio.create_task(notify_verified(instance))
+    _gpu_count = len(nodes) if nodes else None
+    _gpu_type = nodes[0].gpu_identifier if nodes else None
+    asyncio.create_task(notify_verified(instance, gpu_count=_gpu_count, gpu_type=_gpu_type))
     return return_value
 
 
@@ -2025,6 +2096,7 @@ async def claim_graval_launch_config(
     gpu_count = len(nodes)
     gpu_type = nodes[0].gpu_identifier
     asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
+    await _maybe_start_log_capture(instance, config_id)
 
     # The miner must decrypt the proposed symmetric key from this response payload,
     # then encrypt something using this symmetric key within the expected graval timeout.
@@ -2540,7 +2612,9 @@ async def verify_graval_launch_config_instance(
             {"instance_id": instance.instance_id, "reason": reason},
         )
         await db.commit()
-        asyncio.create_task(notify_deleted(instance))
+        _gpu_count = len(instance.nodes) if instance.nodes else None
+        _gpu_type = instance.nodes[0].gpu_identifier if instance.nodes else None
+        asyncio.create_task(notify_deleted(instance, gpu_count=_gpu_count, gpu_type=_gpu_type))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
@@ -2572,7 +2646,9 @@ async def verify_graval_launch_config_instance(
             {"instance_id": instance.instance_id, "reason": reason},
         )
         await db.commit()
-        asyncio.create_task(notify_deleted(instance))
+        _gpu_count = len(instance.nodes) if instance.nodes else None
+        _gpu_type = instance.nodes[0].gpu_identifier if instance.nodes else None
+        asyncio.create_task(notify_deleted(instance, gpu_count=_gpu_count, gpu_type=_gpu_type))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
@@ -2599,7 +2675,9 @@ async def verify_graval_launch_config_instance(
             {"instance_id": instance.instance_id, "reason": reason},
         )
         await db.commit()
-        asyncio.create_task(notify_deleted(instance))
+        _gpu_count = len(instance.nodes) if instance.nodes else None
+        _gpu_type = instance.nodes[0].gpu_identifier if instance.nodes else None
+        asyncio.create_task(notify_deleted(instance, gpu_count=_gpu_count, gpu_type=_gpu_type))
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=launch_config.verification_error,
@@ -2614,7 +2692,9 @@ async def verify_graval_launch_config_instance(
     return_value = await _build_launch_config_verified_response(db, instance, launch_config)
 
     await db.refresh(instance)
-    asyncio.create_task(notify_verified(instance))
+    _gpu_count = len(instance.nodes) if instance.nodes else None
+    _gpu_type = instance.nodes[0].gpu_identifier if instance.nodes else None
+    asyncio.create_task(notify_verified(instance, gpu_count=_gpu_count, gpu_type=_gpu_type))
     return return_value
 
 
@@ -2662,7 +2742,9 @@ async def verify_tee_launch_config_instance(
     return_value = await _build_launch_config_verified_response(db, instance, launch_config)
 
     await db.refresh(instance)
-    asyncio.create_task(notify_verified(instance))
+    _gpu_count = len(instance.nodes) if instance.nodes else None
+    _gpu_type = instance.nodes[0].gpu_identifier if instance.nodes else None
+    asyncio.create_task(notify_verified(instance, gpu_count=_gpu_count, gpu_type=_gpu_type))
     return return_value
 
 

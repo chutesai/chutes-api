@@ -38,6 +38,7 @@ from api.server.router import router as servers_router
 from api.misc.router import router as misc_router
 from api.idp.router import router as idp_router
 from api.e2e.router import router as e2e_router
+from api.encrypted_logs.router import router as encrypted_logs_router
 from api.model_alias.router import router as model_alias_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
@@ -197,6 +198,9 @@ default_router.include_router(misc_router, prefix="/misc", tags=["Miscellaneous"
 default_router.include_router(servers_router, prefix="/servers", tags=["Servers"])
 default_router.include_router(idp_router, prefix="/idp", tags=["Identity Provider"])
 default_router.include_router(e2e_router, prefix="/e2e", tags=["E2E Encryption"])
+default_router.include_router(
+    encrypted_logs_router, prefix="/encrypted_logs", tags=["Encrypted Logs"]
+)
 default_router.include_router(model_alias_router, prefix="/model_aliases", tags=["Model Aliases"])
 
 

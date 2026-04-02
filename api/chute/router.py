@@ -1197,11 +1197,15 @@ async def get_chute_hf_info(
 @router.get("/warmup/{chute_id_or_name:path}")
 async def warm_up_chute(
     chute_id_or_name: str,
+    quick: bool = False,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
     Warm up a chute.
+
+    With ?quick=true, performs a single status check, creates a bounty if needed,
+    and returns JSON immediately instead of holding an SSE connection open.
     """
     chute = (
         (
@@ -1248,6 +1252,19 @@ async def warm_up_chute(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Account balance is ${balance}, please top-up with fiat or send tao to {current_user.payment_address}",
         )
+
+    if quick:
+        # Single status check + bounty creation, return immediately.
+        tm = await get_chute_target_manager(chute=chute, max_wait=0, dynonce=True)
+        is_hot = tm is not None
+        instance_count = len(tm.instances) if tm else 0
+        bounty = await get_bounty_info(chute.chute_id)
+        return {
+            "chute_id": chute.chute_id,
+            "status": "hot" if is_hot else "cold",
+            "instance_count": instance_count,
+            "bounty": bounty,
+        }
 
     started_at = time.time()
 
