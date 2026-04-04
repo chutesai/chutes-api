@@ -46,7 +46,7 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.instance.util import invalidate_instance_cache
 from api.metrics.util import reconcile_connection_counts
 from api.capacity_log.schemas import CapacityLog
-from watchtower import purge, purge_and_notify  # noqa
+from api.instance.util import purge, purge_and_notify  # noqa
 from api.constants import (
     UNDERUTILIZED_CAP,
     UTILIZATION_SCALE_UP,

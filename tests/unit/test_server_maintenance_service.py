@@ -19,7 +19,6 @@ from api.server.service import (
     get_active_upgrade_window,
     preflight_maintenance,
     confirm_maintenance,
-    resolve_server_for_maintenance_boot_completion,
     _get_instances_on_server,
     _find_sole_survivor_chutes,
     _count_active_maintenance_slots,
@@ -433,7 +432,7 @@ async def test_confirm_raises_403_for_non_tee(mock_preflight, mock_window):
 
 
 @pytest.mark.asyncio
-@patch("watchtower.purge_and_notify", new_callable=AsyncMock)
+@patch("api.server.service.purge_and_notify", new_callable=AsyncMock)
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
 @patch("api.server.service.preflight_maintenance", new_callable=AsyncMock)
@@ -460,7 +459,7 @@ async def test_confirm_success(mock_preflight, mock_window, mock_instances, mock
 
 
 @pytest.mark.asyncio
-@patch("watchtower.purge_and_notify", new_callable=AsyncMock)
+@patch("api.server.service.purge_and_notify", new_callable=AsyncMock)
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
 @patch("api.server.service.preflight_maintenance", new_callable=AsyncMock)
@@ -476,25 +475,3 @@ async def test_confirm_purge_failure_does_not_crash(
     db = AsyncMock()
     result = await confirm_maintenance(db, server, TEST_HOTKEY)
     assert result.purged_instance_ids == []
-
-
-# ---------------------------------------------------------------------------
-# resolve_server_for_maintenance_boot_completion
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_resolve_server_returns_server():
-    server = _make_server()
-    db = AsyncMock()
-    db.execute.return_value = _mock_scalar_one_or_none_result(server)
-    result = await resolve_server_for_maintenance_boot_completion(db, TEST_HOTKEY, TEST_VM_NAME)
-    assert result is server
-
-
-@pytest.mark.asyncio
-async def test_resolve_server_returns_none():
-    db = AsyncMock()
-    db.execute.return_value = _mock_scalar_one_or_none_result(None)
-    result = await resolve_server_for_maintenance_boot_completion(db, TEST_HOTKEY, "nonexistent-vm")
-    assert result is None

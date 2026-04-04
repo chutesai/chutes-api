@@ -6,7 +6,6 @@ import asyncio
 import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
-import tempfile
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
@@ -38,7 +37,6 @@ from api.server.exceptions import (
     AttestationError,
     GetEvidenceError,
     GpuEvidenceError,
-    InvalidClientCertError,
     InvalidGpuEvidenceError,
     InvalidQuoteError,
     MeasurementMismatchError,
@@ -50,19 +48,18 @@ from api.server.exceptions import (
 )
 from api.server.util import (
     _track_server,
-    extract_report_data,
-    verify_measurements,
     get_matching_measurement_config,
     generate_nonce,
     get_nonce_expiry_seconds,
-    verify_quote_signature,
-    verify_result,
+    verify_quote,
+    verify_gpu_evidence,
     sync_server_luks_passphrases,
     get_public_key_hash,
     cert_to_base64_der,
     validate_user_nonce,
 )
 from api.instance.schemas import Instance, instance_nodes
+from api.instance.util import purge_and_notify
 from api.chute.schemas import Chute
 from api.node.schemas import Node
 from sqlalchemy.orm import joinedload
@@ -185,29 +182,6 @@ def validate_request_nonce(purpose: NoncePurpose):
     return _validate_request_nonce
 
 
-async def verify_quote(
-    quote: TdxQuote, expected_nonce: str, expected_cert_hash: str
-) -> TdxVerificationResult:
-    # Validate nonce
-    nonce, cert_hash = extract_report_data(quote)
-
-    if nonce != expected_nonce:
-        logger.info(f"Nonce error:  {nonce} =/= {expected_nonce}")
-        raise NonceError("Quote nonce does not match expected nonce.")
-
-    if cert_hash != expected_cert_hash:
-        raise InvalidClientCertError()
-
-    # Verify the quote using DCAP
-    result = await verify_quote_signature(quote)
-    # Verify the quote against the result to ensure it was parsed properly
-    verify_result(quote, result)
-    # Verify the quote against configured MRTD/RMTRs
-    verify_measurements(quote)
-
-    return result
-
-
 def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> None:
     """
     Validate that the provided GPUs match the expected GPUs for this measurement configuration.
@@ -247,31 +221,6 @@ def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> Non
         f"GPU validation passed for measurement config '{measurement_config.name}': "
         f"{len(gpus)} GPUs of types {provided_gpu_ids}"
     )
-
-
-async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as fp:
-            json.dump(evidence, fp)
-            fp.flush()
-
-            verify_gpus_cmd = ["chutes-nvattest", "--nonce", expected_nonce, "--evidence", fp.name]
-
-            process = await asyncio.create_subprocess_exec(*verify_gpus_cmd)
-
-            await asyncio.gather(process.wait())
-
-            if process.returncode != 0:
-                raise InvalidGpuEvidenceError()
-
-            logger.info("GPU evidence verified successfully.")
-
-    except FileNotFoundError as e:
-        logger.error(f"Failed to verify GPU evidence.  chutes-nvattest command not found?:\n{e}")
-        raise GpuEvidenceError("Failed to verify GPU evidence.")
-    except Exception as e:
-        logger.error(f"Unexepected exception encoutnered verifying GPU evidence:\n{e}")
-        raise GpuEvidenceError("Encountered an unexpected exception verifying GPU evidence.")
 
 
 async def generate_and_store_boot_token(miner_hotkey: str, vm_name: str) -> str:
@@ -347,6 +296,10 @@ async def process_boot_attestation(
 
         logger.success(f"Boot attestation successful: {boot_attestation.attestation_id}")
 
+        await _handle_boot_version_update(
+            db, args.miner_hotkey, args.vm_name, measurement_config.version
+        )
+
         # Generate boot token for this verified VM
         boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
 
@@ -382,6 +335,40 @@ async def process_boot_attestation(
         raise
 
 
+async def _handle_boot_version_update(
+    db: AsyncSession, miner_hotkey: str, vm_name: str, measurement_version: str
+) -> None:
+    """Update server.version on every successful boot; clear maintenance slot if target met."""
+    try:
+        server = await get_server_by_name(db, miner_hotkey, vm_name)
+    except ServerNotFoundError:
+        return
+
+    server.version = measurement_version
+
+    if server.maintenance_pending_window_id is not None:
+        window = await db.get(TeeUpgradeWindow, server.maintenance_pending_window_id)
+        if window is not None and semcomp(measurement_version, window.target_measurement_version) >= 0:
+            logger.info(
+                f"Maintenance complete for server {server.server_id}: "
+                f"version {measurement_version} meets target {window.target_measurement_version}"
+            )
+            server.maintenance_pending_window_id = None
+        elif window is not None:
+            logger.warning(
+                f"Boot attestation for server {server.server_id} has version {measurement_version} "
+                f"but target is {window.target_measurement_version}; maintenance not complete"
+            )
+        else:
+            logger.warning(
+                f"Server {server.server_id} has stale maintenance_pending_window_id "
+                f"pointing to missing window; clearing"
+            )
+            server.maintenance_pending_window_id = None
+
+    await db.commit()
+
+
 async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
     """
     Register a TEE server: create Server, verify attestation (creating a ServerAttestation
@@ -400,7 +387,11 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
                 setattr(gpu, key, gpu_info.get(key))
 
         # Start verification process (pass GPUs for validation)
-        await verify_server(db, server, miner_hotkey, gpus=args.gpus)
+        measurement_version = await verify_server(db, server, miner_hotkey, gpus=args.gpus)
+
+        if measurement_version is not None:
+            server.version = measurement_version
+            await db.commit()
 
         # Track nodes once verified
         await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
@@ -443,15 +434,11 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
 
 async def verify_server(
     db: AsyncSession, server: Server, miner_hotkey: str, gpus: list[NodeArgs]
-) -> None:
+) -> Optional[str]:
     """
     Verify server attestation and validate GPUs match measurement configuration.
 
-    Args:
-        db: Database session
-        server: Server to verify
-        miner_hotkey: Miner hotkey
-        gpus: List of GPUs to validate against measurement configuration
+    Returns the measurement_version string on success, None on failure.
     """
     failure_reason = ""
     quote = None
@@ -493,6 +480,8 @@ async def verify_server(
         db.add(server_attestation)
         await db.commit()
         await db.refresh(server_attestation)
+
+        return measurement_config.version
 
     except GetEvidenceError as e:
         failure_reason = "Failed to get attestation evidence."
@@ -1199,8 +1188,6 @@ async def confirm_maintenance(
 
     Raises HTTPException (409/403) on failure.
     """
-    from watchtower import purge_and_notify
-
     preflight = await preflight_maintenance(db, server, miner_hotkey)
     if not preflight.eligible:
         reason_codes = {r.reason for r in preflight.denial_reasons}
@@ -1241,13 +1228,3 @@ async def confirm_maintenance(
     )
 
 
-async def resolve_server_for_maintenance_boot_completion(
-    db: AsyncSession, miner_hotkey: str, vm_name: str
-) -> Optional[Server]:
-    """Look up a Server by (miner_hotkey, name) for boot completion. Returns None if not found."""
-    query = select(Server).where(
-        Server.miner_hotkey == miner_hotkey,
-        Server.name == vm_name,
-    )
-    result = await db.execute(query)
-    return result.scalar_one_or_none()

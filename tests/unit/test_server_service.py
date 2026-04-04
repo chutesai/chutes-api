@@ -107,7 +107,7 @@ def mock_util_functions():
         patch("api.server.service.generate_nonce", return_value=TEST_GPU_NONCE) as mock_gen,
         patch("api.server.service.get_nonce_expiry_seconds", return_value=600) as mock_exp,
         patch(
-            "api.server.service.extract_report_data",
+            "api.server.util.extract_report_data",
             return_value=(TEST_GPU_NONCE, TEST_CERT_HASH),
         ) as mock_extract,
         patch("api.server.service.verify_gpu_evidence") as mock_verify_gpu,
@@ -238,6 +238,7 @@ def _sample_node_args():
 def server_args():
     """Sample ServerArgs for testing."""
     return ServerArgs(
+        id="test-server-123",
         host=TEST_SERVER_IP,
         name="test-vm-name",
         gpus=[_sample_node_args()],
@@ -279,7 +280,7 @@ def sample_server_attestation():
 def mock_verify_quote_signature(sample_verification_result):
     """Mock verify_quote_signature function."""
     with patch(
-        "api.server.service.verify_quote_signature", return_value=sample_verification_result
+        "api.server.util.verify_quote_signature", return_value=sample_verification_result
     ) as mock:
         yield mock
 
@@ -287,7 +288,7 @@ def mock_verify_quote_signature(sample_verification_result):
 @pytest.fixture
 def mock_verify_measurements():
     """Mock verify_measurements function."""
-    with patch("api.server.service.verify_measurements", return_value=True) as mock:
+    with patch("api.server.util.verify_measurements", return_value=True) as mock:
         yield mock
 
 
@@ -456,6 +457,9 @@ async def test_process_boot_attestation_success(
         with patch(
             "api.server.service.generate_and_store_boot_token",
             return_value="test-boot-token",
+        ), patch(
+            "api.server.service._handle_boot_version_update",
+            new_callable=AsyncMock,
         ):
             result = await process_boot_attestation(
                 mock_db_session,
@@ -1022,7 +1026,7 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
     )
 
     with patch("api.server.service.BootTdxQuote.from_base64", return_value=boot_quote):
-        with patch("api.server.service.verify_quote_signature") as mock_verify:
+        with patch("api.server.util.verify_quote_signature") as mock_verify:
             mock_verify.return_value = TdxVerificationResult(
                 mrtd="a" * 96,
                 rtmr0="b" * 96,
@@ -1045,6 +1049,9 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
             with patch(
                 "api.server.service.generate_and_store_boot_token",
                 return_value="test-boot-token",
+            ), patch(
+                "api.server.service._handle_boot_version_update",
+                new_callable=AsyncMock,
             ):
                 result = await process_boot_attestation(
                     mock_db_session,
@@ -1095,7 +1102,7 @@ async def test_full_runtime_flow_end_to_end(
 
     with patch("api.server.service.check_server_ownership", return_value=sample_server):
         with patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=runtime_quote):
-            with patch("api.server.service.verify_quote_signature") as mock_verify:
+            with patch("api.server.util.verify_quote_signature") as mock_verify:
                 mock_verify.return_value = TdxVerificationResult(
                     mrtd="a" * 96,
                     rtmr0="d" * 96,
@@ -1366,7 +1373,7 @@ async def test_verify_quote_boot_vs_runtime_different_settings(mock_settings):
         td_attributes="0000001000000000",
     )
 
-    with patch("api.server.service.verify_quote_signature") as mock_sig:
+    with patch("api.server.util.verify_quote_signature") as mock_sig:
         mock_sig.side_effect = [boot_dcap_result, runtime_dcap_result]
         await verify_quote(boot_quote, TEST_NONCE, TEST_CERT_HASH)
         await verify_quote(runtime_quote, TEST_NONCE, TEST_CERT_HASH)
@@ -1559,7 +1566,7 @@ async def test_verify_quote_with_different_quote_types(mock_verify_measurements)
         raw_bytes=b"runtime",
     )
 
-    with patch("api.server.service.verify_quote_signature") as mock_sig:
+    with patch("api.server.util.verify_quote_signature") as mock_sig:
         mock_sig.side_effect = [boot_result, runtime_result]
         boot_verify_result = await verify_quote(boot_quote, TEST_NONCE, TEST_CERT_HASH)
         runtime_verify_result = await verify_quote(runtime_quote, TEST_NONCE, TEST_CERT_HASH)

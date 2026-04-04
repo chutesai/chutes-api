@@ -2,8 +2,11 @@
 TDX quote parsing, crypto operations, and server helper functions.
 """
 
+import asyncio
 import secrets
 import base64
+import json
+import tempfile
 from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.sql import func
@@ -20,8 +23,11 @@ from cryptography.x509 import Certificate
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
 from api.server.exceptions import (
-    InvalidQuoteError,
     AttestationError,
+    GpuEvidenceError,
+    InvalidClientCertError,
+    InvalidGpuEvidenceError,
+    InvalidQuoteError,
     InvalidSignatureError,
     InvalidTdxConfiguration,
     MeasurementMismatchError,
@@ -530,3 +536,47 @@ async def _track_server(
     await db.refresh(server)
 
     return server
+
+
+async def verify_quote(
+    quote: TdxQuote, expected_nonce: str, expected_cert_hash: str
+) -> TdxVerificationResult:
+    nonce, cert_hash = extract_report_data(quote)
+
+    if nonce != expected_nonce:
+        logger.info(f"Nonce error:  {nonce} =/= {expected_nonce}")
+        raise NonceError("Quote nonce does not match expected nonce.")
+
+    if cert_hash != expected_cert_hash:
+        raise InvalidClientCertError()
+
+    result = await verify_quote_signature(quote)
+    verify_result(quote, result)
+    verify_measurements(quote)
+
+    return result
+
+
+async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json") as fp:
+            json.dump(evidence, fp)
+            fp.flush()
+
+            verify_gpus_cmd = ["chutes-nvattest", "--nonce", expected_nonce, "--evidence", fp.name]
+
+            process = await asyncio.create_subprocess_exec(*verify_gpus_cmd)
+
+            await asyncio.gather(process.wait())
+
+            if process.returncode != 0:
+                raise InvalidGpuEvidenceError()
+
+            logger.info("GPU evidence verified successfully.")
+
+    except FileNotFoundError as e:
+        logger.error(f"Failed to verify GPU evidence.  chutes-nvattest command not found?:\n{e}")
+        raise GpuEvidenceError("Failed to verify GPU evidence.")
+    except Exception as e:
+        logger.error(f"Unexepected exception encoutnered verifying GPU evidence:\n{e}")
+        raise GpuEvidenceError("Encountered an unexpected exception verifying GPU evidence.")
