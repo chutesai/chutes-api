@@ -42,6 +42,7 @@ def _make_window(**overrides):
         upgrade_window_start=TEST_WINDOW_START,
         upgrade_window_end=TEST_WINDOW_END,
         target_measurement_version=TEST_VERSION_TARGET,
+        max_concurrent_per_miner=1,
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)

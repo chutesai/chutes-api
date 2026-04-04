@@ -45,6 +45,7 @@ def _make_window(**overrides):
         upgrade_window_start=TEST_WINDOW_START,
         upgrade_window_end=TEST_WINDOW_END,
         target_measurement_version=TEST_VERSION_TARGET,
+        max_concurrent_per_miner=DEFAULT_CONCURRENCY_LIMIT,
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
@@ -232,9 +233,7 @@ async def test_count_active_maintenance_slots_returns_zero_when_null():
 
 @pytest.mark.asyncio
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
-async def test_preflight_not_tee(mock_settings, _mock_window):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
+async def test_preflight_not_tee(_mock_window):
     server = _make_server(is_tee=False)
     db = AsyncMock()
     result = await preflight_maintenance(db, server, TEST_HOTKEY)
@@ -245,9 +244,7 @@ async def test_preflight_not_tee(mock_settings, _mock_window):
 
 @pytest.mark.asyncio
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock, return_value=None)
-@patch("api.server.service.settings")
-async def test_preflight_no_active_window(mock_settings, _mock_window):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
+async def test_preflight_no_active_window(_mock_window):
     server = _make_server()
     db = AsyncMock()
     result = await preflight_maintenance(db, server, TEST_HOTKEY)
@@ -260,11 +257,9 @@ async def test_preflight_no_active_window(mock_settings, _mock_window):
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock, return_value=[])
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
 async def test_preflight_already_at_target(
-    mock_settings, mock_window, _mock_slots, _mock_instances, _mock_survivors
+    mock_window, _mock_slots, _mock_instances, _mock_survivors
 ):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
     window = _make_window()
     mock_window.return_value = window
     server = _make_server(version=TEST_VERSION_ABOVE)
@@ -279,11 +274,9 @@ async def test_preflight_already_at_target(
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock, return_value=[])
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
 async def test_preflight_maintenance_pending(
-    mock_settings, mock_window, _mock_slots, _mock_instances, _mock_survivors
+    mock_window, _mock_slots, _mock_instances, _mock_survivors
 ):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
     window = _make_window()
     mock_window.return_value = window
     server = _make_server(maintenance_pending_window_id=TEST_WINDOW_ID)
@@ -298,11 +291,9 @@ async def test_preflight_maintenance_pending(
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock, return_value=[])
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
 async def test_preflight_stale_window_gets_cleared(
-    mock_settings, mock_window, _mock_slots, _mock_instances, _mock_survivors
+    mock_window, _mock_slots, _mock_instances, _mock_survivors
 ):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
     window = _make_window(id="new-window-id")
     mock_window.return_value = window
     server = _make_server(maintenance_pending_window_id="old-stale-window-id")
@@ -317,11 +308,7 @@ async def test_preflight_stale_window_gets_cleared(
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock, return_value=[])
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
-async def test_preflight_concurrency_cap(
-    mock_settings, mock_window, mock_slots, _mock_instances, _mock_survivors
-):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
+async def test_preflight_concurrency_cap(mock_window, mock_slots, _mock_instances, _mock_survivors):
     window = _make_window()
     mock_window.return_value = window
     mock_slots.return_value = DEFAULT_CONCURRENCY_LIMIT
@@ -337,11 +324,9 @@ async def test_preflight_concurrency_cap(
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock)
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
 async def test_preflight_sole_survivor_blocks(
-    mock_settings, mock_window, _mock_slots, mock_instances, mock_survivors
+    mock_window, _mock_slots, mock_instances, mock_survivors
 ):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
     window = _make_window()
     mock_window.return_value = window
     inst = _make_instance()
@@ -361,12 +346,11 @@ async def test_preflight_sole_survivor_blocks(
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock, return_value=[])
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
 async def test_preflight_eligible_version_none(
-    mock_settings, mock_window, _mock_slots, _mock_instances, _mock_survivors
+    mock_window, _mock_slots, _mock_instances, _mock_survivors
 ):
     """Server with version=None should not be denied as 'already at target'."""
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
+
     window = _make_window()
     mock_window.return_value = window
     server = _make_server(version=None)
@@ -381,11 +365,9 @@ async def test_preflight_eligible_version_none(
 @patch("api.server.service._get_instances_on_server", new_callable=AsyncMock, return_value=[])
 @patch("api.server.service._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.service.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.service.settings")
 async def test_preflight_eligible_old_version(
-    mock_settings, mock_window, _mock_slots, _mock_instances, _mock_survivors
+    mock_window, _mock_slots, _mock_instances, _mock_survivors
 ):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
     window = _make_window()
     mock_window.return_value = window
     server = _make_server(version=TEST_VERSION_OLD)

@@ -155,6 +155,7 @@ class UpgradeWindowInfo(BaseModel):
     target_measurement_version: str
     upgrade_window_start: str
     upgrade_window_end: str
+    max_concurrent_per_miner: int = 1
 
 
 class ConfirmMaintenanceResult(BaseModel):
@@ -178,7 +179,6 @@ class MaintenancePolicyResponse(BaseModel):
     """Response for GET /servers/maintenance/policy."""
 
     active_window: Optional[UpgradeWindowInfo] = None
-    max_concurrent_servers_per_miner: int
     current_slots: int = 0
     pending_servers: List[PendingServerInfo] = Field(default_factory=list)
 
@@ -217,6 +217,7 @@ class TeeUpgradeWindow(Base):
     upgrade_window_start = Column(DateTime(timezone=True), nullable=False)
     upgrade_window_end = Column(DateTime(timezone=True), nullable=False)
     target_measurement_version = Column(Text, nullable=False)
+    max_concurrent_per_miner = Column(Integer, nullable=False, default=1, server_default="1")
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     pending_servers = relationship(

@@ -46,6 +46,7 @@ def _make_window(**overrides):
         upgrade_window_start=TEST_WINDOW_START,
         upgrade_window_end=TEST_WINDOW_END,
         target_measurement_version=TEST_VERSION_TARGET,
+        max_concurrent_per_miner=DEFAULT_CONCURRENCY_LIMIT,
         created_at=datetime(2026, 4, 1, tzinfo=timezone.utc),
     )
     defaults.update(overrides)
@@ -83,10 +84,7 @@ def _mock_scalars_result(rows):
 @pytest.mark.asyncio
 @patch("api.server.router._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
 @patch("api.server.router.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.router.settings")
-async def test_policy_returns_active_window(mock_settings, mock_get_window, _mock_slots):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
-    mock_settings.netuid = 64
+async def test_policy_returns_active_window(mock_get_window, _mock_slots):
     window = _make_window()
     mock_get_window.return_value = window
 
@@ -97,14 +95,12 @@ async def test_policy_returns_active_window(mock_settings, mock_get_window, _moc
     assert isinstance(result, MaintenancePolicyResponse)
     assert result.active_window is not None
     assert result.active_window.id == TEST_WINDOW_ID
-    assert result.max_concurrent_servers_per_miner == DEFAULT_CONCURRENCY_LIMIT
+    assert result.active_window.max_concurrent_per_miner == DEFAULT_CONCURRENCY_LIMIT
 
 
 @pytest.mark.asyncio
 @patch("api.server.router.get_active_upgrade_window", new_callable=AsyncMock, return_value=None)
-@patch("api.server.router.settings")
-async def test_policy_returns_null_when_no_window(mock_settings, mock_get_window):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
+async def test_policy_returns_null_when_no_window(mock_get_window):
     db = AsyncMock()
 
     result = await get_maintenance_policy(db=db, hotkey=TEST_HOTKEY, _=None)
@@ -124,10 +120,7 @@ async def test_policy_rejects_missing_hotkey():
 @pytest.mark.asyncio
 @patch("api.server.router._count_active_maintenance_slots", new_callable=AsyncMock, return_value=1)
 @patch("api.server.router.get_active_upgrade_window", new_callable=AsyncMock)
-@patch("api.server.router.settings")
-async def test_policy_includes_pending_servers(mock_settings, mock_get_window, _mock_slots):
-    mock_settings.tee_maintenance_max_miner_concurrency = DEFAULT_CONCURRENCY_LIMIT
-    mock_settings.netuid = 64
+async def test_policy_includes_pending_servers(mock_get_window, _mock_slots):
     window = _make_window()
     mock_get_window.return_value = window
 

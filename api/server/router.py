@@ -365,6 +365,7 @@ async def get_maintenance_policy(
             target_measurement_version=active_window.target_measurement_version,
             upgrade_window_start=str(active_window.upgrade_window_start),
             upgrade_window_end=str(active_window.upgrade_window_end),
+            max_concurrent_per_miner=active_window.max_concurrent_per_miner,
         )
         current_slots = await _count_active_maintenance_slots(db, hotkey, active_window)
 
@@ -385,7 +386,6 @@ async def get_maintenance_policy(
 
     return MaintenancePolicyResponse(
         active_window=window_info,
-        max_concurrent_servers_per_miner=settings.tee_maintenance_max_miner_concurrency,
         current_slots=current_slots,
         pending_servers=pending_servers,
     )

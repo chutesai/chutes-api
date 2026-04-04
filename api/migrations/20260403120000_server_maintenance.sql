@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS tee_upgrade_windows (
     upgrade_window_start TIMESTAMPTZ NOT NULL,
     upgrade_window_end TIMESTAMPTZ NOT NULL,
     target_measurement_version TEXT NOT NULL,
+    max_concurrent_per_miner INTEGER NOT NULL DEFAULT 1,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT uq_tee_upgrade_target UNIQUE (target_measurement_version),
     CONSTRAINT chk_window_bounds CHECK (upgrade_window_end > upgrade_window_start)

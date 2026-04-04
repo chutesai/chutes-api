@@ -429,11 +429,6 @@ class Settings(BaseSettings):
     # Premium chute IDs (restricted from $3/mo sub users without balance).
     premium_chute_ids: list = json.loads(os.getenv("PREMIUM_CHUTE_IDS", "[]"))
 
-    # TEE maintenance settings.
-    tee_maintenance_max_miner_concurrency: int = int(
-        os.getenv("TEE_MAINTENANCE_MAX_MINER_CONCURRENCY", "1")
-    )
-
     # Agent registration settings.
     agent_registration_threshold: float = float(os.getenv("AGENT_REGISTRATION_THRESHOLD", "50.0"))
     agent_registration_tolerance: float = float(os.getenv("AGENT_REGISTRATION_TOLERANCE", "0.10"))

@@ -2,9 +2,7 @@
 Unit tests for TEE maintenance ORM models and config settings (Phase 1).
 """
 
-import os
 from datetime import datetime, timezone
-from unittest.mock import patch
 
 from api.server.schemas import TeeUpgradeWindow, Server
 
@@ -79,20 +77,17 @@ def test_window_has_pending_servers_relationship():
     assert hasattr(TeeUpgradeWindow, "pending_servers")
 
 
-def test_maintenance_config_default_concurrency_limit():
-    env = {k: v for k, v in os.environ.items()}
-    env.pop("TEE_MAINTENANCE_MAX_MINER_CONCURRENCY", None)
-
-    with patch.dict(os.environ, env, clear=True):
-        from api.config import Settings
-
-        s = Settings()
-        assert s.tee_maintenance_max_miner_concurrency == 1
+def test_window_max_concurrent_per_miner_has_column_default():
+    col = TeeUpgradeWindow.__table__.c.max_concurrent_per_miner
+    assert col.server_default.arg == "1"
+    assert col.nullable is False
 
 
-def test_maintenance_config_concurrency_limit_from_env():
-    with patch.dict(os.environ, {"TEE_MAINTENANCE_MAX_MINER_CONCURRENCY": "3"}):
-        from api.config import Settings
-
-        s = Settings()
-        assert s.tee_maintenance_max_miner_concurrency == 3
+def test_window_max_concurrent_per_miner_can_be_set():
+    w = TeeUpgradeWindow(
+        upgrade_window_start=datetime(2026, 4, 1, tzinfo=timezone.utc),
+        upgrade_window_end=datetime(2026, 4, 7, tzinfo=timezone.utc),
+        target_measurement_version="0.3.0",
+        max_concurrent_per_miner=3,
+    )
+    assert w.max_concurrent_per_miner == 3

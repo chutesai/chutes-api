@@ -1125,7 +1125,7 @@ async def preflight_maintenance(
     """Read-only eligibility check for entering maintenance on a server."""
     denial_reasons: list[MaintenanceReason] = []
     blocking: list[SoleSurvivorBlock] = []
-    limit = settings.tee_maintenance_max_miner_concurrency
+    limit = 1
     current_slots = 0
     active_window: Optional[TeeUpgradeWindow] = None
 
@@ -1138,6 +1138,8 @@ async def preflight_maintenance(
             denial_reasons.append(MaintenanceReason(reason="no_active_window"))
 
     if active_window is not None:
+        limit = active_window.max_concurrent_per_miner
+
         if (
             server.version is not None
             and semcomp(server.version, active_window.target_measurement_version) >= 0
@@ -1237,5 +1239,6 @@ async def confirm_maintenance(
             target_measurement_version=active_window.target_measurement_version,
             upgrade_window_start=str(active_window.upgrade_window_start),
             upgrade_window_end=str(active_window.upgrade_window_end),
+            max_concurrent_per_miner=active_window.max_concurrent_per_miner,
         ),
     )
