@@ -598,80 +598,37 @@ async def test_process_runtime_attestation_server_not_found(
 
 
 @pytest.mark.asyncio
-async def test_register_server_success(
-    mock_db_session, server_args, sample_server, sample_runtime_quote
-):
+async def test_register_server_success(mock_db_session, server_args, sample_server):
     """Test successful server registration."""
     miner_hotkey = "5FTestHotkey123"
 
-    def mock_refresh(obj):
-        obj.server_id = "test-server-123"
+    with patch("api.server.service._track_server", return_value=sample_server):
+        with patch("api.server.service._track_nodes", new_callable=AsyncMock):
+            with patch(
+                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+            ):
+                await register_server(mock_db_session, server_args, miner_hotkey)
 
-    mock_db_session.refresh.side_effect = mock_refresh
-
-    with patch("api.server.service.TeeServerClient") as mock_client_class:
-        mock_client = AsyncMock()
-        mock_client.get_evidence.return_value = (
-            sample_runtime_quote,
-            {},
-            TEST_CERT_HASH,
-        )
-        mock_client_class.return_value = mock_client
-        with patch("api.server.service.verify_quote") as mock_verify_quote:
-            mock_verify_quote.return_value = TdxVerificationResult(
-                mrtd="a" * 96,
-                rtmr0="d" * 96,
-                rtmr1="e" * 96,
-                rtmr2="f" * 96,
-                rtmr3="0" * 96,
-                user_data="test",
-                parsed_at=datetime.now(timezone.utc),
-                status="UpToDate",
-                advisory_ids=[],
-                td_attributes="0000001000000000",
-            )
-            await verify_server(mock_db_session, sample_server, miner_hotkey, server_args.gpus)
-
-    # Verify database operations
-    mock_db_session.add.assert_called_once()
-    mock_db_session.commit.assert_called_once()
-    mock_db_session.refresh.assert_called_once()
+    assert sample_server.version == "1.0.0"
+    mock_db_session.commit.assert_called()
 
 
 @pytest.mark.asyncio
-async def test_register_server_integrity_error(
-    mock_db_session, server_args, sample_server, sample_runtime_quote
-):
-    """Test server registration with database integrity error."""
+async def test_register_server_integrity_error(mock_db_session, server_args, sample_server):
+    """Test server registration handles IntegrityError from _track_nodes."""
     miner_hotkey = "5FTestHotkey123"
 
-    mock_db_session.commit.side_effect = IntegrityError("Duplicate key", None, None)
-
     with patch("api.server.service._track_server", return_value=sample_server):
-        with patch("api.server.service._track_nodes", new_callable=AsyncMock):
-            with patch("api.server.service.TeeServerClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get_evidence.return_value = (
-                    sample_runtime_quote,
-                    {},
-                    TEST_CERT_HASH,
-                )
-                mock_client_class.return_value = mock_client
-                with patch("api.server.service.verify_quote") as mock_verify_quote:
-                    mock_verify_quote.return_value = TdxVerificationResult(
-                        mrtd="a" * 96,
-                        rtmr0="d" * 96,
-                        rtmr1="e" * 96,
-                        rtmr2="f" * 96,
-                        rtmr3="0" * 96,
-                        user_data="test",
-                        parsed_at=datetime.now(timezone.utc),
-                        status="UpToDate",
-                        advisory_ids=[],
-                        td_attributes="0000001000000000",
-                    )
-                    with pytest.raises(ServerRegistrationError):
-                        await register_server(mock_db_session, server_args, miner_hotkey)
+        with patch(
+            "api.server.service._track_nodes",
+            new_callable=AsyncMock,
+            side_effect=IntegrityError("Duplicate key", None, None),
+        ):
+            with patch(
+                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+            ):
+                with pytest.raises(ServerRegistrationError):
+                    await register_server(mock_db_session, server_args, miner_hotkey)
 
     mock_db_session.rollback.assert_called_once()
 
@@ -931,39 +888,21 @@ async def test_validate_nonce_invalid_format(mock_settings):
 
 
 @pytest.mark.asyncio
-async def test_register_server_general_exception(
-    mock_db_session, server_args, sample_server, sample_runtime_quote
-):
-    """Test server verification with general exception on commit."""
+async def test_register_server_general_exception(mock_db_session, server_args, sample_server):
+    """Test server registration handles unexpected exceptions."""
     miner_hotkey = "5FTestHotkey123"
 
-    mock_db_session.commit.side_effect = Exception("Database error")
-
     with patch("api.server.service._track_server", return_value=sample_server):
-        with patch("api.server.service._track_nodes", new_callable=AsyncMock):
-            with patch("api.server.service.TeeServerClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get_evidence.return_value = (
-                    sample_runtime_quote,
-                    {},
-                    TEST_CERT_HASH,
-                )
-                mock_client_class.return_value = mock_client
-                with patch("api.server.service.verify_quote") as mock_verify_quote:
-                    mock_verify_quote.return_value = TdxVerificationResult(
-                        mrtd="a" * 96,
-                        rtmr0="d" * 96,
-                        rtmr1="e" * 96,
-                        rtmr2="f" * 96,
-                        rtmr3="0" * 96,
-                        user_data="test",
-                        parsed_at=datetime.now(timezone.utc),
-                        status="UpToDate",
-                        advisory_ids=[],
-                        td_attributes="0000001000000000",
-                    )
-                    with pytest.raises(ServerRegistrationError):
-                        await register_server(mock_db_session, server_args, miner_hotkey)
+        with patch(
+            "api.server.service._track_nodes",
+            new_callable=AsyncMock,
+            side_effect=Exception("Database error"),
+        ):
+            with patch(
+                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+            ):
+                with pytest.raises(ServerRegistrationError):
+                    await register_server(mock_db_session, server_args, miner_hotkey)
 
     mock_db_session.rollback.assert_called_once()
 
@@ -1137,46 +1076,16 @@ async def test_full_runtime_flow_end_to_end(
 
 
 @pytest.mark.asyncio
-async def test_server_lifecycle_flow(
-    mock_db_session, sample_server, server_args, sample_runtime_quote
-):
+async def test_server_lifecycle_flow(mock_db_session, sample_server, server_args):
     """Test complete server lifecycle: register -> check ownership -> delete."""
     miner_hotkey = "5FTestHotkey123"
 
-    def mock_refresh(obj):
-        obj.server_id = "test-server-123"
-        if hasattr(obj, "attestation_id"):
-            obj.attestation_id = "runtime-attest-123"
-        if hasattr(obj, "verified_at"):
-            obj.verified_at = datetime.now(timezone.utc)
-
-    mock_db_session.refresh.side_effect = mock_refresh
-
     with patch("api.server.service._track_server", return_value=sample_server):
         with patch("api.server.service._track_nodes", new_callable=AsyncMock):
-            with patch("api.server.service.TeeServerClient") as mock_client_class:
-                mock_client = AsyncMock()
-                mock_client.get_evidence.return_value = (
-                    sample_runtime_quote,
-                    {},
-                    TEST_CERT_HASH,
-                )
-                mock_client_class.return_value = mock_client
-                with patch("api.server.service.verify_quote") as mock_verify_quote:
-                    mock_verify_quote.return_value = TdxVerificationResult(
-                        mrtd="a" * 96,
-                        rtmr0="d" * 96,
-                        rtmr1="e" * 96,
-                        rtmr2="f" * 96,
-                        rtmr3="0" * 96,
-                        user_data="test",
-                        parsed_at=datetime.now(timezone.utc),
-                        status="UpToDate",
-                        advisory_ids=[],
-                        td_attributes="0000001000000000",
-                    )
-                    await register_server(mock_db_session, server_args, miner_hotkey)
-    mock_db_session.add.assert_called()
+            with patch(
+                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+            ):
+                await register_server(mock_db_session, server_args, miner_hotkey)
     mock_db_session.commit.assert_called()
 
     # Step 2: Check ownership
