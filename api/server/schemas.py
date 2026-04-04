@@ -11,10 +11,12 @@ from sqlalchemy import (
     String,
     DateTime,
     Boolean,
+    CheckConstraint,
     ForeignKey,
     Text,
     Index,
     ForeignKeyConstraint,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from typing import Dict, Any, List, Optional
@@ -139,6 +141,32 @@ class BootAttestation(Base):
     )
 
 
+class TeeUpgradeWindow(Base):
+    """Validator-managed maintenance window: one row per coordinated TEE image cutover."""
+
+    __tablename__ = "tee_upgrade_windows"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    upgrade_window_start = Column(DateTime(timezone=True), nullable=False)
+    upgrade_window_end = Column(DateTime(timezone=True), nullable=False)
+    target_measurement_version = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    pending_servers = relationship(
+        "Server",
+        back_populates="pending_upgrade_window",
+        foreign_keys="Server.maintenance_pending_window_id",
+    )
+
+    __table_args__ = (
+        UniqueConstraint("target_measurement_version", name="uq_tee_upgrade_target"),
+        CheckConstraint(
+            "upgrade_window_end > upgrade_window_start", name="chk_window_bounds"
+        ),
+        Index("idx_tee_upgrade_window_bounds", "upgrade_window_start", "upgrade_window_end"),
+    )
+
+
 class Server(Base):
     """Main server entity (created after boot via CLI)."""
 
@@ -156,16 +184,35 @@ class Server(Base):
 
     is_tee = Column(Boolean, default=False, server_default="false")
 
+    # Maintenance: set at confirm, cleared on successful boot completion or lazily when window closes.
+    maintenance_pending_window_id = Column(
+        String,
+        ForeignKey("tee_upgrade_windows.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    # Current attested measurement version, updated on every successful boot attestation.
+    version = Column(Text, nullable=True)
+
     # Relationships
     nodes = relationship("Node", back_populates="server", cascade="all, delete-orphan")
     runtime_attestations = relationship(
         "ServerAttestation", back_populates="server", cascade="all, delete-orphan"
     )
     miner = relationship("MetagraphNode", back_populates="servers")
+    pending_upgrade_window = relationship(
+        "TeeUpgradeWindow",
+        back_populates="pending_servers",
+        foreign_keys=[maintenance_pending_window_id],
+    )
 
     __table_args__ = (
         Index("idx_server_miner", "miner_hotkey"),
         Index("idx_servers_miner_name", "miner_hotkey", "name", unique=True),
+        Index(
+            "idx_servers_maintenance_pending",
+            "miner_hotkey",
+            postgresql_where=maintenance_pending_window_id.isnot(None),
+        ),
         ForeignKeyConstraint(
             ["netuid", "miner_hotkey"], ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"]
         ),
