@@ -18,7 +18,6 @@ from api.server.service import (
     process_boot_attestation,
     process_runtime_attestation,
     register_server,
-    verify_server,
     check_server_ownership,
     get_server_by_name,
     update_server_name,
@@ -454,12 +453,15 @@ async def test_process_boot_attestation_success(
 
         mock_db_session.refresh.side_effect = mock_refresh
 
-        with patch(
-            "api.server.service.generate_and_store_boot_token",
-            return_value="test-boot-token",
-        ), patch(
-            "api.server.service._handle_boot_version_update",
-            new_callable=AsyncMock,
+        with (
+            patch(
+                "api.server.service.generate_and_store_boot_token",
+                return_value="test-boot-token",
+            ),
+            patch(
+                "api.server.service._handle_boot_version_update",
+                new_callable=AsyncMock,
+            ),
         ):
             result = await process_boot_attestation(
                 mock_db_session,
@@ -985,12 +987,15 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
 
             mock_db_session.refresh.side_effect = mock_refresh
 
-            with patch(
-                "api.server.service.generate_and_store_boot_token",
-                return_value="test-boot-token",
-            ), patch(
-                "api.server.service._handle_boot_version_update",
-                new_callable=AsyncMock,
+            with (
+                patch(
+                    "api.server.service.generate_and_store_boot_token",
+                    return_value="test-boot-token",
+                ),
+                patch(
+                    "api.server.service._handle_boot_version_update",
+                    new_callable=AsyncMock,
+                ),
             ):
                 result = await process_boot_attestation(
                     mock_db_session,

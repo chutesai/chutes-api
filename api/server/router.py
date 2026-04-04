@@ -374,12 +374,14 @@ async def get_maintenance_policy(
         )
         result = await db.execute(query)
         for srv in result.scalars().all():
-            pending_servers.append(PendingServerInfo(
-                server_id=srv.server_id,
-                name=srv.name,
-                version=srv.version,
-                target_version=active_window.target_measurement_version,
-            ))
+            pending_servers.append(
+                PendingServerInfo(
+                    server_id=srv.server_id,
+                    name=srv.name,
+                    version=srv.version,
+                    target_version=active_window.target_measurement_version,
+                )
+            )
 
     return MaintenancePolicyResponse(
         active_window=window_info,

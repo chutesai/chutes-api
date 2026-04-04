@@ -227,9 +227,7 @@ class TeeUpgradeWindow(Base):
 
     __table_args__ = (
         UniqueConstraint("target_measurement_version", name="uq_tee_upgrade_target"),
-        CheckConstraint(
-            "upgrade_window_end > upgrade_window_start", name="chk_window_bounds"
-        ),
+        CheckConstraint("upgrade_window_end > upgrade_window_start", name="chk_window_bounds"),
         Index("idx_tee_upgrade_window_bounds", "upgrade_window_start", "upgrade_window_end"),
     )
 

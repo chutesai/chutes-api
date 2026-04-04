@@ -22,20 +22,17 @@ from api.util import (
     decrypt_instance_response,
     encrypt_instance_request,
     semcomp,
-    notify_deleted,
-    notify_job_deleted,
 )
 from api.database import get_session
 from api.chute.schemas import Chute
 from api.image.schemas import Image
-from api.job.schemas import Job
 from api.exceptions import EnvdumpMissing
 from sqlalchemy import text, update, func, select
 from sqlalchemy.orm import joinedload, selectinload
 import api.database.orms  # noqa
 import api.miner_client as miner_client
 from api.instance.schemas import Instance, LaunchConfig
-from api.instance.util import invalidate_instance_cache, cleanup_instance_conn_tracking, purge, purge_and_notify  # noqa: F401
+from api.instance.util import purge, purge_and_notify  # noqa: F401
 from api.chute.codecheck import is_bad_code
 
 

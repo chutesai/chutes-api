@@ -2,7 +2,6 @@
 Core server management and TDX attestation logic.
 """
 
-import asyncio
 import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
@@ -18,7 +17,7 @@ from api.constants import NONCE_HEADER, NoncePurpose
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
 from api.server.client import TeeServerClient
-from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote, TdxVerificationResult
+from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote
 from api.server.schemas import (
     Server,
     ServerAttestation,
@@ -348,7 +347,10 @@ async def _handle_boot_version_update(
 
     if server.maintenance_pending_window_id is not None:
         window = await db.get(TeeUpgradeWindow, server.maintenance_pending_window_id)
-        if window is not None and semcomp(measurement_version, window.target_measurement_version) >= 0:
+        if (
+            window is not None
+            and semcomp(measurement_version, window.target_measurement_version) >= 0
+        ):
             logger.info(
                 f"Maintenance complete for server {server.server_id}: "
                 f"version {measurement_version} meets target {window.target_measurement_version}"
@@ -1059,9 +1061,7 @@ async def get_active_upgrade_window(
     return rows[0]
 
 
-async def _get_instances_on_server(
-    db: AsyncSession, server_id: str
-) -> list[Instance]:
+async def _get_instances_on_server(db: AsyncSession, server_id: str) -> list[Instance]:
     """Return all instances hosted on a server via Instance → instance_nodes → Node → Server."""
     query = (
         select(Instance)
@@ -1138,39 +1138,50 @@ async def preflight_maintenance(
             denial_reasons.append(MaintenanceReason(reason="no_active_window"))
 
     if active_window is not None:
-        if server.version is not None and semcomp(server.version, active_window.target_measurement_version) >= 0:
-            denial_reasons.append(MaintenanceReason(
-                reason="already_at_target",
-                current_version=server.version,
-                target_version=active_window.target_measurement_version,
-            ))
+        if (
+            server.version is not None
+            and semcomp(server.version, active_window.target_measurement_version) >= 0
+        ):
+            denial_reasons.append(
+                MaintenanceReason(
+                    reason="already_at_target",
+                    current_version=server.version,
+                    target_version=active_window.target_measurement_version,
+                )
+            )
 
         if server.maintenance_pending_window_id is not None:
             if server.maintenance_pending_window_id == active_window.id:
-                denial_reasons.append(MaintenanceReason(
-                    reason="maintenance_pending",
-                    current_version=server.version,
-                    target_version=active_window.target_measurement_version,
-                    window_id=active_window.id,
-                ))
+                denial_reasons.append(
+                    MaintenanceReason(
+                        reason="maintenance_pending",
+                        current_version=server.version,
+                        target_version=active_window.target_measurement_version,
+                        window_id=active_window.id,
+                    )
+                )
             else:
                 server.maintenance_pending_window_id = None
 
         current_slots = await _count_active_maintenance_slots(db, miner_hotkey, active_window)
         if current_slots >= limit:
-            denial_reasons.append(MaintenanceReason(
-                reason="concurrency_cap",
-                current_slots=current_slots,
-                limit=limit,
-            ))
+            denial_reasons.append(
+                MaintenanceReason(
+                    reason="concurrency_cap",
+                    current_slots=current_slots,
+                    limit=limit,
+                )
+            )
 
         instances = await _get_instances_on_server(db, server.server_id)
         blocking = await _find_sole_survivor_chutes(db, instances)
         if blocking:
-            denial_reasons.append(MaintenanceReason(
-                reason="sole_survivor",
-                blocking=[b.model_dump() for b in blocking],
-            ))
+            denial_reasons.append(
+                MaintenanceReason(
+                    reason="sole_survivor",
+                    blocking=[b.model_dump() for b in blocking],
+                )
+            )
 
     return PreflightResult(
         eligible=len(denial_reasons) == 0,
@@ -1214,7 +1225,9 @@ async def confirm_maintenance(
             )
             purged_ids.append(inst.instance_id)
         except Exception:
-            logger.error(f"Failed to purge instance {inst.instance_id} during maintenance", exc_info=True)
+            logger.error(
+                f"Failed to purge instance {inst.instance_id} during maintenance", exc_info=True
+            )
 
     return ConfirmMaintenanceResult(
         server_id=server.server_id,
@@ -1226,5 +1239,3 @@ async def confirm_maintenance(
             upgrade_window_end=str(active_window.upgrade_window_end),
         ),
     )
-
-

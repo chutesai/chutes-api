@@ -158,7 +158,10 @@ async def test_boot_stale_window_cleared(mock_get):
 @patch("api.server.service._track_nodes", new_callable=AsyncMock)
 @patch("api.server.service.verify_server", new_callable=AsyncMock)
 @patch("api.server.service._track_server", new_callable=AsyncMock)
-@patch("api.server.service.SUPPORTED_GPUS", {"gpu-a100": {"processors": 1, "max_threads_per_processor": 1}})
+@patch(
+    "api.server.service.SUPPORTED_GPUS",
+    {"gpu-a100": {"processors": 1, "max_threads_per_processor": 1}},
+)
 async def test_register_server_sets_version(mock_track_server, mock_verify, mock_track_nodes):
     from api.server.service import register_server
     from api.server.schemas import ServerArgs
@@ -188,7 +191,10 @@ async def test_register_server_sets_version(mock_track_server, mock_verify, mock
 @patch("api.server.service._track_nodes", new_callable=AsyncMock)
 @patch("api.server.service.verify_server", new_callable=AsyncMock)
 @patch("api.server.service._track_server", new_callable=AsyncMock)
-@patch("api.server.service.SUPPORTED_GPUS", {"gpu-a100": {"processors": 1, "max_threads_per_processor": 1}})
+@patch(
+    "api.server.service.SUPPORTED_GPUS",
+    {"gpu-a100": {"processors": 1, "max_threads_per_processor": 1}},
+)
 async def test_register_server_version_none_when_verify_returns_none(
     mock_track_server, mock_verify, mock_track_nodes
 ):

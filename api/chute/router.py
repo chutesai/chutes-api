@@ -1262,21 +1262,27 @@ async def warm_up_chute(
 
         # Load instances with GPU info for the dashboard.
         instances_with_nodes = (
-            await db.execute(
-                select(Instance)
-                .where(Instance.chute_id == chute.chute_id)
-                .options(selectinload(Instance.nodes))
+            (
+                await db.execute(
+                    select(Instance)
+                    .where(Instance.chute_id == chute.chute_id)
+                    .options(selectinload(Instance.nodes))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         instances_info = []
         for inst in instances_with_nodes:
             gpu_type = inst.nodes[0].gpu_identifier if inst.nodes else None
-            instances_info.append({
-                "instance_id": inst.instance_id,
-                "active": inst.active,
-                "gpu_count": len(inst.nodes) if inst.nodes else 0,
-                "gpu_model_name": gpu_type,
-            })
+            instances_info.append(
+                {
+                    "instance_id": inst.instance_id,
+                    "active": inst.active,
+                    "gpu_count": len(inst.nodes) if inst.nodes else 0,
+                    "gpu_model_name": gpu_type,
+                }
+            )
 
         return {
             "chute_id": chute.chute_id,
