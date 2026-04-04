@@ -165,6 +165,24 @@ class ConfirmMaintenanceResult(BaseModel):
     window: UpgradeWindowInfo
 
 
+class PendingServerInfo(BaseModel):
+    """A server with pending maintenance, shown in the policy response."""
+
+    server_id: str
+    name: Optional[str] = None
+    version: Optional[str] = None
+    target_version: str
+
+
+class MaintenancePolicyResponse(BaseModel):
+    """Response for GET /servers/maintenance/policy."""
+
+    active_window: Optional[UpgradeWindowInfo] = None
+    max_concurrent_servers_per_miner: int
+    current_slots: int = 0
+    pending_servers: List[PendingServerInfo] = Field(default_factory=list)
+
+
 class BootAttestation(Base):
     """Track anonymous boot attestations (pre-registration)."""
 

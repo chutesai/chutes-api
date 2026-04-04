@@ -25,6 +25,12 @@ from api.server.schemas import (
     BootAttestationResponse,
     RuntimeAttestationResponse,
     LuksPassphraseRequest,
+    PreflightResult,
+    ConfirmMaintenanceResult,
+    MaintenancePolicyResponse,
+    PendingServerInfo,
+    TeeUpgradeWindow,
+    UpgradeWindowInfo,
 )
 from api.server.service import (
     create_nonce,
@@ -38,6 +44,10 @@ from api.server.service import (
     delete_server,
     validate_request_nonce,
     process_luks_passphrase_request,
+    get_active_upgrade_window,
+    preflight_maintenance,
+    confirm_maintenance,
+    _count_active_maintenance_slots,
 )
 from api.server.util import (
     decrypt_passphrase,
@@ -332,6 +342,53 @@ async def create_server(
         )
 
 
+@router.get("/maintenance/policy", response_model=MaintenancePolicyResponse)
+async def get_maintenance_policy(
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
+    ),
+):
+    """Return the active upgrade window, concurrency limits, and the miner's pending servers."""
+    if not hotkey:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hotkey header required")
+
+    active_window = await get_active_upgrade_window(db)
+    window_info: UpgradeWindowInfo | None = None
+    current_slots = 0
+    pending_servers: list[PendingServerInfo] = []
+
+    if active_window is not None:
+        window_info = UpgradeWindowInfo(
+            id=active_window.id,
+            target_measurement_version=active_window.target_measurement_version,
+            upgrade_window_start=str(active_window.upgrade_window_start),
+            upgrade_window_end=str(active_window.upgrade_window_end),
+        )
+        current_slots = await _count_active_maintenance_slots(db, hotkey, active_window)
+
+        query = select(Server).where(
+            Server.miner_hotkey == hotkey,
+            Server.maintenance_pending_window_id.isnot(None),
+        )
+        result = await db.execute(query)
+        for srv in result.scalars().all():
+            pending_servers.append(PendingServerInfo(
+                server_id=srv.server_id,
+                name=srv.name,
+                version=srv.version,
+                target_version=active_window.target_measurement_version,
+            ))
+
+    return MaintenancePolicyResponse(
+        active_window=window_info,
+        max_concurrent_servers_per_miner=settings.tee_maintenance_max_miner_concurrency,
+        current_slots=current_slots,
+        pending_servers=pending_servers,
+    )
+
+
 @router.patch("/{server_id}", response_model=Dict[str, Any])
 async def patch_server_name(
     server_id: str,
@@ -386,13 +443,21 @@ async def get_server_details(
     try:
         server = await check_server_ownership(db, server_id, hotkey)
 
-        return {
+        response: dict = {
             "server_id": server.server_id,
             "name": server.name,
             "ip": server.ip,
+            "version": server.version,
+            "maintenance_pending_window_id": server.maintenance_pending_window_id,
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,
         }
+        if server.maintenance_pending_window_id is not None:
+            window = await db.get(TeeUpgradeWindow, server.maintenance_pending_window_id)
+            if window is not None:
+                response["target_version"] = window.target_measurement_version
+
+        return response
 
     except ServerNotFoundError as e:
         raise e
@@ -403,6 +468,34 @@ async def get_server_details(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get server details"
         )
+
+
+@router.get("/{server_name_or_id}/maintenance/preflight", response_model=PreflightResult)
+async def get_maintenance_preflight(
+    server_name_or_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
+    ),
+):
+    """Check maintenance eligibility for a server without entering maintenance."""
+    server = await get_server_by_name_or_id(db, hotkey, server_name_or_id)
+    return await preflight_maintenance(db, server, hotkey)
+
+
+@router.put("/{server_name_or_id}/maintenance", response_model=ConfirmMaintenanceResult)
+async def put_confirm_maintenance(
+    server_name_or_id: str,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
+    ),
+):
+    """Enter maintenance: purge instances and mark server for upgrade."""
+    server = await get_server_by_name_or_id(db, hotkey, server_name_or_id)
+    return await confirm_maintenance(db, server, hotkey)
 
 
 @router.delete("/{server_name_or_id}", response_model=Dict[str, str])
