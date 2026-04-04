@@ -24,7 +24,21 @@ CREATE INDEX IF NOT EXISTS idx_servers_maintenance_pending
     ON servers (miner_hotkey)
     WHERE maintenance_pending_window_id IS NOT NULL;
 
+ALTER TABLE boot_attestations
+    ADD COLUMN IF NOT EXISTS miner_hotkey VARCHAR;
+
+ALTER TABLE boot_attestations
+    ADD COLUMN IF NOT EXISTS vm_name VARCHAR;
+
+CREATE INDEX IF NOT EXISTS idx_boot_miner_vm
+    ON boot_attestations (miner_hotkey, vm_name);
+
 -- migrate:down
+
+DROP INDEX IF EXISTS idx_boot_miner_vm;
+
+ALTER TABLE boot_attestations DROP COLUMN IF EXISTS vm_name;
+ALTER TABLE boot_attestations DROP COLUMN IF EXISTS miner_hotkey;
 
 DROP INDEX IF EXISTS idx_servers_maintenance_pending;
 

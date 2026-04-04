@@ -334,6 +334,8 @@ async def process_boot_attestation(
         boot_attestation = BootAttestation(
             quote_data=args.quote,
             server_ip=server_ip,
+            miner_hotkey=args.miner_hotkey,
+            vm_name=args.vm_name,
             measurement_version=measurement_config.version,
             created_at=func.now(),
             verified_at=func.now(),
@@ -366,6 +368,8 @@ async def process_boot_attestation(
         boot_attestation = BootAttestation(
             quote_data=args.quote,
             server_ip=server_ip,
+            miner_hotkey=args.miner_hotkey,
+            vm_name=args.vm_name,
             verification_error=str(e.detail),
             measurement_version=measurement_version,
             created_at=func.now(),

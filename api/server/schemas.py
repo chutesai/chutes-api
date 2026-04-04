@@ -191,6 +191,8 @@ class BootAttestation(Base):
     attestation_id = Column(String, primary_key=True, default=generate_uuid)
     quote_data = Column(Text, nullable=False)  # Base64 encoded quote
     server_ip = Column(String, nullable=True)  # For later linking to server
+    miner_hotkey = Column(String, nullable=True)
+    vm_name = Column(String, nullable=True)
     verification_error = Column(String, nullable=True)
     measurement_version = Column(
         String, nullable=True
@@ -202,6 +204,7 @@ class BootAttestation(Base):
         Index("idx_boot_server_id", "server_ip"),
         Index("idx_boot_created", "created_at"),
         Index("idx_boot_verified", "verified_at"),
+        Index("idx_boot_miner_vm", "miner_hotkey", "vm_name"),
     )
 
 
