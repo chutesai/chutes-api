@@ -119,6 +119,52 @@ class TeeChuteEvidence(BaseModel):
     )
 
 
+class MaintenanceReason(BaseModel):
+    """A single reason why maintenance eligibility was denied."""
+
+    reason: str
+    current_version: Optional[str] = None
+    target_version: Optional[str] = None
+    window_id: Optional[str] = None
+    current_slots: Optional[int] = None
+    limit: Optional[int] = None
+    blocking: Optional[List[dict]] = None
+
+
+class SoleSurvivorBlock(BaseModel):
+    """An instance that is the sole active instance for its chute."""
+
+    chute_id: str
+    instance_id: str
+
+
+class PreflightResult(BaseModel):
+    """Result of a maintenance preflight eligibility check."""
+
+    eligible: bool
+    denial_reasons: List[MaintenanceReason] = Field(default_factory=list)
+    blocking_chute_ids: List[SoleSurvivorBlock] = Field(default_factory=list)
+    current_slots: int = 0
+    limit: int = 1
+
+
+class UpgradeWindowInfo(BaseModel):
+    """Summary of an upgrade window for API responses."""
+
+    id: str
+    target_measurement_version: str
+    upgrade_window_start: str
+    upgrade_window_end: str
+
+
+class ConfirmMaintenanceResult(BaseModel):
+    """Result of confirming maintenance on a server."""
+
+    server_id: str
+    purged_instance_ids: List[str] = Field(default_factory=list)
+    window: UpgradeWindowInfo
+
+
 class BootAttestation(Base):
     """Track anonymous boot attestations (pre-registration)."""
 

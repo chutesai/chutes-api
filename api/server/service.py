@@ -27,6 +27,12 @@ from api.server.schemas import (
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
+    TeeUpgradeWindow,
+    MaintenanceReason,
+    SoleSurvivorBlock,
+    PreflightResult,
+    UpgradeWindowInfo,
+    ConfirmMaintenanceResult,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -56,7 +62,7 @@ from api.server.util import (
     cert_to_base64_der,
     validate_user_nonce,
 )
-from api.instance.schemas import Instance
+from api.instance.schemas import Instance, instance_nodes
 from api.chute.schemas import Chute
 from api.node.schemas import Node
 from sqlalchemy.orm import joinedload
@@ -1028,3 +1034,216 @@ async def get_chute_instances_evidence(
             failed_instance_ids.append(instance.instance_id)
 
     return (evidence_list, failed_instance_ids)
+
+
+# ---------------------------------------------------------------------------
+# TEE Maintenance Window
+# ---------------------------------------------------------------------------
+
+
+async def get_active_upgrade_window(
+    db: AsyncSession,
+) -> Optional[TeeUpgradeWindow]:
+    """Return the active tee_upgrade_windows row (start <= now <= end), or None."""
+    now = func.now()
+    query = (
+        select(TeeUpgradeWindow)
+        .where(
+            TeeUpgradeWindow.upgrade_window_start <= now,
+            TeeUpgradeWindow.upgrade_window_end >= now,
+        )
+        .order_by(TeeUpgradeWindow.created_at.desc())
+    )
+    result = await db.execute(query)
+    rows = result.scalars().all()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        logger.warning(
+            f"Multiple overlapping tee_upgrade_windows rows active ({len(rows)}); "
+            f"using most recently created: {rows[0].id}"
+        )
+    return rows[0]
+
+
+async def _get_instances_on_server(
+    db: AsyncSession, server_id: str
+) -> list[Instance]:
+    """Return all instances hosted on a server via Instance → instance_nodes → Node → Server."""
+    query = (
+        select(Instance)
+        .join(instance_nodes, Instance.instance_id == instance_nodes.c.instance_id)
+        .join(Node, instance_nodes.c.node_id == Node.uuid)
+        .where(Node.server_id == server_id)
+        .distinct()
+    )
+    result = await db.execute(query)
+    return list(result.scalars().all())
+
+
+async def _find_sole_survivor_chutes(
+    db: AsyncSession, instances: list[Instance]
+) -> list[SoleSurvivorBlock]:
+    """For each instance, check if it is the only active instance globally for its chute.
+
+    Returns a list of SoleSurvivorBlock for blocking sole survivors.
+    """
+    blocking: list[SoleSurvivorBlock] = []
+    seen_chutes: set[str] = set()
+    for inst in instances:
+        if inst.chute_id in seen_chutes:
+            continue
+        seen_chutes.add(inst.chute_id)
+        count_query = (
+            select(func.count())
+            .select_from(Instance)
+            .where(
+                Instance.chute_id == inst.chute_id,
+                Instance.active.is_(True),
+                Instance.instance_id != inst.instance_id,
+            )
+        )
+        result = await db.execute(count_query)
+        other_active = result.scalar() or 0
+        if other_active == 0:
+            blocking.append(SoleSurvivorBlock(chute_id=inst.chute_id, instance_id=inst.instance_id))
+    return blocking
+
+
+async def _count_active_maintenance_slots(
+    db: AsyncSession, miner_hotkey: str, active_window: TeeUpgradeWindow
+) -> int:
+    """Count servers for this miner that are in maintenance for the given active window."""
+    query = (
+        select(func.count())
+        .select_from(Server)
+        .where(
+            Server.miner_hotkey == miner_hotkey,
+            Server.maintenance_pending_window_id == active_window.id,
+        )
+    )
+    result = await db.execute(query)
+    return result.scalar() or 0
+
+
+async def preflight_maintenance(
+    db: AsyncSession, server: Server, miner_hotkey: str
+) -> PreflightResult:
+    """Read-only eligibility check for entering maintenance on a server."""
+    denial_reasons: list[MaintenanceReason] = []
+    blocking: list[SoleSurvivorBlock] = []
+    limit = settings.tee_maintenance_max_miner_concurrency
+    current_slots = 0
+    active_window: Optional[TeeUpgradeWindow] = None
+
+    if not server.is_tee:
+        denial_reasons.append(MaintenanceReason(reason="not_tee"))
+
+    if not denial_reasons:
+        active_window = await get_active_upgrade_window(db)
+        if active_window is None:
+            denial_reasons.append(MaintenanceReason(reason="no_active_window"))
+
+    if active_window is not None:
+        if server.version is not None and semcomp(server.version, active_window.target_measurement_version) >= 0:
+            denial_reasons.append(MaintenanceReason(
+                reason="already_at_target",
+                current_version=server.version,
+                target_version=active_window.target_measurement_version,
+            ))
+
+        if server.maintenance_pending_window_id is not None:
+            if server.maintenance_pending_window_id == active_window.id:
+                denial_reasons.append(MaintenanceReason(
+                    reason="maintenance_pending",
+                    current_version=server.version,
+                    target_version=active_window.target_measurement_version,
+                    window_id=active_window.id,
+                ))
+            else:
+                server.maintenance_pending_window_id = None
+
+        current_slots = await _count_active_maintenance_slots(db, miner_hotkey, active_window)
+        if current_slots >= limit:
+            denial_reasons.append(MaintenanceReason(
+                reason="concurrency_cap",
+                current_slots=current_slots,
+                limit=limit,
+            ))
+
+        instances = await _get_instances_on_server(db, server.server_id)
+        blocking = await _find_sole_survivor_chutes(db, instances)
+        if blocking:
+            denial_reasons.append(MaintenanceReason(
+                reason="sole_survivor",
+                blocking=[b.model_dump() for b in blocking],
+            ))
+
+    return PreflightResult(
+        eligible=len(denial_reasons) == 0,
+        denial_reasons=denial_reasons,
+        blocking_chute_ids=blocking,
+        current_slots=current_slots,
+        limit=limit,
+    )
+
+
+async def confirm_maintenance(
+    db: AsyncSession, server: Server, miner_hotkey: str
+) -> ConfirmMaintenanceResult:
+    """Enter maintenance: re-validate, set pending window, and auto-purge instances.
+
+    Raises HTTPException (409/403) on failure.
+    """
+    from watchtower import purge_and_notify
+
+    preflight = await preflight_maintenance(db, server, miner_hotkey)
+    if not preflight.eligible:
+        reason_codes = {r.reason for r in preflight.denial_reasons}
+        conflict_reasons = {"sole_survivor", "concurrency_cap", "maintenance_pending"}
+        if reason_codes & conflict_reasons:
+            status_code = status.HTTP_409_CONFLICT
+        else:
+            status_code = status.HTTP_403_FORBIDDEN
+        raise HTTPException(status_code=status_code, detail=preflight.model_dump())
+
+    active_window = await get_active_upgrade_window(db)
+    server.maintenance_pending_window_id = active_window.id
+    await db.commit()
+    await db.refresh(server)
+
+    instances = await _get_instances_on_server(db, server.server_id)
+    purged_ids: list[str] = []
+    for inst in instances:
+        try:
+            await purge_and_notify(
+                inst,
+                reason="tee maintenance",
+                valid_termination=True,
+            )
+            purged_ids.append(inst.instance_id)
+        except Exception:
+            logger.error(f"Failed to purge instance {inst.instance_id} during maintenance", exc_info=True)
+
+    return ConfirmMaintenanceResult(
+        server_id=server.server_id,
+        purged_instance_ids=purged_ids,
+        window=UpgradeWindowInfo(
+            id=active_window.id,
+            target_measurement_version=active_window.target_measurement_version,
+            upgrade_window_start=str(active_window.upgrade_window_start),
+            upgrade_window_end=str(active_window.upgrade_window_end),
+        ),
+    )
+
+
+async def resolve_server_for_maintenance_boot_completion(
+    db: AsyncSession, miner_hotkey: str, vm_name: str
+) -> Optional[Server]:
+    """Look up a Server by (miner_hotkey, name) for boot completion. Returns None if not found."""
+    query = select(Server).where(
+        Server.miner_hotkey == miner_hotkey,
+        Server.name == vm_name,
+    )
+    result = await db.execute(query)
+    return result.scalar_one_or_none()
