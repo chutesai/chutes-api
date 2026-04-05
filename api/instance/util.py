@@ -1193,7 +1193,7 @@ async def is_instance_in_thrash_penalty(
     return await is_thrashing_miner(db, miner_hotkey, chute_id, instance_created_at)
 
 
-async def purge(target, reason="miner failed watchtower probes", valid_termination=False):
+async def purge(target, reason, valid_termination=False):
     """Delete an instance from the database and clean up associated state."""
     async with get_session() as session:
         await session.execute(
@@ -1229,12 +1229,12 @@ async def purge(target, reason="miner failed watchtower probes", valid_terminati
 
 
 async def purge_and_notify(
-    target, reason="miner failed watchtower probes", valid_termination=False
+    target, reason, valid_termination=False
 ):
     """Purge an instance and broadcast a deletion notification."""
     await purge(target, reason=reason, valid_termination=valid_termination)
     await notify_deleted(
         target,
-        message=f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted by watchtower {reason=}",
+        message=f"Instance {target.instance_id} of miner {target.miner_hotkey} deleted: {reason}",
     )
     await invalidate_instance_cache(target.chute_id, instance_id=target.instance_id)

@@ -1222,7 +1222,7 @@ async def confirm_maintenance(
         try:
             await purge_and_notify(
                 inst,
-                reason="tee maintenance",
+                reason="maintenance - server entering TEE upgrade window",
                 valid_termination=True,
             )
             purged_ids.append(inst.instance_id)

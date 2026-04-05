@@ -405,7 +405,8 @@ async def instance_cleanup():
             )
             logger.warning(f"  {instance.verified=} {instance.active=}")
             await purge_and_notify(
-                instance, reason="Instance failed to verify within a reasonable amount of time"
+                instance,
+                reason="autoscaler - instance failed to verify within a reasonable amount of time",
             )
             total += 1
         if total:
@@ -3103,7 +3104,7 @@ async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_no
             valid_candidates = []
             for inst in active_instances:
                 if len(inst.nodes) != (chute.node_selector.get("gpu_count") or 1):
-                    await purge_and_notify(inst, "Instance node count mismatch")
+                    await purge_and_notify(inst, "autoscaler - instance node count mismatch")
                     num_to_remove -= 1
                     instances_removed += 1
                 elif db_now.replace(tzinfo=None) - inst.activated_at.replace(
@@ -3136,7 +3137,7 @@ async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_no
                     f"Downscaling {chute_id}: removing {targeted_instance.instance_id} ({targeted_instance.nodes[0].gpu_identifier if targeted_instance.nodes else 'unknown'})"
                 )
                 await purge_and_notify(
-                    targeted_instance, "Autoscaler adjustment", valid_termination=True
+                    targeted_instance, "autoscaler - downscale adjustment", valid_termination=True
                 )
                 await invalidate_instance_cache(chute_id, targeted_instance.instance_id)
                 instances_removed += 1

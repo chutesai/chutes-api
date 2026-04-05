@@ -519,7 +519,9 @@ async def increment_soft_fail(instance, chute):
             f"miner {instance.miner_hotkey} "
             f"chute {chute.name} reached max soft fails: {fail_count}"
         )
-        await purge_and_notify(instance)
+        await purge_and_notify(
+            instance, reason=f"watchtower - max consecutive soft fails ({fail_count})"
+        )
 
 
 def get_expected_command(chute, miner_hotkey: str, seed: int = None):
@@ -780,7 +782,8 @@ async def check_chute(chute_id):
                 # Delete failed checks.
                 if failed_envdump:
                     await purge_and_notify(
-                        instance, reason="Instance failed env dump signature or process checks."
+                        instance,
+                        reason="watchtower - failed env dump signature or process checks",
                     )
                     bad_env.add(instance.instance_id)
                     failed_count = await settings.redis_client.incr(
@@ -831,7 +834,7 @@ async def check_chute(chute_id):
             f"miner {instance.miner_hotkey} "
             f"chute {chute.name} due to hard fail"
         )
-        await purge_and_notify(instance)
+        await purge_and_notify(instance, reason="watchtower - hard probe failure")
 
     # Limit "soft" fails to max consecutive failures, allowing some downtime but not much.
     for instance in soft_failed:
@@ -1045,7 +1048,7 @@ async def procs_check():
                         if reason:
                             logger.warning(reason)
                             await purge_and_notify(
-                                instance, reason="miner failed watchtower probes"
+                                instance, reason="watchtower - miner failed probes"
                             )
                         else:
                             logger.success(
