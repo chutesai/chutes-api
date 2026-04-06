@@ -24,6 +24,8 @@ class MinerServer(BaseModel):
     name: str
     ip: str
     is_tee: bool
+    version: str | None = None
+    maintenance_pending: bool = False
     created_at: str | None = None
     updated_at: str | None = None
     gpus: list[MinerServerGpu] = Field(default_factory=list)
@@ -38,6 +40,8 @@ class MinerServer(BaseModel):
             name=server.name,
             ip=server.ip,
             is_tee=server.is_tee,
+            version=server.version,
+            maintenance_pending=server.maintenance_pending_window_id is not None,
             created_at=server.created_at.isoformat() if server.created_at else None,
             updated_at=server.updated_at.isoformat() if server.updated_at else None,
             gpus=[
