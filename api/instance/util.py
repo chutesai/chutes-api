@@ -1228,9 +1228,7 @@ async def purge(target, reason, valid_termination=False):
     await cleanup_instance_conn_tracking(target.chute_id, target.instance_id)
 
 
-async def purge_and_notify(
-    target, reason, valid_termination=False
-):
+async def purge_and_notify(target, reason, valid_termination=False):
     """Purge an instance and broadcast a deletion notification."""
     await purge(target, reason=reason, valid_termination=valid_termination)
     await notify_deleted(
