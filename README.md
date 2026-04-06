@@ -2,7 +2,7 @@
 
 This repository contains all code, dockerfiles, etc. used by the chutes.ai platform's API/validator services.
 
-The miner code is available [here](https://github.com/rayonlabs/chutes-miner), and CLI/SDK code [here](https://github.com/rayonlabs/chutes).
+The miner code is available [here](https://github.com/chutesai/chutes-miner), and CLI/SDK code [here](https://github.com/chutesai/chutes).
 
 ## 👨‍💻 Development
 
