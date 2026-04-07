@@ -2629,7 +2629,7 @@ async def update_common_attributes(
         await set_chute_disabled(chute.chute_id, args.disabled)
 
         # Invalidate caches immediately so other processes see the updated state
-        await invalidate_chute_cache(chute.chute_id, chute.name)
+        await invalidate_chute_cache(chute.chute_id, chute.name, chute.slug)
 
         # If disabling a private chute, terminate all instances with valid_termination=true
         if args.disabled and not chute.public:
