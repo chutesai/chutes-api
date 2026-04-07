@@ -28,7 +28,7 @@ from api.server.schemas import (
     PreflightResult,
     ConfirmMaintenanceResult,
     MaintenancePolicyResponse,
-    PendingServerInfo,
+    ServerUpgradeStatus,
     TeeUpgradeWindow,
     UpgradeWindowInfo,
 )
@@ -62,7 +62,7 @@ from api.server.exceptions import (
     ServerRegistrationError,
 )
 from api.miner.util import is_miner_blacklisted
-from api.util import extract_ip, is_valid_host
+from api.util import extract_ip, is_valid_host, semcomp
 
 
 router = APIRouter()
@@ -357,37 +357,40 @@ async def get_maintenance_policy(
     active_window = await get_active_upgrade_window(db)
     window_info: UpgradeWindowInfo | None = None
     current_slots = 0
-    pending_servers: list[PendingServerInfo] = []
+    server_statuses: list[ServerUpgradeStatus] = []
 
     if active_window is not None:
+        target_version = active_window.target_measurement_version
         window_info = UpgradeWindowInfo(
             id=active_window.id,
-            target_measurement_version=active_window.target_measurement_version,
+            target_measurement_version=target_version,
             upgrade_window_start=str(active_window.upgrade_window_start),
             upgrade_window_end=str(active_window.upgrade_window_end),
             max_concurrent_per_miner=active_window.max_concurrent_per_miner,
         )
         current_slots = await _count_active_maintenance_slots(db, hotkey, active_window)
 
-        query = select(Server).where(
-            Server.miner_hotkey == hotkey,
-            Server.maintenance_pending_window_id.isnot(None),
-        )
-        result = await db.execute(query)
-        for srv in result.scalars().all():
-            pending_servers.append(
-                PendingServerInfo(
+        tee_servers = (
+            await db.execute(
+                select(Server).where(Server.miner_hotkey == hotkey, Server.is_tee.is_(True))
+            )
+        ).scalars().all()
+
+        for srv in tee_servers:
+            server_statuses.append(
+                ServerUpgradeStatus(
                     server_id=srv.server_id,
                     name=srv.name,
                     version=srv.version,
-                    target_version=active_window.target_measurement_version,
+                    needs_upgrade=srv.version is None or semcomp(srv.version, target_version) < 0,
+                    in_maintenance=srv.maintenance_pending_window_id is not None,
                 )
             )
 
     return MaintenancePolicyResponse(
         active_window=window_info,
         current_slots=current_slots,
-        pending_servers=pending_servers,
+        servers=server_statuses,
     )
 
 
