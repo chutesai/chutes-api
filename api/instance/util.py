@@ -1193,6 +1193,33 @@ async def is_instance_in_thrash_penalty(
     return await is_thrashing_miner(db, miner_hotkey, chute_id, instance_created_at)
 
 
+async def get_server_for_gpus(db, gpu_uuids: list[str]) -> Server | None:
+    """Resolve the single server that owns the given GPU node UUIDs.
+
+    Returns None if no server is found. Raises HTTPException if GPUs span
+    multiple servers (unsupported topology).
+    """
+    from api.node.schemas import Node
+
+    server_id_subq = (
+        select(Node.server_id)
+        .where(Node.uuid.in_(gpu_uuids), Node.server_id.isnot(None))
+        .distinct()
+        .subquery()
+    )
+    servers = (
+        await db.execute(select(Server).where(Server.server_id.in_(select(server_id_subq))))
+    ).scalars().all()
+    if len(servers) > 1:
+        names = [s.name for s in servers]
+        logger.warning(f"GPUs span multiple servers: {names}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="GPUs must belong to a single server.",
+        )
+    return servers[0] if servers else None
+
+
 async def purge(target, reason, valid_termination=False):
     """Delete an instance from the database and clean up associated state."""
     async with get_session() as session:

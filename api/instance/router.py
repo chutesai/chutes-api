@@ -60,6 +60,7 @@ from api.instance.util import (
     create_launch_jwt_v2,
     generate_fs_key,
     get_instance_by_chute_and_id,
+    get_server_for_gpus,
     create_launch_jwt,
     create_job_jwt,
     load_launch_config_from_jwt,
@@ -1623,6 +1624,14 @@ async def _validate_tee_launch_config_instance(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Can not claim a TEE launch config for a non-TEE chute.",
+        )
+
+    # Deny launches on servers in TEE maintenance mode before creating any instance/node records.
+    server = await get_server_for_gpus(db, [g["uuid"] for g in args.gpus])
+    if server and server.maintenance_pending_window_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Server {server.name} is in TEE maintenance mode and cannot accept new instances.",
         )
 
     launch_config, nodes, instance, validator_pubkey = await _validate_launch_config_instance(
