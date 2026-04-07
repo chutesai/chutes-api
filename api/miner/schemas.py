@@ -41,7 +41,7 @@ class MinerServer(BaseModel):
             ip=server.ip,
             is_tee=server.is_tee,
             version=server.version,
-            maintenance_pending=server.maintenance_pending_window_id is not None,
+            maintenance_pending=server.in_maintenance,
             created_at=server.created_at.isoformat() if server.created_at else None,
             updated_at=server.updated_at.isoformat() if server.updated_at else None,
             gpus=[

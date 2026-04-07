@@ -345,7 +345,7 @@ async def _handle_boot_version_update(
 
     server.version = measurement_version
 
-    if server.maintenance_pending_window_id is not None:
+    if server.in_maintenance:
         window = await db.get(TeeUpgradeWindow, server.maintenance_pending_window_id)
         if (
             window is not None
@@ -1152,7 +1152,7 @@ async def preflight_maintenance(
                 )
             )
 
-        if server.maintenance_pending_window_id is not None:
+        if server.in_maintenance:
             if server.maintenance_pending_window_id == active_window.id:
                 denial_reasons.append(
                     MaintenanceReason(

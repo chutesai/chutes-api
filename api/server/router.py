@@ -387,7 +387,7 @@ async def get_maintenance_policy(
                     name=srv.name,
                     version=srv.version,
                     needs_upgrade=srv.version is None or semcomp(srv.version, target_version) < 0,
-                    in_maintenance=srv.maintenance_pending_window_id is not None,
+                    in_maintenance=srv.in_maintenance,
                 )
             )
 
@@ -461,7 +461,7 @@ async def get_server_details(
             "created_at": server.created_at.isoformat(),
             "updated_at": server.updated_at.isoformat() if server.updated_at else None,
         }
-        if server.maintenance_pending_window_id is not None:
+        if server.in_maintenance:
             window = await db.get(TeeUpgradeWindow, server.maintenance_pending_window_id)
             if window is not None:
                 response["target_version"] = window.target_measurement_version

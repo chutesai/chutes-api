@@ -1628,7 +1628,7 @@ async def _validate_tee_launch_config_instance(
 
     # Deny launches on servers in TEE maintenance mode before creating any instance/node records.
     server = await get_server_for_gpus(db, [g["uuid"] for g in args.gpus])
-    if server and server.maintenance_pending_window_id is not None:
+    if server and server.in_maintenance:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Server {server.name} is in TEE maintenance mode and cannot accept new instances.",

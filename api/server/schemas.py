@@ -260,6 +260,10 @@ class Server(Base):
     # Current attested measurement version, updated on every successful boot attestation.
     version = Column(Text, nullable=True)
 
+    @property
+    def in_maintenance(self) -> bool:
+        return self.maintenance_pending_window_id is not None
+
     # Relationships
     nodes = relationship("Node", back_populates="server", cascade="all, delete-orphan")
     runtime_attestations = relationship(
