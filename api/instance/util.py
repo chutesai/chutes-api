@@ -42,6 +42,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from api.server.client import TeeServerClient
 from api.server.schemas import Server
+from api.node.schemas import Node
 from api.server.exceptions import GetEvidenceError
 from api.server.util import verify_quote, verify_gpu_evidence
 from api.server.util import get_public_key_hash
@@ -1199,8 +1200,6 @@ async def get_server_for_gpus(db, gpu_uuids: list[str]) -> Server | None:
     Returns None if no server is found. Raises HTTPException if GPUs span
     multiple servers (unsupported topology).
     """
-    from api.node.schemas import Node
-
     server_id_subq = (
         select(Node.server_id)
         .where(Node.uuid.in_(gpu_uuids), Node.server_id.isnot(None))
