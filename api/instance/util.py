@@ -1208,8 +1208,10 @@ async def get_server_for_gpus(db, gpu_uuids: list[str]) -> Server | None:
         .subquery()
     )
     servers = (
-        await db.execute(select(Server).where(Server.server_id.in_(select(server_id_subq))))
-    ).scalars().all()
+        (await db.execute(select(Server).where(Server.server_id.in_(select(server_id_subq)))))
+        .scalars()
+        .all()
+    )
     if len(servers) > 1:
         names = [s.name for s in servers]
         logger.warning(f"GPUs span multiple servers: {names}")

@@ -371,10 +371,14 @@ async def get_maintenance_policy(
         current_slots = await _count_active_maintenance_slots(db, hotkey, active_window)
 
         tee_servers = (
-            await db.execute(
-                select(Server).where(Server.miner_hotkey == hotkey, Server.is_tee.is_(True))
+            (
+                await db.execute(
+                    select(Server).where(Server.miner_hotkey == hotkey, Server.is_tee.is_(True))
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         for srv in tee_servers:
             server_statuses.append(
