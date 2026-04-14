@@ -59,9 +59,7 @@ async def _get_validator_uid(
     return int(result.value) if hasattr(result, "value") else int(result)
 
 
-async def _get_last_update(
-    substrate: AsyncSubstrateInterface, netuid: int
-) -> dict[int, int]:
+async def _get_last_update(substrate: AsyncSubstrateInterface, netuid: int) -> dict[int, int]:
     """Get the last update block for all UIDs on a netuid."""
     result = await substrate.query(
         module="SubtensorModule",
@@ -151,9 +149,7 @@ async def _get_weights_to_set(
 
 async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
     """Get weights from scoring data and set them on chain."""
-    validator_uid = await _get_validator_uid(
-        substrate, settings.netuid, settings.validator_ss58
-    )
+    validator_uid = await _get_validator_uid(substrate, settings.netuid, settings.validator_ss58)
 
     if validator_uid is None:
         raise ValueError(
@@ -216,9 +212,7 @@ async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
 def _seconds_until_next_weight_window(cadence_minutes: int) -> float:
     """Seconds until the next UTC-aligned weight-setting window boundary."""
     now = datetime.now(timezone.utc)
-    elapsed = (
-        now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1_000_000.0
-    )
+    elapsed = now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1_000_000.0
     period = cadence_minutes * 60
     remainder = elapsed % period
     return float(period) if remainder == 0 else float(period - remainder)
