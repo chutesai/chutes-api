@@ -3,11 +3,10 @@ Calculates and schedules weights every SCORING_PERIOD
 """
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from async_substrate_interface import AsyncSubstrateInterface
 from loguru import logger
-from metasync.constants import SCORING_CADENCE_MINUTES
 from metasync.database import engine, Base
 from metasync.config import settings
 from metasync.shared import get_scoring_data
@@ -209,21 +208,17 @@ async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
         return False
 
 
-def _seconds_until_next_weight_window(cadence_minutes: int) -> float:
-    """Seconds until the next UTC-aligned weight-setting window boundary."""
+def _seconds_until_next_weight_window() -> float:
+    """Seconds until the top of the next UTC hour."""
     now = datetime.now(timezone.utc)
-    elapsed = now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1_000_000.0
-    period = cadence_minutes * 60
-    remainder = elapsed % period
-    return float(period) if remainder == 0 else float(period - remainder)
+    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return (next_hour - now).total_seconds()
 
 
 async def _sleep_until_next_weight_window() -> None:
     """Sleep until the start of the next UTC-aligned hourly weight-setting window."""
-    sleep_s = _seconds_until_next_weight_window(SCORING_CADENCE_MINUTES)
-    logger.info(
-        f"Next weight window in {sleep_s:.1f}s (every {SCORING_CADENCE_MINUTES} min, UTC-aligned)"
-    )
+    sleep_s = _seconds_until_next_weight_window()
+    logger.info(f"Next weight window in {sleep_s:.1f}s (top of next UTC hour)")
     await asyncio.sleep(sleep_s)
 
 
