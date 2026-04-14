@@ -74,7 +74,9 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
             for coldkey in hot_cold_map.values()
         }
     if blacklisted_hotkeys:
-        logger.info(f"Found {len(blacklisted_hotkeys)} blacklisted miners to exclude from scoring")
+        logger.info(
+            f"Found {len(blacklisted_hotkeys)} blacklisted miners to exclude from scoring"
+        )
 
     # Base score - instances active during the scoring period.
     logger.info("Fetching scores based on active instances during scoring interval...")
@@ -87,7 +89,11 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
             instance_seconds,
             instance_compute_units,
         ) in instances_result:
-            if not hotkey or hotkey not in hot_cold_map or hotkey in blacklisted_hotkeys:
+            if (
+                not hotkey
+                or hotkey not in hot_cold_map
+                or hotkey in blacklisted_hotkeys
+            ):
                 continue
             raw_values[hotkey] = {
                 "total_instances": float(total_instances or 0.0),
@@ -123,7 +129,9 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
         n = max(len(scores), 1)
         final_scores = {hk: 1.0 / n for hk in scores.keys()}
 
-    sorted_hotkeys = sorted(final_scores.keys(), key=lambda k: final_scores[k], reverse=True)
+    sorted_hotkeys = sorted(
+        final_scores.keys(), key=lambda k: final_scores[k], reverse=True
+    )
     logger.info(
         f"{'#':<3} {'Hotkey':<48} {'Score':<10} {'Instances':<10} {'Seconds':<12} {'Compute':<12}"
     )
@@ -145,4 +153,4 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
 if __name__ == "__main__":
     import asyncio
 
-    asyncio.run(get_scoring_data(interval="7 days"))
+    asyncio.run(get_scoring_data(interval="1 day"))

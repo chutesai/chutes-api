@@ -1,10 +1,7 @@
 from api.database import Base, get_session
 from api.config import settings
 from metasync.shared import create_metagraph_node_class
-from metasync.constants import (
-    SCORING_INTERVAL,
-    INVENTORY_HISTORY_QUERY,
-)
+from metasync.constants import INVENTORY_HISTORY_QUERY, INVENTORY_INTERVAL
 from sqlalchemy import select, text
 
 MetagraphNode = create_metagraph_node_class(Base)
@@ -26,7 +23,7 @@ async def get_miner_by_hotkey(hotkey, db):
 
 
 async def get_inventory_history():
-    query = text(INVENTORY_HISTORY_QUERY.format(interval=SCORING_INTERVAL))
+    query = text(INVENTORY_HISTORY_QUERY.format(interval=INVENTORY_INTERVAL))
     values = {}
     async with get_session() as session:
         result = await session.execute(query)

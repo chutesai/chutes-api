@@ -1,4 +1,10 @@
-SCORING_INTERVAL = "7 days"
+SCORING_INTERVAL = "1 day"
+
+# Wall-clock cadence for weight-setting (aligned with auditor at :00/:30 UTC).
+SCORING_CADENCE_MINUTES = 30
+
+# GPU inventory history chart window (independent of scoring window).
+INVENTORY_INTERVAL = "7 days"
 
 # Dynamic bounty boost based on bounty age at claim time (maxes out at 3 hours)
 BOUNTY_BOOST_MIN = 1.1

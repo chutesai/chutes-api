@@ -3,8 +3,11 @@ Calculates and schedules weights every SCORING_PERIOD
 """
 
 import asyncio
+from datetime import datetime, timezone
+
 from async_substrate_interface import AsyncSubstrateInterface
 from loguru import logger
+from metasync.constants import SCORING_CADENCE_MINUTES
 from metasync.database import engine, Base
 from metasync.config import settings
 from metasync.shared import get_scoring_data
@@ -56,7 +59,9 @@ async def _get_validator_uid(
     return int(result.value) if hasattr(result, "value") else int(result)
 
 
-async def _get_last_update(substrate: AsyncSubstrateInterface, netuid: int) -> dict[int, int]:
+async def _get_last_update(
+    substrate: AsyncSubstrateInterface, netuid: int
+) -> dict[int, int]:
     """Get the last update block for all UIDs on a netuid."""
     result = await substrate.query(
         module="SubtensorModule",
@@ -146,7 +151,9 @@ async def _get_weights_to_set(
 
 async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
     """Get weights from scoring data and set them on chain."""
-    validator_uid = await _get_validator_uid(substrate, settings.netuid, settings.validator_ss58)
+    validator_uid = await _get_validator_uid(
+        substrate, settings.netuid, settings.validator_ss58
+    )
 
     if validator_uid is None:
         raise ValueError(
@@ -206,6 +213,26 @@ async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
         return False
 
 
+def _seconds_until_next_weight_window(cadence_minutes: int) -> float:
+    """Seconds until the next UTC-aligned weight-setting window boundary."""
+    now = datetime.now(timezone.utc)
+    elapsed = (
+        now.hour * 3600 + now.minute * 60 + now.second + now.microsecond / 1_000_000.0
+    )
+    period = cadence_minutes * 60
+    remainder = elapsed % period
+    return float(period) if remainder == 0 else float(period - remainder)
+
+
+async def _sleep_until_next_weight_window() -> None:
+    """Sleep until the start of the next UTC-aligned weight-setting window."""
+    sleep_s = _seconds_until_next_weight_window(SCORING_CADENCE_MINUTES)
+    logger.info(
+        f"Next weight window in {sleep_s:.1f}s (every {SCORING_CADENCE_MINUTES} min, UTC-aligned)"
+    )
+    await asyncio.sleep(sleep_s)
+
+
 async def set_weights_periodically() -> None:
     """
     Main loop to periodically set weights on the metagraph.
@@ -223,6 +250,8 @@ async def set_weights_periodically() -> None:
 
         consecutive_failures = 0
         while True:
+            await _sleep_until_next_weight_window()
+
             current_block = await _get_current_block(substrate)
             last_update_map = await _get_last_update(substrate, settings.netuid)
             last_updated = last_update_map.get(validator_uid, 0)
@@ -231,11 +260,10 @@ async def set_weights_periodically() -> None:
             logger.info(f"Last updated: {updated} blocks ago for uid: {validator_uid}")
 
             if updated < set_weights_interval_blocks:
-                blocks_to_sleep = set_weights_interval_blocks - updated + 1
                 logger.info(
-                    f"Last updated: {updated} - sleeping for {blocks_to_sleep} blocks as we set recently..."
+                    f"Updated {updated} blocks ago (<{set_weights_interval_blocks}); "
+                    "skipping this weight window"
                 )
-                await asyncio.sleep(12 * blocks_to_sleep)
                 continue
 
             try:
@@ -250,11 +278,7 @@ async def set_weights_periodically() -> None:
                 continue
 
             consecutive_failures += 1
-            logger.info(
-                f"Failed to set weights {consecutive_failures} times in a row"
-                " - sleeping for 10 blocks before trying again..."
-            )
-            await asyncio.sleep(12 * 10)
+            logger.info(f"Failed to set weights {consecutive_failures} times in a row")
 
 
 async def main():
