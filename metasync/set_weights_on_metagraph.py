@@ -203,9 +203,9 @@ async def _get_and_set_weights(substrate: AsyncSubstrateInterface) -> bool:
     if success:
         logger.info("Weights set successfully.")
         return True
-    else:
-        logger.error("Failed to set weights :(")
-        return False
+
+    logger.error("Failed to set weights :(")
+    return False
 
 
 def _seconds_until_next_weight_window() -> float:
@@ -255,19 +255,36 @@ async def set_weights_periodically() -> None:
                 )
                 continue
 
-            try:
+            deadline = datetime.now(timezone.utc) + timedelta(minutes=15)
+            attempt = 0
+            success = False
+            while not success:
+                attempt += 1
                 success = await _get_and_set_weights(substrate)
-            except Exception as e:
-                logger.error(f"Failed to set weights with error: {e}")
-                success = False
+                if success:
+                    break
+                remaining = (deadline - datetime.now(timezone.utc)).total_seconds()
+                if remaining <= 0:
+                    logger.error(f"Giving up on this window after {attempt} attempt(s)")
+                    break
+                retry_in = min(60, remaining)
+                logger.warning(
+                    f"Attempt {attempt} failed; retrying in {retry_in:.0f}s ({remaining:.0f}s budget remaining)"
+                )
+                await asyncio.sleep(retry_in)
 
             if success:
+                if consecutive_failures > 0:
+                    logger.info(
+                        f"Weight setting recovered after {consecutive_failures} missed window(s)"
+                    )
                 consecutive_failures = 0
-                logger.info("Successfully set weights!")
-                continue
-
-            consecutive_failures += 1
-            logger.info(f"Failed to set weights {consecutive_failures} times in a row")
+            else:
+                consecutive_failures += 1
+                logger.critical(
+                    f"WEIGHT_SET_FAILURE: failed to set weights for {consecutive_failures} "
+                    f"consecutive window(s) (~{consecutive_failures}h of missed updates)"
+                )
 
 
 async def main():
