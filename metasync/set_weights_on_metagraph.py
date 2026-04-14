@@ -219,7 +219,7 @@ def _seconds_until_next_weight_window(cadence_minutes: int) -> float:
 
 
 async def _sleep_until_next_weight_window() -> None:
-    """Sleep until the start of the next UTC-aligned weight-setting window."""
+    """Sleep until the start of the next UTC-aligned hourly weight-setting window."""
     sleep_s = _seconds_until_next_weight_window(SCORING_CADENCE_MINUTES)
     logger.info(
         f"Next weight window in {sleep_s:.1f}s (every {SCORING_CADENCE_MINUTES} min, UTC-aligned)"

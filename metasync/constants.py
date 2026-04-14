@@ -1,7 +1,7 @@
 SCORING_INTERVAL = "1 day"
 
-# Wall-clock cadence for weight-setting (aligned with auditor at :00/:30 UTC).
-SCORING_CADENCE_MINUTES = 30
+# Wall-clock cadence for weight-setting (aligned with auditor hourly export).
+SCORING_CADENCE_MINUTES = 60
 
 # GPU inventory history chart window (independent of scoring window).
 INVENTORY_INTERVAL = "7 days"
