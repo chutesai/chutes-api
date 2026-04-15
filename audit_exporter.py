@@ -1,17 +1,15 @@
 """
-Export audit/invocation information from our validator.
+Export audit information from our validator.
 
 Information collected:
-  - invocation counts/duration
-  - user-generated reports
-  - deployment audit information, so we can cross-check against miner self-reports
-  - etc.
+  - deployment audit information (instance_audit), so we can cross-check against miner self-reports
+  - compute multiplier history (instance_compute_history), for time-weighted scoring
 
-The information is then signed with our hotkey and uploaded to blob store, and a sha256 of the report data is committed to chain.
+The information is then hashed, the hash is committed to chain via set_commitment,
+and the full payload is uploaded to blob store.
 """
 
 import io
-import csv
 import json
 import uuid
 import backoff
@@ -22,35 +20,11 @@ from sqlalchemy import text
 from datetime import UTC, datetime, timedelta
 from substrateinterface import SubstrateInterface
 from api.config import settings
-from api.database import get_session, get_inv_session
+from api.database import get_session
 from api.audit.schemas import AuditEntry
 import api.database.orms  # noqa
 
 
-INVOCATION_QUERY = text(
-    """
-SELECT
-     parent_invocation_id,
-     invocation_id,
-     chute_id,
-     chute_user_id,
-     function_name,
-     image_id,
-     image_user_id,
-     instance_id,
-     miner_uid,
-     miner_hotkey,
-     started_at,
-     completed_at,
-     error_message,
-     compute_multiplier,
-     bounty,
-     metrics
- FROM invocations
-WHERE (started_at >= :start_time AND started_at < :end_time) OR (started_at >= :start_time - INTERVAL '1 day' AND completed_at >= :start_time AND completed_at < :end_time)
- ORDER BY started_at ASC
-"""
-)
 COMPUTE_HISTORY_QUERY = text(
     """
 SELECT
@@ -64,37 +38,6 @@ WHERE ended_at IS NULL
    OR (started_at >= :start_time AND started_at <= :end_time)
    OR (started_at < :start_time AND (ended_at IS NULL OR ended_at > :end_time))
 ORDER BY instance_id, started_at
-"""
-)
-REPORT_QUERY = text(
-    """
-SELECT *
-  FROM reports
- WHERE (timestamp >= :start_time AND timestamp < :end_time) OR (confirmed_at >= :start_time AND confirmed_at < :end_time)
- ORDER BY timestamp ASC
-"""
-)
-JOB_QUERY = text(
-    """
-SELECT
-    job_id,
-    chute_id,
-    version,
-    chutes_version,
-    method,
-    miner_uid,
-    miner_hotkey,
-    miner_coldkey,
-    instance_id,
-    created_at,
-    updated_at,
-    started_at,
-    finished_at,
-    status,
-    compute_multiplier,
-    miner_terminated
-FROM jobs
-WHERE (started_at >= :start_time AND started_at < :end_time) OR (finished_at >= :start_time AND finished_at < :end_time)
 """
 )
 
@@ -152,79 +95,6 @@ async def get_instance_audit(start_time, end_time) -> list:
                 if isinstance(item[key], datetime):
                     item[key] = item[key].isoformat()
         return results
-
-
-def get_sha256(path):
-    """
-    Calculate sha256 of file.
-    """
-    sha256_hash = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(chunk)
-    return sha256_hash.hexdigest()
-
-
-@backoff.on_exception(
-    backoff.constant,
-    Exception,
-    jitter=None,
-    interval=10,
-    max_tries=6,
-)
-async def generate_invocation_report_data(start_time, end_time) -> dict:
-    """
-    Export all invocation and report data for this time slice to CSV file,
-    tracking the blob storage paths and checksums.
-    """
-    for type_, query in (
-        ("invocations", INVOCATION_QUERY),
-        ("reports", REPORT_QUERY),
-        ("jobs", JOB_QUERY),
-    ):
-        session_method = get_inv_session if type_ == "invocations" else get_session
-        async with session_method() as session:
-            result = await session.stream(
-                query,
-                {
-                    "start_time": start_time.replace(tzinfo=None),
-                    "end_time": end_time.replace(tzinfo=None),
-                },
-            )
-            with open(f"/tmp/{type_}.csv", "w") as outfile:
-                writer = csv.writer(outfile)
-                writer.writerow(result.keys())
-                async for row in result:
-                    writer.writerow(row)
-
-    # Upload both to S3.
-    year = end_time.strftime("%Y")
-    month = end_time.strftime("%m")
-    day = end_time.strftime("%d")
-    hour = end_time.strftime("%H")
-    base_path = f"invocations/{year}/{month}/{day}/{hour}"
-    paths = {
-        "invocations": f"{base_path}.csv",
-        "reports": f"{base_path}-reports.csv",
-        "jobs": f"{base_path}-jobs.csv",
-    }
-    async with settings.s3_client() as s3:
-        for type_, destination in paths.items():
-            await s3.upload_file(
-                f"/tmp/{type_}.csv",
-                settings.storage_bucket,
-                destination,
-                ExtraArgs={"ContentType": "text/csv"},
-            )
-            logger.success(f"Uploaded {type_} CSV to: {destination}")
-    result = {
-        type_: {
-            "path": path,
-            "sha256": get_sha256(f"/tmp/{type_}.csv"),
-        }
-        for type_, path in paths.items()
-    }
-    return result
 
 
 @backoff.on_exception(
@@ -296,12 +166,10 @@ async def main():
 
     instance_audit = await get_instance_audit(start_time, end_time)
     compute_history = await get_compute_history(start_time, end_time)
-    invocation_reports = await generate_invocation_report_data(start_time, end_time)
     report_data = json.dumps(
         {
             "instance_audit": instance_audit,
             "compute_history": compute_history,
-            "csv_exports": invocation_reports,
         }
     ).encode()
     sha256 = hashlib.sha256(report_data).hexdigest()
