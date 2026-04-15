@@ -817,21 +817,28 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
     """
     Refresh compute_multiplier for active instances based on current chute state.
 
-    Uses a gradual adjustment curve to prevent "rug pull" scenarios where miners
-    deploy based on a high boost that immediately drops:
-
+    Both public and private instances use the same gradual blending curve:
     - 0-2 hours after activation: No change (instance keeps original multiplier)
     - 2-8 hours: Ease-in blend toward target (slow at first, accelerates)
       Uses t² curve where t is normalized time in the ramp window
     - 8+ hours: Clamp to target value
 
-    Additionally, instances in the thrash penalty period are skipped entirely.
+    The difference is in target calculation:
+    - Public: includes demand/revenue-based boost from the autoscaler.
+    - Private (billed_to IS NOT NULL): target is the base multiplier
+      (actual GPU * count * private bonus * manual boost * TEE) with no
+      demand/revenue-based adjustments. This corrects any stale boosts
+      on existing instances while preserving bounty decay through the
+      blending curve.
+
+    Public instances in the thrash penalty period are skipped entirely.
 
     Pre-loads all instance values first, calculates new values in Python,
     then issues static UPDATE statements to avoid read-modify-write locks.
     """
     from api.chute.util import calculate_effective_compute_multiplier
     from api.constants import THRASH_WINDOW_HOURS, THRASH_PENALTY_HOURS
+    from api.gpu import COMPUTE_MULTIPLIER
 
     logger.info("Refreshing compute multipliers for active instances...")
 
@@ -849,15 +856,12 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             logger.info("No chutes to process")
             return
 
-        # Pre-load all active PUBLIC instances for these chutes.
-        # Private instances (billed_to IS NOT NULL) keep their base-calculated
-        # compute multiplier and are never adjusted by demand/revenue signals.
+        # Pre-load all active instances (both public and private)
         instance_query = select(Instance).where(
             Instance.chute_id.in_(chutes.keys()),
             Instance.active.is_(True),
             Instance.verified.is_(True),
             Instance.activated_at.isnot(None),
-            Instance.billed_to.is_(None),
         )
         instance_result = await session.execute(instance_query)
         instances = instance_result.scalars().all()
@@ -866,7 +870,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             logger.info("No active instances to update")
             return
 
-        # Identify instances in thrash penalty period (single query for efficiency)
+        # Identify instances in thrash penalty period (only applies to public instances)
         thrash_penalty_result = await session.execute(
             text(
                 """
@@ -876,6 +880,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
                   AND i.active = true
                   AND i.verified = true
                   AND i.activated_at IS NOT NULL
+                  AND i.billed_to IS NULL
                   AND i.activated_at + INTERVAL ':penalty_hours hours' > NOW()
                   AND EXISTS (
                       SELECT 1
@@ -900,7 +905,9 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
                 f"Skipping {len(thrash_penalty_instances)} instances in thrash penalty period"
             )
 
-        # Calculate target multipliers for each chute (without bounty)
+        # Calculate target multipliers for each chute (without bounty).
+        # For private chutes, calculate_effective_compute_multiplier already
+        # excludes demand-based boost thanks to the chute.public guard.
         chute_targets = {}
         for chute_id, chute in chutes.items():
             effective_data = await calculate_effective_compute_multiplier(
@@ -908,25 +915,60 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             )
             chute_targets[chute_id] = effective_data["effective_compute_multiplier"]
 
+        # For private instances, look up actual GPU identifiers so we can
+        # adjust from the node selector minimum to the real hardware.
+        private_instance_ids = [i.instance_id for i in instances if i.billed_to is not None]
+        instance_gpus = {}
+        if private_instance_ids:
+            gpu_result = await session.execute(
+                text("""
+                    SELECT ino.instance_id, n.gpu_identifier
+                    FROM instance_nodes ino
+                    JOIN nodes n ON n.uuid = ino.node_id
+                    WHERE ino.instance_id = ANY(:instance_ids)
+                """),
+                {"instance_ids": private_instance_ids},
+            )
+            for row in gpu_result:
+                if row.instance_id not in instance_gpus:
+                    instance_gpus[row.instance_id] = row.gpu_identifier
+
         # Calculate new values in Python
         now = datetime.now()
         updates = []  # List of (instance_id, new_multiplier)
 
         for inst in instances:
-            # Skip instances in thrash penalty period
-            if inst.instance_id in thrash_penalty_instances:
-                continue
-
             target = chute_targets.get(inst.chute_id)
             if target is None:
                 continue
-
-            hours_since = (now - inst.activated_at.replace(tzinfo=None)).total_seconds() / 3600.0
             current = inst.compute_multiplier
 
+            if inst.billed_to is not None:
+                # Private instance: target is base multiplier (no demand boost)
+                # adjusted for actual GPU hardware. Bounty still decays via
+                # the same blending curve as public instances.
+                chute = chutes.get(inst.chute_id)
+                if not chute:
+                    continue
+                actual_gpu = instance_gpus.get(inst.instance_id)
+                if actual_gpu and actual_gpu in COMPUTE_MULTIPLIER:
+                    gpu_count = chute.node_selector.get("gpu_count", 1)
+                    ns = NodeSelector(**chute.node_selector)
+                    ns_min = ns.compute_multiplier
+                    actual_base = gpu_count * COMPUTE_MULTIPLIER[actual_gpu]
+                    if ns_min > 0 and actual_base != ns_min:
+                        target *= actual_base / ns_min
+            else:
+                # Public instance: skip if in thrash penalty period
+                if inst.instance_id in thrash_penalty_instances:
+                    continue
+
+            # Both public and private use the same blending curve.
+            # This preserves bounty during the 0-2h hold period, decays it
+            # over 2-8h, and clamps to the (bounty-free) target after 8h.
+            hours_since = (now - inst.activated_at.replace(tzinfo=None)).total_seconds() / 3600.0
             new_value = _calculate_blended_multiplier(current, target, hours_since)
 
-            # Skip if no update needed or value unchanged
             if new_value is None:
                 continue
             if current is not None and abs(current - new_value) < 0.001:
@@ -936,6 +978,8 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
 
         # Batch update with static values (no read-modify-write)
         if updates:
+            private_count = sum(1 for iid, _ in updates if iid in set(private_instance_ids))
+            public_count = len(updates) - private_count
             for instance_id, new_multiplier in updates:
                 await session.execute(
                     text("""
@@ -946,7 +990,10 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
                     {"instance_id": instance_id, "multiplier": new_multiplier},
                 )
             await session.commit()
-            logger.success(f"Updated compute_multiplier for {len(updates)} instances")
+            logger.success(
+                f"Updated compute_multiplier for {len(updates)} instances "
+                f"({public_count} public, {private_count} private corrections)"
+            )
         else:
             logger.info("No compute_multiplier updates needed")
 
