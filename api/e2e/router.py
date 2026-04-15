@@ -343,7 +343,7 @@ async def e2e_invoke(
             )
 
         multiplier = NodeSelector(**chute.node_selector).compute_multiplier
-        if chute.boost:
+        if chute.boost and chute.public:
             multiplier *= chute.boost
 
         if is_stream:

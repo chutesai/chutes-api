@@ -1365,9 +1365,15 @@ async def _validate_launch_config_instance(
         instance.billed_to = chute.user_id
 
     # Add chute boost (urgency boost from autoscaler).
+    # Skip for private instances — their multiplier stays at the base GPU calculation.
     # Skip for thrashing miners. Use DB NOW() via None param since launch_config.created_at
     # can be created hours before the instance is actually created.
-    if chute.boost is not None and chute.boost > 0 and chute.boost <= 20:
+    if (
+        instance.billed_to is None
+        and chute.boost is not None
+        and chute.boost > 0
+        and chute.boost <= 20
+    ):
         is_thrashing = await is_thrashing_miner(db, launch_config.miner_hotkey, chute.chute_id)
         if is_thrashing:
             logger.warning(

@@ -475,12 +475,14 @@ async def calculate_effective_compute_multiplier(
             factors["private"] = PRIVATE_INSTANCE_BONUS
             total *= PRIVATE_INSTANCE_BONUS
 
-    # Urgency boost from autoscaler (skip for sponsored chutes).
+    # Urgency boost from autoscaler (skip for sponsored and private chutes).
+    # Private chutes never get demand/revenue-based boost adjustments.
     from api.invocation.util import get_all_sponsored_chute_ids
 
     sponsored = await get_all_sponsored_chute_ids()
     if (
-        chute.chute_id not in sponsored
+        chute.public
+        and chute.chute_id not in sponsored
         and chute.boost is not None
         and chute.boost > 0
         and chute.boost <= 20
@@ -1510,7 +1512,7 @@ async def invoke(
             invocation_id = str(uuid.uuid4())
             started_at = time.time()
             multiplier = NodeSelector(**chute.node_selector).compute_multiplier
-            if chute.boost:
+            if chute.boost and chute.public:
                 multiplier *= chute.boost
             if manual_boost != 1.0:
                 multiplier *= manual_boost

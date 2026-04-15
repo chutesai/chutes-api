@@ -849,12 +849,15 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
             logger.info("No chutes to process")
             return
 
-        # Pre-load all active instances for these chutes
+        # Pre-load all active PUBLIC instances for these chutes.
+        # Private instances (billed_to IS NOT NULL) keep their base-calculated
+        # compute multiplier and are never adjusted by demand/revenue signals.
         instance_query = select(Instance).where(
             Instance.chute_id.in_(chutes.keys()),
             Instance.active.is_(True),
             Instance.verified.is_(True),
             Instance.activated_at.isnot(None),
+            Instance.billed_to.is_(None),
         )
         instance_result = await session.execute(instance_query)
         instances = instance_result.scalars().all()
@@ -2240,7 +2243,9 @@ async def _perform_autoscale_impl(
     for ctx in contexts.values():
         if ctx.chute_id in sponsored_chute_ids:
             ctx.boost = 1.0
-        elif not ctx.public and ctx.current_count >= ctx.max_instances:
+        elif not ctx.public:
+            # Private chutes never get demand/revenue-based boost adjustments.
+            # Their compute multiplier stays at the base GPU calculation.
             ctx.boost = 1.0
         elif ctx.upscale_amount > 0:
             # Urgency component: 0 to URGENCY_BOOST_MAX based on smoothed urgency
@@ -2523,6 +2528,7 @@ async def _perform_autoscale_impl(
         chute_actions[ctx.chute_id] = ctx.action
         chute_target_counts[ctx.chute_id] = ctx.target_count
         chute_rate_limiting[ctx.chute_id] = ctx.any_rate_limiting
+        # Private chutes always get boost=1.0 written to clear any stale values.
         chute_boosts[ctx.chute_id] = ctx.boost
 
         # In dry_run, skip Redis writes entirely
