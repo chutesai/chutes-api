@@ -630,13 +630,12 @@ async def _check_scalable_private(db, chute, miner):
             ),
         )
 
-    # Require some minimal public chute participation.
+    # Require minimum active public inventory right now.
     active_public_query = text("""
         SELECT
             COUNT(DISTINCT i.instance_id) AS active_instance_count,
             COUNT(inodes.node_id) AS total_gpus
         FROM instances i
-        JOIN chutes c ON c.chute_id = i.chute_id
         JOIN instance_nodes inodes ON inodes.instance_id = i.instance_id
         WHERE i.miner_hotkey = :hotkey
           AND i.active = TRUE
@@ -647,18 +646,96 @@ async def _check_scalable_private(db, chute, miner):
     )
     instance_count = active_public_result["active_instance_count"] if active_public_result else 0
     total_gpus = active_public_result["total_gpus"] if active_public_result else 0
-    if instance_count < 2 or total_gpus < 12:
+    if instance_count < 4 or total_gpus < 12:
         logger.warning(
             f"PRIVATE_GATE: miner {miner.hotkey} denied private chute {chute_id}: "
             f"{instance_count} active public instances with {total_gpus} GPUs "
-            f"(minimum 2 instances and 12 GPUs required)"
+            f"(minimum 4 instances and 12 GPUs required)"
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                f"You must have at least 2 active public (non-private) chute instances "
+                f"You must have at least 4 active public (non-private) chute instances "
                 f"with a total of at least 12 GPUs to deploy private chutes "
                 f"(currently have {instance_count} instances with {total_gpus} GPUs)"
+            ),
+        )
+
+    # Require average GPU inventory of at least 16 over the entire 7-day scoring period.
+    # Try cached value first, fall back to a single-miner DB query on cache miss.
+    inventory_history = None
+    inventory_raw = await settings.redis_client.get(f"uqhist:{miner.hotkey}")
+    if inventory_raw:
+        inventory_history = json.loads(inventory_raw)
+    if not inventory_history:
+        miner_inventory_result = await db.execute(
+            text("""
+                WITH time_series AS (
+                    SELECT generate_series(
+                        date_trunc('hour', now() - INTERVAL '7 days'),
+                        date_trunc('hour', now()),
+                        INTERVAL '1 hour'
+                    ) AS time_point
+                ),
+                latest_chute_config AS (
+                    SELECT DISTINCT ON (chute_id)
+                        chute_id,
+                        (node_selector->>'gpu_count')::integer AS gpu_count
+                    FROM chute_history
+                    ORDER BY chute_id, updated_at DESC
+                ),
+                active_instances AS (
+                    SELECT
+                        ts.time_point,
+                        ia.chute_id,
+                        COALESCE(lcc.gpu_count, 1) AS gpu_count
+                    FROM time_series ts
+                    JOIN instance_audit ia
+                        ON ia.miner_hotkey = :hotkey
+                        AND ia.activated_at <= ts.time_point
+                        AND (ia.deleted_at IS NULL OR ia.deleted_at >= ts.time_point)
+                        AND ia.activated_at IS NOT NULL
+                        AND (
+                            ia.billed_to IS NOT NULL
+                            OR (COALESCE(ia.deleted_at, ts.time_point) - ia.activated_at >= interval '1 hour')
+                        )
+                    LEFT JOIN latest_chute_config lcc ON ia.chute_id = lcc.chute_id
+                )
+                SELECT
+                    ts.time_point::text AS time,
+                    COALESCE(SUM(ai.gpu_count), 0) AS total_count
+                FROM time_series ts
+                LEFT JOIN active_instances ai ON ai.time_point = ts.time_point
+                GROUP BY ts.time_point
+                ORDER BY ts.time_point
+            """),
+            {"hotkey": miner.hotkey},
+        )
+        rows = miner_inventory_result.mappings().all()
+        if rows:
+            inventory_history = [{"total_count": int(r["total_count"])} for r in rows]
+    if not inventory_history:
+        logger.warning(
+            f"PRIVATE_GATE: miner {miner.hotkey} denied private chute {chute_id}: "
+            f"no inventory history found"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No inventory history found; you must have an average of at least 16 GPUs over the 7-day scoring period to deploy private chutes.",
+        )
+    avg_gpus = sum(entry.get("total_count", 0) for entry in inventory_history) / len(
+        inventory_history
+    )
+    if avg_gpus < 16:
+        logger.warning(
+            f"PRIVATE_GATE: miner {miner.hotkey} denied private chute {chute_id}: "
+            f"average GPU inventory {avg_gpus:.1f} < 16 over 7-day scoring period"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                f"You must have an average of at least 16 GPUs over the 7-day scoring period "
+                f"to deploy private chutes (currently {avg_gpus:.1f} average GPUs)"
             ),
         )
 
