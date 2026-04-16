@@ -1,4 +1,7 @@
+from datetime import timedelta
+
 SCORING_INTERVAL = "1 day"
+SCORING_WINDOW = timedelta(days=1)
 
 # GPU inventory history chart window (independent of scoring window).
 INVENTORY_INTERVAL = "7 days"

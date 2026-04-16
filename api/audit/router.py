@@ -5,6 +5,7 @@ Audit router.
 import io
 import uuid
 from datetime import datetime, timedelta
+from metasync.constants import SCORING_WINDOW
 from loguru import logger
 from fastapi import APIRouter, Depends, Request, Header, Response, HTTPException, status
 from sqlalchemy import select, func
@@ -60,10 +61,10 @@ async def add_miner_audit_data(
 @router.get("/", response_model=list[AuditEntryResponse])
 async def list_audit_entries(db: AsyncSession = Depends(get_db_session)):
     """
-    List all audit reports from the past week.
+    List all audit reports within the scoring window plus a 1-hour buffer.
     """
     query = select(AuditEntry).where(
-        AuditEntry.start_time >= func.now() - timedelta(days=7, hours=1)
+        AuditEntry.start_time >= func.now() - SCORING_WINDOW - timedelta(hours=1)
     )
     results = (await db.execute(query)).unique().scalars()
     return results
