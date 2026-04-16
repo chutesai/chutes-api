@@ -736,12 +736,8 @@ async def stream_miner_logs(
             detail="Logs are only available for public chutes.",
         )
 
-    # Check if there's already an instance for this config.
-    instance = (
-        (await db.execute(select(Instance).where(Instance.config_id == config_id)))
-        .unique()
-        .scalar_one_or_none()
-    )
+    # Instance is eagerly joined on LaunchConfig (lazy="joined").
+    instance = launch_config.instance
 
     if instance and instance.activated_at is not None:
         raise HTTPException(
@@ -749,27 +745,32 @@ async def stream_miner_logs(
             detail="Instance has already been activated; logs are no longer available.",
         )
 
+    if launch_config.failed_at is not None and instance is None:
+        reason = launch_config.verification_error or "unknown reason"
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Instance launch failed: {reason}",
+        )
+
     async def _stream():
         deadline = time.monotonic() + MAX_STREAM_SECONDS
         found_cursor = cursor is None  # If no cursor, emit everything immediately.
 
         # If no instance exists yet, poll until one appears.
-        current_instance = instance
+        current_instance = launch_config.instance
         while current_instance is None:
             if await request.is_disconnected() or time.monotonic() >= deadline:
                 return
             yield "data: Waiting for instance to be created...\n\n"
             await asyncio.sleep(2)
-            async with get_session(readonly=True) as poll_session:
-                current_instance = (
-                    (
-                        await poll_session.execute(
-                            select(Instance).where(Instance.config_id == config_id)
-                        )
-                    )
-                    .unique()
-                    .scalar_one_or_none()
-                )
+            # db.refresh() sees latest committed data under READ COMMITTED (PG default).
+            # If isolation were ever raised to REPEATABLE READ, a fresh session would be needed.
+            await db.refresh(launch_config)
+            if launch_config.failed_at is not None and launch_config.instance is None:
+                reason = launch_config.verification_error or "Instance failed to launch"
+                yield f"data: Instance launch failed: {reason}\n\n"
+                return
+            current_instance = launch_config.instance
 
         # Re-check activation status in case it changed while polling.
         if current_instance.activated_at is not None:
