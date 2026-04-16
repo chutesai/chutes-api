@@ -767,7 +767,9 @@ async def stream_miner_logs(
             # "instance" here, refresh() leaves the relationship expired.
             # db.refresh() sees latest committed data under READ COMMITTED (PG default).
             # If isolation were ever raised to REPEATABLE READ, a fresh session would be needed.
-            await db.refresh(launch_config, attribute_names=["failed_at", "verification_error", "instance"])
+            await db.refresh(
+                launch_config, attribute_names=["failed_at", "verification_error", "instance"]
+            )
             if launch_config.failed_at is not None and launch_config.instance is None:
                 reason = launch_config.verification_error or "Instance failed to launch"
                 yield f"data: Instance launch failed: {reason}\n\n"
