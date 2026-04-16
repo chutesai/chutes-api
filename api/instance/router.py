@@ -1175,14 +1175,23 @@ async def _validate_launch_config_instance(
 
     # Re-check scalable...
     if not launch_config.job_id:
-        if (
-            not chute.public
-            and not has_legacy_private_billing(chute)
-            and chute.user_id != await chutes_user_id()
-        ):
-            await _check_scalable_private(db, chute, miner)
-        else:
-            await _check_scalable(db, chute, launch_config.miner_hotkey)
+        try:
+            if (
+                not chute.public
+                and not has_legacy_private_billing(chute)
+                and chute.user_id != await chutes_user_id()
+            ):
+                await _check_scalable_private(db, chute, miner)
+            else:
+                await _check_scalable(db, chute, launch_config.miner_hotkey)
+        except HTTPException as exc:
+            launch_config.failed_at = func.now()
+            detail = exc.detail
+            launch_config.verification_error = (
+                detail if isinstance(detail, str) else str(detail)
+            )
+            await db.commit()
+            raise
 
     # IP matches?
     x_forwarded_for = request.headers.get("X-Forwarded-For")
