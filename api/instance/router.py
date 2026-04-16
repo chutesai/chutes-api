@@ -1187,9 +1187,7 @@ async def _validate_launch_config_instance(
         except HTTPException as exc:
             launch_config.failed_at = func.now()
             detail = exc.detail
-            launch_config.verification_error = (
-                detail if isinstance(detail, str) else str(detail)
-            )
+            launch_config.verification_error = detail if isinstance(detail, str) else str(detail)
             await db.commit()
             raise
 
