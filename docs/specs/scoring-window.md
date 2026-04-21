@@ -98,3 +98,30 @@ Success =
 - **Auditor deploy**: merge matching changes to `chutes-audit` (`SCORING_INTERVAL = "1 day"`, hourly clock-aligned `_verify_integrity`, remove synthetics and invocation CSV checking, reduced data retention from 169h to ~25h, updated `compare_miner_metrics` interval). Release so autoupdater propagates to lite validators.
 - **Ordering**: deploy validator first, then release auditor. The auditor must tolerate missing `csv_exports` in the audit JSON (or be updated first to not require it). Brief scoring misalignment is tolerable -- vtrust recovers within 1-2 weight-setting cycles once auditors update.
 - **Miner impact**: normalized scores for steady-state miners stay roughly the same. New miners (>1 day) immediately reach full parity. Miners with recent downtime see sharper penalties (~4.2% per hour of outage vs ~0.6% under 7 days).
+
+---
+
+## Legacy Trailing Credit (added 2026-04-21)
+
+The 7→1 day window change breaks ramp-up/ramp-down symmetry for nodes that were added under the old regime. Every node added under the 7-day window paid a ramp-up "tax" (diluted contribution for its first 7 days). The symmetric compensation was a 7-day ramp-down "cushion" after removal (the node lingers in the scoring window). Switching to a 1-day window means those nodes would only receive a 1-day cushion — losing ~3 node-days of owed trailing credit.
+
+### Per-Instance Window Design
+
+Instead of a global taper (which only helps nodes removed during the taper period), the fix uses **per-instance window logic** in `INSTANCES_QUERY`:
+
+- **Active instances** (not yet removed): always use the current 1-day window. This keeps steady-state normalized scoring fair for everyone — pre-change and post-change active instances contribute equally after normalization.
+- **Deleted instances created BEFORE `SCORING_WINDOW_CHANGE_DATE`** (2026-04-20): use the legacy 7-day window for both the deletion filter (`deleted_at >= now() - 7 days`) and `billing_start` (`GREATEST(created_at, now() - 7 days)`). This gives them the trailing credit they already paid for.
+- **Deleted instances created AFTER the change date**: use the current 1-day window (symmetric with their 1-day ramp-up).
+
+This naturally phases out: no new pre-change instances can be created, so once all legacy instances have been removed and their 7-day trail expires, the legacy CASE branches become dead code.
+
+### Auditor Data Requirements
+
+Since auditors must independently compute the same per-instance window logic, they need 7 days of historical data (not just 1 day). The audit entry endpoint (`GET /audit/`) uses `LEGACY_SCORING_WINDOW` (7 days + 1 hour buffer) to ensure auditors receive sufficient history. The instance reconciliation and compute history CSV endpoints already use 7-8 day windows.
+
+### Files Changed
+
+- `metasync/constants.py` — added `LEGACY_SCORING_INTERVAL`, `LEGACY_SCORING_WINDOW`, `SCORING_WINDOW_CHANGE_DATE`; updated `INSTANCES_QUERY` with per-instance CASE logic
+- `metasync/shared.py` — passes legacy parameters when formatting `INSTANCES_QUERY`
+- `chute_autoscaler.py` — same changes to the duplicated query in `simulate_miner_scores()`
+- `api/audit/router.py` — uses `LEGACY_SCORING_WINDOW` instead of `SCORING_WINDOW` for audit entry listing

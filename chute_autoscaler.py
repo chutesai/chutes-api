@@ -559,12 +559,14 @@ async def simulate_miner_scores(
         - instance_changes: list of instance-level multiplier changes
         - miner_changes: summary of score changes per miner
     """
-    from metasync.constants import SCORING_INTERVAL
+    from metasync.constants import SCORING_INTERVAL, LEGACY_SCORING_INTERVAL, SCORING_WINDOW_CHANGE_DATE
 
     logger.info("Simulating miner scores with updated compute multipliers...")
 
     # Use the same interval as metasync scoring
     interval = SCORING_INTERVAL
+    legacy_interval = LEGACY_SCORING_INTERVAL
+    change_date = SCORING_WINDOW_CHANGE_DATE
 
     async with get_session() as session:
         await session.execute(text("SET LOCAL statement_timeout = '30s'"))
@@ -599,7 +601,12 @@ async def simulate_miner_scores(
                     ia.stop_billing_at,
                     ia.compute_multiplier,
                     ia.bounty,
-                    GREATEST(ia.created_at, now() - interval '{interval}') as billing_start,
+                    GREATEST(ia.created_at, now() - CASE
+                        WHEN ia.deleted_at IS NOT NULL
+                             AND ia.created_at < TIMESTAMPTZ '{change_date}'
+                        THEN INTERVAL '{legacy_interval}'
+                        ELSE INTERVAL '{interval}'
+                    END) as billing_start,
                     LEAST(
                         COALESCE(ia.stop_billing_at, now()),
                         COALESCE(ia.deleted_at, now()),
@@ -622,7 +629,14 @@ async def simulate_miner_scores(
                       OR ia.deletion_reason LIKE '%has an old version%'
                       OR ia.deleted_at IS NULL
                   )
-                  AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
+                  AND (
+                      ia.deleted_at IS NULL
+                      OR ia.deleted_at >= now() - CASE
+                          WHEN ia.created_at < TIMESTAMPTZ '{change_date}'
+                          THEN INTERVAL '{legacy_interval}'
+                          ELSE INTERVAL '{interval}'
+                      END
+                  )
             ),
             instance_weighted_compute AS (
                 SELECT

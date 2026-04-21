@@ -10,6 +10,8 @@ from sqlalchemy.orm import relationship
 from sqlalchemy import Column, String, DateTime, Integer, Float, text
 from metasync.constants import (
     SCORING_INTERVAL,
+    LEGACY_SCORING_INTERVAL,
+    SCORING_WINDOW_CHANGE_DATE,
     INSTANCES_QUERY,
 )
 
@@ -52,7 +54,11 @@ async def get_scoring_data(interval: str = SCORING_INTERVAL):
     Compute miner scores based purely on compute_units (instance lifetime * compute_multiplier).
     All bonuses (bounty age, urgency, TEE, private) are baked into compute_multiplier at activation.
     """
-    instances_query = text(INSTANCES_QUERY.format(interval=interval))
+    instances_query = text(INSTANCES_QUERY.format(
+        interval=interval,
+        legacy_interval=LEGACY_SCORING_INTERVAL,
+        change_date=SCORING_WINDOW_CHANGE_DATE,
+    ))
 
     # Load active miners from metagraph (and map coldkey pairings to de-dupe multi-hotkey miners).
     raw_values = {}

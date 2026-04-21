@@ -6,6 +6,30 @@ SCORING_WINDOW = timedelta(days=1)
 # GPU inventory history chart window (independent of scoring window).
 INVENTORY_INTERVAL = "7 days"
 
+# --- Legacy trailing credit for pre-change instances ---
+# Under the old 7-day rolling window, every node paid a ramp-up "tax":
+# for its first 7 days, its score contribution was diluted (it contributed
+# t/7 of its steady-state value at time t). The symmetric compensation was
+# a 7-day ramp-down "cushion" after removal (the node lingers in the window).
+#
+# Changing the window from 7->1 breaks this symmetry: nodes that already
+# paid the 7-day ramp-up tax would only receive a 1-day ramp-down cushion.
+#
+# To restore fairness, the INSTANCES_QUERY uses a per-instance window:
+#   - Active instances (not yet removed): always use the current 1-day window.
+#     This keeps steady-state normalized scoring fair for everyone.
+#   - Deleted instances created BEFORE the change date: use the legacy 7-day
+#     window, giving them the trailing credit they already paid for.
+#   - Deleted instances created AFTER the change date: use the current 1-day
+#     window (symmetric with their 1-day ramp-up).
+#
+# This naturally phases out: no new pre-change instances can be created,
+# so once all legacy instances have been removed (and their 7-day trail
+# expires), the legacy path becomes a no-op.
+LEGACY_SCORING_INTERVAL = "7 days"
+LEGACY_SCORING_WINDOW = timedelta(days=7)
+SCORING_WINDOW_CHANGE_DATE = "2026-04-20T00:00:00+00"
+
 # Dynamic bounty boost based on bounty age at claim time (maxes out at 3 hours)
 BOUNTY_BOOST_MIN = 1.1
 BOUNTY_BOOST_MAX = 1.5
@@ -101,6 +125,11 @@ ORDER BY mts.miner_hotkey, mts.time_point
 # The history table includes the startup period (created_at to activated_at) at 0.3x rate,
 # so billing_start uses created_at to capture this.
 # All bonuses (bounty, urgency, TEE, private) are baked into compute_multiplier.
+#
+# Per-instance window logic (see "Legacy trailing credit" comment above):
+#   - Active instances: INTERVAL '{interval}' (the current 1-day window)
+#   - Deleted + created before change date: INTERVAL '{legacy_interval}' (7-day trailing credit)
+#   - Deleted + created after change date: INTERVAL '{interval}' (1-day, symmetric)
 INSTANCES_QUERY = """
 WITH billed_instances AS (
     SELECT
@@ -113,8 +142,15 @@ WITH billed_instances AS (
         ia.stop_billing_at,
         ia.compute_multiplier,
         ia.bounty,
-        -- Start from created_at to include startup period (history has 0.3x rate for this period)
-        GREATEST(ia.created_at, now() - interval '{interval}') as billing_start,
+        -- Per-instance lookback: active instances use the current interval;
+        -- deleted pre-change instances get the legacy 7-day window for fair
+        -- trailing credit (they already paid the 7-day ramp-up tax).
+        GREATEST(ia.created_at, now() - CASE
+            WHEN ia.deleted_at IS NOT NULL
+                 AND ia.created_at < TIMESTAMPTZ '{change_date}'
+            THEN INTERVAL '{legacy_interval}'
+            ELSE INTERVAL '{interval}'
+        END) as billing_start,
         LEAST(
             COALESCE(ia.stop_billing_at, now()),
             COALESCE(ia.deleted_at, now()),
@@ -137,7 +173,14 @@ WITH billed_instances AS (
           OR ia.deletion_reason LIKE '%has an old version%'
           OR ia.deleted_at IS NULL
       )
-      AND (ia.deleted_at IS NULL OR ia.deleted_at >= now() - interval '{interval}')
+      AND (
+          ia.deleted_at IS NULL
+          OR ia.deleted_at >= now() - CASE
+              WHEN ia.created_at < TIMESTAMPTZ '{change_date}'
+              THEN INTERVAL '{legacy_interval}'
+              ELSE INTERVAL '{interval}'
+          END
+      )
 ),
 
 -- Calculate time-weighted compute units using history table.
