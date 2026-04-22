@@ -28,7 +28,7 @@ INVENTORY_INTERVAL = "7 days"
 # expires), the legacy path becomes a no-op.
 LEGACY_SCORING_INTERVAL = "7 days"
 LEGACY_SCORING_WINDOW = timedelta(days=7)
-SCORING_WINDOW_CHANGE_DATE = "2026-04-20T00:00:00+00"
+SCORING_WINDOW_CHANGE_DATE = "2026-04-20T19:00:00+00"
 
 # Dynamic bounty boost based on bounty age at claim time (maxes out at 3 hours)
 BOUNTY_BOOST_MIN = 1.1
