@@ -559,7 +559,11 @@ async def simulate_miner_scores(
         - instance_changes: list of instance-level multiplier changes
         - miner_changes: summary of score changes per miner
     """
-    from metasync.constants import SCORING_INTERVAL, LEGACY_SCORING_INTERVAL, SCORING_WINDOW_CHANGE_DATE
+    from metasync.constants import (
+        SCORING_INTERVAL,
+        LEGACY_SCORING_INTERVAL,
+        SCORING_WINDOW_CHANGE_DATE,
+    )
 
     logger.info("Simulating miner scores with updated compute multipliers...")
 
