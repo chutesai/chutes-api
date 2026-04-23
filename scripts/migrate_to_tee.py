@@ -14,7 +14,6 @@ Usage:
   python scripts/migrate_to_tee.py <chute_id> --apply      # persist changes
 """
 
-import api.database.orms
 import sys
 import uuid
 import asyncio
