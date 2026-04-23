@@ -61,8 +61,6 @@ from api.bounty.util import (
     get_bounty_infos,
     delete_bounty,
     create_bounty_if_not_exists,
-    get_bounty_amount,
-    send_bounty_notification,
     set_chute_disabled,
 )
 from api.instance.schemas import Instance
@@ -93,10 +91,10 @@ from api.util import (
     notify_deleted,
     image_supports_cllmv,
 )
-from api.affine import check_affine_code, force_affine_engine_args
+from api.affine import check_affine_code, transform_code_for_tee
 from api.guesser import guesser
 from aiocache import cached, Cache
-from api.chute.teeify import transform_for_tee
+
 from pydantic import BaseModel as PydanticBaseModel
 
 router = APIRouter()
@@ -1615,6 +1613,17 @@ async def _deploy_chute(
         chute_args.node_selector = {"gpu_count": 1}
     if isinstance(chute_args.node_selector, dict):
         chute_args.node_selector = NodeSelector(**chute_args.node_selector)
+
+    # Force TEE and pro_6000 node selector for all integrated subnet chutes.
+    # Must happen after normalization but before fee estimation so pricing
+    # and validation reflect the actual deployed hardware.
+    if is_subnet_model:
+        chute_args.tee = True
+        chute_args.node_selector = NodeSelector(
+            gpu_count=chute_args.node_selector.gpu_count,
+            include=["pro_6000"],
+        )
+
     if len(chute_args.node_selector.exclude or []) > 5:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -2057,11 +2066,6 @@ async def deploy_chute(
                 detail=message,
             )
 
-        # Force required engine_args values for affine chutes.
-        forced_code = force_affine_engine_args(chute_args.code)
-        if forced_code is not None:
-            chute_args.code = forced_code
-
         # Make sure egress is disabled (checked in code also, but...)
         if chute_args.allow_external_egress:
             logger.warning(
@@ -2146,8 +2150,24 @@ async def deploy_chute(
             "code check and prelim model config/node selector config passed."
         )
 
-    # Affine chutes cannot be created with tee=True directly - must use /teeify endpoint
-    if chute_args.tee and not current_user.has_role(Permissioning.unlimited_dev):
+    # Rewrite code AST for subnet models so the stored code reflects the
+    # forced tee=True and node_selector=pro_6000 (and TP/DP for affine).
+    if is_subnet_model:
+        is_affine = "affine" in chute_args.name.lower()
+        transformed = transform_code_for_tee(
+            chute_args.code,
+            gpu_count=chute_args.node_selector.gpu_count,
+            is_affine=is_affine,
+        )
+        if transformed is not None:
+            chute_args.code = transformed
+
+    # Non-subnet chutes cannot be created with tee=True directly.
+    if (
+        chute_args.tee
+        and not is_subnet_model
+        and not current_user.has_role(Permissioning.unlimited_dev)
+    ):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="TEE private deployments are limited at this time due to infrastructure capacity limitations.",
@@ -2406,180 +2426,6 @@ async def easy_deploy_diffusion_chute(
         jobs=[],
     )
     return await _deploy_chute(chute_args, db, current_user)
-
-
-@router.put("/{chute_id}/teeify", response_model=ChuteResponse)
-async def teeify_chute(
-    chute_id: str,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(get_current_user()),
-):
-    """
-    Create a new TEE-enabled chute from an existing affine chute.
-    """
-    # Validate chute_id is a UUID
-    try:
-        uuid.UUID(chute_id)
-    except ValueError:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Must use chute UUID for teeify.",
-        )
-
-    # Find the original chute
-    chute = (
-        (
-            await db.execute(
-                select(Chute)
-                .where(Chute.chute_id == chute_id)
-                .options(selectinload(Chute.instances))
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
-    )
-
-    if not chute:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chute not found",
-        )
-
-    # Only subnet admins can promote to TEE
-    if not subnet_role_accessible(chute, current_user, admin=True):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only subnet admins can promote chutes to TEE",
-        )
-
-    # Validate the chute has "affine" in its name
-    if "affine" not in chute.name.lower():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only chutes with 'affine' in the name can be TEE-ified",
-        )
-
-    # Check if a TEE version of this chute already exists
-    tee_name = f"{chute.name}-TEE"
-    existing_tee = (
-        (
-            await db.execute(
-                select(Chute).where(Chute.name == tee_name).where(Chute.user_id == chute.user_id)
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
-    )
-    if existing_tee:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"TEE version already exists: {existing_tee.chute_id}",
-        )
-
-    # Transform the code and node_selector for TEE
-    try:
-        new_code, new_node_selector = transform_for_tee(chute.code, chute.node_selector, tee_name)
-    except Exception as exc:
-        logger.error(f"Failed to transform code for TEE: {exc}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to transform code for TEE: {str(exc)}",
-        )
-
-    # Generate new chute_id and version for the TEE clone
-    new_chute_id = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.username}::chute::{tee_name}")
-    )
-    new_version = str(
-        uuid.uuid5(uuid.NAMESPACE_OID, f"{chute.image_id}:{chute.image.patch_version}:{new_code}")
-    )
-
-    # Create the new TEE chute
-    try:
-        tee_chute = Chute(
-            chute_id=new_chute_id,
-            user_id=chute.user_id,
-            name=tee_name,
-            tagline=chute.tagline,
-            readme=chute.readme,
-            tool_description=chute.tool_description,
-            logo_id=chute.logo_id,
-            image_id=chute.image_id,
-            code=new_code,
-            filename=chute.filename,
-            ref_str=chute.ref_str,
-            version=new_version,
-            public=chute.public,
-            cords=chute.cords,
-            jobs=chute.jobs,
-            node_selector=new_node_selector,
-            standard_template=chute.standard_template,
-            chutes_version=chute.chutes_version,
-            concurrency=chute.concurrency,
-            revision=chute.revision,
-            scaling_threshold=chute.scaling_threshold,
-            max_instances=chute.max_instances,
-            shutdown_after_seconds=chute.shutdown_after_seconds,
-            allow_external_egress=chute.allow_external_egress,
-            encrypted_fs=chute.encrypted_fs,
-            tee=True,
-            lock_modules=chute.lock_modules if chute.lock_modules is not None else False,
-            immutable=True,
-        )
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Validation failure: {exc}",
-        )
-
-    # Generate a unique slug for the new chute
-    tee_chute.slug = re.sub(
-        r"[^a-z0-9-]+$",
-        "-",
-        slugify(f"{current_user.username}-{tee_name}", max_length=58).lower(),
-    )
-    base_slug = tee_chute.slug
-    already_exists = (
-        await db.execute(select(exists().where(Chute.slug == tee_chute.slug)))
-    ).scalar()
-    while already_exists:
-        suffix = "".join(random.choice(string.ascii_lowercase + string.digits) for _ in range(5))
-        tee_chute.slug = f"{base_slug}-{suffix}"
-        already_exists = (
-            await db.execute(select(exists().where(Chute.slug == tee_chute.slug)))
-        ).scalar()
-
-    db.add(tee_chute)
-    await db.commit()
-    await db.refresh(tee_chute)
-
-    # Notify miners about the new chute
-    await settings.redis_client.publish(
-        "miner_broadcast",
-        json.dumps(
-            {
-                "reason": "chute_created",
-                "data": {
-                    "chute_id": tee_chute.chute_id,
-                    "version": tee_chute.version,
-                    "job_only": not tee_chute.cords,
-                },
-            }
-        ).decode(),
-    )
-
-    logger.success(
-        f"TEE-ified chute created: {tee_chute.chute_id} {tee_chute.name} (from {chute.chute_id})"
-    )
-    response = ChuteResponse.from_orm(tee_chute)
-    await _inject_current_estimated_price(tee_chute, response)
-    await create_bounty_if_not_exists(tee_chute.chute_id)
-    amount = await get_bounty_amount(tee_chute.chute_id)
-    if amount:
-        await send_bounty_notification(tee_chute.chute_id, amount)
-    bounty_info = await get_bounty_info(tee_chute.chute_id)
-    await _inject_effective_compute_multiplier(tee_chute, response, bounty_info=bounty_info)
-    return response
 
 
 @router.put("/{chute_id_or_name:path}", response_model=ChuteResponse)

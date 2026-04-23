@@ -1,5 +1,5 @@
 import textwrap
-from api.affine import check_affine_code, force_affine_engine_args
+from api.affine import check_affine_code, force_affine_engine_args, transform_code_for_tee
 
 
 def assert_valid(code: str) -> None:
@@ -525,3 +525,220 @@ def test_force_targets_top_level_assignment_only() -> None:
     assert "--chunked-prefill-size 4096" in result
     # The original flag is preserved.
     assert "--context-length" in result
+
+
+# --- force_affine_engine_args with gpu_count (TP/DP) tests ---
+
+
+def test_force_sglang_tp_dp_args() -> None:
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=4, include=["pro_6000"]),
+            engine_args="--context-length 36384",
+        )
+    """)
+    result = force_affine_engine_args(code, gpu_count=4)
+    assert result is not None
+    assert "--tp 1" in result
+    assert "--dp 4" in result
+    assert "--mem-fraction-static 0.8" in result
+    assert "--chunked-prefill-size 4096" in result
+
+
+def test_force_vllm_tp_dp_args() -> None:
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.vllm import build_vllm_chute
+
+        chute = build_vllm_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/vllm:nightly-2026010900",
+            node_selector=NodeSelector(gpu_count=8, include=["pro_6000"]),
+            engine_args="--context-length 36384",
+        )
+    """)
+    result = force_affine_engine_args(code, gpu_count=8)
+    assert result is not None
+    assert "--tensor-parallel-size 1" in result
+    assert "--data-parallel-size 8" in result
+    assert "--gpu-memory-utilization 0.8" in result
+    assert "--max-num-batched-tokens 4096" in result
+
+
+def test_force_tp_dp_replaces_existing_values() -> None:
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=8, include=["pro_6000"]),
+            engine_args="--tp 4 --dp 2 --context-length 36384",
+        )
+    """)
+    result = force_affine_engine_args(code, gpu_count=8)
+    assert result is not None
+    assert "--tp 1" in result
+    assert "--dp 8" in result
+    assert result.count("--tp") == 1
+    assert result.count("--dp") == 1
+
+
+def test_force_no_tp_dp_without_gpu_count() -> None:
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=1, include=["pro_6000"]),
+            engine_args="--context-length 36384",
+        )
+    """)
+    result = force_affine_engine_args(code)
+    assert result is not None
+    assert "--tp" not in result
+    assert "--dp" not in result
+
+
+def test_force_gpu_count_1_sets_dp_1() -> None:
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=1, include=["pro_6000"]),
+            engine_args="--context-length 36384",
+        )
+    """)
+    result = force_affine_engine_args(code, gpu_count=1)
+    assert result is not None
+    assert "--tp 1" in result
+    assert "--dp 1" in result
+
+
+# --- transform_code_for_tee tests ---
+
+
+def test_transform_replaces_node_selector_and_adds_tee() -> None:
+    """Existing h100 node_selector should be replaced with pro_6000, tee=True added."""
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=2, include=["h100"]),
+            engine_args="--tool-call-parser qwen25 --context-length 36384",
+        )
+    """)
+    result = transform_code_for_tee(code, gpu_count=2, is_affine=True)
+    assert result is not None
+    # node_selector replaced
+    assert 'include=["pro_6000"]' in result or "include=['pro_6000']" in result
+    assert "h100" not in result
+    assert "gpu_count=2" in result
+    # tee added
+    assert "tee=True" in result
+    # engine_args: TP/DP forced
+    assert "--tp 1" in result
+    assert "--dp 2" in result
+    # engine_args: mem/prefill forced
+    assert "--mem-fraction-static 0.8" in result
+    assert "--chunked-prefill-size 4096" in result
+    # original flags preserved
+    assert "--tool-call-parser" in result
+    assert "--context-length" in result
+
+
+def test_transform_replaces_node_selector_non_affine() -> None:
+    """Non-affine subnet chute: node_selector replaced, tee added, no TP/DP changes."""
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.vllm import build_vllm_chute
+
+        chute = build_vllm_chute(
+            username="exampleuser",
+            model_name="foo/turbovision-test",
+            image="chutes/vllm:nightly-2026010900",
+            node_selector=NodeSelector(gpu_count=4, include=["a100"]),
+            engine_args="--tool-call-parser qwen25",
+        )
+    """)
+    result = transform_code_for_tee(code, gpu_count=4, is_affine=False)
+    assert result is not None
+    # node_selector replaced
+    assert 'include=["pro_6000"]' in result or "include=['pro_6000']" in result
+    assert "a100" not in result
+    assert "gpu_count=4" in result
+    # tee added
+    assert "tee=True" in result
+    # No TP/DP or mem forced (not affine)
+    assert "--tensor-parallel-size" not in result
+    assert "--data-parallel-size" not in result
+    # original engine_args preserved as-is
+    assert "--tool-call-parser qwen25" in result
+
+
+def test_transform_overwrites_existing_tee_false() -> None:
+    """If tee=False exists in code, it should be replaced with tee=True."""
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=8, include=["h200"]),
+            tee=False,
+            engine_args="--context-length 36384",
+        )
+    """)
+    result = transform_code_for_tee(code, gpu_count=8, is_affine=True)
+    assert result is not None
+    assert "tee=True" in result
+    assert "tee=False" not in result
+    assert "h200" not in result
+    assert 'include=["pro_6000"]' in result or "include=['pro_6000']" in result
+    assert "--tp 1" in result
+    assert "--dp 8" in result
+
+
+def test_transform_affine_multi_gpu_replaces_tp() -> None:
+    """Affine chute with existing TP=4: should be overwritten to TP=1, DP=gpu_count."""
+    code = textwrap.dedent("""
+        from chutes.chute import NodeSelector
+        from chutes.chute.template.sglang import build_sglang_chute
+
+        chute = build_sglang_chute(
+            username="exampleuser",
+            model_name="foo/affine-test",
+            image="chutes/sglang:nightly-2025121000",
+            node_selector=NodeSelector(gpu_count=4, min_vram_gb_per_gpu=80),
+            engine_args="--tp 4 --context-length 36384",
+        )
+    """)
+    result = transform_code_for_tee(code, gpu_count=4, is_affine=True)
+    assert result is not None
+    assert "--tp 1" in result
+    assert "--dp 4" in result
+    assert result.count("--tp") == 1
+    assert "min_vram_gb_per_gpu" not in result
+    assert 'include=["pro_6000"]' in result or "include=['pro_6000']" in result

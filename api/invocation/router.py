@@ -440,7 +440,7 @@ async def _invoke(
     if tee_only_header == "true" and not chute.tee:
         raise HTTPException(
             status_code=status.HTTP_426_UPGRADE_REQUIRED,
-            detail="This chute does not have TEE enabled. Use the /teeify endpoint to promote the chute to TEE, or remove the X-TEE-Only header.",
+            detail="This chute does not have TEE enabled. Please remove the X-TEE-Only header, or use a TEE-enabled chute.",
         )
 
     await check_quota_and_balance(request, current_user, chute)

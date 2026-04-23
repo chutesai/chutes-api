@@ -602,11 +602,17 @@ def check_affine_code(code: str) -> tuple[bool, str]:
         return True, "Valid chute file with Chute constructor"
 
 
-def _update_engine_args_str(engine_args: str, builder_name: str) -> str:
+def _update_engine_args_str(
+    engine_args: str, builder_name: str, gpu_count: int | None = None
+) -> str:
     """
     Ensure required flags are present in the engine_args string.
     sglang: --mem-fraction-static 0.8 --chunked-prefill-size 4096
     vllm:   --gpu-memory-utilization 0.8 --max-num-batched-tokens 4096
+
+    If gpu_count is provided, also force TP=1 and DP=gpu_count:
+    sglang: --tp 1 --dp {gpu_count}
+    vllm:   --tensor-parallel-size 1 --data-parallel-size {gpu_count}
     """
     if builder_name == "build_sglang_chute":
         mem_flag = "--mem-fraction-static"
@@ -615,7 +621,15 @@ def _update_engine_args_str(engine_args: str, builder_name: str) -> str:
         mem_flag = "--gpu-memory-utilization"
         prefill_flag = "--max-num-batched-tokens"
 
-    for flag, default in [(mem_flag, "0.8"), (prefill_flag, "4096")]:
+    flags = [(mem_flag, "0.8"), (prefill_flag, "4096")]
+
+    if gpu_count is not None:
+        if builder_name == "build_sglang_chute":
+            flags += [("--tp", "1"), ("--dp", str(gpu_count))]
+        else:
+            flags += [("--tensor-parallel-size", "1"), ("--data-parallel-size", str(gpu_count))]
+
+    for flag, default in flags:
         pattern = re.escape(flag) + r"\s+=?\s*\S+"
         if re.search(pattern, engine_args):
             engine_args = re.sub(pattern, f"{flag} {default}", engine_args)
@@ -628,10 +642,12 @@ def _update_engine_args_str(engine_args: str, builder_name: str) -> str:
     return engine_args.strip()
 
 
-def force_affine_engine_args(code: str) -> str | None:
+def force_affine_engine_args(code: str, gpu_count: int | None = None) -> str | None:
     """
     Parse affine chute code, force required engine_args values, return updated code.
     Returns None if no builder call found or code can't be parsed.
+
+    If gpu_count is provided, also forces TP=1 and DP=gpu_count.
 
     Only targets a top-level assignment whose value is a builder call,
     matching the same pattern check_affine_code validates. Uses ast.unparse()
@@ -658,15 +674,101 @@ def force_affine_engine_args(code: str) -> str | None:
         for kw in node.keywords:
             if kw.arg == "engine_args":
                 old_val = kw.value.value if isinstance(kw.value, ast.Constant) else ""
-                new_val = _update_engine_args_str(old_val, name)
+                new_val = _update_engine_args_str(old_val, name, gpu_count)
                 if old_val.strip() == new_val.strip():
                     return code  # No change needed.
                 kw.value = ast.Constant(value=new_val)
                 return ast.unparse(tree)
 
         # No engine_args keyword exists — add one.
-        new_val = _update_engine_args_str("", name)
+        new_val = _update_engine_args_str("", name, gpu_count)
         node.keywords.append(ast.keyword(arg="engine_args", value=ast.Constant(value=new_val)))
         return ast.unparse(tree)
 
     return None
+
+
+def transform_code_for_tee(code: str, gpu_count: int, is_affine: bool) -> str | None:
+    """
+    AST-transform chute code for TEE deployment:
+    - Set node_selector to include=["pro_6000"] (preserving gpu_count)
+    - Set tee=True
+    - For affine: also force TP=1, DP=gpu_count via engine_args
+    Returns updated code or None on failure.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    modified = False
+    builder_names = ALLOWED_TEMPLATE_BUILDERS | {"Chute"}
+
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func_name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if func_name not in builder_names:
+            continue
+
+        has_tee = False
+        has_node_selector = False
+
+        for kw in node.keywords:
+            if kw.arg == "tee":
+                kw.value = ast.Constant(value=True)
+                has_tee = True
+                modified = True
+            elif kw.arg == "node_selector":
+                kw.value = ast.Call(
+                    func=ast.Name(id="NodeSelector", ctx=ast.Load()),
+                    args=[],
+                    keywords=[
+                        ast.keyword(arg="gpu_count", value=ast.Constant(value=gpu_count)),
+                        ast.keyword(
+                            arg="include",
+                            value=ast.List(elts=[ast.Constant(value="pro_6000")], ctx=ast.Load()),
+                        ),
+                    ],
+                )
+                has_node_selector = True
+                modified = True
+
+        if not has_tee:
+            node.keywords.append(ast.keyword(arg="tee", value=ast.Constant(value=True)))
+            modified = True
+        if not has_node_selector:
+            node.keywords.append(
+                ast.keyword(
+                    arg="node_selector",
+                    value=ast.Call(
+                        func=ast.Name(id="NodeSelector", ctx=ast.Load()),
+                        args=[],
+                        keywords=[
+                            ast.keyword(arg="gpu_count", value=ast.Constant(value=gpu_count)),
+                            ast.keyword(
+                                arg="include",
+                                value=ast.List(
+                                    elts=[ast.Constant(value="pro_6000")], ctx=ast.Load()
+                                ),
+                            ),
+                        ],
+                    ),
+                )
+            )
+            modified = True
+
+        break  # Only transform the first builder/Chute call
+
+    if not modified:
+        return None
+
+    ast.fix_missing_locations(tree)
+    new_code = ast.unparse(tree)
+
+    if is_affine:
+        forced = force_affine_engine_args(new_code, gpu_count=gpu_count)
+        if forced is not None:
+            new_code = forced
+
+    return new_code
