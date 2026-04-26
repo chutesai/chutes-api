@@ -70,7 +70,6 @@ async def test_measurement_fields_are_correct(mock_settings):
     assert isinstance(r.gpu_count, int)
 
 
-
 @pytest.mark.asyncio
 @patch("api.server.router.settings")
 async def test_returns_empty_list_when_no_measurements(mock_settings):
@@ -104,9 +103,7 @@ async def test_result_is_written_to_cache(mock_settings):
 async def test_cache_hit_skips_settings_and_write(mock_settings):
     m = _make_measurement()
     cached_data = [m.__dict__]
-    mock_settings.redis_client.get = AsyncMock(
-        return_value=json.dumps(cached_data)
-    )
+    mock_settings.redis_client.get = AsyncMock(return_value=json.dumps(cached_data))
     mock_settings.redis_client.set = AsyncMock()
 
     result = await get_tee_measurements()
