@@ -184,6 +184,18 @@ class MaintenancePolicyResponse(BaseModel):
     servers: List[ServerUpgradeStatus] = Field(default_factory=list)
 
 
+class TeeMeasurementResponse(BaseModel):
+    """Public response model for a single accepted TEE measurement configuration."""
+
+    version: str
+    name: str
+    mrtd: str
+    boot_rtmrs: Dict[str, str]
+    runtime_rtmrs: Dict[str, str]
+    expected_gpus: List[str]
+    gpu_count: int
+
+
 class BootAttestation(Base):
     """Track anonymous boot attestations (pre-registration)."""
 

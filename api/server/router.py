@@ -2,7 +2,8 @@
 FastAPI routes for server management and TDX attestation.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List
+import orjson as json
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -31,6 +32,7 @@ from api.server.schemas import (
     ServerUpgradeStatus,
     TeeUpgradeWindow,
     UpgradeWindowInfo,
+    TeeMeasurementResponse,
 )
 from api.server.service import (
     create_nonce,
@@ -340,6 +342,44 @@ async def create_server(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server registration failed"
         )
+
+
+TEE_MEASUREMENTS_CACHE_KEY = "tee_measurements"
+TEE_MEASUREMENTS_CACHE_TTL = 3600  # 60 minutes; measurements only change on new releases
+
+
+@router.get("/tee/measurements", response_model=List[TeeMeasurementResponse])
+async def get_tee_measurements():
+    """
+    Return the list of currently accepted TEE measurement configurations.
+
+    These are the reference values (MRTD + RTMRs) that the platform accepts
+    during boot and runtime attestation. Clients can use these to independently
+    verify that a server is running approved software before trusting it.
+    No authentication required — public transparency endpoint.
+    """
+    cached = await settings.redis_client.get(TEE_MEASUREMENTS_CACHE_KEY)
+    if cached:
+        return json.loads(cached)
+
+    result = [
+        TeeMeasurementResponse(
+            version=m.version,
+            name=m.name,
+            mrtd=m.mrtd,
+            boot_rtmrs=m.boot_rtmrs,
+            runtime_rtmrs=m.runtime_rtmrs,
+            expected_gpus=m.expected_gpus,
+            gpu_count=m.gpu_count,
+        )
+        for m in settings.tee_measurements
+    ]
+    await settings.redis_client.set(
+        TEE_MEASUREMENTS_CACHE_KEY,
+        json.dumps([r.model_dump() for r in result]).decode(),
+        ex=TEE_MEASUREMENTS_CACHE_TTL,
+    )
+    return result
 
 
 @router.get("/maintenance/policy", response_model=MaintenancePolicyResponse)
