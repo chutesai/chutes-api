@@ -362,6 +362,15 @@ async def get_tee_measurements():
     if cached:
         return json.loads(cached)
 
+    try:
+        measurements = settings.tee_measurements
+    except Exception as e:
+        logger.error(f"TEE measurement config is invalid: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to read TEE measurements",
+        )
+
     result = [
         TeeMeasurementResponse(
             version=m.version,
@@ -372,7 +381,7 @@ async def get_tee_measurements():
             expected_gpus=m.expected_gpus,
             gpu_count=m.gpu_count,
         )
-        for m in settings.tee_measurements
+        for m in measurements
     ]
     await settings.redis_client.set(
         TEE_MEASUREMENTS_CACHE_KEY,
