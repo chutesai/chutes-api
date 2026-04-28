@@ -373,17 +373,17 @@ class Settings(BaseSettings):
 
             rtmr0_upper = measurement_config["boot_rtmrs"]["rtmr0"].upper().strip()
             if len(rtmr0_upper) != 96:
-                logger.warning(
-                    f"Invalid RTMR0 length for measurement config {config_name}: {len(rtmr0_upper)} (expected 96)"
+                raise ValueError(
+                    f"Invalid RTMR0 length for measurement config '{config_name}': "
+                    f"{len(rtmr0_upper)} chars (expected 96)."
                 )
-                continue
 
             mrtd_upper = measurement_config["mrtd"].upper().strip()
             if len(mrtd_upper) != 96:
-                logger.warning(
-                    f"Invalid MRTD length for measurement config {config_name}: {len(mrtd_upper)} (expected 96)"
+                raise ValueError(
+                    f"Invalid MRTD length for measurement config '{config_name}': "
+                    f"{len(mrtd_upper)} chars (expected 96)."
                 )
-                continue
 
             boot_rtmrs = {
                 k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()
@@ -398,6 +398,13 @@ class Settings(BaseSettings):
                     "This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
                 )
 
+            gpu_count = measurement_config.get("gpu_count")
+            if gpu_count is None:
+                raise ValueError(
+                    f"Missing 'gpu_count' for measurement config '{config_name}'. "
+                    "All TEE measurement configs must specify gpu_count."
+                )
+
             measurements.append(
                 TeeMeasurementConfig(
                     version=str(version).strip(),
@@ -406,7 +413,7 @@ class Settings(BaseSettings):
                     boot_rtmrs=boot_rtmrs,
                     runtime_rtmrs=runtime_rtmrs,
                     expected_gpus=[gpu.lower() for gpu in measurement_config["expected_gpus"]],
-                    gpu_count=measurement_config.get("gpu_count"),
+                    gpu_count=gpu_count,
                 )
             )
 
