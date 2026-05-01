@@ -1464,7 +1464,21 @@ async def main():
         if not image_id:
             await asyncio.sleep(10)
             continue
-        await forge(image_id)
+        try:
+            await forge(image_id)
+        except Exception as exc:
+            logger.error(f"Unhandled error forging {image_id=}: {exc}\n{traceback.format_exc()}")
+            try:
+                async with get_session() as session:
+                    result = await session.execute(
+                        select(Image).where(Image.image_id == image_id).limit(1)
+                    )
+                    image = result.scalar_one_or_none()
+                    if image and image.status == "building":
+                        image.status = f"error: {str(exc)[:200]}"
+                        await session.commit()
+            except Exception:
+                logger.error(f"Failed to mark {image_id} as error: {traceback.format_exc()}")
 
 
 if __name__ == "__main__":
