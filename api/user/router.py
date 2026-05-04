@@ -1208,13 +1208,9 @@ async def chute_quota_usage(
     return {"quota": quota, "used": used}
 
 
-@router.get("/me/subscription_usage")
-async def my_subscription_usage(
-    current_user: User = Depends(get_current_user()),
-    db: AsyncSession = Depends(get_db_session),
-):
+async def _get_subscription_usage(user_id: str, db: AsyncSession):
     """
-    Get current subscription usage and caps for the authenticated user.
+    Compute subscription usage and caps for a given user_id.
     Returns monthly and 4-hour window usage vs limits.
     """
     from api.config import (
@@ -1230,7 +1226,7 @@ async def my_subscription_usage(
         subscription_anchor,
         effective_date,
         updated_at,
-    ) = await InvocationQuota.get_subscription_record(current_user.user_id)
+    ) = await InvocationQuota.get_subscription_record(user_id)
     monthly_price = get_subscription_tier(quota)
     if monthly_price is None:
         return {"subscription": False}
@@ -1242,9 +1238,7 @@ async def my_subscription_usage(
 
     # Try Redis first, fall back to DB.
     four_hour_usage = None
-    four_hour_key = (
-        f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{current_user.user_id}"
-    )
+    four_hour_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['four_hour_period']}:{user_id}"
     cached_4h = await settings.redis_client.get(four_hour_key)
     if cached_4h is not None:
         four_hour_usage = float(cached_4h.decode() if isinstance(cached_4h, bytes) else cached_4h)
@@ -1254,9 +1248,7 @@ async def my_subscription_usage(
     monthly_cap = None
     if not custom_sub:
         monthly_cap = monthly_price * SUBSCRIPTION_MONTHLY_CAP_MULTIPLIER
-        month_key = (
-            f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{current_user.user_id}"
-        )
+        month_key = f"{SUBSCRIPTION_CACHE_PREFIX}_{periods['monthly_period']}:{user_id}"
         cached_month = await settings.redis_client.get(month_key)
         if cached_month is not None:
             monthly_usage = float(
@@ -1298,7 +1290,7 @@ async def my_subscription_usage(
                 )
             """),
             {
-                "user_id": current_user.user_id,
+                "user_id": user_id,
                 "cycle_start": periods["cycle_start"].replace(tzinfo=None),
                 "four_hour_start": periods["four_hour_start"].replace(tzinfo=None),
             },
@@ -1333,6 +1325,51 @@ async def my_subscription_usage(
             "reset_at": periods["cycle_end"].isoformat(),
         }
     return response
+
+
+@router.get("/me/subscription_usage")
+async def my_subscription_usage(
+    current_user: User = Depends(get_current_user()),
+    db: AsyncSession = Depends(get_db_session),
+):
+    """
+    Get current subscription usage and caps for the authenticated user.
+    Returns monthly and 4-hour window usage vs limits.
+    """
+    return await _get_subscription_usage(current_user.user_id, db)
+
+
+@router.get("/{user_id_or_username}/subscription_usage")
+async def admin_subscription_usage(
+    user_id_or_username: str,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Admin endpoint to get subscription usage and caps for any user by user_id or username.
+    """
+    if not current_user.has_role(Permissioning.billing_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This action can only be performed by billing admin accounts.",
+        )
+    user = (
+        (
+            await db.execute(
+                select(User).where(
+                    or_(User.user_id == user_id_or_username, User.username == user_id_or_username)
+                )
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User not found: {user_id_or_username}",
+        )
+    return await _get_subscription_usage(user.user_id, db)
 
 
 @router.delete("/me")
