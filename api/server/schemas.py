@@ -2,7 +2,7 @@
 ORM definitions for servers and TDX attestations.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import (
@@ -128,6 +128,20 @@ class LuksAttestRequest(BaseModel):
     volumes: List[str] = Field(
         ..., description="Volume names to rotate passphrases for"
     )
+
+    @field_validator("volumes")
+    @classmethod
+    def validate_volumes(cls, v: List[str]) -> List[str]:
+        from api.constants import SUPPORTED_LUKS_VOLUMES
+
+        if not v:
+            raise ValueError("volumes must be non-empty")
+        invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
+        if invalid:
+            raise ValueError(
+                f"Invalid volume name(s): {invalid}. Supported: {list(SUPPORTED_LUKS_VOLUMES)}"
+            )
+        return v
 
 
 class LuksVolumeInfo(BaseModel):
