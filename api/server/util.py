@@ -38,7 +38,7 @@ from api.server.exceptions import (
 from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
 
-from api.server.schemas import Server, VmCacheConfig
+from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
 
 
 def generate_nonce() -> str:
@@ -512,6 +512,69 @@ async def delete_luks_passphrases_for_server(
         await db.delete(vm_config)
         await db.commit()
         logger.info(f"Deleted LUKS config for VM {server_name} (miner: {miner_hotkey})")
+
+
+async def generate_confirm_nonce(miner_hotkey: str, vm_name: str) -> str:
+    """Generate a confirm nonce and store in Redis with 5-minute TTL."""
+    nonce = secrets.token_hex(32)
+    redis_key = f"confirm:{miner_hotkey}:{vm_name}"
+    await settings.redis_client.setex(redis_key, 300, nonce)
+    logger.info(f"Generated confirm nonce for VM {vm_name} (miner: {miner_hotkey})")
+    return nonce
+
+
+async def generate_luks_quote_nonce(miner_hotkey: str, vm_name: str) -> str:
+    """Generate a LUKS quote nonce and store in Redis with 10-minute TTL."""
+    nonce = secrets.token_hex(32)
+    redis_key = f"luks_quote_nonce:{miner_hotkey}:{vm_name}"
+    await settings.redis_client.setex(redis_key, 600, nonce)
+    logger.info(f"Generated LUKS quote nonce for VM {vm_name} (miner: {miner_hotkey})")
+    return nonce
+
+
+async def rotate_luks_passphrases(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+    volume_names: List[str],
+) -> tuple[Dict[str, LuksVolumeRotation], "VmCacheConfig"]:
+    """
+    Rotate LUKS passphrases for the given volumes.
+
+    For each volume:
+    - Reads the current passphrase from DB (None if first boot)
+    - Discards any stale pending passphrase from a prior unconfirmed rotation
+    - Generates a new passphrase stored as pending_{vol} in volume_passphrases
+
+    Returns a tuple of (volume_data, vm_config) where volume_data maps each
+    volume name to a LuksVolumeRotation and vm_config is the updated ORM object
+    (after commit + refresh).
+    """
+    vm_config = await _get_vm_cache_config(db, miner_hotkey, vm_name)
+    if vm_config is None:
+        vm_config = await _create_vm_cache_config(db, miner_hotkey, vm_name)
+
+    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
+    result: Dict[str, LuksVolumeRotation] = {}
+
+    for vol in volume_names:
+        current_enc = stored.get(vol)
+        current = decrypt_passphrase(current_enc) if current_enc else None
+
+        # Discard any stale pending from a prior unconfirmed rotation
+        stored.pop(f"pending_{vol}", None)
+
+        new_passphrase = generate_cache_passphrase()
+        stored[f"pending_{vol}"] = encrypt_passphrase(new_passphrase)
+
+        result[vol] = LuksVolumeRotation(current=current, next=new_passphrase)
+
+    vm_config.volume_passphrases = stored
+    vm_config.last_boot_at = func.now()
+    await db.commit()
+    await db.refresh(vm_config)
+    logger.info(f"LUKS rotation for VM {vm_name}: volumes={volume_names}")
+    return result, vm_config
 
 
 async def _track_server(

@@ -20,6 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
 from api.database import Base, generate_uuid
 from api.node.schemas import NodeArgs
 
@@ -59,7 +60,8 @@ class BootAttestationResponse(BaseModel):
     """Response model for successful boot attestation."""
 
     key: str
-    boot_token: str
+    boot_token: Optional[str] = None
+    luks_quote_nonce: Optional[str] = None
 
 
 class RuntimeAttestationArgs(BaseModel):
@@ -76,6 +78,37 @@ class RuntimeAttestationResponse(BaseModel):
     status: str
 
 
+@dataclass
+class LuksVolumeRotation:
+    """Internal result of rotating a single LUKS volume's passphrase (not an API model)."""
+
+    current: Optional[str]
+    """Current active passphrase. None on first boot — VM should run luksFormat."""
+    next: str
+    """New pending passphrase the VM should add as a LUKS key slot."""
+
+    @property
+    def is_first_boot(self) -> bool:
+        return self.current is None
+
+
+@dataclass
+class LuksAttestResult:
+    """Internal result of process_luks_attest_request (not an API model)."""
+
+    volumes: Dict[str, "LuksVolumeRotation"]
+    confirm_nonce: str
+    k3s_encryption_key: str
+
+
+@dataclass
+class LuksConfirmResult:
+    """Internal result of process_luks_confirm (not an API model)."""
+
+    volumes: Dict[str, dict]
+    """Per-volume outcome: {"result": "promoted"|"discarded"|"no_pending"}."""
+
+
 class LuksPassphraseRequest(BaseModel):
     """Request model for LUKS POST: VM sends volume list, API returns keys (existing/new/rekey), prunes others."""
 
@@ -86,6 +119,56 @@ class LuksPassphraseRequest(BaseModel):
         None,
         description="Volume names that must receive new passphrases (no reuse); must be subset of volumes",
     )
+
+
+class LuksAttestRequest(BaseModel):
+    """Request model for POST /luks/attest (new VMs, version >= 1.3.0)."""
+
+    quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
+    volumes: List[str] = Field(
+        ..., description="Volume names to rotate passphrases for"
+    )
+
+
+class LuksVolumeInfo(BaseModel):
+    """Passphrase info for a single volume in the luks/attest response."""
+
+    current: Optional[str] = Field(
+        None,
+        description="Current passphrase (None on first boot — VM must luksFormat before luksOpen)",
+    )
+    next: str = Field(..., description="New pending passphrase the VM should add as a LUKS key slot")
+
+
+class LuksAttestResponse(BaseModel):
+    """Response model for POST /luks/attest."""
+
+    volumes: Dict[str, LuksVolumeInfo]
+    confirm_nonce: str = Field(..., description="Single-use nonce for the confirm endpoint")
+    k3s_encryption_key: str = Field(..., description="k3s encryption key (base64)")
+
+
+class LuksVolumeConfirmStatus(BaseModel):
+    """Confirm status for a single volume."""
+
+    rotated: bool = Field(
+        ..., description="True if passphrase rotation succeeded for this volume; False to discard pending"
+    )
+
+
+class LuksConfirmRequest(BaseModel):
+    """Request model for POST /luks/confirm."""
+
+    volumes: Dict[str, LuksVolumeConfirmStatus] = Field(
+        ..., description="Per-volume rotation result reported by the VM"
+    )
+
+
+class LuksConfirmResponse(BaseModel):
+    """Response model for POST /luks/confirm."""
+
+    status: str
+    volumes: Dict[str, Any]
 
 
 class GpuAttestationArgs(BaseModel):
@@ -334,6 +417,7 @@ class VmCacheConfig(Base):
     miner_hotkey = Column(String, primary_key=True)
     vm_name = Column(String, primary_key=True)
     volume_passphrases = Column(JSONB, nullable=False, default=dict)
+    k3s_encryption_key = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     last_boot_at = Column(DateTime(timezone=True), nullable=True)

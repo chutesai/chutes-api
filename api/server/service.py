@@ -5,6 +5,7 @@ Core server management and TDX attestation logic.
 import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
+import secrets
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 
 from api.config import settings
-from api.constants import NONCE_HEADER, NoncePurpose
+from api.constants import NONCE_HEADER, NoncePurpose, HOTKEY_HEADER, LUKS_STORAGE_VOLUME
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
 from api.server.client import TeeServerClient
@@ -31,6 +32,13 @@ from api.server.schemas import (
     PreflightResult,
     UpgradeWindowInfo,
     ConfirmMaintenanceResult,
+    VmCacheConfig,
+    LuksAttestRequest,
+    LuksVolumeInfo,
+    LuksVolumeRotation,
+    LuksAttestResult,
+    LuksConfirmRequest,
+    LuksConfirmResult,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -47,12 +55,19 @@ from api.server.exceptions import (
 )
 from api.server.util import (
     _track_server,
+    _get_vm_cache_config,
     get_matching_measurement_config,
     generate_nonce,
     get_nonce_expiry_seconds,
     verify_quote,
     verify_gpu_evidence,
     sync_server_luks_passphrases,
+    rotate_luks_passphrases,
+    LuksVolumeRotation,
+    generate_confirm_nonce,
+    generate_luks_quote_nonce,
+    encrypt_passphrase,
+    decrypt_passphrase,
     get_public_key_hash,
     cert_to_base64_der,
     validate_user_nonce,
@@ -180,6 +195,72 @@ def validate_request_nonce(purpose: NoncePurpose):
 
     return _validate_request_nonce
 
+async def require_luks_quote_nonce(
+    vm_name: str,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    quote_nonce: str | None = Header(None, alias="X-Quote-Nonce"),
+) -> str:
+    """
+    FastAPI dependency for POST /luks/attest (new VMs, version >= 1.3.0).
+
+    Mirrors validate_request_nonce: GETDEL luks_quote_nonce:{hotkey}:{vm_name},
+    verify X-Quote-Nonce header matches stored value. Returns the validated nonce
+    so the handler can pass it to verify_quote (which checks signature + all RTMRs
+    including RTMR3 extended in initramfs).
+    """
+    if not quote_nonce or not hotkey:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Quote nonce (X-Quote-Nonce) and hotkey are required",
+        )
+    redis_key = f"luks_quote_nonce:{hotkey}:{vm_name}"
+    stored = await settings.redis_client.getdel(redis_key)
+    if not stored:
+        logger.warning(f"LUKS quote nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Quote nonce not found or expired",
+        )
+    if stored.decode() != quote_nonce:
+        logger.warning(f"LUKS quote nonce mismatch for VM {vm_name} (hotkey: {hotkey})")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Quote nonce mismatch",
+        )
+    return quote_nonce
+
+
+async def require_confirm_nonce(
+    vm_name: str,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    confirm_nonce: str | None = Header(None, alias="X-Confirm-Nonce"),
+) -> None:
+    """
+    FastAPI dependency for POST /luks/confirm.
+
+    GETDEL confirm:{hotkey}:{vm_name}, verify X-Confirm-Nonce header matches
+    stored value. Raises 401 on mismatch or missing/expired nonce.
+    """
+    if not confirm_nonce or not hotkey:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Confirm nonce (X-Confirm-Nonce) and hotkey are required",
+        )
+    redis_key = f"confirm:{hotkey}:{vm_name}"
+    stored = await settings.redis_client.getdel(redis_key)
+    if not stored:
+        logger.warning(f"Confirm nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Confirm nonce not found or expired",
+        )
+    if stored.decode() != confirm_nonce:
+        logger.warning(f"Confirm nonce mismatch for VM {vm_name} (hotkey: {hotkey})")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Confirm nonce mismatch",
+        )
+
 
 def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> None:
     """
@@ -249,7 +330,7 @@ async def process_boot_attestation(
     args: BootAttestationArgs,
     nonce: str,
     expected_cert_hash: str,
-) -> str:
+) -> tuple[Optional[str], Optional[str]]:
     """
     Process a boot attestation request.
 
@@ -261,7 +342,9 @@ async def process_boot_attestation(
         expected_cert_hash: Expected certificate hash
 
     Returns:
-        Boot token for subsequent cache passphrase retrieval
+        Tuple of (boot_token, luks_quote_nonce). Exactly one is set depending on
+        the VM's measurement version: boot_token for version < 1.3.0 (legacy POST
+        /luks flow), luks_quote_nonce for version >= 1.3.0 (POST /luks/attest flow).
 
     Raises:
         NonceError: If nonce validation fails
@@ -299,10 +382,16 @@ async def process_boot_attestation(
             db, args.miner_hotkey, args.vm_name, measurement_config.version
         )
 
-        # Generate boot token for this verified VM
-        boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
+        # Version-gate: legacy VMs (< 1.3.0) get a boot token for POST /luks;
+        # new VMs (>= 1.3.0) get a luks_quote_nonce for POST /luks/attest instead.
+        boot_token: Optional[str] = None
+        luks_quote_nonce: Optional[str] = None
+        if semcomp(measurement_config.version, "1.3.0") >= 0:
+            luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
+        else:
+            boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
 
-        return boot_token
+        return boot_token, luks_quote_nonce
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record; set measurement_version if quote matched a config
@@ -883,6 +972,92 @@ async def process_luks_passphrase_request(
     )
     await _consume_boot_token(boot_token)
     return result
+
+
+async def process_luks_attest_request(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    body: LuksAttestRequest,
+    quote_nonce: str,
+    expected_cert_hash: str,
+) -> LuksAttestResult:
+    """
+    Process POST /luks/attest for new-format VMs (version >= 1.3.0).
+
+    The quote nonce has already been validated and consumed by require_luks_quote_nonce.
+    Verifies the TDX quote (signature + all RTMR measurements including RTMR3), rotates
+    passphrases, manages the k3s encryption key, and issues a confirm nonce.
+    """
+    quote = RuntimeTdxQuote.from_base64(body.quote)
+    await verify_quote(quote, quote_nonce, expected_cert_hash)
+
+    volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, body.volumes)
+
+    # Derive k3s key lifecycle from DB state: if storage had no current passphrase
+    # (first boot) or no k3s key is stored yet, generate a new one.
+    storage_rotation = volumes_data.get(LUKS_STORAGE_VOLUME)
+    if (storage_rotation is None or storage_rotation.is_first_boot) or not vm_config.k3s_encryption_key:
+        k3s_bytes = secrets.token_bytes(32)
+        k3s_b64 = base64.b64encode(k3s_bytes).decode()
+        vm_config.k3s_encryption_key = encrypt_passphrase(k3s_b64)
+        await db.commit()
+    else:
+        k3s_b64 = decrypt_passphrase(vm_config.k3s_encryption_key)
+
+    confirm_nonce = await generate_confirm_nonce(hotkey, vm_name)
+
+    return LuksAttestResult(
+        volumes=volumes_data,
+        confirm_nonce=confirm_nonce,
+        k3s_encryption_key=k3s_b64,
+    )
+
+
+async def process_luks_confirm(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    body: LuksConfirmRequest,
+) -> LuksConfirmResult:
+    """
+    Process POST /luks/confirm.
+
+    The confirm nonce has already been validated and consumed by require_confirm_nonce.
+    Promotes pending passphrases to current for volumes that rotated successfully,
+    or discards them for volumes that failed.
+    """
+    vm_config = await _get_vm_cache_config(db, hotkey, vm_name)
+    if vm_config is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No LUKS config found for VM {vm_name}",
+        )
+
+    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
+    confirmed_volumes: Dict[str, dict] = {}
+
+    for vol, vol_status in body.volumes.items():
+        pending_key = f"pending_{vol}"
+        if vol_status.rotated:
+            if pending_key in stored:
+                stored[vol] = stored.pop(pending_key)
+                confirmed_volumes[vol] = {"result": "promoted"}
+                logger.info(f"LUKS confirm: promoted pending passphrase for volume {vol} (VM: {vm_name})")
+            else:
+                confirmed_volumes[vol] = {"result": "no_pending"}
+                logger.warning(
+                    f"LUKS confirm: rotated=True but no pending passphrase for volume {vol} (VM: {vm_name})"
+                )
+        else:
+            stored.pop(pending_key, None)
+            confirmed_volumes[vol] = {"result": "discarded"}
+            logger.info(f"LUKS confirm: discarded pending passphrase for volume {vol} (VM: {vm_name})")
+
+    vm_config.volume_passphrases = stored
+    await db.commit()
+
+    return LuksConfirmResult(volumes=confirmed_volumes)
 
 
 async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Server, Instance]:

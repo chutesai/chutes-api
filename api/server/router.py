@@ -26,6 +26,11 @@ from api.server.schemas import (
     BootAttestationResponse,
     RuntimeAttestationResponse,
     LuksPassphraseRequest,
+    LuksAttestRequest,
+    LuksAttestResponse,
+    LuksVolumeInfo,
+    LuksConfirmRequest,
+    LuksConfirmResponse,
     PreflightResult,
     ConfirmMaintenanceResult,
     MaintenancePolicyResponse,
@@ -46,6 +51,10 @@ from api.server.service import (
     delete_server,
     validate_request_nonce,
     process_luks_passphrase_request,
+    require_luks_quote_nonce,
+    require_confirm_nonce,
+    process_luks_attest_request,
+    process_luks_confirm,
     get_active_upgrade_window,
     preflight_maintenance,
     confirm_maintenance,
@@ -66,6 +75,7 @@ from api.util import extract_ip, is_valid_host, semcomp
 
 
 router = APIRouter()
+
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
 
@@ -103,12 +113,20 @@ async def verify_boot_attestation(
 
     This endpoint verifies the TDX quote against expected boot measurements
     and returns the LUKS passphrase for disk decryption if valid.
+    For VMs running version >= 1.3.0, also returns a luks_quote_nonce for
+    the subsequent POST /luks/attest call.
     """
     try:
         server_ip = extract_ip(request)
-        boot_token = await process_boot_attestation(db, server_ip, args, nonce, expected_cert_hash)
+        boot_token, luks_quote_nonce = await process_boot_attestation(
+            db, server_ip, args, nonce, expected_cert_hash
+        )
 
-        return BootAttestationResponse(key=get_luks_passphrase(), boot_token=boot_token)
+        return BootAttestationResponse(
+            key=get_luks_passphrase(),
+            boot_token=boot_token,
+            luks_quote_nonce=luks_quote_nonce,
+        )
     except NonceError as e:
         logger.warning(f"Boot attestation nonce error: {str(e)}")
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -169,9 +187,11 @@ async def sync_luks_passphrases(
     boot_token: str | None = Header(None, alias="X-Boot-Token"),
 ):
     """
-    Sync LUKS passphrases: VM sends volume list; API returns keys for existing volumes,
-    creates keys for new volumes, rekeys volumes in rekey list, and prunes stored keys
-    for volumes not in the list. Boot token is consumed after successful POST.
+    Sync LUKS passphrases for legacy VMs (version < 1.3.0).
+
+    VM sends its volume list; API returns keys for existing volumes, creates keys
+    for new volumes, rekeys volumes in the rekey list, and prunes stored keys for
+    volumes not in the list. Boot token is validated and consumed on success.
     """
     try:
         _validate_luks_request(boot_token, hotkey, body)
@@ -194,6 +214,74 @@ async def sync_luks_passphrases(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to sync/create LUKS passphrases",
+        )
+
+
+@router.post("/{vm_name}/luks/attest", response_model=LuksAttestResponse)
+async def attest_luks(
+    vm_name: str,
+    body: LuksAttestRequest,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    expected_cert_hash=Depends(extract_client_cert_hash()),
+    validated_nonce: str = Depends(require_luks_quote_nonce),
+):
+    """
+    Rotate LUKS passphrases for new-format VMs (version >= 1.3.0).
+
+    The VM embeds the luks_quote_nonce (received in the boot attestation response)
+    in a TDX quote after extending RTMR3 in initramfs. require_luks_quote_nonce
+    validates and consumes the nonce; the handler then calls verify_quote which
+    checks the TDX signature and all RTMR measurements including RTMR3. Returns
+    rotated passphrases, the k3s encryption key, and a confirm nonce.
+    """
+    try:
+        result = await process_luks_attest_request(
+            db, hotkey, vm_name, body, validated_nonce, expected_cert_hash
+        )
+        return LuksAttestResponse(
+            volumes={vol: LuksVolumeInfo(current=r.current, next=r.next) for vol, r in result.volumes.items()},
+            confirm_nonce=result.confirm_nonce,
+            k3s_encryption_key=result.k3s_encryption_key,
+        )
+    except AttestationError as e:
+        logger.warning(f"LUKS attest quote verification failed: {str(e)}")
+        raise e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in LUKS attest: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="LUKS attestation failed",
+        )
+
+
+@router.post("/{vm_name}/luks/confirm", response_model=LuksConfirmResponse)
+async def confirm_luks_rotation(
+    vm_name: str,
+    body: LuksConfirmRequest,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _=Depends(require_confirm_nonce),
+):
+    """
+    Confirm or discard pending LUKS passphrase rotation results.
+
+    The VM reports per-volume success/failure. require_confirm_nonce validates
+    and consumes the nonce before the handler runs. Volumes with rotated=True
+    have pending passphrases promoted to current; rotated=False discards pending.
+    """
+    try:
+        result = await process_luks_confirm(db, hotkey, vm_name, body)
+        return LuksConfirmResponse(status="confirmed", volumes=result.volumes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in LUKS confirm: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="LUKS confirm failed",
         )
 
 
@@ -639,3 +727,4 @@ async def get_attestation_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get attestation status",
         )
+

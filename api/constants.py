@@ -23,6 +23,10 @@ ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 # LUKS volume names allowed in GET/POST (extendable)
 SUPPORTED_LUKS_VOLUMES = ("storage", "tdx-cache")
 
+# The storage volume's first-boot state determines whether a new k3s encryption
+# key must be generated (luksFormat on a raw device vs. luksOpen on existing LUKS).
+LUKS_STORAGE_VOLUME = "storage"
+
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
 
