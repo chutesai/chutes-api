@@ -2028,17 +2028,13 @@ async def get_rint_nonce(
             detail=f"Launch config {config_id} not found",
         )
 
-    # Check if nonce exists in Redis (one-time use)
     redis_key = f"rint_nonce:{config_id}"
-    nonce = await settings.redis_client.get(redis_key)
+    nonce = await settings.redis_client.getdel(redis_key)
     if not nonce:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Nonce for config {config_id} not found or already consumed",
         )
-
-    # Consume the nonce (delete from Redis)
-    await settings.redis_client.delete(redis_key)
 
     return PlainTextResponse(nonce.decode() if isinstance(nonce, bytes) else nonce)
 

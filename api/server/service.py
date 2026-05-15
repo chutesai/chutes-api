@@ -128,8 +128,7 @@ async def validate_and_consume_nonce(
     """
     redis_key = f"nonce:{nonce_value}"
 
-    # Get and delete nonce atomically
-    redis_value = await settings.redis_client.get(redis_key)
+    redis_value = await settings.redis_client.getdel(redis_key)
 
     if not redis_value:
         raise NonceError("Nonce not found or expired")
@@ -158,11 +157,6 @@ async def validate_and_consume_nonce(
             f"Nonce purpose mismatch: expected {purpose.value}, got {stored_purpose}. "
             f"Nonces are purpose-specific and cannot be reused across different operations."
         )
-
-    # Consume the nonce by deleting it
-    deleted = await settings.redis_client.delete(redis_key)
-    if not deleted:
-        raise NonceError("Nonce was already consumed")
 
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}... for purpose {purpose}")
 

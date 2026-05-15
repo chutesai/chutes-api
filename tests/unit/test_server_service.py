@@ -331,19 +331,18 @@ async def test_create_nonce(mock_settings):
 @pytest.mark.asyncio
 async def test_validate_and_consume_nonce_success(mock_settings):
     """Test successful nonce validation and consumption."""
-    mock_settings.redis_client.get.return_value = json.dumps(
+    mock_settings.redis_client.getdel.return_value = json.dumps(
         {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value}
     ).encode()
     await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
 
-    mock_settings.redis_client.get.assert_called_once_with(f"nonce:{TEST_NONCE}")
-    mock_settings.redis_client.delete.assert_called_once_with(f"nonce:{TEST_NONCE}")
+    mock_settings.redis_client.getdel.assert_called_once_with(f"nonce:{TEST_NONCE}")
 
 
 @pytest.mark.asyncio
 async def test_validate_and_consume_nonce_not_found(mock_settings):
-    """Test nonce validation when nonce doesn't exist."""
-    mock_settings.redis_client.get.return_value = None
+    """Test nonce validation when nonce doesn't exist (or was already consumed)."""
+    mock_settings.redis_client.getdel.return_value = None
 
     with pytest.raises(NonceError, match="Nonce not found or expired"):
         await validate_and_consume_nonce("invalid_nonce", TEST_SERVER_IP, NoncePurpose.BOOT)
@@ -352,24 +351,13 @@ async def test_validate_and_consume_nonce_not_found(mock_settings):
 @pytest.mark.asyncio
 async def test_validate_and_consume_nonce_server_mismatch(mock_settings):
     """Test nonce validation with wrong server ID."""
-    mock_settings.redis_client.get.return_value = json.dumps(
+    mock_settings.redis_client.getdel.return_value = json.dumps(
         {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value}
     ).encode()
 
     with pytest.raises(NonceError, match="Nonce server mismatch"):
         await validate_and_consume_nonce(TEST_GPU_NONCE, "192.168.0.1", NoncePurpose.BOOT)
 
-
-@pytest.mark.asyncio
-async def test_validate_and_consume_nonce_already_consumed(mock_settings):
-    """Test nonce validation when nonce was already consumed."""
-    mock_settings.redis_client.get.return_value = json.dumps(
-        {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value}
-    ).encode()
-    mock_settings.redis_client.delete.return_value = 0  # Nothing deleted (already consumed)
-
-    with pytest.raises(NonceError, match="Nonce was already consumed"):
-        await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
 
 
 # Quote Verification Tests
@@ -883,7 +871,7 @@ async def test_create_nonce_redis_failure(mock_settings):
 @pytest.mark.asyncio
 async def test_validate_nonce_invalid_format(mock_settings):
     """Test nonce validation when Redis value can't be decoded as JSON."""
-    mock_settings.redis_client.get.return_value = b"\xff\xfe\xfd"
+    mock_settings.redis_client.getdel.return_value = b"\xff\xfe\xfd"
 
     with pytest.raises(NonceError, match="Invalid nonce format"):
         await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
@@ -921,7 +909,7 @@ async def test_register_server_general_exception(mock_db_session, server_args, s
 @pytest.mark.asyncio
 async def test_nonce_validation_error_cases(mock_settings, redis_value, expected_error):
     """Test various nonce validation error scenarios."""
-    mock_settings.redis_client.get.return_value = redis_value
+    mock_settings.redis_client.getdel.return_value = redis_value
 
     with pytest.raises(NonceError, match=expected_error):
         await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
