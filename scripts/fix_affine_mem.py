@@ -127,12 +127,7 @@ async def fix_dp_gpu_mismatch(session, dry_run: bool):
     Fix chutes where the code's gpu_count=X differs from --dp Y.
     Updates --dp to match gpu_count, and syncs the DB node_selector.
     """
-    all_chutes = (
-        (await session.execute(select(Chute)))
-        .unique()
-        .scalars()
-        .all()
-    )
+    all_chutes = (await session.execute(select(Chute))).unique().scalars().all()
 
     mismatched = []
     for chute in all_chutes:
@@ -201,7 +196,9 @@ async def fix_dp_gpu_mismatch(session, dry_run: bool):
 
     print(f"\n{'=' * 72}")
     mode = "Would update" if dry_run else "Updated"
-    print(f"[dp/gpu_count fix] {mode}: {updated} | Skipped: {skipped} | Total mismatched: {len(mismatched)}")
+    print(
+        f"[dp/gpu_count fix] {mode}: {updated} | Skipped: {skipped} | Total mismatched: {len(mismatched)}"
+    )
 
 
 async def main():

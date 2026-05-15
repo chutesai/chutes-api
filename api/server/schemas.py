@@ -125,9 +125,7 @@ class LuksAttestRequest(BaseModel):
     """Request model for POST /luks/attest (new VMs, version >= 1.3.0)."""
 
     quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
-    volumes: List[str] = Field(
-        ..., description="Volume names to rotate passphrases for"
-    )
+    volumes: List[str] = Field(..., description="Volume names to rotate passphrases for")
 
     @field_validator("volumes")
     @classmethod
@@ -151,7 +149,9 @@ class LuksVolumeInfo(BaseModel):
         None,
         description="Current passphrase (None on first boot — VM must luksFormat before luksOpen)",
     )
-    next: str = Field(..., description="New pending passphrase the VM should add as a LUKS key slot")
+    next: str = Field(
+        ..., description="New pending passphrase the VM should add as a LUKS key slot"
+    )
 
 
 class LuksAttestResponse(BaseModel):
@@ -166,7 +166,8 @@ class LuksVolumeConfirmStatus(BaseModel):
     """Confirm status for a single volume."""
 
     rotated: bool = Field(
-        ..., description="True if passphrase rotation succeeded for this volume; False to discard pending"
+        ...,
+        description="True if passphrase rotation succeeded for this volume; False to discard pending",
     )
 
 

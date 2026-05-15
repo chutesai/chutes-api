@@ -32,10 +32,7 @@ from api.server.schemas import (
     PreflightResult,
     UpgradeWindowInfo,
     ConfirmMaintenanceResult,
-    VmCacheConfig,
     LuksAttestRequest,
-    LuksVolumeInfo,
-    LuksVolumeRotation,
     LuksAttestResult,
     LuksConfirmRequest,
     LuksConfirmResult,
@@ -63,7 +60,6 @@ from api.server.util import (
     verify_gpu_evidence,
     sync_server_luks_passphrases,
     rotate_luks_passphrases,
-    LuksVolumeRotation,
     generate_confirm_nonce,
     generate_luks_quote_nonce,
     encrypt_passphrase,
@@ -188,6 +184,7 @@ def validate_request_nonce(purpose: NoncePurpose):
             )
 
     return _validate_request_nonce
+
 
 async def require_luks_quote_nonce(
     vm_name: str,
@@ -991,7 +988,9 @@ async def process_luks_attest_request(
     # Derive k3s key lifecycle from DB state: if storage had no current passphrase
     # (first boot) or no k3s key is stored yet, generate a new one.
     storage_rotation = volumes_data.get(LUKS_STORAGE_VOLUME)
-    if (storage_rotation is None or storage_rotation.is_first_boot) or not vm_config.k3s_encryption_key:
+    if (
+        storage_rotation is None or storage_rotation.is_first_boot
+    ) or not vm_config.k3s_encryption_key:
         k3s_bytes = secrets.token_bytes(32)
         k3s_b64 = base64.b64encode(k3s_bytes).decode()
         vm_config.k3s_encryption_key = encrypt_passphrase(k3s_b64)
@@ -1037,7 +1036,9 @@ async def process_luks_confirm(
             if pending_key in stored:
                 stored[vol] = stored.pop(pending_key)
                 confirmed_volumes[vol] = {"result": "promoted"}
-                logger.info(f"LUKS confirm: promoted pending passphrase for volume {vol} (VM: {vm_name})")
+                logger.info(
+                    f"LUKS confirm: promoted pending passphrase for volume {vol} (VM: {vm_name})"
+                )
             else:
                 confirmed_volumes[vol] = {"result": "no_pending"}
                 logger.warning(
@@ -1046,7 +1047,9 @@ async def process_luks_confirm(
         else:
             stored.pop(pending_key, None)
             confirmed_volumes[vol] = {"result": "discarded"}
-            logger.info(f"LUKS confirm: discarded pending passphrase for volume {vol} (VM: {vm_name})")
+            logger.info(
+                f"LUKS confirm: discarded pending passphrase for volume {vol} (VM: {vm_name})"
+            )
 
     vm_config.volume_passphrases = stored
     await db.commit()

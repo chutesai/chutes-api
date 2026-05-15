@@ -359,7 +359,6 @@ async def test_validate_and_consume_nonce_server_mismatch(mock_settings):
         await validate_and_consume_nonce(TEST_GPU_NONCE, "192.168.0.1", NoncePurpose.BOOT)
 
 
-
 # Quote Verification Tests
 
 

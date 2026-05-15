@@ -240,7 +240,10 @@ async def attest_luks(
             db, hotkey, vm_name, body, validated_nonce, expected_cert_hash
         )
         return LuksAttestResponse(
-            volumes={vol: LuksVolumeInfo(current=r.current, next=r.next) for vol, r in result.volumes.items()},
+            volumes={
+                vol: LuksVolumeInfo(current=r.current, next=r.next)
+                for vol, r in result.volumes.items()
+            },
             confirm_nonce=result.confirm_nonce,
             k3s_encryption_key=result.k3s_encryption_key,
         )
@@ -727,4 +730,3 @@ async def get_attestation_status(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get attestation status",
         )
-
