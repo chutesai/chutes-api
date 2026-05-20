@@ -40,6 +40,14 @@ class TeeInstanceEvidence(BaseModel):
     certificate: str = Field(
         ..., description="Base64-encoded DER format TLS certificate from the server"
     )
+    signature: Optional[str] = Field(
+        None,
+        description="Base64-encoded RSA-PKCS1v15-SHA256 signature of attested_body, signed with the host TLS private key. Present on attestation proxy >= 0.2.0. Verifying this against the certificate public key proves the responder holds the attested private key.",
+    )
+    attested_body: Optional[str] = Field(
+        None,
+        description="Base64-encoded raw response body from the attestation proxy—the exact bytes covered by signature. Present when signature is present.",
+    )
 
 
 class NonceResponse(BaseModel):

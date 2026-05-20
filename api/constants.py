@@ -19,6 +19,7 @@ PURPOSE_HEADER = "X-Chutes-Purpose"
 MINER_HEADER = "X-Chutes-Miner"
 VALIDATOR_HEADER = "X-Chutes-Validator"
 ENCRYPTED_HEADER = "X-Chutes-Encrypted"
+ATTESTATION_SIGNATURE_HEADER = "X-Signature"
 
 # LUKS volume names allowed in GET/POST (extendable)
 SUPPORTED_LUKS_VOLUMES = ("storage", "tdx-cache")
