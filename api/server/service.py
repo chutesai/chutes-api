@@ -12,8 +12,10 @@ from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
 from sqlalchemy import delete, or_, select, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from bittensor_wallet.keypair import Keypair
 
 from api.config import settings
 from api.constants import NONCE_HEADER, NoncePurpose, HOTKEY_HEADER, LUKS_STORAGE_VOLUME
@@ -38,6 +40,7 @@ from api.server.schemas import (
     LuksAttestResult,
     LuksConfirmRequest,
     LuksConfirmResult,
+    VmAuthKey,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -159,7 +162,9 @@ async def validate_and_consume_nonce(
 
     # Validate server IP
     if stored_server != server_ip:
-        raise NonceError(f"Nonce server mismatch: expected {server_ip}, got {stored_server}")
+        raise NonceError(
+            f"Nonce server mismatch: expected {server_ip}, got {stored_server}"
+        )
 
     # Validate purpose (if stored nonce has a purpose, it must match)
     if stored_purpose and stored_purpose != purpose.value:
@@ -168,7 +173,9 @@ async def validate_and_consume_nonce(
             f"Nonces are purpose-specific and cannot be reused across different operations."
         )
 
-    logger.info(f"Validated and consumed nonce: {nonce_value[:8]}... for purpose {purpose}")
+    logger.info(
+        f"Validated and consumed nonce: {nonce_value[:8]}... for purpose {purpose}"
+    )
     return stored_hotkey
 
 
@@ -194,7 +201,8 @@ def validate_request_nonce(purpose: NoncePurpose):
         except NonceError as e:
             logger.error(f"Request nonce validation failed: {e}")
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid nonce supplied"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied",
             )
 
     return _validate_request_nonce
@@ -220,15 +228,20 @@ def validate_boot_nonce():
         server_ip = extract_ip(request)
 
         try:
-            stored_hotkey = await validate_and_consume_nonce(nonce, server_ip, NoncePurpose.BOOT)
+            stored_hotkey = await validate_and_consume_nonce(
+                nonce, server_ip, NoncePurpose.BOOT
+            )
         except NonceError as e:
             logger.error(f"Boot nonce validation failed: {e}")
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid nonce supplied"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied",
             )
 
         if not stored_hotkey:
-            logger.warning("Boot attestation rejected: nonce has no bound miner hotkey (legacy VM)")
+            logger.warning(
+                "Boot attestation rejected: nonce has no bound miner hotkey (legacy VM)"
+            )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Nonce was not issued with a miner hotkey binding — please upgrade your VM",
@@ -269,7 +282,9 @@ async def require_luks_quote_nonce(
     redis_key = f"luks_quote_nonce:{hotkey}:{vm_name}"
     stored = await settings.redis_client.getdel(redis_key)
     if not stored:
-        logger.warning(f"LUKS quote nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
+        logger.warning(
+            f"LUKS quote nonce not found or expired for VM {vm_name} (hotkey: {hotkey})"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Quote nonce not found or expired",
@@ -302,7 +317,9 @@ async def require_confirm_nonce(
     redis_key = f"confirm:{hotkey}:{vm_name}"
     stored = await settings.redis_client.getdel(redis_key)
     if not stored:
-        logger.warning(f"Confirm nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
+        logger.warning(
+            f"Confirm nonce not found or expired for VM {vm_name} (hotkey: {hotkey})"
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Confirm nonce not found or expired",
@@ -386,6 +403,39 @@ class BootAttestationResult:
     luks_quote_nonce: Optional[str] = None
     root_next: Optional[str] = None
     root_confirm_nonce: Optional[str] = None
+    vm_auth_ss58: Optional[str] = None
+
+
+async def _generate_and_store_vm_auth_key(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+) -> Keypair:
+    """Generate a fresh SR25519 keypair for this VM, encrypt the seed, and upsert into vm_auth_keys.
+
+    Called on every successful boot attestation so the key rotates each boot.
+    Returns the new Keypair (seed already committed to DB before return).
+    """
+    seed_hex = "0x" + secrets.token_hex(32)
+    keypair = Keypair.create_from_seed(seed_hex)
+    encrypted_seed = encrypt_passphrase(seed_hex)
+
+    stmt = pg_insert(VmAuthKey).values(
+        miner_hotkey=miner_hotkey,
+        vm_name=vm_name,
+        auth_seed=encrypted_seed,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["miner_hotkey", "vm_name"],
+        set_={"auth_seed": encrypted_seed, "created_at": func.now()},
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    logger.info(
+        f"Generated ephemeral auth key for VM {vm_name} (miner: {miner_hotkey}): {keypair.ss58_address}"
+    )
+    return keypair
 
 
 async def process_boot_attestation(
@@ -407,8 +457,8 @@ async def process_boot_attestation(
 
     Returns:
         BootAttestationResult with root_key, optional boot_token/luks_quote_nonce
-        (mutually exclusive by measurement version), and optional root_next/root_confirm_nonce
-        for VMs >= 1.4.0.
+        (mutually exclusive by measurement version), optional root_next/root_confirm_nonce
+        for VMs >= 1.4.0, and vm_auth_ss58 (always set on successful attestation).
 
     Raises:
         NonceError: If nonce validation fails
@@ -453,7 +503,9 @@ async def process_boot_attestation(
         await db.commit()
         await db.refresh(boot_attestation)
 
-        logger.success(f"Boot attestation successful: {boot_attestation.attestation_id}")
+        logger.success(
+            f"Boot attestation successful: {boot_attestation.attestation_id}"
+        )
 
         await _handle_boot_version_update(
             db, args.miner_hotkey, args.vm_name, measurement_config.version
@@ -469,14 +521,26 @@ async def process_boot_attestation(
             measurement_config.version,
         )
 
+        # Generate a fresh per-VM ephemeral SR25519 keypair. The SS58 is returned to
+        # the VM so it can trust requests signed with this key; the encrypted seed is
+        # stored in vm_auth_keys for the validator backend to use when calling this VM.
+        vm_keypair = await _generate_and_store_vm_auth_key(
+            db, args.miner_hotkey, args.vm_name
+        )
+        vm_auth_ss58 = vm_keypair.ss58_address
+
         # Version-gate: legacy VMs (< 1.3.0) get a boot token for POST /luks;
         # new VMs (>= 1.3.0) get a luks_quote_nonce for POST /luks/attest instead.
         boot_token: Optional[str] = None
         luks_quote_nonce: Optional[str] = None
         if semcomp(measurement_config.version, "1.3.0") >= 0:
-            luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
+            luks_quote_nonce = await generate_luks_quote_nonce(
+                args.miner_hotkey, args.vm_name
+            )
         else:
-            boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
+            boot_token = await generate_and_store_boot_token(
+                args.miner_hotkey, args.vm_name
+            )
 
         return BootAttestationResult(
             root_key=root_key,
@@ -484,6 +548,7 @@ async def process_boot_attestation(
             luks_quote_nonce=luks_quote_nonce,
             root_next=root_next,
             root_confirm_nonce=root_confirm_nonce,
+            vm_auth_ss58=vm_auth_ss58,
         )
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
@@ -571,14 +636,18 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
                 setattr(gpu, key, gpu_info.get(key))
 
         # Start verification process (pass GPUs for validation)
-        measurement_version = await verify_server(db, server, miner_hotkey, gpus=args.gpus)
+        measurement_version = await verify_server(
+            db, server, miner_hotkey, gpus=args.gpus
+        )
 
         if measurement_version is not None:
             server.version = measurement_version
             await db.commit()
 
         # Track nodes once verified
-        await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
+        await _track_nodes(
+            db, miner_hotkey, server.server_id, args.gpus, "0", func.now()
+        )
 
     except AttestationError as e:
         # Clean up orphan server: _track_server committed before verify_server failed.
@@ -628,7 +697,7 @@ async def verify_server(
     quote = None
     measurement_config = None
     try:
-        client = TeeServerClient(server)
+        client = await TeeServerClient.create(db, server)
 
         nonce = generate_nonce()
         logger.info(
@@ -699,9 +768,13 @@ async def verify_server(
         raise e
     finally:
         if failure_reason:
-            measurement_version = measurement_config.version if measurement_config else None
+            measurement_version = (
+                measurement_config.version if measurement_config else None
+            )
             server_attestation = ServerAttestation(
-                quote_data=base64.b64encode(quote.raw_bytes).decode("utf-8") if quote else None,
+                quote_data=base64.b64encode(quote.raw_bytes).decode("utf-8")
+                if quote
+                else None,
                 server_id=server.server_id,
                 verification_error=failure_reason,
                 created_at=func.now(),
@@ -724,7 +797,9 @@ async def verify_server(
                 raise
 
 
-async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey: str) -> Server:
+async def check_server_ownership(
+    db: AsyncSession, server_id: str, miner_hotkey: str
+) -> Server:
     """
     Get a server by ID, ensuring it belongs to the authenticated miner.
 
@@ -739,7 +814,9 @@ async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey:
     Raises:
         ServerNotFoundError: If server not found or doesn't belong to miner
     """
-    query = select(Server).where(Server.server_id == server_id, Server.miner_hotkey == miner_hotkey)
+    query = select(Server).where(
+        Server.server_id == server_id, Server.miner_hotkey == miner_hotkey
+    )
 
     result = await db.execute(query)
     server = result.scalar_one_or_none()
@@ -750,7 +827,9 @@ async def check_server_ownership(db: AsyncSession, server_id: str, miner_hotkey:
     return server
 
 
-async def get_server_by_name(db: AsyncSession, miner_hotkey: str, server_name: str) -> Server:
+async def get_server_by_name(
+    db: AsyncSession, miner_hotkey: str, server_name: str
+) -> Server:
     """
     Get a server by miner hotkey and VM name (stable identity for API paths).
 
@@ -765,7 +844,9 @@ async def get_server_by_name(db: AsyncSession, miner_hotkey: str, server_name: s
     Raises:
         ServerNotFoundError: If server not found
     """
-    query = select(Server).where(Server.miner_hotkey == miner_hotkey, Server.name == server_name)
+    query = select(Server).where(
+        Server.miner_hotkey == miner_hotkey, Server.name == server_name
+    )
     result = await db.execute(query)
     server = result.scalar_one_or_none()
     if not server:
@@ -1034,7 +1115,9 @@ async def _get_boot_token_context(boot_token: str) -> tuple[str, str]:
     return miner_hotkey, vm_name
 
 
-async def _validate_boot_token_for_luks(boot_token: str, hotkey: str, vm_name: str) -> None:
+async def _validate_boot_token_for_luks(
+    boot_token: str, hotkey: str, vm_name: str
+) -> None:
     """Validate boot token and verify hotkey/vm_name match. Raises NonceError on failure."""
     token_hotkey, token_vm_name = await _get_boot_token_context(boot_token)
     if token_hotkey != hotkey:
@@ -1085,7 +1168,9 @@ async def process_luks_attest_request(
     quote = RuntimeTdxQuote.from_base64(body.quote)
     await verify_quote(quote, quote_nonce, expected_cert_hash)
 
-    volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, body.volumes)
+    volumes_data, vm_config = await rotate_luks_passphrases(
+        db, hotkey, vm_name, body.volumes
+    )
 
     # Derive k3s key lifecycle from DB state: if storage had no current passphrase
     # (first boot) or no k3s key is stored yet, generate a new one.
@@ -1159,7 +1244,9 @@ async def process_luks_confirm(
     return LuksConfirmResult(volumes=confirmed_volumes)
 
 
-async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Server, Instance]:
+async def get_instance_server(
+    db: AsyncSession, instance_id: str
+) -> tuple[Server, Instance]:
     """
     Get the TEE server and instance for evidence/attestation (instance has chute, nodes, server loaded).
 
@@ -1178,7 +1265,10 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     query = (
         select(Instance)
         .where(Instance.instance_id == instance_id)
-        .options(joinedload(Instance.chute), joinedload(Instance.nodes).joinedload(Node.server))
+        .options(
+            joinedload(Instance.chute),
+            joinedload(Instance.nodes).joinedload(Node.server),
+        )
     )
     result = await db.execute(query)
     instance = result.unique().scalar_one_or_none()
@@ -1195,25 +1285,6 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     server = node.server
 
     return (server, instance)
-
-
-async def _get_instance_evidence(
-    server: Server, deployment_id: str, nonce: str
-) -> TeeInstanceEvidence:
-    """
-    Get TEE instance evidence via the chute's evidence endpoint (third-party flow).
-    Caller supplies nonce; we call chute-service-{deployment_id}/evidence?nonce=...
-    Verification flow (no caller nonce) uses get_chute_evidence(deployment_id) → verify endpoint.
-    """
-    client = TeeServerClient(server)
-    quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id, nonce=nonce)
-
-    quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
-    cert_base64 = cert_to_base64_der(cert)
-
-    return TeeInstanceEvidence(
-        quote=quote_base64, gpu_evidence=gpu_evidence, certificate=cert_base64
-    )
 
 
 async def get_instance_evidence(
@@ -1236,23 +1307,38 @@ async def get_instance_evidence(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Instance has no deployment_id; evidence is only available after TEE verification",
         )
-    return await _get_instance_evidence(server, instance.deployment_id, nonce)
+    client = await TeeServerClient.create(db, server)
+    quote, gpu_evidence, cert = await client.get_chute_evidence(
+        instance.deployment_id, nonce=nonce
+    )
+    return TeeInstanceEvidence(
+        quote=base64.b64encode(quote.raw_bytes).decode("utf-8"),
+        gpu_evidence=gpu_evidence,
+        certificate=cert_to_base64_der(cert),
+    )
 
 
-async def _fetch_instance_evidence(instance: Instance, nonce: str) -> TeeInstanceEvidence | None:
-    """Fetch evidence for a single instance, returning None on failure."""
+async def _fetch_instance_evidence(
+    db: AsyncSession, instance: Instance, nonce: str
+) -> TeeInstanceEvidence | None:
+    """Fetch evidence for a single instance, returning None on failure (used by bulk gather)."""
     try:
         node = instance.nodes[0]
         server = node.server
-        evidence = await _get_instance_evidence(server, instance.deployment_id, nonce)
+        client = await TeeServerClient.create(db, server)
+        quote, gpu_evidence, cert = await client.get_chute_evidence(
+            instance.deployment_id, nonce=nonce
+        )
         return TeeInstanceEvidence(
-            quote=evidence.quote,
-            gpu_evidence=evidence.gpu_evidence,
+            quote=base64.b64encode(quote.raw_bytes).decode("utf-8"),
+            gpu_evidence=gpu_evidence,
+            certificate=cert_to_base64_der(cert),
             instance_id=instance.instance_id,
-            certificate=evidence.certificate,
         )
     except GetEvidenceError as e:
-        logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
+        logger.error(
+            f"Failed to get evidence for instance {instance.instance_id}: {str(e)}"
+        )
         return None
 
 
@@ -1298,7 +1384,9 @@ async def get_chute_instances_evidence(
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
-    results = await asyncio.gather(*[_fetch_instance_evidence(inst, nonce) for inst in instances])
+    results = await asyncio.gather(
+        *[_fetch_instance_evidence(db, inst, nonce) for inst in instances]
+    )
     evidence_list: list[TeeInstanceEvidence] = []
     failed_instance_ids: list[str] = []
     for instance, result in zip(instances, results):
@@ -1378,7 +1466,9 @@ async def _find_sole_survivor_chutes(
         result = await db.execute(count_query)
         other_active = result.scalar() or 0
         if other_active == 0:
-            blocking.append(SoleSurvivorBlock(chute_id=inst.chute_id, instance_id=inst.instance_id))
+            blocking.append(
+                SoleSurvivorBlock(chute_id=inst.chute_id, instance_id=inst.instance_id)
+            )
     return blocking
 
 
@@ -1444,7 +1534,9 @@ async def preflight_maintenance(
             else:
                 server.maintenance_pending_window_id = None
 
-        current_slots = await _count_active_maintenance_slots(db, miner_hotkey, active_window)
+        current_slots = await _count_active_maintenance_slots(
+            db, miner_hotkey, active_window
+        )
         if current_slots >= limit:
             denial_reasons.append(
                 MaintenanceReason(
@@ -1507,7 +1599,8 @@ async def confirm_maintenance(
             purged_ids.append(inst.instance_id)
         except Exception:
             logger.error(
-                f"Failed to purge instance {inst.instance_id} during maintenance", exc_info=True
+                f"Failed to purge instance {inst.instance_id} during maintenance",
+                exc_info=True,
             )
 
     return ConfirmMaintenanceResult(

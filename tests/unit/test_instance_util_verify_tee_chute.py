@@ -97,7 +97,7 @@ async def test_verify_tee_chute_chutes_060_uses_e2e_pubkey_hash(mock_db, sample_
     ):
         mock_client = MagicMock()
         mock_client.get_chute_evidence = AsyncMock(return_value=(sample_quote, [], mock_cert))
-        mock_client_cls.return_value = mock_client
+        mock_client_cls.create = AsyncMock(return_value=mock_client)
 
         await verify_tee_chute(mock_db, instance, launch_config, "deploy-123", EXPECTED_NONCE)
 
@@ -121,7 +121,7 @@ async def test_verify_tee_chute_chutes_059_uses_raw_nonce(mock_db, sample_quote,
     ):
         mock_client = MagicMock()
         mock_client.get_chute_evidence = AsyncMock(return_value=(sample_quote, [], mock_cert))
-        mock_client_cls.return_value = mock_client
+        mock_client_cls.create = AsyncMock(return_value=mock_client)
 
         await verify_tee_chute(mock_db, instance, launch_config, "deploy-123", EXPECTED_NONCE)
 
@@ -145,7 +145,7 @@ async def test_verify_tee_chute_chutes_060_missing_e2e_pubkey_raises_400(
     ):
         mock_client = MagicMock()
         mock_client.get_chute_evidence = AsyncMock(return_value=(sample_quote, [], mock_cert))
-        mock_client_cls.return_value = mock_client
+        mock_client_cls.create = AsyncMock(return_value=mock_client)
 
         with pytest.raises(HTTPException) as exc_info:
             await verify_tee_chute(mock_db, instance, launch_config, "deploy-123", EXPECTED_NONCE)
@@ -168,7 +168,7 @@ async def test_verify_tee_chute_chutes_060_extra_none_raises_400(mock_db, sample
     ):
         mock_client = MagicMock()
         mock_client.get_chute_evidence = AsyncMock(return_value=(sample_quote, [], mock_cert))
-        mock_client_cls.return_value = mock_client
+        mock_client_cls.create = AsyncMock(return_value=mock_client)
 
         with pytest.raises(HTTPException) as exc_info:
             await verify_tee_chute(mock_db, instance, launch_config, "deploy-123", EXPECTED_NONCE)
