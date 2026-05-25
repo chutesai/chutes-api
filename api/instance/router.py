@@ -2086,7 +2086,7 @@ async def validate_tee_launch_config_instance(
     request: Request,
     db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(None, alias=AUTHORIZATION_HEADER),
-    expected_nonce: str = Depends(validate_request_nonce(NoncePurpose.BOOT)),
+    expected_nonce: str = Depends(validate_request_nonce(NoncePurpose.INSTANCE_VERIFICATION)),
 ):
     # TODO: Remove endpoint once all TEE VMs are upgraded to 0.2.0
     # and once all TEE chutes are upgraded to 0.6.0

@@ -15,7 +15,8 @@ from api.config import settings
 from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
-from api.constants import HOTKEY_HEADER, NoncePurpose, SUPPORTED_LUKS_VOLUMES
+from api.metagraph import get_miner_by_hotkey
+from api.constants import HOTKEY_HEADER, NONCE_HEADER, NoncePurpose, SUPPORTED_LUKS_VOLUMES
 
 from api.server.schemas import (
     BootAttestationArgs,
@@ -51,6 +52,7 @@ from api.server.service import (
     get_server_attestation_status,
     delete_server,
     validate_request_nonce,
+    validate_boot_nonce,
     process_luks_passphrase_request,
     require_luks_quote_nonce,
     require_confirm_nonce,
@@ -81,16 +83,24 @@ router = APIRouter()
 
 
 @router.get("/nonce", response_model=NonceResponse)
-async def get_nonce(request: Request):
+async def get_nonce(request: Request, miner_hotkey: str):
     """
     Generate a nonce for boot attestation.
 
     This endpoint is called by VMs during boot before any registration.
     No authentication required as the VM doesn't exist in the system yet.
+
+    miner_hotkey is required and bound into the nonce. Boot attestation will reject
+    any request whose args.miner_hotkey does not match the value stored here,
+    preventing cross-miner nonce reuse. VMs that do not supply this param are
+    considered legacy and are rejected — use the measurement version enforcement
+    to drive upgrades.
     """
     try:
         server_ip = extract_ip(request)
-        nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.BOOT)
+        nonce_info = await create_nonce(
+            server_ip, purpose=NoncePurpose.BOOT, miner_hotkey=miner_hotkey
+        )
 
         return NonceResponse(nonce=nonce_info["nonce"], expires_at=nonce_info["expires_at"])
     except Exception as e:
@@ -105,7 +115,7 @@ async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
-    nonce=Depends(validate_request_nonce(NoncePurpose.BOOT)),
+    nonce: str = Depends(validate_boot_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
     """
@@ -118,6 +128,18 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = extract_ip(request)
+
+        # Verify the miner hotkey is actually registered on the subnet.
+        miner_node = await get_miner_by_hotkey(args.miner_hotkey, db)
+        if not miner_node:
+            logger.warning(
+                f"Boot attestation rejected: miner hotkey {args.miner_hotkey} is not registered on subnet {settings.netuid}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Miner hotkey is not registered on the subnet",
+            )
+
         result: BootAttestationResult = await process_boot_attestation(
             db, server_ip, args, nonce, expected_cert_hash
         )
@@ -667,7 +689,7 @@ async def verify_runtime_attestation(
     _: User = Depends(
         get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
     ),
-    nonce=Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
+    nonce: str = Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
     """
