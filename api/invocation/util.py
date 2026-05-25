@@ -24,7 +24,7 @@ from api.config import (
     SUBSCRIPTION_PAYGO_DISCOUNTS,
     FOUR_HOUR_CHUNKS_PER_MONTH,
 )
-from api.database import get_session, get_inv_session
+from api.database import get_session
 from api.chute.schemas import NodeSelector
 from api.permissions import Permissioning
 from api.util import has_legacy_private_billing
@@ -339,7 +339,7 @@ async def generate_invocation_history_metrics():
     """
     Generate all vllm/diffusion metrics through time.
     """
-    async with get_inv_session() as session:
+    async with get_session() as session:
         await session.execute(text("TRUNCATE TABLE vllm_metrics RESTART IDENTITY"))
         await session.execute(text("TRUNCATE TABLE diffusion_metrics RESTART IDENTITY"))
         await session.execute(text(TOKEN_METRICS_QUERY))

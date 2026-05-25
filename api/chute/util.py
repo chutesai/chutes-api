@@ -43,7 +43,7 @@ from api.constants import (
     DEFAULT_CACHE_DISCOUNT,
 )
 from api.bounty.util import get_bounty_info
-from api.database import get_session, get_inv_session
+from api.database import get_session
 from api.fmv.fetcher import get_fetcher
 from api.exceptions import (
     InstanceRateLimit,
@@ -281,7 +281,7 @@ async def store_invocation(
     error_message: Optional[str] = None,
     metrics: Optional[dict] = {},
 ):
-    async with get_inv_session() as session:
+    async with get_session() as session:
         async with session.begin():
             result = await session.execute(
                 UNIFIED_INVOCATION_INSERT,
@@ -2341,7 +2341,7 @@ WHERE
     instance_map = {row.instance_id: row.chute_id for row in instance_rows}
     invocation_rows = []
     if instance_map:
-        async with get_inv_session() as inv_session:
+        async with get_session() as inv_session:
             result = await inv_session.execute(
                 text("""
 SELECT
