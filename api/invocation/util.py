@@ -42,7 +42,7 @@ SELECT * FROM get_diffusion_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date
 ORDER BY date DESC, name;
 """
 
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
 FOUR_HOUR_BUCKET_SECONDS = 4 * 3600
 SUBSCRIPTION_CACHE_PREFIX = "sub_cap_v2"
 SUBSCRIPTION_USAGE_FLOOR = datetime(2026, 3, 1, tzinfo=timezone.utc)

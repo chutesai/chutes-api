@@ -717,7 +717,7 @@ wheels = [
 [[package]]
 name = "chutes"
 version = "0.6.10"
-source = { git = "https://github.com/chutesai/chutes.git?rev=6d0a638498b5be8082bb925d86069ff8205dc300#6d0a638498b5be8082bb925d86069ff8205dc300" }
+source = { git = "https://github.com/chutesai/chutes.git?rev=08d79872854a664de16b32b14cd0bf947e427517#08d79872854a664de16b32b14cd0bf947e427517" }
 dependencies = [
     { name = "aiofiles" },
     { name = "aiohttp", extra = ["speedups"] },
@@ -732,7 +732,7 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "hypercorn" },
     { name = "loguru" },
-    { name = "netifaces" },
+    { name = "netifaces-plus" },
     { name = "orjson" },
     { name = "prometheus-client" },
     { name = "psutil" },
@@ -828,7 +828,7 @@ requires-dist = [
     { name = "backoff", specifier = ">=2.2.1,<3.0.0" },
     { name = "bittensor-drand", specifier = ">=1.2.0" },
     { name = "bittensor-wallet", specifier = ">=4.0.1" },
-    { name = "chutes", git = "https://github.com/chutesai/chutes.git?rev=6d0a638498b5be8082bb925d86069ff8205dc300" },
+    { name = "chutes", git = "https://github.com/chutesai/chutes.git?rev=08d79872854a664de16b32b14cd0bf947e427517" },
     { name = "cryptography", specifier = ">=46.0.5" },
     { name = "dcap-qvl", specifier = "==0.3.12" },
     { name = "dnslib", specifier = ">=0.9.26,<0.10.0" },
@@ -1807,10 +1807,39 @@ wheels = [
 ]
 
 [[package]]
-name = "netifaces"
-version = "0.11.0"
+name = "netifaces-plus"
+version = "0.12.5"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/a6/91/86a6eac449ddfae239e93ffc1918cf33fd9bab35c04d1e963b311e347a73/netifaces-0.11.0.tar.gz", hash = "sha256:043a79146eb2907edf439899f262b3dfe41717d34124298ed281139a8b93ca32", size = 30106, upload-time = "2021-05-31T08:33:02.506Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/7e/58/23cda686e1b5cd4a13948ff257558f49723d9c12e9a14f53df4c10a9bbdd/netifaces_plus-0.12.5.tar.gz", hash = "sha256:6428bd7d4323556efd4b0ec6b315221875812f8cf2b69501c6fda7a09eb79528", size = 30882, upload-time = "2025-11-01T23:03:20.322Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/64/b8/e9222c15360a56792924c792bf3866191840884812bcc6d4443a0f00b52a/netifaces_plus-0.12.5-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:ae9d3ee379d7e368fb4d052d8f754166a0594ae700829e23cb95d900e16d4005", size = 20063, upload-time = "2025-11-01T23:02:19.744Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/9f/99b8f5cff804adcffea26f799bacd0b8a0bc9e7109928e151670aed7b5e7/netifaces_plus-0.12.5-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:a75fb3175bf2677f3942958675bf29d194efb56f294b7891cfe3d2cb8f2b8dd7", size = 13849, upload-time = "2025-11-01T23:02:20.952Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/9c/d98e94a38b59c47ff8b0c645b09ec487388ca7d27caf55986980eef93d63/netifaces_plus-0.12.5-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:ad4079afcaf3b538a0f18930afb46b7dd92acf257e91462c289eb3418b88fca6", size = 14310, upload-time = "2025-11-01T23:02:21.674Z" },
+    { url = "https://files.pythonhosted.org/packages/01/a0/341b8f8de13635e12a4cdb8f2d679c1f0ccff14da8956fb2d1a2c85b2830/netifaces_plus-0.12.5-cp310-cp310-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:e45ed84edf335c39db6c9e7ce77e91a489825afc7d6b9a20a7fb3ed9aa551faa", size = 37489, upload-time = "2025-11-01T23:02:22.711Z" },
+    { url = "https://files.pythonhosted.org/packages/41/49/4b3648306cb073c5ce5207240dcd509c98aad82a9c2b404e6b7405a4c06c/netifaces_plus-0.12.5-cp310-cp310-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:127d74bd4b885a8f8a17a2038ad798b004250b934e482f3d14c844f90d77eed9", size = 38447, upload-time = "2025-11-01T23:02:23.457Z" },
+    { url = "https://files.pythonhosted.org/packages/63/a8/9059b6aabe39dea46561eaed408984b4a9b847f66a53c16c65ef2f13a9f7/netifaces_plus-0.12.5-cp310-cp310-manylinux2014_armv7l.manylinux_2_17_armv7l.manylinux_2_31_armv7l.whl", hash = "sha256:b5ffe376dbfd1e7b163cd317d40f0c2993f5093e38b81e8916b7c569657a2e4f", size = 41971, upload-time = "2025-11-01T23:02:24.282Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/af/5261edd6a5e8654c7ff7c479cc71ef99da51baee41986f128e57ca8e7158/netifaces_plus-0.12.5-cp310-cp310-win32.whl", hash = "sha256:8b15ac8b9b1eddeb5911f23b752bf8f422454e1ab3a1e613737be548963be615", size = 16562, upload-time = "2025-11-01T23:02:25.272Z" },
+    { url = "https://files.pythonhosted.org/packages/cb/b7/fc1f07f74c3435e165bf3bd820c0500de9661b6817d296d4150f4a27759f/netifaces_plus-0.12.5-cp310-cp310-win_amd64.whl", hash = "sha256:bc9e36f8dee5142cf2886477470a9c21edcf31884fb81f6f7ef97f155e83d1ca", size = 17502, upload-time = "2025-11-01T23:02:26.422Z" },
+    { url = "https://files.pythonhosted.org/packages/92/ef/f748633e49f4cac288effb267e3e43749e6a4ec4270d2a138c9fbebfe3dc/netifaces_plus-0.12.5-cp310-cp310-win_arm64.whl", hash = "sha256:ebb86cb7200a39b22e7c40fee335f39b496cb93170a4268a432d4acaa3ebc4a5", size = 16272, upload-time = "2025-11-01T23:02:27.425Z" },
+    { url = "https://files.pythonhosted.org/packages/94/a2/9e1f2b88ab76a0db3f4563359cc4771b1692792a669a025b24dec20e094e/netifaces_plus-0.12.5-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:572e638edce7c9d1c260e7d620ee3646857cf9f0e939800faf62a46f5e512fb4", size = 20059, upload-time = "2025-11-01T23:02:28.188Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/37/82e8b615df8d2c377fdb83fc5a3b6f61b15a0028317264f7fcf37216d7df/netifaces_plus-0.12.5-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:d1e704382e932dc0862d7fff0d161812b1a214b867182f878a63e4b7d5e7d42f", size = 13848, upload-time = "2025-11-01T23:02:29.19Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/1a/a00541f5981f043ce965797e971be58e93446b557295a1a168db877f03ab/netifaces_plus-0.12.5-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:8800b82e63cba6253c9ac2c81bf0c668091666d7717a3daa9f158e97b2cb6fcf", size = 14309, upload-time = "2025-11-01T23:02:29.922Z" },
+    { url = "https://files.pythonhosted.org/packages/25/a0/2f4a3f11ddde8f70239f95dc7428d4f99f3a0916ccc6683105bc6e3db04d/netifaces_plus-0.12.5-cp311-cp311-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:45b0c3fd91545fc75194b615d738bcb1e7c2fc1bcf282f87fb74f0e8ddf46be6", size = 37691, upload-time = "2025-11-01T23:02:30.935Z" },
+    { url = "https://files.pythonhosted.org/packages/ff/64/7dac66e2aa9e763a816f974c74516f240f39dea74d6b1ed38aaf2532bb8e/netifaces_plus-0.12.5-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:fa583053ee487a447c903dbc424fedfb5c4adb26f45cf20951222a47ee7b3090", size = 38683, upload-time = "2025-11-01T23:02:31.754Z" },
+    { url = "https://files.pythonhosted.org/packages/37/b5/a19631eaef7f718ae15a57f9856a30e6de977c04fb5e8d021d0544c07b6a/netifaces_plus-0.12.5-cp311-cp311-manylinux2014_armv7l.manylinux_2_17_armv7l.manylinux_2_31_armv7l.whl", hash = "sha256:a029aa704ec41373388898173cf8eef1f3d321efe3d5d2dc71ae6bb68cba08cd", size = 43089, upload-time = "2025-11-01T23:02:32.781Z" },
+    { url = "https://files.pythonhosted.org/packages/99/42/a13678188127f9913d9d87bf9a015c19f26cfcaabf748f152d5f690bc9a6/netifaces_plus-0.12.5-cp311-cp311-win32.whl", hash = "sha256:451125600a4221155408859091589c908111b7dad64365b3d926874385096aa7", size = 16559, upload-time = "2025-11-01T23:02:33.552Z" },
+    { url = "https://files.pythonhosted.org/packages/79/5f/e99a14504cba2eff36ac62a7ad7dac7230aea1caf4baa292c4e681d8cbd1/netifaces_plus-0.12.5-cp311-cp311-win_amd64.whl", hash = "sha256:52ecff050da304ee2ea5b33c826dbb4b285cf9496f2255dd6273e138845709ea", size = 17500, upload-time = "2025-11-01T23:02:34.329Z" },
+    { url = "https://files.pythonhosted.org/packages/36/33/bbf8d920802336b531a7a81d44d438f2140623f7d272ecbfb967a1163348/netifaces_plus-0.12.5-cp311-cp311-win_arm64.whl", hash = "sha256:59190cb4638ab5f05f1ebd7e36b6ee1efada74266d2fa24deb4e850452584c9a", size = 16266, upload-time = "2025-11-01T23:02:35.311Z" },
+    { url = "https://files.pythonhosted.org/packages/49/f1/f3ad6a0d918b73ce2594d5bd071021f8cb964559b886aaa81c805862257f/netifaces_plus-0.12.5-cp312-cp312-macosx_10_13_universal2.whl", hash = "sha256:e6b0e163641afb9f155310fb762ac6cfbb6970f48f9db365f6b0657a65cf93a8", size = 20160, upload-time = "2025-11-01T23:02:36.362Z" },
+    { url = "https://files.pythonhosted.org/packages/26/22/92086eb92e34c61a30622a39fa74174e3ebfbfae72bd734615eaeb4cc5c9/netifaces_plus-0.12.5-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:9e9fd20ea8e5407093eee9388ad9d0cb5332e5a955b8640aa2b62b8c3fecffa0", size = 13943, upload-time = "2025-11-01T23:02:37.117Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/3f/fbb553811afcb610339cd95e9d66f7d1f8afe0d78f8633acb058e6d9b1ea/netifaces_plus-0.12.5-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:05b2410c7825a1751a4b18b542a7e241d41ab5e693ded5a735fd3d20c820f691", size = 14298, upload-time = "2025-11-01T23:02:38.375Z" },
+    { url = "https://files.pythonhosted.org/packages/74/19/8714d056c72f2bcd2806435f3cfa741e76cf71e36a6626437cc936ce69ff/netifaces_plus-0.12.5-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:8fc3c2505e6e9e810d761099fd4ec39ecd9e0503f0ea640e93b9be18a2628400", size = 38975, upload-time = "2025-11-01T23:02:39.119Z" },
+    { url = "https://files.pythonhosted.org/packages/78/58/fb37bdab0a146db10d479f612fbc42dffd4710d3720b358141820f673a68/netifaces_plus-0.12.5-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:2bca2ff13f340f468f5a4455b0e5b6122dba533729d2fed3afae863a44795052", size = 39803, upload-time = "2025-11-01T23:02:39.885Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/c3/ab2ca63d3f67df3a0c186d0271b1c59a9190d36754e123f71c3e16e331c3/netifaces_plus-0.12.5-cp312-cp312-manylinux2014_armv7l.manylinux_2_17_armv7l.manylinux_2_31_armv7l.whl", hash = "sha256:7892ee77003b515a4c5616f845b28d517db5008dab56a81726f951aa357cfd07", size = 43709, upload-time = "2025-11-01T23:02:40.66Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/6b/71ba8c31b26116e2e74a243f68902453f3a2ea3f32db5a64ce67bddacf8f/netifaces_plus-0.12.5-cp312-cp312-win32.whl", hash = "sha256:c2d15241fe3ebd579dca22606a941bd91f5e8a812be75e4ff5a9ef35e04102a9", size = 16729, upload-time = "2025-11-01T23:02:41.451Z" },
+    { url = "https://files.pythonhosted.org/packages/03/c7/65074ecbc598789f900fad94cc26586da54fd4a19bccac507aaa5b87f862/netifaces_plus-0.12.5-cp312-cp312-win_amd64.whl", hash = "sha256:4f388456a853d4d896d53306a67d1a9153ccb88425b4d60b03b082eb23f71402", size = 17584, upload-time = "2025-11-01T23:02:42.169Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/88/b1031125519f80c04713703be0e2a544abd2895466a6a0a137a650755170/netifaces_plus-0.12.5-cp312-cp312-win_arm64.whl", hash = "sha256:4f995dda18fef704680055ee9851af5004efde53714f014ecb6915b45028653d", size = 16277, upload-time = "2025-11-01T23:02:42.959Z" },
+]
 
 [[package]]
 name = "numpy"

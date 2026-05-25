@@ -83,7 +83,7 @@ allow-direct-references = true
 [tool.uv]
 
 [tool.uv.sources]
-chutes = { git = "https://github.com/chutesai/chutes.git", rev = "6d0a638498b5be8082bb925d86069ff8205dc300" }
+chutes = { git = "https://github.com/chutesai/chutes.git", rev = "08d79872854a664de16b32b14cd0bf947e427517" }
 # Make sure uv knows to use editable installs for this project if you like
 # (optional; uv works fine without this)
 # editable = true

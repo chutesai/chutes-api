@@ -188,20 +188,12 @@ class _InstanceInfo:
         self.config_id = config_id
 
 
-def cm_redis_shard(chute_id: str):
-    """Get the sharded cm_redis client for a chute's connection counting.
-    Uses first 8 hex chars of the UUID for deterministic sharding
-    (Python's hash() is randomized per-process via PYTHONHASHSEED)."""
-    clients = settings.cm_redis_client
-    return clients[int(chute_id[:8], 16) % len(clients)]
-
-
 async def cleanup_instance_conn_tracking(chute_id: str, instance_id: str):
     """Remove a deleted instance from Redis connection tracking sets/keys."""
     try:
         # Enumeration key on primary redis.
         await settings.redis_client.client.srem(f"cc_inst:{chute_id}", instance_id)
-        await cm_redis_shard(chute_id).delete(f"cc:{chute_id}:{instance_id}")
+        await settings.cm_redis_client.delete(f"cc:{chute_id}:{instance_id}")
     except Exception as e:
         logger.warning(f"Failed to clean up connection tracking for {instance_id}: {e}")
 
@@ -371,6 +363,10 @@ async def start_instance_invalidation_listener():
     while True:
         pubsub = None
         try:
+            if settings.redis_cacert:
+                ssl_kwargs["ssl"] = True
+                ssl_kwargs["ssl_cert_reqs"] = "required"
+                ssl_kwargs["ssl_ca_certs"] = settings.redis_cacert
             client = aioredis.Redis(
                 host=settings.redis_host,
                 port=settings.redis_port,
@@ -380,6 +376,7 @@ async def start_instance_invalidation_listener():
                 socket_timeout=60,
                 socket_keepalive=True,
                 retry_on_timeout=True,
+                **ssl_kwargs,
             )
             pubsub = client.pubsub()
             await pubsub.subscribe("events")
@@ -432,8 +429,8 @@ class LeastConnManager:
     ):
         self.concurrency = concurrency or 1
         self.chute_id = chute_id
-        # Shard connection counting across cm_redis backends.
-        self.redis_client = cm_redis_shard(chute_id)
+        # Shard connection counting across cm_redis backend.
+        self.redis_client = settings.cm_redis_client
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.mean_count = None
