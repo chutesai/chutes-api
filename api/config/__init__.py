@@ -322,6 +322,7 @@ class Settings(BaseSettings):
     depot_project_id: str = os.getenv("DEPOT_PROJECT_ID", "")
     depot_registry: str = os.getenv("DEPOT_REGISTRY", "")
     depot_registry_token: str = os.getenv("DEPOT_REGISTRY_TOKEN", "")
+    depot_registry_rw_token: str = os.getenv("DEPOT_REGISTRY_RW_TOKEN", "")
 
     # Cosign Settings
     cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")

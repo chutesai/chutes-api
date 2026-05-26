@@ -25,6 +25,11 @@ data:
             tcp_nopush on;
             listen {{ .Values.registryProxy.service.port }};
 
+            # Block pulls of intermediate build tags (never externally accessible).
+            location ~ "^/v2/.+/manifests/_forgebuild-" {
+                return 403;
+            }
+
             location /v2/ {
                 limit_except GET HEAD {
                     deny all;

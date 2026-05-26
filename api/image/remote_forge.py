@@ -80,15 +80,10 @@ async def _depot_build(
 ) -> asyncio.subprocess.Process:
     """Run `depot build` with standard project/env settings.
 
-    When --save is in args, a --metadata-file is automatically added so the
-    build ID can be retrieved afterwards via _get_build_id().
+    When --save is in args, the image is pushed directly to the Depot Registry
+    using CLI credentials (DEPOT_TOKEN). Use --save-tag to name the image in
+    the registry.
     """
-    # Inject --metadata-file when saving so we can depot push afterwards.
-    metadata_path = None
-    if "--save" in args:
-        metadata_path = os.path.join(cwd, f".depot-meta-{uuid.uuid4().hex[:8]}.json")
-        args = args + ["--metadata-file", metadata_path]
-
     cmd = ["depot", "build", "--project", settings.depot_project_id] + args
     process = await asyncio.create_subprocess_exec(
         *cmd, stdout=PIPE, stderr=PIPE, env=_DEPOT_ENV, cwd=cwd
@@ -101,52 +96,7 @@ async def _depot_build(
         ),
         timeout=timeout,
     )
-    # Stash metadata path on the process object for _depot_push to find.
-    process._depot_metadata_path = metadata_path
     return process
-
-
-async def _depot_push(process: asyncio.subprocess.Process, tag: str, timeout: int = 900) -> None:
-    """Push a --save'd depot build to the registry.
-
-    Reads the build ID from the metadata file written by _depot_build,
-    then runs `depot push` which pushes from Depot's cache to the registry.
-    """
-    metadata_path = getattr(process, "_depot_metadata_path", None)
-    if not metadata_path or not os.path.exists(metadata_path):
-        raise BuildFailure("No depot metadata file found — was --save used?")
-
-    with open(metadata_path) as f:
-        metadata = json.loads(f.read())
-
-    # Metadata may be {"depot.build": {"buildID": "xxx", ...}} or flat {"buildID": "xxx"}.
-    build_id = metadata.get("buildID", "")
-    if not build_id:
-        depot_build = metadata.get("depot.build", {})
-        if isinstance(depot_build, dict):
-            build_id = depot_build.get("buildID", "")
-        elif isinstance(depot_build, str):
-            build_id = depot_build
-    if not build_id:
-        raise BuildFailure(
-            f"Could not find build ID in depot metadata. Keys: {list(metadata.keys())}"
-        )
-
-    logger.info(f"Pushing build {build_id} as {_safe_ref(tag)}")
-    cmd = [
-        "depot",
-        "push",
-        "--project",
-        settings.depot_project_id,
-        "--tag",
-        tag,
-        build_id,
-    ]
-    push_proc = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE, env=_DEPOT_ENV)
-    stdout, stderr = await asyncio.wait_for(push_proc.communicate(), timeout=timeout)
-    if push_proc.returncode != 0:
-        raise BuildFailure(f"depot push failed for {_safe_ref(tag)}: {stderr.decode()}")
-    logger.info(f"Pushed {_safe_ref(tag)}")
 
 
 async def _is_real_image_tag(repo: str, oci_tag: str) -> bool:
@@ -187,14 +137,20 @@ async def _is_real_image_tag(repo: str, oci_tag: str) -> bool:
     return False
 
 
+_INTERMEDIATE_PREFIX = "_forgebuild-"
+
+
 async def _safe_intermediate_tag(repo: str, oci_tag: str, suffix: str) -> str:
     """Generate an intermediate OCI tag that is guaranteed not to collide
     with any real image tag in the database.
 
+    Uses a reserved prefix (_forgebuild-) that the registry proxy blocks,
+    so these tags are never externally pullable even if cleanup is delayed.
+
     Tries up to 5 times with different UUIDs before giving up.
     """
     for _ in range(5):
-        candidate = f"{oci_tag}-{suffix}-{uuid.uuid4().hex[:8]}"
+        candidate = f"{_INTERMEDIATE_PREFIX}{oci_tag}-{suffix}-{uuid.uuid4().hex[:8]}"
         if not await _is_real_image_tag(repo, candidate):
             return candidate
         logger.warning(f"Intermediate tag {candidate} collides with a real image, retrying")
@@ -247,20 +203,21 @@ async def _cleanup_intermediate_tags(tags: list[str], final_tag: str) -> None:
 
 async def initialize():
     """
-    Ensure ORM modules are loaded, login to Docker Hub and Depot registry for cosign.
+    Ensure ORM modules are loaded, login to Depot registry for cosign/crane.
     """
     import api.database.orms  # noqa: F401
 
     # Login cosign + crane to Depot registry (needed for sign_image and get_image_digest).
-    if settings.depot_registry and settings.depot_registry_token:
-        # cosign login -u ... -p ... <registry>
+    # depot build --save uses DEPOT_TOKEN directly, no docker login needed.
+    registry_token = settings.depot_registry_rw_token or settings.depot_registry_token
+    if settings.depot_registry and registry_token:
         process = await asyncio.create_subprocess_exec(
             "cosign",
             "login",
             "-u",
             "x-token",
             "-p",
-            settings.depot_registry_token,
+            registry_token,
             settings.depot_registry,
         )
         await process.wait()
@@ -269,7 +226,6 @@ async def initialize():
         else:
             logger.warning("cosign failed to authenticate to depot registry")
 
-        # crane auth login -u ... -p ... <registry>
         process = await asyncio.create_subprocess_exec(
             "crane",
             "auth",
@@ -277,7 +233,7 @@ async def initialize():
             "-u",
             "x-token",
             "-p",
-            settings.depot_registry_token,
+            registry_token,
             settings.depot_registry,
         )
         await process.wait()
@@ -501,7 +457,7 @@ async def build_and_push_image(image, build_dir):
         process = await _depot_build(
             [
                 "--save",
-                "--tag",
+                "--save-tag",
                 original_depot_ref,
                 "-f",
                 os.path.join(build_dir, "Dockerfile"),
@@ -513,7 +469,6 @@ async def build_and_push_image(image, build_dir):
         )
         if process.returncode != 0:
             raise BuildFailure("Build of original image failed!")
-        await _depot_push(process, original_depot_ref)
         intermediate_tags.append(original_depot_ref)
 
         # Stage 2: Install chutes lib (status only, no raw log streaming).
@@ -554,7 +509,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
         process = await _depot_build(
             [
                 "--save",
-                "--tag",
+                "--save-tag",
                 chutes_depot_tag,
                 "-f",
                 chutes_dockerfile_path,
@@ -566,7 +521,6 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
         )
         if process.returncode != 0:
             raise BuildFailure("Failed to install chutes library into image!")
-        await _depot_push(process, chutes_depot_tag)
         intermediate_tags.append(chutes_depot_tag)
         await _stream_status(image.image_id, "chutes library installed")
 
@@ -737,7 +691,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
         process = await _depot_build(
             [
                 "--save",
-                "--tag",
+                "--save-tag",
                 final_depot_tag,
                 "-f",
                 final_dockerfile_path,
@@ -749,7 +703,6 @@ ENV PYTHONDONTWRITEBYTECODE=1
         )
         if process.returncode != 0:
             raise BuildFailure(f"Final build of {_safe_ref(final_depot_tag)} failed!")
-        await _depot_push(process, final_depot_tag)
 
         delta = time.time() - started_at
         message = f"image built and pushed in {round(delta, 1)} seconds"
@@ -1019,7 +972,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             process = await _depot_build(
                 [
                     "--save",
-                    "--tag",
+                    "--save-tag",
                     updated_depot_tag,
                     "-f",
                     dockerfile_path,
@@ -1031,7 +984,6 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             )
             if process.returncode != 0:
                 raise BuildFailure("Failed to build updated image!")
-            await _depot_push(process, updated_depot_tag)
             intermediate_tags.append(updated_depot_tag)
 
             # Stage 2: Filesystem verification + extract.
@@ -1208,7 +1160,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
             process = await _depot_build(
                 [
                     "--save",
-                    "--tag",
+                    "--save-tag",
                     target_depot_tag,
                     "-f",
                     final_dockerfile_path,
@@ -1220,7 +1172,6 @@ ENV PYTHONDONTWRITEBYTECODE=1
             )
             if process.returncode != 0:
                 raise BuildFailure("Failed to build final image!")
-            await _depot_push(process, target_depot_tag)
 
             logger.success(f"Successfully pushed updated image {_safe_ref(target_depot_tag)}")
             success = True

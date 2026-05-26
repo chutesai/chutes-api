@@ -40,6 +40,11 @@ spec:
                 secretKeyRef:
                   name: depot-credentials
                   key: registry-token
+            - name: DEPOT_REGISTRY_RW_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: depot-credentials
+                  key: registry-rw-token
             - name: CFSV_OP
               valueFrom:
                 secretKeyRef:
