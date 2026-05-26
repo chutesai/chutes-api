@@ -53,21 +53,32 @@ _DEPOT_ENV = {
 }
 
 
-def _depot_save_tag(repo: str, tag: str) -> str:
-    """Return the repo:tag value for --save-tag (no registry prefix).
+def _depot_save_tag(tag: str) -> str:
+    """Return the simple tag name for --save-tag.
 
-    depot build --save-tag implicitly targets the project's own registry,
-    so only the repo:tag portion is needed.
-    Example: alice/model:v1
+    depot build --save-tag only accepts simple tag names (no repo path,
+    no registry prefix). The image is stored project-scoped in the
+    Depot Registry at {org_registry}/{project_id}:{tag}.
     """
-    return f"{repo}:{tag}"
+    return tag
 
 
-def _depot_pull_ref(repo: str, tag: str) -> str:
-    """Return a fully qualified Depot registry image reference for FROM / pull.
+def _depot_saved_ref(tag: str) -> str:
+    """Return the pullable reference for an image saved with --save-tag.
+
+    Images saved via --save-tag are stored at:
+      {org_registry}/{project_id}:{tag}
+    """
+    return f"{settings.depot_registry}/{settings.depot_project_id}:{tag}"
+
+
+def _depot_repo_ref(repo: str, tag: str) -> str:
+    """Return a fully qualified registry reference at a specific repo path.
 
     Format: {org_registry}/{repo}:{tag}
     Example: foo.registry.depot.dev/alice/model:v1
+
+    Used for the final user-facing image path and for crane copy targets.
     """
     return f"{settings.depot_registry}/{repo}:{tag}"
 
@@ -107,6 +118,27 @@ async def _depot_build(
         timeout=timeout,
     )
     return process
+
+
+async def _crane_copy(src: str, dst: str) -> None:
+    """Copy/retag an image in the registry using crane.
+
+    Used to move a project-scoped --save-tag image to a user-facing repo path.
+    """
+    process = await asyncio.create_subprocess_exec(
+        "crane",
+        "copy",
+        src,
+        dst,
+        stdout=PIPE,
+        stderr=PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise BuildFailure(
+            f"crane copy {_safe_ref(src)} -> {_safe_ref(dst)} failed: {stderr.decode().strip()}"
+        )
+    logger.info(f"Copied {_safe_ref(src)} -> {_safe_ref(dst)}")
 
 
 async def _is_real_image_tag(repo: str, oci_tag: str) -> bool:
@@ -459,16 +491,15 @@ async def build_and_push_image(image, build_dir):
 
     try:
         # Stage 1: Build user's Dockerfile and push to Depot registry.
-        original_oci_tag = await _safe_intermediate_tag(repo)
-        original_save_tag = _depot_save_tag(repo, original_oci_tag)
-        original_pull_ref = _depot_pull_ref(repo, original_oci_tag)
-        logger.info(f"Stage 1: Building original image as {original_save_tag}")
+        original_tag = await _safe_intermediate_tag(repo)
+        original_ref = _depot_saved_ref(original_tag)
+        logger.info(f"Stage 1: Building original image as {original_tag}")
 
         process = await _depot_build(
             [
                 "--save",
                 "--save-tag",
-                original_save_tag,
+                original_tag,
                 "-f",
                 os.path.join(build_dir, "Dockerfile"),
                 ".",
@@ -479,16 +510,15 @@ async def build_and_push_image(image, build_dir):
         )
         if process.returncode != 0:
             raise BuildFailure("Build of original image failed!")
-        intermediate_tags.append(original_pull_ref)
+        intermediate_tags.append(original_ref)
 
         # Stage 2: Install chutes lib (status only, no raw log streaming).
-        chutes_oci_tag = await _safe_intermediate_tag(repo)
-        chutes_save_tag = _depot_save_tag(repo, chutes_oci_tag)
-        chutes_pull_ref = _depot_pull_ref(repo, chutes_oci_tag)
-        logger.info(f"Stage 2: Installing chutes lib as {chutes_save_tag}")
+        chutes_tag = await _safe_intermediate_tag(repo)
+        chutes_ref = _depot_saved_ref(chutes_tag)
+        logger.info(f"Stage 2: Installing chutes lib as {chutes_tag}")
         await _stream_status(image.image_id, "installing chutes library...")
 
-        chutes_dockerfile_content = f"""FROM {original_pull_ref}
+        chutes_dockerfile_content = f"""FROM {original_ref}
 USER root
 ENV LD_PRELOAD=""
 RUN rm -f /etc/chutesfs.index
@@ -521,7 +551,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             [
                 "--save",
                 "--save-tag",
-                chutes_save_tag,
+                chutes_tag,
                 "-f",
                 chutes_dockerfile_path,
                 ".",
@@ -532,14 +562,14 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
         )
         if process.returncode != 0:
             raise BuildFailure("Failed to install chutes library into image!")
-        intermediate_tags.append(chutes_pull_ref)
+        intermediate_tags.append(chutes_ref)
         await _stream_status(image.image_id, "chutes library installed")
 
         # Stage 3: Filesystem verification + extract (status only).
         logger.info("Stage 3: Building filesystem verification image")
         await _stream_status(image.image_id, "generating filesystem verification data...")
 
-        fsv_dockerfile_content = f"""FROM {chutes_pull_ref}
+        fsv_dockerfile_content = f"""FROM {chutes_ref}
 USER chutes
 ARG CFSV_OP
 ARG PS_OP
@@ -669,16 +699,18 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
             await upload_bytecode_manifest_json(image, bytecode_manifest_json_path)
 
         # Stage 4: Build final image and push (status only).
-        final_save_tag = _depot_save_tag(repo, oci_tag)
-        final_pull_ref = _depot_pull_ref(repo, oci_tag)
-        logger.info(f"Stage 4: Building final image as {final_save_tag}")
+        # Save with a simple intermediate tag, then crane copy to the user-facing repo path.
+        final_tag = await _safe_intermediate_tag(repo)
+        final_saved_ref = _depot_saved_ref(final_tag)
+        final_repo_ref = _depot_repo_ref(repo, oci_tag)
+        logger.info(f"Stage 4: Building final image as {final_tag}")
         await _stream_status(image.image_id, "building final image...")
 
         index_path = os.path.join(extracted_dir, "chutesfs.index")
         final_index_path = os.path.join(build_dir, "chutesfs.index")
         shutil.copy2(index_path, final_index_path)
 
-        final_dockerfile_content = f"""FROM {chutes_pull_ref}
+        final_dockerfile_content = f"""FROM {chutes_ref}
 COPY chutesfs.index /etc/chutesfs.index
 ENV PYTHONDONTWRITEBYTECODE=1
 """
@@ -704,7 +736,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
             [
                 "--save",
                 "--save-tag",
-                final_save_tag,
+                final_tag,
                 "-f",
                 final_dockerfile_path,
                 ".",
@@ -714,7 +746,12 @@ ENV PYTHONDONTWRITEBYTECODE=1
             timeout=settings.build_timeout,
         )
         if process.returncode != 0:
-            raise BuildFailure(f"Final build of {final_save_tag} failed!")
+            raise BuildFailure(f"Final build of {final_tag} failed!")
+        intermediate_tags.append(final_saved_ref)
+
+        # Copy from project-scoped tag to user-facing repo path.
+        logger.info(f"Copying {final_tag} -> {_safe_ref(final_repo_ref)}")
+        await _crane_copy(final_saved_ref, final_repo_ref)
 
         delta = time.time() - started_at
         message = f"image built and pushed in {round(delta, 1)} seconds"
@@ -734,13 +771,13 @@ ENV PYTHONDONTWRITEBYTECODE=1
         raise BuildTimeout(message)
 
     # Stage 5: Trivy scan via remote multi-stage build.
-    await trivy_image_scan(image, final_pull_ref, build_dir, _capture_logs)
+    await trivy_image_scan(image, final_repo_ref, build_dir, _capture_logs)
 
     # Stage 6: Cosign sign.
-    await sign_image(image, final_pull_ref)
+    await sign_image(image, final_repo_ref)
 
     # Clean up intermediate images from the registry.
-    await _cleanup_intermediate_tags(intermediate_tags, final_pull_ref)
+    await _cleanup_intermediate_tags(intermediate_tags, final_repo_ref)
 
     # DONE!
     delta = time.time() - started_at
@@ -936,9 +973,8 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     target_oci_tag = f"{base_oci_tag}-{patch_version}"
     target_tag = f"{repo}:{target_oci_tag}"
 
-    source_pull_ref = _depot_pull_ref(repo, source_oci_tag)
-    target_save_tag = _depot_save_tag(repo, target_oci_tag)
-    target_pull_ref = _depot_pull_ref(repo, target_oci_tag)
+    source_repo_ref = _depot_repo_ref(repo, source_oci_tag)
+    target_repo_ref = _depot_repo_ref(repo, target_oci_tag)
 
     error_message = None
     success = False
@@ -950,12 +986,11 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
             _copy_cfsv_binary(image, build_dir)
 
             # Stage 1: Build updated base image with new chutes lib.
-            updated_oci_tag = await _safe_intermediate_tag(repo)
-            updated_save_tag = _depot_save_tag(repo, updated_oci_tag)
-            updated_pull_ref = _depot_pull_ref(repo, updated_oci_tag)
-            logger.info(f"Stage 1: Building updated image as {updated_save_tag}")
+            updated_tag = await _safe_intermediate_tag(repo)
+            updated_ref = _depot_saved_ref(updated_tag)
+            logger.info(f"Stage 1: Building updated image as {updated_tag}")
 
-            dockerfile_content = f"""FROM {source_pull_ref}
+            dockerfile_content = f"""FROM {source_repo_ref}
 USER root
 ENV LD_PRELOAD=""
 RUN rm -f /etc/chutesfs.index /usr/bin/cautious-launcher /etc/ld.so.preload
@@ -987,7 +1022,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
                 [
                     "--save",
                     "--save-tag",
-                    updated_save_tag,
+                    updated_tag,
                     "-f",
                     dockerfile_path,
                     ".",
@@ -998,12 +1033,12 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             )
             if process.returncode != 0:
                 raise BuildFailure("Failed to build updated image!")
-            intermediate_tags.append(updated_pull_ref)
+            intermediate_tags.append(updated_ref)
 
             # Stage 2: Filesystem verification + extract.
             logger.info("Stage 2: Building filesystem verification image")
 
-            fsv_dockerfile_content = f"""FROM {updated_pull_ref}
+            fsv_dockerfile_content = f"""FROM {updated_ref}
 ARG CFSV_OP
 ARG PS_OP
 USER chutes
@@ -1144,13 +1179,15 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
                 logger.success(f"Uploaded bytecode manifest JSON to {manifest_json_s3_key}")
 
             # Stage 3: Build final image and push.
-            logger.info(f"Stage 3: Building final image as {target_save_tag}")
+            final_tag = await _safe_intermediate_tag(repo)
+            final_saved_ref = _depot_saved_ref(final_tag)
+            logger.info(f"Stage 3: Building final image as {final_tag}")
 
             index_path = os.path.join(extracted_dir, "chutesfs.index")
             final_index_path = os.path.join(build_dir, "chutesfs.index")
             shutil.copy2(index_path, final_index_path)
 
-            final_dockerfile_content = f"""FROM {updated_pull_ref}
+            final_dockerfile_content = f"""FROM {updated_ref}
 COPY chutesfs.index /etc/chutesfs.index
 ENV PYTHONDONTWRITEBYTECODE=1
 """
@@ -1175,7 +1212,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
                 [
                     "--save",
                     "--save-tag",
-                    target_save_tag,
+                    final_tag,
                     "-f",
                     final_dockerfile_path,
                     ".",
@@ -1186,12 +1223,17 @@ ENV PYTHONDONTWRITEBYTECODE=1
             )
             if process.returncode != 0:
                 raise BuildFailure("Failed to build final image!")
+            intermediate_tags.append(final_saved_ref)
 
-            logger.success(f"Successfully pushed updated image {target_save_tag}")
+            # Copy from project-scoped tag to user-facing repo path.
+            logger.info(f"Copying {final_tag} -> {_safe_ref(target_repo_ref)}")
+            await _crane_copy(final_saved_ref, target_repo_ref)
+
+            logger.success(f"Successfully pushed updated image {_safe_ref(target_repo_ref)}")
             success = True
 
         except asyncio.TimeoutError:
-            message = f"Update of {target_save_tag} timed out"
+            message = f"Update of {_safe_ref(target_repo_ref)} timed out"
             logger.error(message)
             process.kill()
             await process.communicate()
@@ -1203,11 +1245,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
             error_message = str(exc)
 
         # Clean up intermediate images from the registry.
-        await _cleanup_intermediate_tags(intermediate_tags, target_pull_ref)
+        await _cleanup_intermediate_tags(intermediate_tags, target_repo_ref)
 
         # Sign if successful.
         if success:
-            await sign_image(image, target_pull_ref, stream=True)
+            await sign_image(image, target_repo_ref, stream=True)
 
     # Update the image with the new patch version, tag, etc.
     affected_chute_ids = []
