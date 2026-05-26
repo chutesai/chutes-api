@@ -26,7 +26,7 @@ data:
             listen {{ .Values.registryProxy.service.port }};
 
             # Block pulls of intermediate build tags (never externally accessible).
-            location ~ "^/v2/.+/manifests/_forgebuild-" {
+            location ~ "^/v2/.+/manifests/forgebuild-" {
                 return 403;
             }
 
