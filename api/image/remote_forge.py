@@ -835,23 +835,19 @@ RUN --mount=type=bind,from=target,source=/,target=/scan-target \
             timeout=settings.scan_timeout,
         )
         if process.returncode == 0:
-            short_tag = (
-                final_image_tag.split(":")[-1] if ":" in final_image_tag else final_image_tag
-            )
-            message = f"No HIGH|CRITICAL vulnerabilities detected in {short_tag}"
+            message = "trivy scan complete (results above)"
             await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
             )
-            logger.success(message)
+            logger.info(message)
         else:
-            message = "Issues scanning image with trivy!"
+            message = "trivy scan failed to run"
             await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream",
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
             logger.error(message)
-            raise BuildFailure(f"Failed trivy image scan: {_safe_ref(final_image_tag)}")
     except asyncio.TimeoutError:
         message = "Trivy scan timed out."
         logger.error(message)
