@@ -119,7 +119,14 @@ async def _depot_push(process: asyncio.subprocess.Process, tag: str, timeout: in
     with open(metadata_path) as f:
         metadata = json.loads(f.read())
 
-    build_id = metadata.get("buildID") or metadata.get("depot.build", "")
+    # Metadata may be {"depot.build": {"buildID": "xxx", ...}} or flat {"buildID": "xxx"}.
+    build_id = metadata.get("buildID", "")
+    if not build_id:
+        depot_build = metadata.get("depot.build", {})
+        if isinstance(depot_build, dict):
+            build_id = depot_build.get("buildID", "")
+        elif isinstance(depot_build, str):
+            build_id = depot_build
     if not build_id:
         raise BuildFailure(
             f"Could not find build ID in depot metadata. Keys: {list(metadata.keys())}"
