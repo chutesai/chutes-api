@@ -5,6 +5,7 @@ Remote (depot) image forge.
 import asyncio
 from asyncio.subprocess import PIPE
 from typing import Callable
+import re
 import uuid
 import os
 import hashlib
@@ -77,7 +78,17 @@ async def _depot_build(
     capture_logs: Callable,
     timeout: int,
 ) -> asyncio.subprocess.Process:
-    """Run `depot build` with standard project/env settings."""
+    """Run `depot build` with standard project/env settings.
+
+    When --save is in args, a --metadata-file is automatically added so the
+    build ID can be retrieved afterwards via _get_build_id().
+    """
+    # Inject --metadata-file when saving so we can depot push afterwards.
+    metadata_path = None
+    if "--save" in args:
+        metadata_path = os.path.join(cwd, f".depot-meta-{uuid.uuid4().hex[:8]}.json")
+        args = args + ["--metadata-file", metadata_path]
+
     cmd = ["depot", "build", "--project", settings.depot_project_id] + args
     process = await asyncio.create_subprocess_exec(
         *cmd, stdout=PIPE, stderr=PIPE, env=_DEPOT_ENV, cwd=cwd
@@ -90,7 +101,143 @@ async def _depot_build(
         ),
         timeout=timeout,
     )
+    # Stash metadata path on the process object for _depot_push to find.
+    process._depot_metadata_path = metadata_path
     return process
+
+
+async def _depot_push(process: asyncio.subprocess.Process, tag: str, timeout: int = 900) -> None:
+    """Push a --save'd depot build to the registry.
+
+    Reads the build ID from the metadata file written by _depot_build,
+    then runs `depot push` which pushes from Depot's cache to the registry.
+    """
+    metadata_path = getattr(process, "_depot_metadata_path", None)
+    if not metadata_path or not os.path.exists(metadata_path):
+        raise BuildFailure("No depot metadata file found — was --save used?")
+
+    with open(metadata_path) as f:
+        metadata = json.loads(f.read())
+
+    # The build ID is in the metadata under depot.build or depot.buildID.
+    build_id = metadata.get("depot.build") or metadata.get("depot.buildID", "")
+    if not build_id:
+        # Fallback: try containerimage.digest or just dump keys for debugging.
+        raise BuildFailure(
+            f"Could not find build ID in depot metadata. Keys: {list(metadata.keys())}"
+        )
+
+    logger.info(f"Pushing build {build_id} as {_safe_ref(tag)}")
+    cmd = [
+        "depot",
+        "push",
+        "--project",
+        settings.depot_project_id,
+        "--tag",
+        tag,
+        build_id,
+    ]
+    push_proc = await asyncio.create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE, env=_DEPOT_ENV)
+    stdout, stderr = await asyncio.wait_for(push_proc.communicate(), timeout=timeout)
+    if push_proc.returncode != 0:
+        raise BuildFailure(f"depot push failed for {_safe_ref(tag)}: {stderr.decode()}")
+    logger.info(f"Pushed {_safe_ref(tag)}")
+
+
+async def _is_real_image_tag(repo: str, oci_tag: str) -> bool:
+    """Check the database to see if any image actually uses this tag.
+
+    Returns True if an image exists with a matching user/name/tag/patch_version
+    that would produce this repo:oci_tag combination in the registry.
+
+    This prevents us from accidentally clobbering or deleting a real image
+    when creating or cleaning up intermediate build tags.
+    """
+    # repo = "username/imagename", oci_tag could be "v1" or "v1-patchhash"
+    parts = repo.split("/", 1)
+    if len(parts) != 2:
+        return False
+    username, image_name = parts
+
+    from api.user.schemas import User
+
+    async with get_session() as session:
+        result = await session.execute(
+            select(Image)
+            .join(User, Image.user_id == User.user_id)
+            .where(
+                User.username == username,
+                Image.name == image_name,
+            )
+        )
+        images = result.scalars().all()
+        for image in images:
+            # Reconstruct every possible OCI tag this image could produce.
+            base = image.tag.lower()
+            candidates = {base}
+            if image.patch_version and image.patch_version != "initial":
+                candidates.add(f"{base}-{image.patch_version}")
+            if oci_tag in candidates:
+                return True
+    return False
+
+
+async def _safe_intermediate_tag(repo: str, oci_tag: str, suffix: str) -> str:
+    """Generate an intermediate OCI tag that is guaranteed not to collide
+    with any real image tag in the database.
+
+    Tries up to 5 times with different UUIDs before giving up.
+    """
+    for _ in range(5):
+        candidate = f"{oci_tag}-{suffix}-{uuid.uuid4().hex[:8]}"
+        if not await _is_real_image_tag(repo, candidate):
+            return candidate
+        logger.warning(f"Intermediate tag {candidate} collides with a real image, retrying")
+    raise BuildFailure(
+        f"Could not generate a safe intermediate tag for {repo}:{oci_tag} "
+        f"after 5 attempts — this should never happen"
+    )
+
+
+async def _cleanup_intermediate_tags(tags: list[str], final_tag: str) -> None:
+    """Delete intermediate image tags from the Depot registry.
+
+    Safety checks:
+      - Skips any tag matching the final image tag.
+      - Queries the DB to verify the tag doesn't belong to a real image.
+    """
+    for tag in tags:
+        if tag == final_tag:
+            logger.warning(f"Skipping cleanup of {_safe_ref(tag)} — matches final image tag")
+            continue
+        # Parse repo:oci_tag from the full registry ref.
+        # tag = "registry/repo:oci_tag"
+        without_registry = tag.split("/", 1)[-1] if "/" in tag else tag
+        if ":" in without_registry:
+            repo_part, oci_tag_part = without_registry.rsplit(":", 1)
+        else:
+            logger.warning(f"Skipping cleanup of {_safe_ref(tag)} — could not parse tag")
+            continue
+        if await _is_real_image_tag(repo_part, oci_tag_part):
+            logger.error(
+                f"REFUSING to delete {_safe_ref(tag)} — it matches a real image in the database!"
+            )
+            continue
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "crane",
+                "delete",
+                tag,
+                stdout=PIPE,
+                stderr=PIPE,
+            )
+            stdout, stderr = await process.communicate()
+            if process.returncode == 0:
+                logger.info(f"Cleaned up intermediate tag {_safe_ref(tag)}")
+            else:
+                logger.warning(f"Failed to clean up {_safe_ref(tag)}: {stderr.decode().strip()}")
+        except Exception as exc:
+            logger.warning(f"Error cleaning up {_safe_ref(tag)}: {exc}")
 
 
 async def initialize():
@@ -239,6 +386,43 @@ async def _drain_logs(stream, name, label: str = ""):
             log_method(line.decode().strip())
 
 
+_FROM_RE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)", re.IGNORECASE | re.MULTILINE)
+
+
+def _validate_dockerfile_bases(dockerfile_path: str) -> None:
+    """Reject Dockerfiles that pull from anything other than parachutes/* images.
+
+    Allows:
+      - parachutes/<image>:<tag>
+      - scratch (Docker built-in)
+      - References to earlier build stages (e.g. FROM builder)
+    """
+    with open(dockerfile_path) as f:
+        content = f.read()
+
+    stage_names: set[str] = set()
+    for match in _FROM_RE.finditer(content):
+        image_ref = match.group(1)
+
+        # Collect AS aliases so later FROM <alias> is allowed.
+        as_match = re.search(r"\bAS\s+(\S+)", match.group(0), re.IGNORECASE)
+        if as_match:
+            stage_names.add(as_match.group(1).lower())
+
+        ref_lower = image_ref.lower()
+
+        # Allow scratch and references to earlier stages.
+        if ref_lower == "scratch" or ref_lower in stage_names:
+            continue
+
+        # Strip tag/digest for the prefix check.
+        image_name = ref_lower.split(":")[0].split("@")[0]
+        if not image_name.startswith("parachutes/"):
+            raise BuildFailure(
+                f"Dockerfile FROM targets must use parachutes/* base images, got: {image_ref}"
+            )
+
+
 def _copy_cfsv_binary(image, build_dir: str) -> str:
     """Copy the appropriate cfsv binary version into the build directory."""
     build_cfsv_path = os.path.join(build_dir, "cfsv")
@@ -275,8 +459,10 @@ async def build_and_push_image(image, build_dir):
         oci_tag = f"{oci_tag}-{image.patch_version}"
     short_tag = f"{repo}:{oci_tag}"
 
+    _validate_dockerfile_bases(os.path.join(build_dir, "Dockerfile"))
     _copy_cfsv_binary(image, build_dir)
 
+    intermediate_tags: list[str] = []
     started_at = time.time()
 
     async def _capture_logs(stream, name, capture=True):
@@ -303,7 +489,7 @@ async def build_and_push_image(image, build_dir):
 
     try:
         # Stage 1: Build user's Dockerfile and push to Depot registry.
-        original_oci_tag = f"{oci_tag}-original-{uuid.uuid4().hex[:8]}"
+        original_oci_tag = await _safe_intermediate_tag(repo, oci_tag, "original")
         original_depot_ref = _depot_registry_ref(repo, original_oci_tag)
         logger.info(f"Stage 1: Building original image as {_safe_ref(original_depot_ref)}")
 
@@ -322,9 +508,11 @@ async def build_and_push_image(image, build_dir):
         )
         if process.returncode != 0:
             raise BuildFailure("Build of original image failed!")
+        await _depot_push(process, original_depot_ref)
+        intermediate_tags.append(original_depot_ref)
 
         # Stage 2: Install chutes lib (status only, no raw log streaming).
-        chutes_oci_tag = f"{original_oci_tag}-chutes"
+        chutes_oci_tag = await _safe_intermediate_tag(repo, oci_tag, "chutes")
         chutes_depot_tag = _depot_registry_ref(repo, chutes_oci_tag)
         logger.info(f"Stage 2: Installing chutes lib as {_safe_ref(chutes_depot_tag)}")
         await _stream_status(image.image_id, "installing chutes library...")
@@ -373,6 +561,8 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
         )
         if process.returncode != 0:
             raise BuildFailure("Failed to install chutes library into image!")
+        await _depot_push(process, chutes_depot_tag)
+        intermediate_tags.append(chutes_depot_tag)
         await _stream_status(image.image_id, "chutes library installed")
 
         # Stage 3: Filesystem verification + extract (status only).
@@ -554,6 +744,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
         )
         if process.returncode != 0:
             raise BuildFailure(f"Final build of {_safe_ref(final_depot_tag)} failed!")
+        await _depot_push(process, final_depot_tag)
 
         delta = time.time() - started_at
         message = f"image built and pushed in {round(delta, 1)} seconds"
@@ -577,6 +768,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
     # Stage 6: Cosign sign.
     await sign_image(image, final_depot_tag)
+
+    # Clean up intermediate images from the registry.
+    await _cleanup_intermediate_tags(intermediate_tags, final_depot_tag)
 
     # DONE!
     delta = time.time() - started_at
@@ -779,12 +973,13 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     success = False
     inspecto_hash = None
     package_hashes = None
+    intermediate_tags: list[str] = []
     with tempfile.TemporaryDirectory() as build_dir:
         try:
             _copy_cfsv_binary(image, build_dir)
 
             # Stage 1: Build updated base image with new chutes lib.
-            updated_oci_tag = f"{target_oci_tag}-updated-{uuid.uuid4().hex[:8]}"
+            updated_oci_tag = await _safe_intermediate_tag(repo, target_oci_tag, "updated")
             updated_depot_tag = _depot_registry_ref(repo, updated_oci_tag)
             logger.info(f"Stage 1: Building updated image as {_safe_ref(updated_depot_tag)}")
 
@@ -831,6 +1026,8 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             )
             if process.returncode != 0:
                 raise BuildFailure("Failed to build updated image!")
+            await _depot_push(process, updated_depot_tag)
+            intermediate_tags.append(updated_depot_tag)
 
             # Stage 2: Filesystem verification + extract.
             logger.info("Stage 2: Building filesystem verification image")
@@ -1018,6 +1215,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
             )
             if process.returncode != 0:
                 raise BuildFailure("Failed to build final image!")
+            await _depot_push(process, target_depot_tag)
 
             logger.success(f"Successfully pushed updated image {_safe_ref(target_depot_tag)}")
             success = True
@@ -1033,6 +1231,9 @@ ENV PYTHONDONTWRITEBYTECODE=1
                 f"Error updating chutes lib for {image_id}: {exc}\n{traceback.format_exc()}"
             )
             error_message = str(exc)
+
+        # Clean up intermediate images from the registry.
+        await _cleanup_intermediate_tags(intermediate_tags, target_depot_tag)
 
         # Sign if successful.
         if success:
