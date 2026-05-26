@@ -4,7 +4,7 @@ Remote (depot) image forge.
 
 import asyncio
 from asyncio.subprocess import PIPE
-from typing import Any, Callable
+from typing import Callable
 import uuid
 import os
 import hashlib
@@ -148,11 +148,15 @@ async def get_image_digest(image_tag: str) -> str:
 async def sign_image(
     image,
     image_tag: str,
-    _capture_logs: Callable[[Any, Any, bool], None],
     stream: bool = True,
 ):
-    """Sign the image using cosign against Depot's registry."""
+    """Sign the image using cosign against Depot's registry.
+
+    Only streams brief status messages to redis -- no raw cosign output.
+    """
     started_at = time.time()
+    if stream:
+        await _stream_status(image.image_id, "signing image...")
     try:
         image_digest = await get_image_digest(image_tag)
         image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
@@ -174,23 +178,15 @@ async def sign_image(
             logger.success(f"Successfully signed {image_digest_tag}")
             if stream:
                 delta = time.time() - started_at
-                message = (
-                    "\N{HAMMER AND WRENCH} "
-                    + f" finished signing image {image.image_id} in {round(delta, 1)} seconds"
+                await _stream_status(
+                    image.image_id,
+                    f"image signed in {round(delta, 1)} seconds",
                 )
-                await settings.redis_client.client.xadd(
-                    f"forge:{image.image_id}:stream",
-                    {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
-                )
-                logger.success(message)
         else:
-            message = f"Image sign failed: {stderr.decode()}"
-            logger.error(message)
+            # Log full stderr server-side only; send sanitised message to redis.
+            logger.error(f"Image sign failed: {stderr.decode()}")
             if stream:
-                await settings.redis_client.client.xadd(
-                    f"forge:{image.image_id}:stream",
-                    {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-                )
+                await _stream_status(image.image_id, "image signing failed", log_type="stderr")
                 await settings.redis_client.client.xadd(
                     f"forge:{image.image_id}:stream", {"data": "DONE"}
                 )
@@ -198,17 +194,34 @@ async def sign_image(
     except SignFailure:
         raise
     except asyncio.TimeoutError:
-        message = f"Sign of {image_tag} timed out after {settings.push_timeout} seconds."
-        logger.error(message)
+        logger.error(f"Sign of {image_tag} timed out after {settings.push_timeout} seconds.")
         if stream:
-            await settings.redis_client.client.xadd(
-                f"forge:{image.image_id}:stream",
-                {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
-            )
+            await _stream_status(image.image_id, "image signing timed out", log_type="stderr")
             await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream", {"data": "DONE"}
             )
         raise SignTimeout(f"Sign of {image_tag} timed out after {settings.push_timeout} seconds.")
+
+
+async def _stream_status(image_id: str, message: str, log_type: str = "stdout"):
+    """Send a brief status message to the forge redis stream (no raw build output)."""
+    await settings.redis_client.client.xadd(
+        f"forge:{image_id}:stream",
+        {"data": json.dumps({"log_type": log_type, "log": message}).decode()},
+    )
+
+
+async def _drain_logs(stream, name, label: str = ""):
+    """Read subprocess output, log server-side only. Nothing goes to redis."""
+    log_method = logger.info if name == "stdout" else logger.warning
+    while True:
+        line = await stream.readline()
+        if not line:
+            break
+        if label:
+            log_method(f"[{label}]: {line.decode().strip()}")
+        else:
+            log_method(line.decode().strip())
 
 
 def _copy_cfsv_binary(image, build_dir: str) -> str:
@@ -295,10 +308,11 @@ async def build_and_push_image(image, build_dir):
         if process.returncode != 0:
             raise BuildFailure("Build of original image failed!")
 
-        # Stage 2: Install chutes lib.
+        # Stage 2: Install chutes lib (status only, no raw log streaming).
         chutes_oci_tag = f"{original_oci_tag}-chutes"
         chutes_depot_tag = _depot_registry_ref(repo, chutes_oci_tag)
         logger.info(f"Stage 2: Installing chutes lib as {chutes_depot_tag}")
+        await _stream_status(image.image_id, "installing chutes library...")
 
         chutes_dockerfile_content = f"""FROM {original_depot_ref}
 USER root
@@ -339,14 +353,16 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
                 ".",
             ],
             cwd=build_dir,
-            capture_logs=_capture_logs,
+            capture_logs=lambda s, n: _drain_logs(s, n, label=f"chutes {short_tag}"),
             timeout=settings.build_timeout,
         )
         if process.returncode != 0:
             raise BuildFailure("Failed to install chutes library into image!")
+        await _stream_status(image.image_id, "chutes library installed")
 
-        # Stage 3: Filesystem verification + extract via --output.
+        # Stage 3: Filesystem verification + extract (status only).
         logger.info("Stage 3: Building filesystem verification image")
+        await _stream_status(image.image_id, "generating filesystem verification data...")
 
         fsv_dockerfile_content = f"""FROM {chutes_depot_tag}
 USER chutes
@@ -438,11 +454,12 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
                 ".",
             ],
             cwd=build_dir,
-            capture_logs=lambda stream, name: _capture_logs(stream, name, capture=False),
+            capture_logs=lambda s, n: _drain_logs(s, n, label=f"fsv {short_tag}"),
             timeout=settings.build_timeout,
         )
         if process.returncode != 0:
             raise BuildFailure("Build of filesystem verification image failed!")
+        await _stream_status(image.image_id, "filesystem verification complete")
 
         # Read extracted files.
         data_file_path = os.path.join(extracted_dir, "chutesfs.data")
@@ -476,9 +493,10 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
         if bytecode_manifest_json_path:
             await upload_bytecode_manifest_json(image, bytecode_manifest_json_path)
 
-        # Stage 4: Build final image and push.
+        # Stage 4: Build final image and push (status only).
         final_depot_tag = _depot_registry_ref(repo, oci_tag)
         logger.info(f"Stage 4: Building final image as {final_depot_tag}")
+        await _stream_status(image.image_id, "building final image...")
 
         index_path = os.path.join(extracted_dir, "chutesfs.index")
         final_index_path = os.path.join(build_dir, "chutesfs.index")
@@ -516,19 +534,16 @@ ENV PYTHONDONTWRITEBYTECODE=1
                 ".",
             ],
             cwd=build_dir,
-            capture_logs=_capture_logs,
+            capture_logs=lambda s, n: _drain_logs(s, n, label=f"final {short_tag}"),
             timeout=settings.build_timeout,
         )
         if process.returncode != 0:
             raise BuildFailure(f"Final build of {final_depot_tag} failed!")
 
         delta = time.time() - started_at
-        message = f"Successfully built {final_depot_tag} in {round(delta, 5)} seconds"
+        message = f"image built and pushed in {round(delta, 1)} seconds"
         logger.success(message)
-        await settings.redis_client.client.xadd(
-            f"forge:{image.image_id}:stream",
-            {"data": json.dumps({"log_type": "stdout", "log": message}).decode()},
-        )
+        await _stream_status(image.image_id, message)
 
     except asyncio.TimeoutError:
         message = f"Build timed out after {settings.build_timeout} seconds."
@@ -546,7 +561,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
     await trivy_image_scan(image, final_depot_tag, build_dir, _capture_logs)
 
     # Stage 6: Cosign sign.
-    await sign_image(image, final_depot_tag, _capture_logs)
+    await sign_image(image, final_depot_tag)
 
     # DONE!
     delta = time.time() - started_at
@@ -745,22 +760,6 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     source_depot_tag = _depot_registry_ref(repo, source_oci_tag)
     target_depot_tag = _depot_registry_ref(repo, target_oci_tag)
 
-    async def _capture_logs(stream, name, capture=True):
-        if not capture:
-            while True:
-                line = await stream.readline()
-                if not line:
-                    break
-            return
-        log_method = logger.info if name == "stdout" else logger.warning
-        while True:
-            line = await stream.readline()
-            if line:
-                decoded_line = line.decode().strip()
-                log_method(f"[update {target_tag}]: {decoded_line}")
-            else:
-                break
-
     error_message = None
     success = False
     inspecto_hash = None
@@ -812,7 +811,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
                     ".",
                 ],
                 cwd=build_dir,
-                capture_logs=_capture_logs,
+                capture_logs=lambda s, n: _drain_logs(s, n, label=f"update {target_tag}"),
                 timeout=settings.build_timeout,
             )
             if process.returncode != 0:
@@ -912,7 +911,7 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
                     ".",
                 ],
                 cwd=build_dir,
-                capture_logs=lambda stream, name: _capture_logs(stream, name, capture=False),
+                capture_logs=lambda s, n: _drain_logs(s, n, label=f"fsv {target_tag}"),
                 timeout=settings.build_timeout,
             )
             if process.returncode != 0:
@@ -999,7 +998,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
                     ".",
                 ],
                 cwd=build_dir,
-                capture_logs=_capture_logs,
+                capture_logs=lambda s, n: _drain_logs(s, n, label=f"final {target_tag}"),
                 timeout=settings.build_timeout,
             )
             if process.returncode != 0:
@@ -1022,7 +1021,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
         # Sign if successful.
         if success:
-            await sign_image(image, target_depot_tag, _capture_logs, stream=True)
+            await sign_image(image, target_depot_tag, stream=True)
 
     # Update the image with the new patch version, tag, etc.
     affected_chute_ids = []
