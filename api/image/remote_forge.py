@@ -396,6 +396,8 @@ def _sanitize_log(line: str) -> str:
     line = _SENSITIVE_ENV_RE.sub(r"\1=<redacted>", line)
     if settings.depot_registry:
         line = line.replace(settings.depot_registry, "<registry>")
+    if settings.depot_project_id:
+        line = line.replace(settings.depot_project_id, "<project>")
     return line
 
 
@@ -607,16 +609,16 @@ USER chutes
 ENV LD_PRELOAD=""
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN rm -rf does_not_exist.py does_not_exist
-RUN --mount=type=secret,id=ps_op PS_OP="$(cat /run/secrets/ps_op)" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
+RUN --mount=type=secret,id=ps_op,mode=0444 PS_OP="$(cat /run/secrets/ps_op)" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
         # Generate bytecode manifest (V2) for chutes >= 0.5.5.
@@ -633,7 +635,7 @@ RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cf
             has_bcm = True
             fsv_dockerfile_content += """COPY chutes-bcm.so /tmp/chutes-bcm.so
 COPY generate_manifest_driver.py /tmp/generate_manifest_driver.py
-RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python /tmp/generate_manifest_driver.py \
+RUN --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" python /tmp/generate_manifest_driver.py \
     --output /tmp/bytecode.manifest \
     --json-output /tmp/bytecode.manifest.json \
     --lib /tmp/chutes-bcm.so \
@@ -650,7 +652,7 @@ RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python 
 USER root
 RUN cp -f /tmp/bytecode.manifest /etc/bytecode.manifest || true
 USER chutes
-RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python -m cllmv.pkg_hash > /tmp/package_hashes.json
+RUN --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" python -m cllmv.pkg_hash > /tmp/package_hashes.json
 """
 
         # Append extract stage for --output type=local.
@@ -1084,16 +1086,16 @@ USER chutes
 ENV LD_PRELOAD=""
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN rm -rf does_not_exist.py does_not_exist
-RUN --mount=type=secret,id=ps_op PS_OP="$(cat /run/secrets/ps_op)" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
+RUN --mount=type=secret,id=ps_op,mode=0444 PS_OP="$(cat /run/secrets/ps_op)" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
             has_bcm = False
@@ -1109,7 +1111,7 @@ RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cf
                 has_bcm = True
                 fsv_dockerfile_content += """COPY chutes-bcm.so /tmp/chutes-bcm.so
 COPY generate_manifest_driver.py /tmp/generate_manifest_driver.py
-RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python /tmp/generate_manifest_driver.py \
+RUN --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" python /tmp/generate_manifest_driver.py \
     --output /tmp/bytecode.manifest \
     --json-output /tmp/bytecode.manifest.json \
     --lib /tmp/chutes-bcm.so \
@@ -1126,7 +1128,7 @@ RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python 
 USER root
 RUN cp -f /tmp/bytecode.manifest /etc/bytecode.manifest || true
 USER chutes
-RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python -m cllmv.pkg_hash > /tmp/package_hashes.json
+RUN --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" python -m cllmv.pkg_hash > /tmp/package_hashes.json
 """
 
             # Extract stage.

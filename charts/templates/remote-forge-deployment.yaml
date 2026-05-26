@@ -89,7 +89,7 @@ spec:
             items:
             - key: cosign.key
               path: cosign.key
-              mode: 0400
+              mode: 0444
       {{- with .Values.remoteForge.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
