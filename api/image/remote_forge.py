@@ -119,10 +119,8 @@ async def _depot_push(process: asyncio.subprocess.Process, tag: str, timeout: in
     with open(metadata_path) as f:
         metadata = json.loads(f.read())
 
-    # The build ID is in the metadata under depot.build or depot.buildID.
-    build_id = metadata.get("depot.build") or metadata.get("depot.buildID", "")
+    build_id = metadata.get("buildID") or metadata.get("depot.build", "")
     if not build_id:
-        # Fallback: try containerimage.digest or just dump keys for debugging.
         raise BuildFailure(
             f"Could not find build ID in depot metadata. Keys: {list(metadata.keys())}"
         )
