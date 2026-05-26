@@ -32,7 +32,6 @@ from api.chute.schemas import (
     ChuteUpdateArgs,
     RollingUpdate,
 )
-from api.chute.codecheck import is_bad_code
 from api.chute.templates import (
     VLLMChuteArgs,
     VLLMEngineArgs,
@@ -2202,16 +2201,7 @@ async def deploy_chute(
 
     # No-DoS-Plz.
     await limit_deployments(db, current_user)
-    if not current_user.has_role(Permissioning.unlimited_dev):
-        bad, response = await is_bad_code(chute_args.code)
-        if bad:
-            logger.warning(
-                f"CODECHECK FAIL: User {current_user.user_id} attempted to deploy bad code {response}\n{chute_args.code}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=json.dumps(response).decode(),
-            )
+
     use_rolling_update = chute_args.use_rolling_update
     if is_subnet_model:
         use_rolling_update = False

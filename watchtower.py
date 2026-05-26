@@ -33,7 +33,6 @@ import api.database.orms  # noqa
 import api.miner_client as miner_client
 from api.instance.schemas import Instance, LaunchConfig
 from api.instance.util import purge, purge_and_notify  # noqa: F401
-from api.chute.codecheck import is_bad_code
 
 
 TCP_STATES = {
@@ -947,60 +946,6 @@ async def report_short_lived_chutes():
     # Generate the reports in separate sessions so we don't have massive transactions.
     for chute_id, reason in bad_chutes:
         await generate_confirmed_reports(chute_id, reason)
-
-
-async def remove_bad_chutes():
-    """
-    Remove malicious/bad chutes via AI analysis of code.
-    """
-    from api.user.service import chutes_user_id
-
-    async with get_session() as session:
-        chutes = (
-            (await session.execute(select(Chute).where(Chute.user_id != await chutes_user_id())))
-            .unique()
-            .scalars()
-            .all()
-        )
-    tasks = [is_bad_code(chute.code) for chute in chutes]
-    results = await asyncio.gather(*tasks)
-    for idx in range(len(chutes)):
-        chute = chutes[idx]
-        bad, reason = results[idx]
-        if bad:
-            logger.error(
-                "\n".join(
-                    [
-                        f"Chute contains problematic code: {chute.chute_id=} {chute.name=} {chute.user_id=}",
-                        json.dumps(reason).decode(),
-                        "Code:",
-                        chute.code,
-                    ]
-                )
-            )
-            # Delete it automatically.
-            async with get_session() as session:
-                chute = (
-                    (await session.execute(select(Chute).where(Chute.chute_id == chute.chute_id)))
-                    .unique()
-                    .scalar_one_or_none()
-                )
-                version = chute.version
-                await session.delete(chute)
-                await settings.redis_client.publish(
-                    "miner_broadcast",
-                    json.dumps(
-                        {
-                            "reason": "chute_deleted",
-                            "data": {"chute_id": chute.chute_id, "version": version},
-                        }
-                    ).decode(),
-                )
-                await session.commit()
-            reason = f"Chute contains code identified by DeepSeek-R1 as likely cheating: {json.dumps(reason).decode()}"
-            await generate_confirmed_reports(chute.chute_id, reason)
-        else:
-            logger.success(f"Chute seems fine: {chute.chute_id=} {chute.name=}")
 
 
 async def procs_check():

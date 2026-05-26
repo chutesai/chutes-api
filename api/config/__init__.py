@@ -279,9 +279,6 @@ class Settings(BaseSettings):
     # Consecutive failure count that triggers instance deletion.
     consecutive_failure_limit: int = int(os.getenv("CONSECUTIVE_FAILURE_LIMIT", "7"))
 
-    # API key for checking code.
-    codecheck_key: Optional[str] = os.getenv("CODECHECK_KEY")
-
     # Logos CDN hostname.
     logo_cdn: Optional[str] = os.getenv("LOGO_CDN", "https://logos.chutes.ai")
 
