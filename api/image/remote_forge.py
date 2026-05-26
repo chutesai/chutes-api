@@ -342,8 +342,8 @@ for _val in (
     os.environ.get("CFSV_OP", ""),
     os.environ.get("PS_OP", ""),
 ):
-    if _val and len(_val) >= 8:
-        _REDACT_STRINGS.append(_val)
+    if _val and len(f"{_val}") >= 8:
+        _REDACT_STRINGS.append(f"{_val}")
 
 
 def _sanitize_log(line: str) -> str:
