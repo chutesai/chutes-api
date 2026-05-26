@@ -357,11 +357,11 @@ async def process_boot_attestation(
         if semcomp(measurement_config.version, minimum_version) < 0:
             logger.warning(
                 f"Boot attestation rejected: VM version {measurement_config.version} "
-                f"is outdated (minimum: {minimum_version}). VM must be re-imaged."
+                f"is outdated (minimum: {minimum_version}). Please upgrade to the latest VM version."
             )
             raise MeasurementMismatchError(
                 f"VM version {measurement_config.version} is no longer accepted for boot attestation. "
-                f"Please re-image with the latest VM version ({minimum_version})."
+                f"Please upgrade to the latest VM version ({minimum_version})."
             )
 
         # Create boot attestation record
