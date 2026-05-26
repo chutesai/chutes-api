@@ -296,7 +296,9 @@ async def get_image_digest(image_tag: str) -> str:
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise SignFailure(f"Failed to get digest for {_safe_ref(image_tag)}: {stderr.decode()}")
+        raise SignFailure(
+            f"Failed to get digest for {_safe_ref(image_tag)}: {_sanitize_log(stderr.decode())}"
+        )
 
     digest = stdout.decode().strip()
     if not digest.startswith("sha256:"):
@@ -344,7 +346,7 @@ async def sign_image(
                 )
         else:
             # Log full stderr server-side only; send sanitised message to redis.
-            logger.error(f"Image sign failed: {stderr.decode()}")
+            logger.error(f"Image sign failed: {_sanitize_log(stderr.decode())}")
             if stream:
                 await _stream_status(image.image_id, "image signing failed", log_type="stderr")
                 await settings.redis_client.client.xadd(
