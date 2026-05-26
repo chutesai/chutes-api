@@ -54,7 +54,6 @@ from api.server.util import (
     _track_server,
     _get_vm_cache_config,
     get_matching_measurement_config,
-    get_latest_measurement_version,
     generate_nonce,
     get_nonce_expiry_seconds,
     verify_quote,
@@ -354,15 +353,15 @@ async def process_boot_attestation(
 
         measurement_config = get_matching_measurement_config(quote)
 
-        latest_version = get_latest_measurement_version()
-        if semcomp(measurement_config.version, latest_version) < 0:
+        minimum_version = settings.tee_minimum_boot_version
+        if semcomp(measurement_config.version, minimum_version) < 0:
             logger.warning(
                 f"Boot attestation rejected: VM version {measurement_config.version} "
-                f"is outdated (latest: {latest_version}). VM must be re-imaged."
+                f"is outdated (minimum: {minimum_version}). VM must be re-imaged."
             )
             raise MeasurementMismatchError(
                 f"VM version {measurement_config.version} is no longer accepted for boot attestation. "
-                f"Please re-image with the latest VM version ({latest_version})."
+                f"Please re-image with the latest VM version ({minimum_version})."
             )
 
         # Create boot attestation record

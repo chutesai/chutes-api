@@ -3,11 +3,13 @@ Application-wide settings.
 """
 
 import os
+import re
 import hashlib
 from pathlib import Path
 import aioboto3
 import json
 import yaml
+import semver
 from dataclasses import dataclass
 from api.safe_redis import SafeRedis
 from functools import cached_property, lru_cache
@@ -411,6 +413,30 @@ class Settings(BaseSettings):
 
         logger.info(f"Loaded {len(measurements)} TEE measurement configurations")
         return measurements
+
+    @property
+    def tee_minimum_boot_version(self) -> str:
+        """Minimum VM version accepted for boot attestation.
+
+        Returns TEE_MINIMUM_BOOT_VERSION when set, allowing new platform measurement
+        configs to be added to the YAML incrementally without immediately enforcing a
+        version bump for platforms not yet upgraded.  Falls back to the highest version
+        found across all loaded measurement configs.
+        """
+        if pinned := os.getenv("TEE_MINIMUM_BOOT_VERSION"):
+            return pinned
+        versions = [m.version for m in self.tee_measurements if m.version]
+        if not versions:
+            return "0.0.0"
+        latest = versions[0]
+        for v in versions[1:]:
+            match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)", v)
+            clean = match.group(1) if match else "0.0.0"
+            match_latest = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)", latest)
+            clean_latest = match_latest.group(1) if match_latest else "0.0.0"
+            if semver.compare(clean, clean_latest) > 0:
+                latest = v
+        return latest
 
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     cache_passphrase_key: Optional[str] = os.getenv("CACHE_PASSPHRASE_KEY")
