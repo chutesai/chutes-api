@@ -131,10 +131,15 @@ FROM base AS remote-forge
 RUN curl -L https://depot.dev/install-cli.sh | sh
 
 # Install cosign (for signing - lightweight, doesn't pull images)
-ENV COSIGN_VERSION=2.5.3
+ENV COSIGN_VERSION=3.0.6
 RUN curl -LO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_${COSIGN_VERSION}_amd64.deb" && \
     dpkg -i cosign_${COSIGN_VERSION}_amd64.deb && \
     rm cosign_${COSIGN_VERSION}_amd64.deb
+
+# Install crane (for querying image digests from registry)
+ENV CRANE_VERSION=0.21.6
+RUN curl -sL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" | \
+    tar -xz -C /usr/local/bin crane
 
 # Install uv
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

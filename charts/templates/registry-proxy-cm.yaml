@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "registryProxy.labels" . | nindent 4 }}
 data:
-  nginx.conf: |
+  nginx.conf.template: |
     user www-data;
     worker_processes {{ .Values.registryProxy.config.workerProcesses }};
     pid /run/nginx.pid;
@@ -24,28 +24,53 @@ data:
             sendfile on;
             tcp_nopush on;
             listen {{ .Values.registryProxy.service.port }};
-        
+
             location /v2/ {
-                limit_except GET {
+                limit_except GET HEAD {
                     deny all;
                 }
-                proxy_pass http://registry:{{ .Values.registry.service.port }};
-                auth_request /auth;
-                proxy_set_header Authorization $auth_resp_authorization;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_pass https://${DEPOT_REGISTRY};
+
+                proxy_ssl_server_name on;
+                proxy_ssl_name ${DEPOT_REGISTRY};
+                proxy_set_header Host ${DEPOT_REGISTRY};
+
+                # Pass through bearer tokens from Docker client
+                proxy_set_header Authorization $http_authorization;
+
+                # Rewrite Www-Authenticate to point to our /token endpoint
+                proxy_hide_header Www-Authenticate;
+                add_header Www-Authenticate 'Bearer realm="https://registry.chutes.ai/token",service="${DEPOT_REGISTRY}"' always;
+
+                proxy_request_buffering off;
+                proxy_buffering off;
+                proxy_http_version 1.1;
+                proxy_read_timeout 900s;
+                proxy_send_timeout 900s;
             }
-        
+
+            # Token endpoint - verify hotkey, then proxy to Depot's token service with Depot creds
+            location /token {
+                auth_request /auth;
+
+                proxy_pass https://api.depot.dev/auth/registry/token$is_args$args;
+                proxy_ssl_server_name on;
+                proxy_ssl_name api.depot.dev;
+                proxy_set_header Host api.depot.dev;
+
+                # Inject Depot registry credentials (substituted at runtime by init container)
+                proxy_set_header Authorization "Basic ${DEPOT_BASIC_AUTH}";
+            }
+
             location = /auth {
                 internal;
                 proxy_pass http://api:{{ .Values.api.service.port }}/registry/auth;
                 auth_request_set $auth_resp_authorization $upstream_http_authorization;
-                proxy_pass_request_body off; 
+                proxy_pass_request_body off;
                 proxy_set_header Content-Length "";
                 error_page 401 403 500 502 503 504 = @block;
             }
-        
+
             location @block {
                 return 401;
             }

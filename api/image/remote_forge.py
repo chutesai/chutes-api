@@ -103,8 +103,9 @@ async def initialize():
         await process.wait()
         logger.info("Configured depot docker credentials")
 
-    # Login cosign to Depot registry for image signing.
+    # Login cosign + crane to Depot registry.
     if settings.depot_registry and settings.depot_registry_token:
+        # cosign login -u ... -p ... <registry>
         process = await asyncio.create_subprocess_exec(
             "cosign",
             "login",
@@ -116,16 +117,33 @@ async def initialize():
         )
         await process.wait()
         if process.returncode == 0:
-            logger.success(f"Cosign authenticated to {settings.depot_registry}")
+            logger.success(f"cosign authenticated to {settings.depot_registry}")
         else:
-            logger.warning(f"Cosign failed to authenticate to {settings.depot_registry}")
+            logger.warning(f"cosign failed to authenticate to {settings.depot_registry}")
+
+        # crane auth login -u ... -p ... <registry>
+        process = await asyncio.create_subprocess_exec(
+            "crane",
+            "auth",
+            "login",
+            "-u",
+            "x-token",
+            "-p",
+            settings.depot_registry_token,
+            settings.depot_registry,
+        )
+        await process.wait()
+        if process.returncode == 0:
+            logger.success(f"crane authenticated to {settings.depot_registry}")
+        else:
+            logger.warning(f"crane failed to authenticate to {settings.depot_registry}")
 
 
 async def get_image_digest(image_tag: str) -> str:
-    """Get digest using cosign triangulate (against Depot's HTTPS registry)."""
+    """Get the image digest from the registry using crane."""
     process = await asyncio.create_subprocess_exec(
-        "cosign",
-        "triangulate",
+        "crane",
+        "digest",
         image_tag,
         stdout=PIPE,
         stderr=PIPE,
@@ -135,12 +153,9 @@ async def get_image_digest(image_tag: str) -> str:
     if process.returncode != 0:
         raise SignFailure(f"Failed to get digest for {image_tag}: {stderr.decode()}")
 
-    triangulate_output = stdout.decode().strip()
-    if ":sha256-" in triangulate_output and triangulate_output.endswith(".sig"):
-        digest_part = triangulate_output.split(":sha256-")[1].replace(".sig", "")
-        digest = f"sha256:{digest_part}"
-    else:
-        raise SignFailure(f"Unexpected triangulate output format: {triangulate_output}")
+    digest = stdout.decode().strip()
+    if not digest.startswith("sha256:"):
+        raise SignFailure(f"Unexpected digest format: {digest}")
 
     return digest
 

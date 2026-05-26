@@ -172,6 +172,33 @@ forge:
           topologyKey: kubernetes.io/hostname
   tolerations: []
 
+remoteForge:
+  replicaCount: 4
+  image: parachutes/remote-forge:latest
+  imagePullPolicy: Always
+  resources:
+    requests:
+      cpu: "750m"
+      memory: "2Gi"
+    limits:
+      cpu: "750m"
+      memory: "2Gi"
+  nodeSelector: {}
+  affinity:
+    nodeAffinity: {}
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - remote-forge
+          topologyKey: kubernetes.io/hostname
+  tolerations: []
+
 gravalWorker:
   replicaCount: 16
   image: parachutes/validator:latest
