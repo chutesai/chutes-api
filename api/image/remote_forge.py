@@ -367,6 +367,36 @@ async def sign_image(
         )
 
 
+_SENSITIVE_ENV_RE = re.compile(
+    r'(CFSV_OP|PS_OP|DEPOT_TOKEN|DEPOT_REGISTRY_RW_TOKEN|DEPOT_REGISTRY_TOKEN)=["\']?[^\s"\']*["\']?'
+)
+
+# Build a list of literal secret values to redact from log lines.
+_REDACT_STRINGS: list[str] = []
+for _val in (
+    settings.depot_token,
+    settings.depot_registry_token,
+    settings.depot_registry_rw_token,
+    settings.cosign_key,
+    settings.cosign_password,
+    os.environ.get("CFSV_OP", ""),
+    os.environ.get("PS_OP", ""),
+):
+    if _val and len(_val) >= 8:
+        _REDACT_STRINGS.append(_val)
+
+
+def _sanitize_log(line: str) -> str:
+    """Redact sensitive values and strip the registry hostname from a log line."""
+    for secret in _REDACT_STRINGS:
+        if secret in line:
+            line = line.replace(secret, "<redacted>")
+    line = _SENSITIVE_ENV_RE.sub(r"\1=<redacted>", line)
+    if settings.depot_registry:
+        line = line.replace(settings.depot_registry, "<registry>")
+    return line
+
+
 async def _stream_status(image_id: str, message: str, log_type: str = "stdout"):
     """Send a brief status message to the forge redis stream (no raw build output)."""
     await settings.redis_client.client.xadd(
@@ -382,10 +412,11 @@ async def _drain_logs(stream, name, label: str = ""):
         line = await stream.readline()
         if not line:
             break
+        sanitized = _sanitize_log(line.decode().strip())
         if label:
-            log_method(f"[{label}]: {line.decode().strip()}")
+            log_method(f"[{label}]: {sanitized}")
         else:
-            log_method(line.decode().strip())
+            log_method(sanitized)
 
 
 _FROM_RE = re.compile(r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)", re.IGNORECASE | re.MULTILINE)
@@ -478,7 +509,7 @@ async def build_and_push_image(image, build_dir):
         while True:
             line = await stream.readline()
             if line:
-                decoded_line = line.decode().strip()
+                decoded_line = _sanitize_log(line.decode().strip())
                 log_method(f"[build {short_tag}]: {decoded_line}")
                 with open("build.log", "a+") as outfile:
                     outfile.write(decoded_line.strip() + "\n")
@@ -571,21 +602,19 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
 
         fsv_dockerfile_content = f"""FROM {chutes_ref}
 USER chutes
-ARG CFSV_OP
-ARG PS_OP
 ENV LD_PRELOAD=""
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN rm -rf does_not_exist.py does_not_exist
-RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
+RUN --mount=type=secret,id=ps_op PS_OP="$(cat /run/secrets/ps_op)" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none CFSV_OP="${{CFSV_OP}}" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
         # Generate bytecode manifest (V2) for chutes >= 0.5.5.
@@ -602,7 +631,7 @@ RUN --network=none CFSV_OP="${{CFSV_OP}}" /cfsv collect / /etc/chutesfs.index /t
             has_bcm = True
             fsv_dockerfile_content += """COPY chutes-bcm.so /tmp/chutes-bcm.so
 COPY generate_manifest_driver.py /tmp/generate_manifest_driver.py
-RUN CFSV_OP="${CFSV_OP}" python /tmp/generate_manifest_driver.py \
+RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python /tmp/generate_manifest_driver.py \
     --output /tmp/bytecode.manifest \
     --json-output /tmp/bytecode.manifest.json \
     --lib /tmp/chutes-bcm.so \
@@ -619,7 +648,7 @@ RUN CFSV_OP="${CFSV_OP}" python /tmp/generate_manifest_driver.py \
 USER root
 RUN cp -f /tmp/bytecode.manifest /etc/bytecode.manifest || true
 USER chutes
-RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
+RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python -m cllmv.pkg_hash > /tmp/package_hashes.json
 """
 
         # Append extract stage for --output type=local.
@@ -644,12 +673,22 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
         extracted_dir = os.path.join(build_dir, "extracted")
         os.makedirs(extracted_dir, exist_ok=True)
 
+        # Write secrets to temp files for --secret mounts (never in build logs/cache).
+        cfsv_op = os.getenv("CFSV_OP", str(uuid.uuid4()))
+        ps_op = os.getenv("PS_OP", str(uuid.uuid4()))
+        cfsv_op_path = os.path.join(build_dir, ".secret_cfsv_op")
+        ps_op_path = os.path.join(build_dir, ".secret_ps_op")
+        with open(cfsv_op_path, "w") as f:
+            f.write(cfsv_op)
+        with open(ps_op_path, "w") as f:
+            f.write(ps_op)
+
         process = await _depot_build(
             [
-                "--build-arg",
-                f"CFSV_OP={os.getenv('CFSV_OP', str(uuid.uuid4()))}",
-                "--build-arg",
-                f"PS_OP={os.getenv('PS_OP', str(uuid.uuid4()))}",
+                "--secret",
+                f"id=cfsv_op,src={cfsv_op_path}",
+                "--secret",
+                f"id=ps_op,src={ps_op_path}",
                 "--output",
                 f"type=local,dest={extracted_dir}",
                 "--target",
@@ -1039,22 +1078,20 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             logger.info("Stage 2: Building filesystem verification image")
 
             fsv_dockerfile_content = f"""FROM {updated_ref}
-ARG CFSV_OP
-ARG PS_OP
 USER chutes
 ENV LD_PRELOAD=""
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN rm -rf does_not_exist.py does_not_exist
-RUN PS_OP="${{PS_OP}}" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
+RUN --mount=type=secret,id=ps_op PS_OP="$(cat /run/secrets/ps_op)" chutes run does_not_exist:chute --generate-inspecto-hash > /tmp/inspecto.hash
 USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none CFSV_OP="${{CFSV_OP}}" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none CFSV_OP="${{CFSV_OP}}" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
             has_bcm = False
@@ -1070,7 +1107,7 @@ RUN --network=none CFSV_OP="${{CFSV_OP}}" /cfsv collect / /etc/chutesfs.index /t
                 has_bcm = True
                 fsv_dockerfile_content += """COPY chutes-bcm.so /tmp/chutes-bcm.so
 COPY generate_manifest_driver.py /tmp/generate_manifest_driver.py
-RUN CFSV_OP="${CFSV_OP}" python /tmp/generate_manifest_driver.py \
+RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python /tmp/generate_manifest_driver.py \
     --output /tmp/bytecode.manifest \
     --json-output /tmp/bytecode.manifest.json \
     --lib /tmp/chutes-bcm.so \
@@ -1087,7 +1124,7 @@ RUN CFSV_OP="${CFSV_OP}" python /tmp/generate_manifest_driver.py \
 USER root
 RUN cp -f /tmp/bytecode.manifest /etc/bytecode.manifest || true
 USER chutes
-RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
+RUN --mount=type=secret,id=cfsv_op CFSV_OP="$(cat /run/secrets/cfsv_op)" python -m cllmv.pkg_hash > /tmp/package_hashes.json
 """
 
             # Extract stage.
@@ -1114,12 +1151,22 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
             extracted_dir = os.path.join(build_dir, "extracted")
             os.makedirs(extracted_dir, exist_ok=True)
 
+            # Write secrets to temp files for --secret mounts.
+            cfsv_op = os.getenv("CFSV_OP", str(uuid.uuid4()))
+            ps_op = os.getenv("PS_OP", str(uuid.uuid4()))
+            cfsv_op_path = os.path.join(build_dir, ".secret_cfsv_op")
+            ps_op_path = os.path.join(build_dir, ".secret_ps_op")
+            with open(cfsv_op_path, "w") as f:
+                f.write(cfsv_op)
+            with open(ps_op_path, "w") as f:
+                f.write(ps_op)
+
             process = await _depot_build(
                 [
-                    "--build-arg",
-                    f"CFSV_OP={os.getenv('CFSV_OP', str(uuid.uuid4()))}",
-                    "--build-arg",
-                    f"PS_OP={os.getenv('PS_OP', str(uuid.uuid4()))}",
+                    "--secret",
+                    f"id=cfsv_op,src={cfsv_op_path}",
+                    "--secret",
+                    f"id=ps_op,src={ps_op_path}",
                     "--output",
                     f"type=local,dest={extracted_dir}",
                     "--target",
