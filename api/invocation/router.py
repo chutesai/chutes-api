@@ -32,7 +32,7 @@ from api.chute.util import (
 from api.util import recreate_vlm_payload
 from api.user.schemas import User
 from api.user.service import chutes_user_id, get_current_user, subnet_role_accessible
-from api.database import get_session, get_inv_session, get_db_ro_session
+from api.database import get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import (
     get_prompt_prefix_hashes,
@@ -215,7 +215,7 @@ async def get_usage(request: Request):
 async def _cached_get_metrics(table, cache_key):
     if (cached := await settings.redis_client.get(cache_key)) is not None:
         return json.loads(gzip.decompress(base64.b64decode(cached)))
-    async with get_inv_session() as session:
+    async with get_session() as session:
         result = await session.execute(text(f"SELECT * FROM {table}"))
         rows = result.mappings().all()
         rv = [dict(row) for row in rows]
@@ -294,7 +294,7 @@ async def get_llm_stats(
 
     # Merge in tps/ttft from invocations-derived metrics, and backfill
     # token data for dates before usage_data cutoff.
-    async with get_inv_session() as session:
+    async with get_session() as session:
         result = await session.execute(text("SELECT * FROM vllm_metrics"))
         for row in result.mappings():
             key = (row["chute_id"], str(row["date"]))
