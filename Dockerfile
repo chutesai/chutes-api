@@ -123,6 +123,38 @@ ENTRYPOINT ["uv", "run", "python", "-m", "api.image.forge"]
 
 
 ###
+# REMOTE FORGE (Depot.dev remote builders - no privileged mode needed)
+###
+FROM base AS remote-forge
+
+# Install depot CLI
+RUN curl -L https://depot.dev/install-cli.sh | sh
+
+# Install cosign (for signing - lightweight, doesn't pull images)
+ENV COSIGN_VERSION=2.5.3
+RUN curl -LO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_${COSIGN_VERSION}_amd64.deb" && \
+    dpkg -i cosign_${COSIGN_VERSION}_amd64.deb && \
+    rm cosign_${COSIGN_VERSION}_amd64.deb
+
+# Install uv
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:$PATH"
+
+# Dependencies
+ADD pyproject.toml uv.lock README.md /forge/
+WORKDIR /forge/
+RUN uv sync --no-dev
+
+# App code
+ADD --chown=root api /forge/api
+ADD --chown=root metasync /forge/metasync
+ADD --chown=root tokenizer /app/tokenizer
+
+ENV PYTHONPATH=/forge
+ENTRYPOINT ["uv", "run", "python", "-m", "api.image.remote_forge"]
+
+
+###
 # API
 ###
 FROM base AS api

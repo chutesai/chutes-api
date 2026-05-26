@@ -317,6 +317,12 @@ class Settings(BaseSettings):
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "10.0"))
 
+    # Depot.dev settings (remote image building).
+    depot_token: str = os.getenv("DEPOT_TOKEN", "")
+    depot_project_id: str = os.getenv("DEPOT_PROJECT_ID", "")
+    depot_registry: str = os.getenv("DEPOT_REGISTRY", "")
+    depot_registry_token: str = os.getenv("DEPOT_REGISTRY_TOKEN", "")
+
     # Cosign Settings
     cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")
     cosign_key: Optional[Path] = Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
