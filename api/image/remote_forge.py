@@ -46,7 +46,7 @@ from api.database import orms  # noqa
 
 # Minimal environment for depot build subprocesses.
 _DEPOT_ENV = {
-    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/home/chutes/.depot/bin",
     "HOME": os.environ.get("HOME", "/home/chutes"),
     "DEPOT_TOKEN": settings.depot_token,
 }

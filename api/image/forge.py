@@ -881,7 +881,7 @@ async def get_target_image_id() -> str | None:
     async with get_session() as session:
         subquery = (
             select(Image.image_id)
-            .where(Image.status == "pending build")
+            .where(Image.status == "pending")
             .order_by(Image.created_at.asc())
             .limit(1)
             .scalar_subquery()
@@ -890,7 +890,7 @@ async def get_target_image_id() -> str | None:
             update(Image)
             .where(
                 Image.image_id == subquery,
-                Image.status == "pending build",
+                Image.status == "pending",
             )
             .values(
                 status="building",
