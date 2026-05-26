@@ -363,6 +363,7 @@ async def start_instance_invalidation_listener():
     while True:
         pubsub = None
         try:
+            ssl_kwargs = {}
             if settings.redis_cacert:
                 ssl_kwargs["ssl"] = True
                 ssl_kwargs["ssl_cert_reqs"] = "required"
