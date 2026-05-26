@@ -61,6 +61,16 @@ def _depot_registry_ref(repo: str, tag: str) -> str:
     return f"{settings.depot_registry}/{repo}:{tag}"
 
 
+def _safe_ref(ref: str) -> str:
+    """Strip the registry hostname from an image ref for logging.
+
+    'foo.registry.depot.dev/alice/model:v1' -> 'alice/model:v1'
+    """
+    if settings.depot_registry and ref.startswith(settings.depot_registry + "/"):
+        return ref[len(settings.depot_registry) + 1 :]
+    return ref
+
+
 async def _depot_build(
     args: list[str],
     cwd: str,
@@ -89,21 +99,7 @@ async def initialize():
     """
     import api.database.orms  # noqa: F401
 
-    # Docker Hub login (for pulling base images during depot build).
-    username = os.getenv("DOCKER_PULL_USERNAME")
-    password = os.getenv("DOCKER_PULL_PASSWORD")
-    if username and password:
-        process = await asyncio.create_subprocess_exec(
-            "depot",
-            "configure-docker",
-            stdout=PIPE,
-            stderr=PIPE,
-            env=_DEPOT_ENV,
-        )
-        await process.wait()
-        logger.info("Configured depot docker credentials")
-
-    # Login cosign + crane to Depot registry.
+    # Login cosign + crane to Depot registry (needed for sign_image and get_image_digest).
     if settings.depot_registry and settings.depot_registry_token:
         # cosign login -u ... -p ... <registry>
         process = await asyncio.create_subprocess_exec(
@@ -117,9 +113,9 @@ async def initialize():
         )
         await process.wait()
         if process.returncode == 0:
-            logger.success(f"cosign authenticated to {settings.depot_registry}")
+            logger.success("cosign authenticated to depot registry")
         else:
-            logger.warning(f"cosign failed to authenticate to {settings.depot_registry}")
+            logger.warning("cosign failed to authenticate to depot registry")
 
         # crane auth login -u ... -p ... <registry>
         process = await asyncio.create_subprocess_exec(
@@ -134,9 +130,9 @@ async def initialize():
         )
         await process.wait()
         if process.returncode == 0:
-            logger.success(f"crane authenticated to {settings.depot_registry}")
+            logger.success("crane authenticated to depot registry")
         else:
-            logger.warning(f"crane failed to authenticate to {settings.depot_registry}")
+            logger.warning("crane failed to authenticate to depot registry")
 
 
 async def get_image_digest(image_tag: str) -> str:
@@ -151,7 +147,7 @@ async def get_image_digest(image_tag: str) -> str:
     stdout, stderr = await process.communicate()
 
     if process.returncode != 0:
-        raise SignFailure(f"Failed to get digest for {image_tag}: {stderr.decode()}")
+        raise SignFailure(f"Failed to get digest for {_safe_ref(image_tag)}: {stderr.decode()}")
 
     digest = stdout.decode().strip()
     if not digest.startswith("sha256:"):
@@ -190,7 +186,7 @@ async def sign_image(
         stdout, stderr = await process.communicate(input=f"{settings.cosign_password}\n".encode())
 
         if process.returncode == 0:
-            logger.success(f"Successfully signed {image_digest_tag}")
+            logger.success(f"Successfully signed {_safe_ref(image_digest_tag)}")
             if stream:
                 delta = time.time() - started_at
                 await _stream_status(
@@ -205,17 +201,21 @@ async def sign_image(
                 await settings.redis_client.client.xadd(
                     f"forge:{image.image_id}:stream", {"data": "DONE"}
                 )
-            raise SignFailure(f"Sign of {image_tag} failed!")
+            raise SignFailure(f"Sign of {_safe_ref(image_tag)} failed!")
     except SignFailure:
         raise
     except asyncio.TimeoutError:
-        logger.error(f"Sign of {image_tag} timed out after {settings.push_timeout} seconds.")
+        logger.error(
+            f"Sign of {_safe_ref(image_tag)} timed out after {settings.push_timeout} seconds."
+        )
         if stream:
             await _stream_status(image.image_id, "image signing timed out", log_type="stderr")
             await settings.redis_client.client.xadd(
                 f"forge:{image.image_id}:stream", {"data": "DONE"}
             )
-        raise SignTimeout(f"Sign of {image_tag} timed out after {settings.push_timeout} seconds.")
+        raise SignTimeout(
+            f"Sign of {_safe_ref(image_tag)} timed out after {settings.push_timeout} seconds."
+        )
 
 
 async def _stream_status(image_id: str, message: str, log_type: str = "stdout"):
@@ -305,11 +305,11 @@ async def build_and_push_image(image, build_dir):
         # Stage 1: Build user's Dockerfile and push to Depot registry.
         original_oci_tag = f"{oci_tag}-original-{uuid.uuid4().hex[:8]}"
         original_depot_ref = _depot_registry_ref(repo, original_oci_tag)
-        logger.info(f"Stage 1: Building original image as {original_depot_ref}")
+        logger.info(f"Stage 1: Building original image as {_safe_ref(original_depot_ref)}")
 
         process = await _depot_build(
             [
-                "--push",
+                "--save",
                 "--tag",
                 original_depot_ref,
                 "-f",
@@ -326,7 +326,7 @@ async def build_and_push_image(image, build_dir):
         # Stage 2: Install chutes lib (status only, no raw log streaming).
         chutes_oci_tag = f"{original_oci_tag}-chutes"
         chutes_depot_tag = _depot_registry_ref(repo, chutes_oci_tag)
-        logger.info(f"Stage 2: Installing chutes lib as {chutes_depot_tag}")
+        logger.info(f"Stage 2: Installing chutes lib as {_safe_ref(chutes_depot_tag)}")
         await _stream_status(image.image_id, "installing chutes library...")
 
         chutes_dockerfile_content = f"""FROM {original_depot_ref}
@@ -360,7 +360,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
 
         process = await _depot_build(
             [
-                "--push",
+                "--save",
                 "--tag",
                 chutes_depot_tag,
                 "-f",
@@ -510,7 +510,7 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
 
         # Stage 4: Build final image and push (status only).
         final_depot_tag = _depot_registry_ref(repo, oci_tag)
-        logger.info(f"Stage 4: Building final image as {final_depot_tag}")
+        logger.info(f"Stage 4: Building final image as {_safe_ref(final_depot_tag)}")
         await _stream_status(image.image_id, "building final image...")
 
         index_path = os.path.join(extracted_dir, "chutesfs.index")
@@ -541,7 +541,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
         process = await _depot_build(
             [
-                "--push",
+                "--save",
                 "--tag",
                 final_depot_tag,
                 "-f",
@@ -553,7 +553,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
             timeout=settings.build_timeout,
         )
         if process.returncode != 0:
-            raise BuildFailure(f"Final build of {final_depot_tag} failed!")
+            raise BuildFailure(f"Final build of {_safe_ref(final_depot_tag)} failed!")
 
         delta = time.time() - started_at
         message = f"image built and pushed in {round(delta, 1)} seconds"
@@ -648,7 +648,7 @@ RUN --mount=type=bind,from=target,source=/,target=/scan-target \
                 {"data": json.dumps({"log_type": "stderr", "log": message}).decode()},
             )
             logger.error(message)
-            raise BuildFailure(f"Failed trivy image scan: {final_image_tag}")
+            raise BuildFailure(f"Failed trivy image scan: {_safe_ref(final_image_tag)}")
     except asyncio.TimeoutError:
         message = "Trivy scan timed out."
         logger.error(message)
@@ -786,7 +786,7 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
             # Stage 1: Build updated base image with new chutes lib.
             updated_oci_tag = f"{target_oci_tag}-updated-{uuid.uuid4().hex[:8]}"
             updated_depot_tag = _depot_registry_ref(repo, updated_oci_tag)
-            logger.info(f"Stage 1: Building updated image as {updated_depot_tag}")
+            logger.info(f"Stage 1: Building updated image as {_safe_ref(updated_depot_tag)}")
 
             dockerfile_content = f"""FROM {source_depot_tag}
 USER root
@@ -818,7 +818,7 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
 
             process = await _depot_build(
                 [
-                    "--push",
+                    "--save",
                     "--tag",
                     updated_depot_tag,
                     "-f",
@@ -976,7 +976,7 @@ RUN CFSV_OP="${CFSV_OP}" python -m cllmv.pkg_hash > /tmp/package_hashes.json
                 logger.success(f"Uploaded bytecode manifest JSON to {manifest_json_s3_key}")
 
             # Stage 3: Build final image and push.
-            logger.info(f"Stage 3: Building final image as {target_depot_tag}")
+            logger.info(f"Stage 3: Building final image as {_safe_ref(target_depot_tag)}")
 
             index_path = os.path.join(extracted_dir, "chutesfs.index")
             final_index_path = os.path.join(build_dir, "chutesfs.index")
@@ -1005,7 +1005,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
             process = await _depot_build(
                 [
-                    "--push",
+                    "--save",
                     "--tag",
                     target_depot_tag,
                     "-f",
@@ -1019,11 +1019,11 @@ ENV PYTHONDONTWRITEBYTECODE=1
             if process.returncode != 0:
                 raise BuildFailure("Failed to build final image!")
 
-            logger.success(f"Successfully pushed updated image {target_depot_tag}")
+            logger.success(f"Successfully pushed updated image {_safe_ref(target_depot_tag)}")
             success = True
 
         except asyncio.TimeoutError:
-            message = f"Update of {target_depot_tag} timed out"
+            message = f"Update of {_safe_ref(target_depot_tag)} timed out"
             logger.error(message)
             process.kill()
             await process.communicate()
