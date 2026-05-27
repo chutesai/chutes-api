@@ -2,6 +2,7 @@
 Core server management and TDX attestation logic.
 """
 
+import asyncio
 import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
@@ -1137,6 +1138,25 @@ async def get_instance_evidence(
     return await _get_instance_evidence(server, instance.deployment_id, nonce)
 
 
+async def _fetch_instance_evidence(
+    instance: Instance, nonce: str
+) -> TeeInstanceEvidence | None:
+    """Fetch evidence for a single instance, returning None on failure."""
+    try:
+        node = instance.nodes[0]
+        server = node.server
+        evidence = await _get_instance_evidence(server, instance.deployment_id, nonce)
+        return TeeInstanceEvidence(
+            quote=evidence.quote,
+            gpu_evidence=evidence.gpu_evidence,
+            instance_id=instance.instance_id,
+            certificate=evidence.certificate,
+        )
+    except GetEvidenceError as e:
+        logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
+        return None
+
+
 async def get_chute_instances_evidence(
     db: AsyncSession, chute_id: str, nonce: str
 ) -> tuple[list[TeeInstanceEvidence], list[str]]:
@@ -1172,32 +1192,22 @@ async def get_chute_instances_evidence(
             Instance.chute_id == chute_id,
             Instance.active.is_(True),
             Instance.verified.is_(True),
+            Instance.deployment_id.isnot(None),
         )
         .options(joinedload(Instance.nodes).joinedload(Node.server))
     )
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
+    results = await asyncio.gather(
+        *[_fetch_instance_evidence(inst, nonce) for inst in instances]
+    )
     evidence_list: list[TeeInstanceEvidence] = []
     failed_instance_ids: list[str] = []
-    for instance in instances:
-        if not instance.deployment_id:
-            failed_instance_ids.append(instance.instance_id)
-            continue
-        try:
-            node = instance.nodes[0]
-            server = node.server
-            evidence = await _get_instance_evidence(server, instance.deployment_id, nonce)
-            evidence_list.append(
-                TeeInstanceEvidence(
-                    quote=evidence.quote,
-                    gpu_evidence=evidence.gpu_evidence,
-                    instance_id=instance.instance_id,
-                    certificate=evidence.certificate,
-                )
-            )
-        except GetEvidenceError as e:
-            logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
+    for instance, result in zip(instances, results):
+        if result is not None:
+            evidence_list.append(result)
+        else:
             failed_instance_ids.append(instance.instance_id)
 
     return (evidence_list, failed_instance_ids)
