@@ -607,7 +607,6 @@ async def get_default_root_passphrase(db: AsyncSession, image_version: Optional[
     return passphrase
 
 
-
 async def get_root_passphrase_for_boot(
     db: AsyncSession,
     miner_hotkey: str,

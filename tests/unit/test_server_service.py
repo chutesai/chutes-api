@@ -1552,7 +1552,6 @@ async def test_get_default_root_passphrase_no_version_fallback(mock_db_session, 
     mock_db_session.get.assert_not_called()
 
 
-
 @pytest.mark.asyncio
 async def test_get_root_passphrase_for_boot_first_boot_no_prior_state(
     mock_db_session, mock_settings
@@ -1575,7 +1574,9 @@ async def test_get_root_passphrase_for_boot_first_boot_no_prior_state(
         )
 
     assert key == "build-time-default"
-    assert root_next is not None and len(root_next) == 128  # generate_cache_passphrase is 128 hex chars
+    assert (
+        root_next is not None and len(root_next) == 128
+    )  # generate_cache_passphrase is 128 hex chars
     assert root_confirm_nonce == "root-nonce-123"
     # pending_root should be written to vm_config
     assert "pending_root" in vm_config.volume_passphrases
@@ -1612,9 +1613,7 @@ async def test_get_root_passphrase_for_boot_first_boot_with_prior_root(
 
 
 @pytest.mark.asyncio
-async def test_get_root_passphrase_for_boot_normal_boot_stored_root(
-    mock_db_session, mock_settings
-):
+async def test_get_root_passphrase_for_boot_normal_boot_stored_root(mock_db_session, mock_settings):
     """first_boot=False with a stored root key: returns stored key + rotation."""
     from api.server.util import encrypt_passphrase
 
@@ -1713,6 +1712,7 @@ async def test_get_root_passphrase_for_boot_discards_stale_pending(mock_db_sessi
     assert key == "current-root"
     # The new pending_root should differ from the stale one
     from api.server.util import decrypt_passphrase
+
     new_pending_enc = vm_config.volume_passphrases.get("pending_root")
     assert new_pending_enc is not None
     assert decrypt_passphrase(new_pending_enc) != "stale-pending"
@@ -1731,9 +1731,16 @@ async def test_process_boot_attestation_returns_root_rotation_fields(
     """process_boot_attestation wires root rotation fields through to its return value."""
     with patch("api.server.service.verify_quote") as mock_verify:
         mock_verify.return_value = TdxVerificationResult(
-            mrtd="a" * 96, rtmr0="b" * 96, rtmr1="c" * 96, rtmr2="d" * 96, rtmr3="e" * 96,
-            user_data="test", parsed_at=datetime.now(timezone.utc),
-            status="UpToDate", advisory_ids=[], td_attributes="0000001000000000",
+            mrtd="a" * 96,
+            rtmr0="b" * 96,
+            rtmr1="c" * 96,
+            rtmr2="d" * 96,
+            rtmr3="e" * 96,
+            user_data="test",
+            parsed_at=datetime.now(timezone.utc),
+            status="UpToDate",
+            advisory_ids=[],
+            td_attributes="0000001000000000",
         )
 
         def mock_refresh(obj):
@@ -1781,6 +1788,7 @@ async def test_confirm_luks_rotation_promotes_pending_root(mock_db_session):
     assert "pending_root" not in vm_config.volume_passphrases
     # The promoted value should be the new passphrase
     from api.server.util import decrypt_passphrase
+
     assert decrypt_passphrase(vm_config.volume_passphrases["root"]) == "new-root-pass"
 
 
