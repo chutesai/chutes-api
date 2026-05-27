@@ -1,3 +1,5 @@
+teeMinimumBootVersion: ""
+
 account_settings:
   first_payment_bonus:
     threshold: 100.00

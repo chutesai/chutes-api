@@ -353,6 +353,18 @@ async def process_boot_attestation(
         await verify_quote(quote, nonce, expected_cert_hash)
 
         measurement_config = get_matching_measurement_config(quote)
+
+        minimum_version = settings.tee_minimum_boot_version
+        if semcomp(measurement_config.version, minimum_version) < 0:
+            logger.warning(
+                f"Boot attestation rejected: VM version {measurement_config.version} "
+                f"is outdated (minimum: {minimum_version}). Please upgrade to the latest VM version."
+            )
+            raise MeasurementMismatchError(
+                f"VM version {measurement_config.version} is no longer accepted for boot attestation. "
+                f"Please upgrade to the latest VM version ({minimum_version})."
+            )
+
         # Create boot attestation record
         boot_attestation = BootAttestation(
             quote_data=args.quote,

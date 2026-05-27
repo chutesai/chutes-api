@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.fernet import Fernet
 from loguru import logger
+from api.semver_util import semcomp
 
 
 @lru_cache(maxsize=1)
@@ -408,6 +409,29 @@ class Settings(BaseSettings):
 
         logger.info(f"Loaded {len(measurements)} TEE measurement configurations")
         return measurements
+
+    @property
+    def tee_minimum_boot_version(self) -> str:
+        """Minimum VM version accepted for boot attestation.
+
+        Returns TEE_MINIMUM_BOOT_VERSION when set, allowing new platform measurement
+        configs to be added to the YAML incrementally without immediately enforcing a
+        version bump for platforms not yet upgraded.  Falls back to the highest version
+        found across all loaded measurement configs, or "0.0.0" if the config file is
+        not present (e.g. pods that don't mount the TEE measurements ConfigMap).
+        """
+        if pinned := os.getenv("TEE_MINIMUM_BOOT_VERSION"):
+            return pinned
+        if not self.tee_measurement_config_path.exists():
+            return "0.0.0"
+        versions = [m.version for m in self.tee_measurements if m.version]
+        if not versions:
+            return "0.0.0"
+        latest = versions[0]
+        for v in versions[1:]:
+            if semcomp(v, latest) > 0:
+                latest = v
+        return latest
 
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     cache_passphrase_key: Optional[str] = os.getenv("CACHE_PASSPHRASE_KEY")
