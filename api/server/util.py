@@ -38,7 +38,8 @@ from api.server.exceptions import (
 from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
 
-from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
+from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, RootPassphraseDefault
+from api.constants import MIN_ROOT_ROTATION_VERSION
 from api.util import semcomp
 
 
@@ -411,9 +412,9 @@ def _get_fernet() -> Fernet:
     """
     fernet = settings.fernet_key
     if not fernet:
-        logger.error("No cache passphrase encryption key configured")
+        logger.error("No passphrase encryption key configured")
         raise InvalidTdxConfiguration(
-            "CACHE_PASSPHRASE_KEY environment variable must be set. "
+            "PASSPHRASE_ENCRYPTION_KEY environment variable must be set. "
             "Generate a valid key with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
         )
     return fernet
@@ -588,6 +589,80 @@ async def rotate_luks_passphrases(
     await db.refresh(vm_config)
     logger.info(f"LUKS rotation for VM {vm_name}: volumes={volume_names}")
     return result, vm_config
+
+
+async def get_default_root_passphrase(db: AsyncSession, image_version: Optional[str]) -> str:
+    """Return the build-time default root passphrase for the given image version.
+
+    Looks up root_passphrase_defaults by image_version; falls back to
+    settings.luks_passphrase if no record exists or image_version is None.
+    """
+    if image_version:
+        row = await db.get(RootPassphraseDefault, image_version)
+        if row is not None:
+            return decrypt_passphrase(row.encrypted_passphrase)
+    passphrase = settings.luks_passphrase
+    if not passphrase:
+        raise InvalidTdxConfiguration("Missing LUKS passphrase configuration")
+    return passphrase
+
+
+
+async def get_root_passphrase_for_boot(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+    first_boot: bool,
+    measurement_version: str,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Resolve the current root passphrase and optionally stage the next rotation.
+
+    Returns a tuple of (key, root_next, root_confirm_nonce):
+    - key: passphrase the VM should use to unlock the root volume right now.
+    - root_next: new passphrase for the VM to rotate into (None for pre-1.4.0 VMs).
+    - root_confirm_nonce: single-use confirm nonce (None for pre-1.4.0 VMs).
+
+    The measurement_version is used both to gate rotation capability and as the
+    image version key for looking up the build-time default passphrase.
+    """
+    vm_config = await _get_vm_cache_config(db, miner_hotkey, vm_name)
+    if vm_config is None:
+        vm_config = await _create_vm_cache_config(db, miner_hotkey, vm_name)
+
+    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
+
+    if first_boot:
+        stored.pop("root", None)
+        stored.pop("pending_root", None)
+        key = await get_default_root_passphrase(db, measurement_version)
+    else:
+        current_enc = stored.get("root")
+        if current_enc:
+            key = decrypt_passphrase(current_enc)
+        else:
+            key = await get_default_root_passphrase(db, measurement_version)
+
+    root_next: Optional[str] = None
+    root_confirm_nonce: Optional[str] = None
+
+    if semcomp(measurement_version, MIN_ROOT_ROTATION_VERSION) >= 0:
+        # Discard any stale pending from a prior unconfirmed rotation.
+        stored.pop("pending_root", None)
+        new_passphrase = generate_cache_passphrase()
+        stored["pending_root"] = encrypt_passphrase(new_passphrase)
+        root_next = new_passphrase
+        root_confirm_nonce = await generate_confirm_nonce(miner_hotkey, vm_name)
+
+    vm_config.volume_passphrases = stored
+    vm_config.last_boot_at = func.now()
+    await db.commit()
+    await db.refresh(vm_config)
+
+    logger.info(
+        f"Root passphrase resolved for VM {vm_name} (miner: {miner_hotkey}, "
+        f"first_boot={first_boot}, rotation={'yes' if root_next else 'no'})"
+    )
+    return key, root_next, root_confirm_nonce
 
 
 async def _track_server(

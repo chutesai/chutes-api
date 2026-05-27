@@ -27,6 +27,10 @@ SUPPORTED_LUKS_VOLUMES = ("storage", "tdx-cache")
 # key must be generated (luksFormat on a raw device vs. luksOpen on existing LUKS).
 LUKS_STORAGE_VOLUME = "storage"
 
+# Minimum VM image version that supports root volume LUKS passphrase rotation.
+# VMs on versions below this receive root_next=null in boot attestation responses.
+MIN_ROOT_ROTATION_VERSION = "1.4.0"
+
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
 

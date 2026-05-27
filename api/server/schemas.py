@@ -23,6 +23,7 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from api.database import Base, generate_uuid
 from api.node.schemas import NodeArgs
+from api.constants import SUPPORTED_LUKS_VOLUMES
 
 
 class TeeInstanceEvidence(BaseModel):
@@ -54,6 +55,10 @@ class BootAttestationArgs(BaseModel):
     quote: str = Field(..., description="Base64 encoded TDX quote")
     miner_hotkey: str = Field(..., description="Miner hotkey that owns this VM")
     vm_name: str = Field(..., description="VM name/identifier")
+    first_boot: bool = Field(
+        False,
+        description="True when the VM detected a fresh (re-downloaded) image via its LUKS2 header token",
+    )
 
 
 class BootAttestationResponse(BaseModel):
@@ -62,6 +67,14 @@ class BootAttestationResponse(BaseModel):
     key: str
     boot_token: Optional[str] = None
     luks_quote_nonce: Optional[str] = None
+    root_next: Optional[str] = Field(
+        None,
+        description="New root passphrase the VM should rotate to (None for pre-1.4.0 VMs)",
+    )
+    root_confirm_nonce: Optional[str] = Field(
+        None,
+        description="Single-use nonce for confirming root passphrase rotation via POST /luks/confirm",
+    )
 
 
 class RuntimeAttestationArgs(BaseModel):
@@ -130,8 +143,6 @@ class LuksAttestRequest(BaseModel):
     @field_validator("volumes")
     @classmethod
     def validate_volumes(cls, v: List[str]) -> List[str]:
-        from api.constants import SUPPORTED_LUKS_VOLUMES
-
         if not v:
             raise ValueError("volumes must be non-empty")
         invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
@@ -441,3 +452,20 @@ class VmCacheConfig(Base):
         Index("idx_vm_cache_miner", "miner_hotkey"),
         Index("idx_vm_cache_last_boot", "last_boot_at"),
     )
+
+
+class RootPassphraseDefault(Base):
+    """Build-time default root LUKS passphrases keyed by image version.
+
+    Populated out-of-band when a new VM image is published. Used by the boot
+    attestation endpoint to return the correct default passphrase when a VM
+    reports fresh_image=True.
+    """
+
+    __tablename__ = "root_passphrase_defaults"
+
+    image_version = Column(String, primary_key=True)
+    encrypted_passphrase = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+

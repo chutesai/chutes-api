@@ -10,8 +10,10 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock, patch
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from cryptography.fernet import Fernet
 
 from api.server.service import (
+    BootAttestationResult,
     create_nonce,
     validate_and_consume_nonce,
     verify_quote,
@@ -25,6 +27,10 @@ from api.server.service import (
     delete_server,
     process_luks_passphrase_request,
 )
+from api.server.util import (
+    get_default_root_passphrase,
+    get_root_passphrase_for_boot,
+)
 from api.server.schemas import (
     Server,
     ServerAttestation,
@@ -32,6 +38,8 @@ from api.server.schemas import (
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
+    RootPassphraseDefault,
+    VmCacheConfig,
 )
 from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxVerificationResult
 from api.server.exceptions import (
@@ -88,6 +96,8 @@ def mock_settings(mock_redis_client):
     settings.redis_client = mock_redis_client
     settings.tee_measurements = _tee_measurements_for_service_tests()
     settings.luks_passphrase = "test_luks_passphrase"
+    # Provide a real Fernet cipher so encrypt_passphrase/decrypt_passphrase work in tests.
+    settings.fernet_key = Fernet(Fernet.generate_key())
 
     with (
         patch("api.server.service.settings", settings),
@@ -449,6 +459,11 @@ async def test_process_boot_attestation_success(
                 "api.server.service._handle_boot_version_update",
                 new_callable=AsyncMock,
             ),
+            patch(
+                "api.server.service.get_root_passphrase_for_boot",
+                new_callable=AsyncMock,
+                return_value=("test_root_key", None, None),
+            ),
         ):
             result = await process_boot_attestation(
                 mock_db_session,
@@ -458,7 +473,11 @@ async def test_process_boot_attestation_success(
                 TEST_CERT_HASH,
             )
 
-        assert result == "test-boot-token"
+        assert isinstance(result, BootAttestationResult)
+        assert result.boot_token == "test-boot-token"
+        assert result.root_key == "test_root_key"
+        assert result.root_next is None
+        assert result.root_confirm_nonce is None
 
         # Verify database operations
         mock_db_session.add.assert_called_once()
@@ -983,6 +1002,11 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
                     "api.server.service._handle_boot_version_update",
                     new_callable=AsyncMock,
                 ),
+                patch(
+                    "api.server.service.get_root_passphrase_for_boot",
+                    new_callable=AsyncMock,
+                    return_value=("test_root_key", None, None),
+                ),
             ):
                 result = await process_boot_attestation(
                     mock_db_session,
@@ -992,7 +1016,9 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
                     TEST_CERT_HASH,
                 )
 
-            assert result == "test-boot-token"
+            assert isinstance(result, BootAttestationResult)
+            assert result.boot_token == "test-boot-token"
+            assert result.root_key == "test_root_key"
 
 
 @pytest.mark.asyncio
@@ -1476,3 +1502,304 @@ async def test_verify_quote_with_different_quote_types(mock_verify_measurements)
     assert isinstance(runtime_verify_result, TdxVerificationResult)
     assert mock_sig.call_count == 2
     assert mock_verify_measurements.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Root Passphrase Rotation Tests
+# ---------------------------------------------------------------------------
+
+
+def _make_vm_config(passphrases: dict) -> VmCacheConfig:
+    """Build a minimal VmCacheConfig with the given volume_passphrases dict."""
+    cfg = VmCacheConfig(
+        miner_hotkey="5FTestHotkey123",
+        vm_name="test-vm",
+        volume_passphrases=passphrases,
+    )
+    return cfg
+
+
+@pytest.mark.asyncio
+async def test_get_default_root_passphrase_from_db(mock_db_session):
+    """Returns decrypted passphrase when a root_passphrase_defaults row exists."""
+    from api.server.util import encrypt_passphrase
+
+    encrypted = encrypt_passphrase("version-specific-pass")
+    row = RootPassphraseDefault(image_version="1.4.0", encrypted_passphrase=encrypted)
+    mock_db_session.get = AsyncMock(return_value=row)
+
+    result = await get_default_root_passphrase(mock_db_session, "1.4.0")
+    assert result == "version-specific-pass"
+
+
+@pytest.mark.asyncio
+async def test_get_default_root_passphrase_fallback_to_settings(mock_db_session, mock_settings):
+    """Falls back to settings.luks_passphrase when no DB row exists."""
+    mock_db_session.get = AsyncMock(return_value=None)
+    mock_settings.luks_passphrase = "global-default-pass"
+
+    result = await get_default_root_passphrase(mock_db_session, "1.4.0")
+    assert result == "global-default-pass"
+
+
+@pytest.mark.asyncio
+async def test_get_default_root_passphrase_no_version_fallback(mock_db_session, mock_settings):
+    """Falls back to settings.luks_passphrase when image_version is None."""
+    mock_settings.luks_passphrase = "global-default-pass"
+
+    result = await get_default_root_passphrase(mock_db_session, None)
+    assert result == "global-default-pass"
+    mock_db_session.get.assert_not_called()
+
+
+
+@pytest.mark.asyncio
+async def test_get_root_passphrase_for_boot_first_boot_no_prior_state(
+    mock_db_session, mock_settings
+):
+    """first_boot=True with no existing root key: returns default passphrase + rotation fields."""
+    mock_settings.luks_passphrase = "build-time-default"
+    vm_config = _make_vm_config({})  # no root key stored yet
+    mock_db_session.get = AsyncMock(return_value=None)  # no DB default either
+
+    with (
+        patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
+        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="root-nonce-123")),
+    ):
+        key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            mock_db_session,
+            "5FTestHotkey123",
+            "test-vm",
+            first_boot=True,
+            measurement_version="1.4.0",
+        )
+
+    assert key == "build-time-default"
+    assert root_next is not None and len(root_next) == 128  # generate_cache_passphrase is 128 hex chars
+    assert root_confirm_nonce == "root-nonce-123"
+    # pending_root should be written to vm_config
+    assert "pending_root" in vm_config.volume_passphrases
+
+
+@pytest.mark.asyncio
+async def test_get_root_passphrase_for_boot_first_boot_with_prior_root(
+    mock_db_session, mock_settings
+):
+    """first_boot=True with an existing root key: clears stored state, returns default."""
+    from api.server.util import encrypt_passphrase
+
+    old_encrypted = encrypt_passphrase("old-rotated-pass")
+    vm_config = _make_vm_config({"root": old_encrypted})
+    mock_settings.luks_passphrase = "build-time-default"
+    mock_db_session.get = AsyncMock(return_value=None)
+
+    with (
+        patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
+        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-abc")),
+    ):
+        key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            mock_db_session,
+            "5FTestHotkey123",
+            "test-vm",
+            first_boot=True,
+            measurement_version="1.4.0",
+        )
+
+    assert "root" not in vm_config.volume_passphrases
+    assert key == "build-time-default"
+    assert root_next is not None
+    assert root_confirm_nonce == "nonce-abc"
+
+
+@pytest.mark.asyncio
+async def test_get_root_passphrase_for_boot_normal_boot_stored_root(
+    mock_db_session, mock_settings
+):
+    """first_boot=False with a stored root key: returns stored key + rotation."""
+    from api.server.util import encrypt_passphrase
+
+    stored_pass = "current-rotated-pass"
+    vm_config = _make_vm_config({"root": encrypt_passphrase(stored_pass)})
+    mock_settings.luks_passphrase = "build-time-default"
+
+    with (
+        patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
+        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-xyz")),
+    ):
+        key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            mock_db_session,
+            "5FTestHotkey123",
+            "test-vm",
+            first_boot=False,
+            measurement_version="1.4.0",
+        )
+
+    assert key == stored_pass
+    assert root_next is not None
+    assert root_confirm_nonce == "nonce-xyz"
+    assert "pending_root" in vm_config.volume_passphrases
+
+
+@pytest.mark.asyncio
+async def test_get_root_passphrase_for_boot_normal_boot_no_stored_root(
+    mock_db_session, mock_settings
+):
+    """first_boot=False with no stored root key: falls back to version default + rotation."""
+    vm_config = _make_vm_config({})
+    mock_settings.luks_passphrase = "build-time-default"
+    mock_db_session.get = AsyncMock(return_value=None)
+
+    with (
+        patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
+        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-new")),
+    ):
+        key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            mock_db_session,
+            "5FTestHotkey123",
+            "test-vm",
+            first_boot=False,
+            measurement_version="1.4.0",
+        )
+
+    assert key == "build-time-default"
+    assert root_next is not None
+    assert root_confirm_nonce == "nonce-new"
+
+
+@pytest.mark.asyncio
+async def test_get_root_passphrase_for_boot_pre_rotation_version(mock_db_session, mock_settings):
+    """VMs below 1.4.0 get no root_next or root_confirm_nonce."""
+    vm_config = _make_vm_config({})
+    mock_settings.luks_passphrase = "build-time-default"
+    mock_db_session.get = AsyncMock(return_value=None)
+
+    with patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)):
+        key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            mock_db_session,
+            "5FTestHotkey123",
+            "test-vm",
+            first_boot=False,
+            measurement_version="1.3.0",
+        )
+
+    assert key == "build-time-default"
+    assert root_next is None
+    assert root_confirm_nonce is None
+    assert "pending_root" not in (vm_config.volume_passphrases or {})
+
+
+@pytest.mark.asyncio
+async def test_get_root_passphrase_for_boot_discards_stale_pending(mock_db_session, mock_settings):
+    """Stale pending_root from a prior unconfirmed rotation is discarded and replaced."""
+    from api.server.util import encrypt_passphrase
+
+    stale_enc = encrypt_passphrase("stale-pending")
+    current_enc = encrypt_passphrase("current-root")
+    vm_config = _make_vm_config({"root": current_enc, "pending_root": stale_enc})
+    mock_settings.luks_passphrase = "build-time-default"
+
+    with (
+        patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
+        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-fresh")),
+    ):
+        key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            mock_db_session,
+            "5FTestHotkey123",
+            "test-vm",
+            first_boot=False,
+            measurement_version="1.4.0",
+        )
+
+    assert key == "current-root"
+    # The new pending_root should differ from the stale one
+    from api.server.util import decrypt_passphrase
+    new_pending_enc = vm_config.volume_passphrases.get("pending_root")
+    assert new_pending_enc is not None
+    assert decrypt_passphrase(new_pending_enc) != "stale-pending"
+    assert root_next is not None
+
+
+@pytest.mark.asyncio
+async def test_process_boot_attestation_returns_root_rotation_fields(
+    mock_db_session,
+    boot_attestation_args,
+    mock_quote_parsing,
+    mock_verify_quote_signature,
+    mock_verify_measurements,
+    mock_validate_nonce,
+):
+    """process_boot_attestation wires root rotation fields through to its return value."""
+    with patch("api.server.service.verify_quote") as mock_verify:
+        mock_verify.return_value = TdxVerificationResult(
+            mrtd="a" * 96, rtmr0="b" * 96, rtmr1="c" * 96, rtmr2="d" * 96, rtmr3="e" * 96,
+            user_data="test", parsed_at=datetime.now(timezone.utc),
+            status="UpToDate", advisory_ids=[], td_attributes="0000001000000000",
+        )
+
+        def mock_refresh(obj):
+            obj.attestation_id = "boot-attest-123"
+            obj.verified_at = datetime.now(timezone.utc)
+
+        mock_db_session.refresh.side_effect = mock_refresh
+
+        with (
+            patch("api.server.service.generate_and_store_boot_token", return_value="bt"),
+            patch("api.server.service._handle_boot_version_update", new_callable=AsyncMock),
+            patch(
+                "api.server.service.get_root_passphrase_for_boot",
+                new_callable=AsyncMock,
+                return_value=("root-key", "next-pass", "confirm-nonce"),
+            ) as mock_root,
+        ):
+            result = await process_boot_attestation(
+                mock_db_session, TEST_SERVER_IP, boot_attestation_args, TEST_NONCE, TEST_CERT_HASH
+            )
+
+    assert isinstance(result, BootAttestationResult)
+    assert result.root_key == "root-key"
+    assert result.root_next == "next-pass"
+    assert result.root_confirm_nonce == "confirm-nonce"
+    mock_root.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_confirm_luks_rotation_promotes_pending_root(mock_db_session):
+    """process_luks_confirm promotes pending_root to root when rotated=True."""
+    from api.server.service import process_luks_confirm
+    from api.server.schemas import LuksConfirmRequest, LuksVolumeConfirmStatus
+    from api.server.util import encrypt_passphrase
+
+    encrypted_pending = encrypt_passphrase("new-root-pass")
+    vm_config = _make_vm_config({"pending_root": encrypted_pending})
+
+    with patch("api.server.service._get_vm_cache_config", AsyncMock(return_value=vm_config)):
+        body = LuksConfirmRequest(volumes={"root": LuksVolumeConfirmStatus(rotated=True)})
+        result = await process_luks_confirm(mock_db_session, "5FTestHotkey123", "test-vm", body)
+
+    assert result.volumes["root"]["result"] == "promoted"
+    assert "root" in vm_config.volume_passphrases
+    assert "pending_root" not in vm_config.volume_passphrases
+    # The promoted value should be the new passphrase
+    from api.server.util import decrypt_passphrase
+    assert decrypt_passphrase(vm_config.volume_passphrases["root"]) == "new-root-pass"
+
+
+@pytest.mark.asyncio
+async def test_confirm_luks_rotation_discards_pending_root_on_failure(mock_db_session):
+    """process_luks_confirm discards pending_root when rotated=False."""
+    from api.server.service import process_luks_confirm
+    from api.server.schemas import LuksConfirmRequest, LuksVolumeConfirmStatus
+    from api.server.util import encrypt_passphrase
+
+    old_encrypted = encrypt_passphrase("current-root-pass")
+    pending_encrypted = encrypt_passphrase("new-root-pass")
+    vm_config = _make_vm_config({"root": old_encrypted, "pending_root": pending_encrypted})
+
+    with patch("api.server.service._get_vm_cache_config", AsyncMock(return_value=vm_config)):
+        body = LuksConfirmRequest(volumes={"root": LuksVolumeConfirmStatus(rotated=False)})
+        result = await process_luks_confirm(mock_db_session, "5FTestHotkey123", "test-vm", body)
+
+    assert result.volumes["root"]["result"] == "discarded"
+    assert "pending_root" not in vm_config.volume_passphrases
+    # Current root survives
+    assert "root" in vm_config.volume_passphrases

@@ -66,29 +66,32 @@ class Settings(BaseSettings):
 
     @cached_property
     def fernet_key(self) -> Optional[Fernet]:
-        """Get validated Fernet cipher for cache passphrase encryption.
+        """Get validated Fernet cipher for LUKS passphrase encryption at rest.
+
+        Encrypts all LUKS passphrases stored in the database (root, storage, cache
+        volumes) so that database read access alone is insufficient to obtain them.
 
         Returns:
-            Fernet cipher instance, or None if CACHE_PASSPHRASE_KEY not configured
+            Fernet cipher instance, or None if PASSPHRASE_ENCRYPTION_KEY not configured
 
         Raises:
-            ValueError: If CACHE_PASSPHRASE_KEY is invalid format
+            ValueError: If PASSPHRASE_ENCRYPTION_KEY is invalid format
         """
-        key = os.getenv("CACHE_PASSPHRASE_KEY")
+        key = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
         if not key:
             return None
 
         # Fernet keys must be 32 url-safe base64-encoded bytes (44 characters)
         if len(key) != 44:
             raise ValueError(
-                f"CACHE_PASSPHRASE_KEY must be 44 characters (32 bytes base64-encoded), got {len(key)} characters. "
+                f"PASSPHRASE_ENCRYPTION_KEY must be 44 characters (32 bytes base64-encoded), got {len(key)} characters. "
                 "Generate a valid key with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
             )
 
         try:
             return Fernet(key.encode())
         except Exception as e:
-            raise ValueError(f"Invalid CACHE_PASSPHRASE_KEY format: {e}")
+            raise ValueError(f"Invalid PASSPHRASE_ENCRYPTION_KEY format: {e}")
 
     sqlalchemy: str = os.getenv(
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
@@ -434,7 +437,7 @@ class Settings(BaseSettings):
         return latest
 
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
-    cache_passphrase_key: Optional[str] = os.getenv("CACHE_PASSPHRASE_KEY")
+    passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
 
     # TDX verification service URLs (if using Intel's remote verification)
     tdx_verification_url: Optional[str] = os.getenv("TDX_VERIFICATION_URL")

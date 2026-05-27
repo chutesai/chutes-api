@@ -40,6 +40,7 @@ from api.server.schemas import (
     TeeMeasurementResponse,
 )
 from api.server.service import (
+    BootAttestationResult,
     create_nonce,
     process_boot_attestation,
     register_server,
@@ -62,7 +63,6 @@ from api.server.service import (
 )
 from api.server.util import (
     extract_client_cert_hash,
-    get_luks_passphrase,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -118,14 +118,16 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = extract_ip(request)
-        boot_token, luks_quote_nonce = await process_boot_attestation(
+        result: BootAttestationResult = await process_boot_attestation(
             db, server_ip, args, nonce, expected_cert_hash
         )
 
         return BootAttestationResponse(
-            key=get_luks_passphrase(),
-            boot_token=boot_token,
-            luks_quote_nonce=luks_quote_nonce,
+            key=result.root_key,
+            boot_token=result.boot_token,
+            luks_quote_nonce=result.luks_quote_nonce,
+            root_next=result.root_next,
+            root_confirm_nonce=result.root_confirm_nonce,
         )
     except NonceError as e:
         logger.warning(f"Boot attestation nonce error: {str(e)}")
