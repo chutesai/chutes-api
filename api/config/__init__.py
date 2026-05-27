@@ -421,10 +421,13 @@ class Settings(BaseSettings):
         Returns TEE_MINIMUM_BOOT_VERSION when set, allowing new platform measurement
         configs to be added to the YAML incrementally without immediately enforcing a
         version bump for platforms not yet upgraded.  Falls back to the highest version
-        found across all loaded measurement configs.
+        found across all loaded measurement configs, or "0.0.0" if the config file is
+        not present (e.g. pods that don't mount the TEE measurements ConfigMap).
         """
         if pinned := os.getenv("TEE_MINIMUM_BOOT_VERSION"):
             return pinned
+        if not self.tee_measurement_config_path.exists():
+            return "0.0.0"
         versions = [m.version for m in self.tee_measurements if m.version]
         if not versions:
             return "0.0.0"
