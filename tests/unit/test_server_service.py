@@ -346,7 +346,9 @@ async def test_validate_and_consume_nonce_success(mock_settings):
     mock_settings.redis_client.getdel.return_value = json.dumps(
         {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value}
     ).encode()
-    stored_hotkey = await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
+    stored_hotkey = await validate_and_consume_nonce(
+        TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT
+    )
 
     mock_settings.redis_client.getdel.assert_called_once_with(f"nonce:{TEST_NONCE}")
     assert stored_hotkey is None
@@ -363,7 +365,9 @@ async def test_validate_and_consume_nonce_returns_hotkey(mock_settings):
             "miner_hotkey": test_hotkey,
         }
     ).encode()
-    stored_hotkey = await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
+    stored_hotkey = await validate_and_consume_nonce(
+        TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT
+    )
 
     assert stored_hotkey == test_hotkey
 

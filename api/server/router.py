@@ -16,7 +16,7 @@ from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metagraph import get_miner_by_hotkey
-from api.constants import HOTKEY_HEADER, NONCE_HEADER, NoncePurpose, SUPPORTED_LUKS_VOLUMES
+from api.constants import HOTKEY_HEADER, NoncePurpose, SUPPORTED_LUKS_VOLUMES
 
 from api.server.schemas import (
     BootAttestationArgs,
