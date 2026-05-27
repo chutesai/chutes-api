@@ -3,13 +3,11 @@ Application-wide settings.
 """
 
 import os
-import re
 import hashlib
 from pathlib import Path
 import aioboto3
 import json
 import yaml
-import semver
 from dataclasses import dataclass
 from api.safe_redis import SafeRedis
 from functools import cached_property, lru_cache
@@ -26,6 +24,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.fernet import Fernet
 from loguru import logger
+from api.semver_util import semcomp
 
 
 @lru_cache(maxsize=1)
@@ -433,11 +432,7 @@ class Settings(BaseSettings):
             return "0.0.0"
         latest = versions[0]
         for v in versions[1:]:
-            match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)", v)
-            clean = match.group(1) if match else "0.0.0"
-            match_latest = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+)", latest)
-            clean_latest = match_latest.group(1) if match_latest else "0.0.0"
-            if semver.compare(clean, clean_latest) > 0:
+            if semcomp(v, latest) > 0:
                 latest = v
         return latest
 

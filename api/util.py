@@ -10,7 +10,7 @@ import ast
 import aiodns
 import pybase64 as base64
 import ctypes
-import semver
+from api.semver_util import semcomp  # noqa: F401  (re-exported for callers that import from api.util)
 import string
 import aiohttp
 import asyncio
@@ -703,16 +703,6 @@ def use_opencl_graval(chutes_version: str):
         return True
     return False
 
-
-def semcomp(input_version: str, target_version: str):
-    """
-    Semver comparison with cleanup.
-    """
-    if not input_version:
-        input_version = "0.0.0"
-    re_match = re.match(r"^([0-9]+\.[0-9]+\.[0-9]+).*", input_version)
-    clean_version = re_match.group(1) if re_match else "0.0.0"
-    return semver.compare(clean_version, target_version)
 
 
 async def notify_created(instance, gpu_count: int = None, gpu_type: str = None):
