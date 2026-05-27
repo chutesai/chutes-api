@@ -98,9 +98,7 @@ class TeeServerClient:
         logger.info(f"Signature string: {signature_string}")
         signature = self._keypair.sign(signature_string.encode()).hex()
 
-        logger.info(
-            f"Signing: {ss58=} {nonce=} {payload_hash=} {purpose=} {signature=}"
-        )
+        logger.info(f"Signing: {ss58=} {nonce=} {payload_hash=} {purpose=} {signature=}")
         headers[SIGNATURE_HEADER] = signature
 
         return headers, payload_string
