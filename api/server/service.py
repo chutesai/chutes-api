@@ -1138,9 +1138,7 @@ async def get_instance_evidence(
     return await _get_instance_evidence(server, instance.deployment_id, nonce)
 
 
-async def _fetch_instance_evidence(
-    instance: Instance, nonce: str
-) -> TeeInstanceEvidence | None:
+async def _fetch_instance_evidence(instance: Instance, nonce: str) -> TeeInstanceEvidence | None:
     """Fetch evidence for a single instance, returning None on failure."""
     try:
         node = instance.nodes[0]
@@ -1199,9 +1197,7 @@ async def get_chute_instances_evidence(
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
-    results = await asyncio.gather(
-        *[_fetch_instance_evidence(inst, nonce) for inst in instances]
-    )
+    results = await asyncio.gather(*[_fetch_instance_evidence(inst, nonce) for inst in instances])
     evidence_list: list[TeeInstanceEvidence] = []
     failed_instance_ids: list[str] = []
     for instance, result in zip(instances, results):
