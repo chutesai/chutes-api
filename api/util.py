@@ -704,7 +704,6 @@ def use_opencl_graval(chutes_version: str):
     return False
 
 
-
 async def notify_created(instance, gpu_count: int = None, gpu_type: str = None):
     message = f"Instance created: {instance.miner_hotkey=} {instance.instance_id=}"
     if gpu_count:
