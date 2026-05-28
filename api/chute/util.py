@@ -636,7 +636,7 @@ async def chute_id_by_slug(slug: str):
     if cached:
         return cached.decode()
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         if chute_id := (
             await session.execute(select(Chute.chute_id).where(Chute.slug == slug))
         ).scalar_one_or_none():
@@ -661,7 +661,7 @@ async def _get_one(name_or_id: str, nonce: int = None):
 
     # Load from DB.
     chute_user = await chutes_user_id()
-    async with get_session() as db:
+    async with get_session(readonly=True) as db:
         chute = (
             (
                 await db.execute(
@@ -729,7 +729,7 @@ async def is_shared(chute_id: str, user_id: str):
     cached = await settings.redis_client.get(cache_key)
     if cached:
         return cached == b"1"
-    async with get_session() as db:
+    async with get_session(readonly=True) as db:
         query = select(
             exists().where(and_(ChuteShare.chute_id == chute_id, ChuteShare.shared_to == user_id))
         )
@@ -2211,7 +2211,7 @@ async def refresh_all_llm_details():
     """
     Refresh LLM details for all LLMs.
     """
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             select(Chute.chute_id).where(
                 Chute.standard_template == "vllm",
@@ -2260,7 +2260,7 @@ async def get_llms(refresh: bool = False, request=None):
     else:
         await refresh_all_llm_details()
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         filters = [
             Chute.standard_template == "vllm",
             Chute.public.is_(True),
@@ -2341,7 +2341,7 @@ WHERE
     instance_map = {row.instance_id: row.chute_id for row in instance_rows}
     invocation_rows = []
     if instance_map:
-        async with get_session() as inv_session:
+        async with get_session(readonly=True) as inv_session:
             result = await inv_session.execute(
                 text("""
 SELECT

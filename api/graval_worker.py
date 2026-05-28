@@ -487,7 +487,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     Validate GPUs.
     """
     nodes = None
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         if not (
             nodes := (await session.execute(select(Node).where(Node.uuid.in_(uuids))))
             .scalars()
@@ -677,7 +677,7 @@ async def generate_fs_hash(
         return "__disabled__"
 
     # Get the chutes version to determine the cfsv binary to use.
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         chutes_version = (
             (await session.execute(select(Image.chutes_version).where(Image.image_id == image_id)))
             .unique()

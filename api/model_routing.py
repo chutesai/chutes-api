@@ -55,7 +55,7 @@ async def get_user_alias(user_id: str, alias: str) -> list[str] | None:
             return None
         return json.loads(cached)
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             select(ModelAlias.chute_ids).where(
                 ModelAlias.user_id == user_id,

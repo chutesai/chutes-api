@@ -472,13 +472,14 @@ registry:
     type: "gcs"
 
 registryProxy:
-  image: nginx:1.27
+  image: nginx:1.31
   imagePullPolicy: IfNotPresent
   config:
-    workerProcesses: 64
-    workerConnections: 4096
+    workerProcesses: 4
+    workerConnections: 1024
     accessLogPath: "/var/log/nginx/access.log"
-  replicaCount: 2
+    errorLogPath: "/var/log/nginx/error.log"
+  replicaCount: 1
   nodeSelector: {}
   affinity:
     nodeAffinity: {}

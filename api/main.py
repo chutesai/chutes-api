@@ -210,6 +210,8 @@ async def ping():
     try:
         async with get_session() as session:
             await session.execute(text("SELECT 1"))
+            async with get_session(readonly=True) as ro_session:
+                await ro_session.execute(text("SELECT 1"))
             return {"message": "pong"}
     except Exception as e:
         raise HTTPException(

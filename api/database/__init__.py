@@ -25,10 +25,10 @@ SessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
-ro_engine = None
-SessionLocalRead = None
-if settings.postgres_ro:
-    ro_engine = create_async_engine(
+ro_engine = (
+    engine
+    if not settings.postgres_ro
+    else create_async_engine(
         settings.postgres_ro,
         echo=settings.debug,
         pool_size=settings.db_pool_size,
@@ -40,11 +40,12 @@ if settings.postgres_ro:
         pool_use_lifo=True,
         connect_args={"ssl": "require"},
     )
-    SessionLocalRead = sessionmaker(
-        bind=ro_engine,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
+)
+SessionLocalRead = sessionmaker(
+    bind=ro_engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+)
 
 Base = declarative_base()
 

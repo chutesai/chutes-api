@@ -66,7 +66,7 @@ async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
     )
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(query)
         instance_ids = [row[0] for row in result.all()]
         await settings.redis_client.set(cache_key, "|".join(instance_ids), ex=300)
@@ -108,7 +108,7 @@ async def load_chute_target(instance_id: str) -> Instance:
             joinedload(Instance.config),
         )
     )
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         instance = (await session.execute(query)).unique().scalar_one_or_none()
         if instance:
             # Warm up relationships for serialization

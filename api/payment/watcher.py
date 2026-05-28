@@ -169,7 +169,7 @@ class PaymentMonitor:
         Only fetches users updated since the last refresh (minus a buffer for in-flight
         transactions) to minimize network usage.
         """
-        async with get_session() as session:
+        async with get_session(readonly=True) as session:
             # Get current DB time for timestamp tracking
             db_now = (await session.execute(select(func.now()))).scalar()
 

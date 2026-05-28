@@ -62,7 +62,7 @@ async def get_app_by_client_id(client_id: str) -> Optional[OAuthApp]:
     cache_key = f"idp:app_id:{client_id}"
     cached = await settings.redis_client.get(cache_key)
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         if cached:
             app_id = cached.decode() if isinstance(cached, bytes) else cached
             if app_id == "__none__":
@@ -394,7 +394,7 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
         try:
             data = json.loads(cached.decode() if isinstance(cached, bytes) else cached)
             if data.get("valid"):
-                async with get_session() as session:
+                async with get_session(readonly=True) as session:
                     user = (
                         await session.execute(select(User).where(User.user_id == data["user_id"]))
                     ).scalar_one_or_none()
@@ -408,8 +408,7 @@ async def validate_access_token(token: str) -> Optional[TokenValidationResult]:
         except Exception:
             await settings.redis_client.delete(cache_key)
 
-    async with get_session() as session:
-        # O(1) lookup by token_id (primary key)
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             select(OAuthAccessToken)
             .options(

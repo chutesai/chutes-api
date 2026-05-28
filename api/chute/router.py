@@ -777,7 +777,7 @@ async def list_boosted_chutes():
     """
     Get a list of chutes that have a boost.
     """
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             text(
                 """
@@ -811,7 +811,7 @@ async def list_available_affine_chutes():
     """
     Get a list of affine chutes where the creator/user has a non-zero balance.
     """
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         query = text("""
             SELECT
                 c.chute_id,
@@ -957,7 +957,7 @@ async def list_chutes(
 
 @router.get("/rolling_updates")
 async def list_rolling_updates():
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(text("SELECT * FROM rolling_updates"))
         columns = result.keys()
         rows = result.fetchall()

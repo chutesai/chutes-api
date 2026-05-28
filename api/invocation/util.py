@@ -233,7 +233,7 @@ async def gather_metrics(interval: str = "1 hour"):
 
     # Get all chute IDs and their node_selectors from DB
     chute_data = {}
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             text(
                 """
@@ -258,7 +258,7 @@ async def gather_metrics(interval: str = "1 hour"):
 
     # Get active instance counts per chute
     instance_counts = {}
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             text(
                 """

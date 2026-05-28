@@ -33,7 +33,7 @@ async def _load_key(token_id: str):
             return pickle.loads(cached)
         except Exception:
             await settings.redis_client.delete(cache_key)
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         api_key = (
             (
                 await session.execute(

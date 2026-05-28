@@ -196,7 +196,7 @@ async def get_usage(request: Request):
         "group by chute_id, date "
         "order by date desc, usd_amount desc"
     )
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(query)
         rv = []
         for chute_id, date, usd_amount, invocation_count in result:
@@ -215,7 +215,7 @@ async def get_usage(request: Request):
 async def _cached_get_metrics(table, cache_key):
     if (cached := await settings.redis_client.get(cache_key)) is not None:
         return json.loads(gzip.decompress(base64.b64decode(cached)))
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(text(f"SELECT * FROM {table}"))
         rows = result.mappings().all()
         rv = [dict(row) for row in rows]
@@ -273,7 +273,7 @@ async def get_llm_stats(
         FROM daily_usage
     """)
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         name_result = await session.execute(name_query, {"system_uid": system_uid})
         name_map = {row.chute_id: row.name for row in name_result}
 
@@ -294,7 +294,7 @@ async def get_llm_stats(
 
     # Merge in tps/ttft from invocations-derived metrics, and backfill
     # token data for dates before usage_data cutoff.
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(text("SELECT * FROM vllm_metrics"))
         for row in result.mappings():
             key = (row["chute_id"], str(row["date"]))

@@ -151,7 +151,7 @@ def get_current_user(
 
         # Requires a hotkey registered to a netuid?
         if registered_to is not None:
-            async with get_session() as session:
+            async with get_session(readonly=True) as session:
                 if not (
                     await session.execute(
                         select(
@@ -168,7 +168,7 @@ def get_current_user(
 
         # Fetch the actual user.
         # NOTE: We should have a standard way to get this session
-        async with get_session() as session:
+        async with get_session(readonly=True) as session:
             session: AsyncSession  # For nice type hinting for IDE's
             result = await session.execute(select(User).where(User.hotkey == hotkey))
 
@@ -186,7 +186,7 @@ def get_current_user(
 async def chutes_user_id():
     if (user_id := getattr(router, "_chutes_user_id", None)) is not None:
         return user_id
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         router._chutes_user_id = (
             (await session.execute(select(User.user_id).where(User.username == "chutes")))
             .unique()
@@ -198,7 +198,7 @@ async def chutes_user_id():
 async def chutes_user():
     if (user := getattr(router, "_chutes_user", None)) is not None:
         return user
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         router._chutes_user = (
             (await session.execute(select(User).where(User.username == "chutes")))
             .unique()
