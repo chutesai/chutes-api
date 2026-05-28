@@ -39,6 +39,7 @@ from api.server.quote import TdxQuote, TdxVerificationResult
 import hashlib
 
 from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
+from api.util import semcomp
 
 
 def generate_nonce() -> str:
@@ -236,6 +237,18 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
     except Exception as e:
         logger.error(f"Unexpected error during quote verification: {e}")
         raise InvalidQuoteError("Unable to parse provided quote for verification.")
+
+
+def get_latest_measurement_version() -> str:
+    """Return the highest semver version string across all accepted TEE measurement configs."""
+    versions = [m.version for m in settings.tee_measurements if m.version]
+    if not versions:
+        return "0.0.0"
+    latest = versions[0]
+    for v in versions[1:]:
+        if semcomp(v, latest) > 0:
+            latest = v
+    return latest
 
 
 def get_matching_measurement_config(quote: TdxQuote) -> TeeMeasurementConfig:
