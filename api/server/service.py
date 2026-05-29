@@ -3,6 +3,7 @@ Core server management and TDX attestation logic.
 """
 
 import asyncio
+from dataclasses import dataclass
 import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
@@ -68,6 +69,7 @@ from api.server.util import (
     get_public_key_hash,
     cert_to_base64_der,
     validate_user_nonce,
+    get_root_passphrase_for_boot,
 )
 from api.instance.schemas import Instance, instance_nodes
 from api.instance.util import purge_and_notify
@@ -316,27 +318,38 @@ async def generate_and_store_boot_token(miner_hotkey: str, vm_name: str) -> str:
     return boot_token
 
 
+@dataclass
+class BootAttestationResult:
+    """Result of a successful boot attestation."""
+
+    root_key: str
+    boot_token: Optional[str] = None
+    luks_quote_nonce: Optional[str] = None
+    root_next: Optional[str] = None
+    root_confirm_nonce: Optional[str] = None
+
+
 async def process_boot_attestation(
     db: AsyncSession,
     server_ip: str,
     args: BootAttestationArgs,
     nonce: str,
     expected_cert_hash: str,
-) -> tuple[Optional[str], Optional[str]]:
+) -> "BootAttestationResult":
     """
     Process a boot attestation request.
 
     Args:
         db: Database session
         server_ip: Server IP address
-        args: Boot attestation arguments (includes miner_hotkey and vm_name)
+        args: Boot attestation arguments (includes miner_hotkey, vm_name, first_boot)
         nonce: Validated nonce
         expected_cert_hash: Expected certificate hash
 
     Returns:
-        Tuple of (boot_token, luks_quote_nonce). Exactly one is set depending on
-        the VM's measurement version: boot_token for version < 1.3.0 (legacy POST
-        /luks flow), luks_quote_nonce for version >= 1.3.0 (POST /luks/attest flow).
+        BootAttestationResult with root_key, optional boot_token/luks_quote_nonce
+        (mutually exclusive by measurement version), and optional root_next/root_confirm_nonce
+        for VMs >= 1.4.0.
 
     Raises:
         NonceError: If nonce validation fails
@@ -344,7 +357,8 @@ async def process_boot_attestation(
         MeasurementMismatchError: If measurements don't match
     """
     logger.info(
-        f"Processing boot attestation for VM {args.vm_name} (miner: {args.miner_hotkey}, IP: {server_ip})"
+        f"Processing boot attestation for VM {args.vm_name} (miner: {args.miner_hotkey}, IP: {server_ip}, "
+        f"first_boot={args.first_boot})"
     )
 
     # Parse and verify quote
@@ -386,6 +400,16 @@ async def process_boot_attestation(
             db, args.miner_hotkey, args.vm_name, measurement_config.version
         )
 
+        # Resolve the root passphrase (current key + optional next rotation).
+        # measurement_config.version serves as the image version for default-passphrase lookup.
+        root_key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            db,
+            args.miner_hotkey,
+            args.vm_name,
+            args.first_boot,
+            measurement_config.version,
+        )
+
         # Version-gate: legacy VMs (< 1.3.0) get a boot token for POST /luks;
         # new VMs (>= 1.3.0) get a luks_quote_nonce for POST /luks/attest instead.
         boot_token: Optional[str] = None
@@ -395,7 +419,13 @@ async def process_boot_attestation(
         else:
             boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
 
-        return boot_token, luks_quote_nonce
+        return BootAttestationResult(
+            root_key=root_key,
+            boot_token=boot_token,
+            luks_quote_nonce=luks_quote_nonce,
+            root_next=root_next,
+            root_confirm_nonce=root_confirm_nonce,
+        )
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record; set measurement_version if quote matched a config

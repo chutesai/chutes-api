@@ -69,6 +69,11 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: PASSPHRASE_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: passphrase-encryption-key
+                  key: key
             {{- if .Values.datadog_enabled }}
             - name: DD_LOGS_INJECTION
               value: "true"
