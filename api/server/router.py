@@ -85,7 +85,8 @@ router = APIRouter()
 
 @router.get("/nonce", response_model=NonceResponse)
 async def get_nonce(
-    request: Request, miner_hotkey: str,
+    request: Request,
+    miner_hotkey: str,
     _mtls=Depends(require_mtls_domain()),
 ):
     """
