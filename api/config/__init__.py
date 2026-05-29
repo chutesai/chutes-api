@@ -436,6 +436,65 @@ class Settings(BaseSettings):
                 latest = v
         return latest
 
+    signing_keys_bundle_path: Path = Path(
+        os.getenv("SIGNING_KEYS_BUNDLE_PATH", "/etc/config/signing_keys_bundle.json")
+    )
+
+    _REQUIRED_SIGNING_KEY_NAMES: frozenset = frozenset(
+        ["cosign/chutes.pub", "cosign/dockerhub.pub", "helm-pubkey.gpg"]
+    )
+
+    @cached_property
+    def signing_keys_bundle(self) -> Optional[dict]:
+        """Load and validate the signing keys bundle from the configured path.
+
+        Loaded once and cached for the lifetime of the process. Returns None if the
+        file does not exist (pods without the ConfigMap mounted will return 503).
+
+        Raises ValueError if the file exists but fails validation.
+        """
+        if not self.signing_keys_bundle_path.exists():
+            logger.warning(
+                f"Signing keys bundle not found at {self.signing_keys_bundle_path}; "
+                "/servers/signing-keys will return 503"
+            )
+            return None
+
+        with open(self.signing_keys_bundle_path) as fh:
+            bundle = json.loads(fh.read())
+
+        if not isinstance(bundle.get("version"), int):
+            raise ValueError("signing_keys_bundle: 'version' must be an integer")
+        for field in ("keys", "signatures"):
+            if not isinstance(bundle.get(field), dict):
+                raise ValueError(f"signing_keys_bundle: '{field}' must be an object")
+        missing = self._REQUIRED_SIGNING_KEY_NAMES - bundle["keys"].keys()
+        if missing:
+            raise ValueError(f"signing_keys_bundle: missing required keys: {missing}")
+        missing_sigs = self._REQUIRED_SIGNING_KEY_NAMES - bundle["signatures"].keys()
+        if missing_sigs:
+            raise ValueError(f"signing_keys_bundle: missing required signatures: {missing_sigs}")
+        for name, value in {**bundle["keys"], **bundle["signatures"]}.items():
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"signing_keys_bundle: value for '{name}' must be a non-empty string"
+                )
+
+        logger.info(
+            f"Signing keys bundle loaded from {self.signing_keys_bundle_path} "
+            f"(version={bundle['version']}, keys={list(bundle['keys'].keys())})"
+        )
+        return bundle
+
+    # mTLS attestation domain enforcement.
+    # mtls_domain: the Host header value that mTLS-gated endpoints must arrive on.
+    # mtls_proxy_secret: a shared secret injected by the mTLS nginx proxy as
+    #   X-Mtls-Proxy-Auth; every other proxy must strip this header.  When set,
+    #   the application refuses to trust X-Client-Cert unless the header matches,
+    #   preventing header-injection attacks from non-mTLS proxies.
+    mtls_domain: str = os.getenv("MTLS_DOMAIN", "tdx-attestation.chutes.ai")
+    mtls_proxy_secret: Optional[str] = os.getenv("MTLS_PROXY_SECRET")
+
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
 

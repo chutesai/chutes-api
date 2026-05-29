@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from loguru import logger
 from dcap_qvl import get_collateral_and_verify
 from api.config import settings, TeeMeasurementConfig
@@ -53,16 +53,59 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     return minutes * 60
 
 
+def require_mtls_domain():
+    """
+    FastAPI dependency that rejects requests not arriving via the expected mTLS domain.
+
+    Two guards are applied in order:
+
+    1. Host header must match ``settings.mtls_domain`` (default: tdx-attestation.chutes.ai).
+       This catches requests that slip through the wrong reverse-proxy vhost.
+
+    2. When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must carry
+       that exact value.  The mTLS nginx proxy injects this secret; every other proxy
+       (including api.chutes.ai) must strip it.  A missing or wrong value means the request
+       bypassed the mTLS proxy and may carry an attacker-injected ``X-Client-Cert``.
+
+    Both guards fail with 403 to avoid leaking information about which check failed.
+    """
+
+    async def _check(request: Request):
+        host = request.headers.get("host", "").split(":")[0].lower()
+        expected_host = settings.mtls_domain.lower()
+        if host != expected_host:
+            logger.warning(
+                f"mTLS endpoint rejected: host={host!r} expected={expected_host!r} "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint is only accessible via the mTLS attestation domain.",
+            )
+        if settings.mtls_proxy_secret:
+            proxy_auth = request.headers.get("X-Mtls-Proxy-Auth", "")
+            if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
+                logger.warning(
+                    f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="This endpoint is only accessible via the mTLS attestation domain.",
+                )
+
+    return _check
+
+
 def extract_client_cert_hash():
     async def _extract_request_client_cert(request: Request):
         try:
             cert = _get_client_certificate(request)
-            cert_hash = get_public_key_hash(cert)
-
-            return cert_hash
+            return get_public_key_hash(cert)
+        except NoClientCertError:
+            raise
         except Exception as e:
             logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
-            raise NoClientCertError(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+            raise NoClientCertError(detail=str(e))
 
     return _extract_request_client_cert
 
@@ -166,11 +209,23 @@ def cert_to_base64_der(cert: Certificate) -> str:
     return cert_base64
 
 
-def _get_client_certificate(request: Request) -> bytes:
+def _get_client_certificate(request: Request) -> "Certificate":
     """
-    Extract client certificate from Uvicorn request.
-    Simplified for FastAPI-to-FastAPI communication.
+    Extract client certificate from the nginx-injected X-Client-Cert header.
+
+    When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must
+    match before we trust anything in ``X-Client-Cert``.  This is a second line of
+    defence against header-injection attacks: even if ``require_mtls_domain`` is
+    somehow absent from a future endpoint the cert header cannot be forged without
+    also knowing the proxy secret.
     """
+    if settings.mtls_proxy_secret:
+        proxy_auth = request.headers.get("X-Mtls-Proxy-Auth", "")
+        if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
+            raise NoClientCertError(
+                detail="X-Client-Cert header rejected: request did not arrive via the mTLS proxy."
+            )
+
     cert_header = request.headers.get("X-Client-Cert")
     if not cert_header:
         raise NoClientCertError(detail="No client certificate provided")

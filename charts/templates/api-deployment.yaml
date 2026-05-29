@@ -61,6 +61,9 @@ spec:
         - name: tee-measurements
           configMap:
             name: tee-measurements
+        - name: signing-keys-bundle
+          configMap:
+            name: signing-keys-bundle
       containers:
         - name: api
           image: "{{ .Values.api.image }}"
@@ -94,6 +97,15 @@ spec:
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
+            {{- if .Values.mtlsDomain }}
+            - name: MTLS_DOMAIN
+              value: "{{ .Values.mtlsDomain }}"
+            {{- end }}
+            - name: MTLS_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: mtls-proxy-auth
+                  key: secret
             - name: CM_REDIS_SHARD_COUNT
               value: "{{ .Values.cmRedis.shard_count }}"
             {{- if .Values.squad_enabled }}
@@ -108,6 +120,10 @@ spec:
             {{- end }}
             - name: tee-measurements
               mountPath: "/etc/config"
+              readOnly: true
+            - name: signing-keys-bundle
+              mountPath: "/etc/config/signing_keys_bundle.json"
+              subPath: signing_keys_bundle.json
               readOnly: true
           ports:
             - name: http

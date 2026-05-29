@@ -1,5 +1,10 @@
 teeMinimumBootVersion: ""
 
+# mTLS attestation domain enforcement.
+# mtlsDomain overrides the MTLS_DOMAIN env var (default: tdx-attestation.chutes.ai).
+# Leave empty to use the compiled-in default.
+mtlsDomain: ""
+
 account_settings:
   first_payment_bonus:
     threshold: 100.00
