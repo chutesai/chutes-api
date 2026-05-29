@@ -448,6 +448,24 @@ async def get_tee_measurements():
     return result
 
 
+@router.get("/signing-keys")
+async def get_signing_keys():
+    """
+    Return the signed key bundle used by booting VMs to fetch and verify cosign/Helm keys.
+
+    Each entry in 'keys' is a base64-encoded public key; the corresponding entry in
+    'signatures' is a base64-encoded detached PGP signature produced by the root signing key.
+    No authentication required — called by initramfs before TDX attestation completes.
+    """
+    bundle = settings.signing_keys_bundle
+    if bundle is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Signing keys bundle not available",
+        )
+    return bundle
+
+
 @router.get("/maintenance/policy", response_model=MaintenancePolicyResponse)
 async def get_maintenance_policy(
     db: AsyncSession = Depends(get_db_session),
