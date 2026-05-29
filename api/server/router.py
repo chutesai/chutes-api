@@ -65,6 +65,7 @@ from api.server.service import (
 )
 from api.server.util import (
     extract_client_cert_hash,
+    require_mtls_domain,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -83,7 +84,10 @@ router = APIRouter()
 
 
 @router.get("/nonce", response_model=NonceResponse)
-async def get_nonce(request: Request, miner_hotkey: str):
+async def get_nonce(
+    request: Request, miner_hotkey: str,
+    _mtls=Depends(require_mtls_domain()),
+):
     """
     Generate a nonce for boot attestation.
 
@@ -95,6 +99,8 @@ async def get_nonce(request: Request, miner_hotkey: str):
     preventing cross-miner nonce reuse. VMs that do not supply this param are
     considered legacy and are rejected — use the measurement version enforcement
     to drive upgrades.
+
+    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         server_ip = extract_ip(request)
@@ -115,6 +121,7 @@ async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
+    _mtls=Depends(require_mtls_domain()),
     nonce: str = Depends(validate_boot_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
@@ -125,6 +132,7 @@ async def verify_boot_attestation(
     and returns the LUKS passphrase for disk decryption if valid.
     For VMs running version >= 1.3.0, also returns a luks_quote_nonce for
     the subsequent POST /luks/attest call.
+    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         server_ip = extract_ip(request)
@@ -248,6 +256,7 @@ async def attest_luks(
     body: LuksAttestRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_mtls_domain()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
     validated_nonce: str = Depends(require_luks_quote_nonce),
 ):
@@ -259,6 +268,7 @@ async def attest_luks(
     validates and consumes the nonce; the handler then calls verify_quote which
     checks the TDX signature and all RTMR measurements including RTMR3. Returns
     rotated passphrases, the k3s encryption key, and a confirm nonce.
+    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         result = await process_luks_attest_request(
@@ -291,6 +301,7 @@ async def confirm_luks_rotation(
     body: LuksConfirmRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_mtls_domain()),
     _=Depends(require_confirm_nonce),
 ):
     """
@@ -299,6 +310,7 @@ async def confirm_luks_rotation(
     The VM reports per-volume success/failure. require_confirm_nonce validates
     and consumes the nonce before the handler runs. Volumes with rotated=True
     have pending passphrases promoted to current; rotated=False discards pending.
+    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         result = await process_luks_confirm(db, hotkey, vm_name, body)
@@ -455,7 +467,8 @@ async def get_signing_keys():
 
     Each entry in 'keys' is a base64-encoded public key; the corresponding entry in
     'signatures' is a base64-encoded detached PGP signature produced by the root signing key.
-    No authentication required — called by initramfs before TDX attestation completes.
+    Intentionally public — no mTLS required. Independent third parties and auditors can
+    fetch these public keys to verify TDX quotes without needing to be a VM client.
     """
     bundle = settings.signing_keys_bundle
     if bundle is None:

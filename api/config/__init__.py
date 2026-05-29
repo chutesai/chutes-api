@@ -486,6 +486,15 @@ class Settings(BaseSettings):
         )
         return bundle
 
+    # mTLS attestation domain enforcement.
+    # mtls_domain: the Host header value that mTLS-gated endpoints must arrive on.
+    # mtls_proxy_secret: a shared secret injected by the mTLS nginx proxy as
+    #   X-Mtls-Proxy-Auth; every other proxy must strip this header.  When set,
+    #   the application refuses to trust X-Client-Cert unless the header matches,
+    #   preventing header-injection attacks from non-mTLS proxies.
+    mtls_domain: str = os.getenv("MTLS_DOMAIN", "tdx-attestation.chutes.ai")
+    mtls_proxy_secret: Optional[str] = os.getenv("MTLS_PROXY_SECRET")
+
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
 
