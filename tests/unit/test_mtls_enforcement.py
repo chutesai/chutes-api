@@ -5,7 +5,7 @@ Unit tests for mTLS domain enforcement:
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
 from api.server.util import require_mtls_domain, _get_client_certificate
@@ -222,9 +222,7 @@ def test_get_client_cert_correct_secret_reads_header(mock_settings):
     mock_settings.mtls_proxy_secret = "mysecret"
 
     pem = _make_pem_cert()
-    request = _make_request(
-        "tdx-attestation.chutes.ai", proxy_auth="mysecret", client_cert=pem
-    )
+    request = _make_request("tdx-attestation.chutes.ai", proxy_auth="mysecret", client_cert=pem)
     cert = _get_client_certificate(request)
     assert cert is not None
 
@@ -236,9 +234,7 @@ def test_get_client_cert_wrong_secret_raises(mock_settings):
     mock_settings.mtls_proxy_secret = "mysecret"
 
     pem = _make_pem_cert()
-    request = _make_request(
-        "tdx-attestation.chutes.ai", proxy_auth="wrongsecret", client_cert=pem
-    )
+    request = _make_request("tdx-attestation.chutes.ai", proxy_auth="wrongsecret", client_cert=pem)
     with pytest.raises(NoClientCertError):
         _get_client_certificate(request)
 

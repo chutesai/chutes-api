@@ -84,9 +84,7 @@ def require_mtls_domain():
             )
         if settings.mtls_proxy_secret:
             proxy_auth = request.headers.get("X-Mtls-Proxy-Auth", "")
-            if not secrets.compare_digest(
-                proxy_auth.encode(), settings.mtls_proxy_secret.encode()
-            ):
+            if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
                 logger.warning(
                     f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}"
                 )
@@ -223,9 +221,7 @@ def _get_client_certificate(request: Request) -> "Certificate":
     """
     if settings.mtls_proxy_secret:
         proxy_auth = request.headers.get("X-Mtls-Proxy-Auth", "")
-        if not secrets.compare_digest(
-            proxy_auth.encode(), settings.mtls_proxy_secret.encode()
-        ):
+        if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
             raise NoClientCertError(
                 detail="X-Client-Cert header rejected: request did not arrive via the mTLS proxy."
             )
