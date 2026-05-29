@@ -8,7 +8,7 @@ import pytest
 import tempfile
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from fastapi import HTTPException
 
 from api.server.router import get_signing_keys
