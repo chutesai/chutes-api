@@ -331,8 +331,10 @@ async def test_create_nonce(mock_settings):
     assert result["nonce"] == TEST_NONCE
     assert "expires_at" in result
 
-    # Verify Redis operations (value is JSON: server_ip + purpose)
-    expected_value = json.dumps({"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value})
+    # Verify Redis operations (value is JSON: server_ip + purpose + miner_hotkey)
+    expected_value = json.dumps(
+        {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value, "miner_hotkey": None}
+    )
     mock_settings.redis_client.setex.assert_called_once_with(
         f"nonce:{TEST_NONCE}", 600, expected_value
     )
@@ -344,9 +346,30 @@ async def test_validate_and_consume_nonce_success(mock_settings):
     mock_settings.redis_client.getdel.return_value = json.dumps(
         {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value}
     ).encode()
-    await validate_and_consume_nonce(TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT)
+    stored_hotkey = await validate_and_consume_nonce(
+        TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT
+    )
 
     mock_settings.redis_client.getdel.assert_called_once_with(f"nonce:{TEST_NONCE}")
+    assert stored_hotkey is None
+
+
+@pytest.mark.asyncio
+async def test_validate_and_consume_nonce_returns_hotkey(mock_settings):
+    """Test that validate_and_consume_nonce returns a stored miner_hotkey."""
+    test_hotkey = "5FTestHotkey123"
+    mock_settings.redis_client.getdel.return_value = json.dumps(
+        {
+            "server_ip": TEST_SERVER_IP,
+            "purpose": NoncePurpose.BOOT.value,
+            "miner_hotkey": test_hotkey,
+        }
+    ).encode()
+    stored_hotkey = await validate_and_consume_nonce(
+        TEST_GPU_NONCE, TEST_SERVER_IP, NoncePurpose.BOOT
+    )
+
+    assert stored_hotkey == test_hotkey
 
 
 @pytest.mark.asyncio

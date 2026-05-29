@@ -81,13 +81,16 @@ from api.node.schemas import NodeArgs
 from api.util import extract_ip, semcomp
 
 
-async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
+async def create_nonce(
+    server_ip: str, purpose: NoncePurpose, miner_hotkey: str | None = None
+) -> Dict[str, str]:
     """
     Create a new attestation nonce using Redis.
 
     Args:
         server_ip: IP address of the server/instance requesting the nonce
         purpose: Purpose of the nonce (NoncePurpose enum value)
+        miner_hotkey: Optional miner hotkey to bind the nonce to (BOOT purpose only)
 
     Returns:
         Dictionary with nonce and expiry info
@@ -95,10 +98,10 @@ async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
     nonce = generate_nonce()
     expiry_seconds = get_nonce_expiry_seconds()
 
-    # Use Redis to store nonce with TTL
-    # Store as JSON to include both server_ip and purpose
     redis_key = f"nonce:{nonce}"
-    redis_value = json.dumps({"server_ip": server_ip, "purpose": purpose.value})
+    redis_value = json.dumps(
+        {"server_ip": server_ip, "purpose": purpose.value, "miner_hotkey": miner_hotkey}
+    )
 
     await settings.redis_client.setex(redis_key, expiry_seconds, redis_value)
 
@@ -106,14 +109,17 @@ async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
         seconds=expiry_seconds
     )
 
-    logger.info(f"Created nonce: {nonce[:8]}... for server {server_ip} with purpose {purpose}")
+    logger.info(
+        f"Created nonce: {nonce[:8]}... for server {server_ip} with purpose {purpose}"
+        + (f" bound to hotkey {miner_hotkey[:8]}..." if miner_hotkey else "")
+    )
 
     return {"nonce": nonce, "expires_at": expires_at.isoformat()}
 
 
 async def validate_and_consume_nonce(
     nonce_value: str, server_ip: str, purpose: NoncePurpose
-) -> None:
+) -> Optional[str]:
     """
     Validate and consume a nonce using Redis.
 
@@ -121,6 +127,9 @@ async def validate_and_consume_nonce(
         nonce_value: Nonce to validate
         server_ip: Expected server IP address
         purpose: Expected purpose for the nonce (NoncePurpose enum value)
+
+    Returns:
+        The miner_hotkey the nonce was bound to, or None if not bound.
 
     Raises:
         NonceError: If nonce is invalid, expired, already used, or purpose/server mismatch
@@ -140,9 +149,11 @@ async def validate_and_consume_nonce(
         if isinstance(stored_data, str):
             stored_server = stored_data
             stored_purpose = None
+            stored_hotkey = None
         else:
             stored_server = stored_data.get("server_ip")
             stored_purpose = stored_data.get("purpose")
+            stored_hotkey = stored_data.get("miner_hotkey")
     except (ValueError, AttributeError, json.JSONDecodeError):
         raise NonceError("Invalid nonce format")
 
@@ -158,6 +169,7 @@ async def validate_and_consume_nonce(
         )
 
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}... for purpose {purpose}")
+    return stored_hotkey
 
 
 def validate_request_nonce(purpose: NoncePurpose):
@@ -178,7 +190,6 @@ def validate_request_nonce(purpose: NoncePurpose):
 
         try:
             await validate_and_consume_nonce(nonce, server_ip, purpose)
-
             return nonce
         except NonceError as e:
             logger.error(f"Request nonce validation failed: {e}")
@@ -187,6 +198,54 @@ def validate_request_nonce(purpose: NoncePurpose):
             )
 
     return _validate_request_nonce
+
+
+def validate_boot_nonce():
+    """
+    Dependency for POST /servers/boot/attestation.
+
+    Validates and consumes the BOOT nonce, then enforces miner hotkey binding:
+    - The nonce must have been issued with a miner_hotkey query param (rejects legacy VMs).
+    - The stored hotkey must match args.miner_hotkey in the request body.
+
+    Declaring BootAttestationArgs here is intentional: FastAPI parses the request body
+    once and shares the result between this dependency and the handler.
+    """
+
+    async def _validate_boot_nonce(
+        request: Request,
+        args: BootAttestationArgs,
+        nonce: str | None = Header(None, alias=NONCE_HEADER),
+    ) -> str:
+        server_ip = extract_ip(request)
+
+        try:
+            stored_hotkey = await validate_and_consume_nonce(nonce, server_ip, NoncePurpose.BOOT)
+        except NonceError as e:
+            logger.error(f"Boot nonce validation failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid nonce supplied"
+            )
+
+        if not stored_hotkey:
+            logger.warning("Boot attestation rejected: nonce has no bound miner hotkey (legacy VM)")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Nonce was not issued with a miner hotkey binding — please upgrade your VM",
+            )
+        if stored_hotkey != args.miner_hotkey:
+            logger.warning(
+                f"Boot attestation hotkey mismatch: nonce bound to {stored_hotkey[:8]}..., "
+                f"request has {args.miner_hotkey[:8] if args.miner_hotkey else 'None'}..."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Nonce hotkey mismatch",
+            )
+
+        return nonce
+
+    return _validate_boot_nonce
 
 
 async def require_luks_quote_nonce(
