@@ -75,6 +75,7 @@ class BootAttestationResponse(BaseModel):
         None,
         description="Single-use nonce for confirming root passphrase rotation via POST /luks/confirm",
     )
+    vm_auth_ss58: Optional[str] = None
 
 
 class RuntimeAttestationArgs(BaseModel):
@@ -467,3 +468,20 @@ class RootPassphraseDefault(Base):
     image_version = Column(String, primary_key=True)
     encrypted_passphrase = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class VmAuthKey(Base):
+    """Per-VM ephemeral SR25519 auth key, rotated on every successful boot attestation.
+
+    Lifecycle: created/replaced on each boot attestation; independent of VmCacheConfig
+    which persists across reboots. The auth_seed is Fernet-encrypted at rest.
+    """
+
+    __tablename__ = "vm_auth_keys"
+
+    miner_hotkey = Column(String, primary_key=True)
+    vm_name = Column(String, primary_key=True)
+    auth_seed = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("idx_vm_auth_keys_miner", "miner_hotkey"),)

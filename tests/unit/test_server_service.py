@@ -40,6 +40,7 @@ from api.server.schemas import (
     ServerArgs,
     RootPassphraseDefault,
     VmCacheConfig,
+    VmAuthKey,
 )
 from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxVerificationResult
 from api.server.exceptions import (
@@ -66,7 +67,12 @@ def _tee_measurements_for_service_tests():
             version="1",
             mrtd="a" * 96,
             name="test",
-            boot_rtmrs={"RTMR0": "b" * 96, "RTMR1": "c" * 96, "RTMR2": "d" * 96, "RTMR3": "e" * 96},
+            boot_rtmrs={
+                "RTMR0": "b" * 96,
+                "RTMR1": "c" * 96,
+                "RTMR2": "d" * 96,
+                "RTMR3": "e" * 96,
+            },
             runtime_rtmrs={
                 "RTMR0": "d" * 96,
                 "RTMR1": "e" * 96,
@@ -289,7 +295,8 @@ def sample_server_attestation():
 def mock_verify_quote_signature(sample_verification_result):
     """Mock verify_quote_signature function."""
     with patch(
-        "api.server.util.verify_quote_signature", return_value=sample_verification_result
+        "api.server.util.verify_quote_signature",
+        return_value=sample_verification_result,
     ) as mock:
         yield mock
 
@@ -315,7 +322,8 @@ def mock_quote_parsing(sample_boot_quote, sample_runtime_quote):
         "api.server.service.BootTdxQuote.from_base64", return_value=sample_boot_quote
     ) as mock_boot:
         with patch(
-            "api.server.service.RuntimeTdxQuote.from_base64", return_value=sample_runtime_quote
+            "api.server.service.RuntimeTdxQuote.from_base64",
+            return_value=sample_runtime_quote,
         ) as mock_runtime:
             yield {"boot": mock_boot, "runtime": mock_runtime}
 
@@ -333,7 +341,11 @@ async def test_create_nonce(mock_settings):
 
     # Verify Redis operations (value is JSON: server_ip + purpose + miner_hotkey)
     expected_value = json.dumps(
-        {"server_ip": TEST_SERVER_IP, "purpose": NoncePurpose.BOOT.value, "miner_hotkey": None}
+        {
+            "server_ip": TEST_SERVER_IP,
+            "purpose": NoncePurpose.BOOT.value,
+            "miner_hotkey": None,
+        }
     )
     mock_settings.redis_client.setex.assert_called_once_with(
         f"nonce:{TEST_NONCE}", 600, expected_value
@@ -397,7 +409,10 @@ async def test_validate_and_consume_nonce_server_mismatch(mock_settings):
 
 @pytest.mark.asyncio
 async def test_verify_quote_success(
-    sample_boot_quote, mock_validate_nonce, mock_verify_quote_signature, mock_verify_measurements
+    sample_boot_quote,
+    mock_validate_nonce,
+    mock_verify_quote_signature,
+    mock_verify_measurements,
 ):
     """Test successful quote verification."""
     result = await verify_quote(sample_boot_quote, TEST_NONCE, TEST_CERT_HASH)
@@ -429,7 +444,10 @@ async def test_verify_quote_signature_failure(
 
 @pytest.mark.asyncio
 async def test_verify_quote_measurement_failure(
-    sample_boot_quote, mock_validate_nonce, mock_verify_quote_signature, mock_verify_measurements
+    sample_boot_quote,
+    mock_validate_nonce,
+    mock_verify_quote_signature,
+    mock_verify_measurements,
 ):
     """Test quote verification with measurement failure."""
     mock_verify_measurements.side_effect = MeasurementMismatchError("MRTD mismatch")
@@ -473,6 +491,9 @@ async def test_process_boot_attestation_success(
 
         mock_db_session.refresh.side_effect = mock_refresh
 
+        mock_keypair = Mock()
+        mock_keypair.ss58_address = "5EphemeralSS58TestAddress"
+
         with (
             patch(
                 "api.server.service.generate_and_store_boot_token",
@@ -486,6 +507,11 @@ async def test_process_boot_attestation_success(
                 "api.server.service.get_root_passphrase_for_boot",
                 new_callable=AsyncMock,
                 return_value=("test_root_key", None, None),
+            ),
+            patch(
+                "api.server.service._generate_and_store_vm_auth_key",
+                new_callable=AsyncMock,
+                return_value=mock_keypair,
             ),
         ):
             result = await process_boot_attestation(
@@ -501,6 +527,7 @@ async def test_process_boot_attestation_success(
         assert result.root_key == "test_root_key"
         assert result.root_next is None
         assert result.root_confirm_nonce is None
+        assert result.vm_auth_ss58 == "5EphemeralSS58TestAddress"
 
         # Verify database operations
         mock_db_session.add.assert_called_once()
@@ -611,7 +638,8 @@ async def test_process_runtime_attestation_server_not_found(
     miner_hotkey = "5FTestHotkey123"
 
     with patch(
-        "api.server.service.check_server_ownership", side_effect=ServerNotFoundError(server_id)
+        "api.server.service.check_server_ownership",
+        side_effect=ServerNotFoundError(server_id),
     ):
         with pytest.raises(ServerNotFoundError):
             await process_runtime_attestation(
@@ -636,7 +664,9 @@ async def test_register_server_success(mock_db_session, server_args, sample_serv
     with patch("api.server.service._track_server", return_value=sample_server):
         with patch("api.server.service._track_nodes", new_callable=AsyncMock):
             with patch(
-                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+                "api.server.service.verify_server",
+                new_callable=AsyncMock,
+                return_value="1.0.0",
             ):
                 await register_server(mock_db_session, server_args, miner_hotkey)
 
@@ -656,7 +686,9 @@ async def test_register_server_integrity_error(mock_db_session, server_args, sam
             side_effect=IntegrityError("Duplicate key", None, None),
         ):
             with patch(
-                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+                "api.server.service.verify_server",
+                new_callable=AsyncMock,
+                return_value="1.0.0",
             ):
                 with pytest.raises(ServerRegistrationError):
                     await register_server(mock_db_session, server_args, miner_hotkey)
@@ -765,7 +797,8 @@ async def test_delete_server_not_found(mock_db_session):
     miner_hotkey = "5FTestHotkey123"
 
     with patch(
-        "api.server.service.check_server_ownership", side_effect=ServerNotFoundError(server_id)
+        "api.server.service.check_server_ownership",
+        side_effect=ServerNotFoundError(server_id),
     ):
         with pytest.raises(ServerNotFoundError):
             await delete_server(mock_db_session, server_id, miner_hotkey)
@@ -888,7 +921,12 @@ async def test_sync_luks_passphrase(mock_db_session, mock_redis_client):
     ):
         mock_settings.redis_client.delete = AsyncMock(return_value=1)
         result = await process_luks_passphrase_request(
-            mock_db_session, boot_token, hotkey, vm_name, volume_names, rekey_volume_names=rekey
+            mock_db_session,
+            boot_token,
+            hotkey,
+            vm_name,
+            volume_names,
+            rekey_volume_names=rekey,
         )
         assert result == {"storage": "pass1", "cache": "pass2_new"}
         mock_sync.assert_called_once_with(
@@ -930,7 +968,9 @@ async def test_register_server_general_exception(mock_db_session, server_args, s
             side_effect=Exception("Database error"),
         ):
             with patch(
-                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+                "api.server.service.verify_server",
+                new_callable=AsyncMock,
+                return_value="1.0.0",
             ):
                 with pytest.raises(ServerRegistrationError):
                     await register_server(mock_db_session, server_args, miner_hotkey)
@@ -1016,6 +1056,9 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
 
             mock_db_session.refresh.side_effect = mock_refresh
 
+            mock_keypair = Mock()
+            mock_keypair.ss58_address = "5EphemeralSS58TestAddress"
+
             with (
                 patch(
                     "api.server.service.generate_and_store_boot_token",
@@ -1030,6 +1073,11 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
                     new_callable=AsyncMock,
                     return_value=("test_root_key", None, None),
                 ),
+                patch(
+                    "api.server.service._generate_and_store_vm_auth_key",
+                    new_callable=AsyncMock,
+                    return_value=mock_keypair,
+                ),
             ):
                 result = await process_boot_attestation(
                     mock_db_session,
@@ -1042,6 +1090,7 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
             assert isinstance(result, BootAttestationResult)
             assert result.boot_token == "test-boot-token"
             assert result.root_key == "test_root_key"
+            assert result.vm_auth_ss58 == "5EphemeralSS58TestAddress"
 
 
 @pytest.mark.asyncio
@@ -1124,7 +1173,9 @@ async def test_server_lifecycle_flow(mock_db_session, sample_server, server_args
     with patch("api.server.service._track_server", return_value=sample_server):
         with patch("api.server.service._track_nodes", new_callable=AsyncMock):
             with patch(
-                "api.server.service.verify_server", new_callable=AsyncMock, return_value="1.0.0"
+                "api.server.service.verify_server",
+                new_callable=AsyncMock,
+                return_value="1.0.0",
             ):
                 await register_server(mock_db_session, server_args, miner_hotkey)
     mock_db_session.commit.assert_called()
@@ -1154,7 +1205,8 @@ async def test_boot_attestation_partial_failure_recovery(
     # Simulate verification failure but ensure failed record is still created
     with patch("api.server.service.BootTdxQuote.from_base64", return_value=sample_boot_quote):
         with patch(
-            "api.server.service.verify_quote", side_effect=MeasurementMismatchError("MRTD mismatch")
+            "api.server.service.verify_quote",
+            side_effect=MeasurementMismatchError("MRTD mismatch"),
         ):
             with pytest.raises(MeasurementMismatchError):
                 await process_boot_attestation(
@@ -1185,10 +1237,12 @@ async def test_runtime_attestation_partial_failure_recovery(
 
     with patch("api.server.service.check_server_ownership", return_value=sample_server):
         with patch(
-            "api.server.service.RuntimeTdxQuote.from_base64", return_value=sample_runtime_quote
+            "api.server.service.RuntimeTdxQuote.from_base64",
+            return_value=sample_runtime_quote,
         ):
             with patch(
-                "api.server.service.verify_quote", side_effect=InvalidQuoteError("Invalid quote")
+                "api.server.service.verify_quote",
+                side_effect=InvalidQuoteError("Invalid quote"),
             ):
                 with pytest.raises(InvalidQuoteError):
                     await process_runtime_attestation(
@@ -1209,6 +1263,179 @@ async def test_runtime_attestation_partial_failure_recovery(
                 call_args = mock_db_session.add.call_args[0][0]
                 assert isinstance(call_args, ServerAttestation)
                 assert call_args.verification_error == "Invalid quote"
+
+
+# ---------------------------------------------------------------------------
+# VM Auth Key Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_boot_attestation_returns_vm_auth_ss58(
+    mock_db_session,
+    boot_attestation_args,
+    mock_quote_parsing,
+    mock_verify_quote_signature,
+    mock_verify_measurements,
+    mock_validate_nonce,
+):
+    """Successful boot attestation returns vm_auth_ss58 in the 3-tuple response."""
+    mock_keypair = Mock()
+    mock_keypair.ss58_address = "5EphemeralSS58AddressHere"
+
+    with patch("api.server.service.verify_quote") as mock_verify:
+        mock_verify.return_value = TdxVerificationResult(
+            mrtd="a" * 96,
+            rtmr0="b" * 96,
+            rtmr1="c" * 96,
+            rtmr2="d" * 96,
+            rtmr3="e" * 96,
+            user_data="test",
+            parsed_at=datetime.now(timezone.utc),
+            status="UpToDate",
+            advisory_ids=[],
+            td_attributes="0000001000000000",
+        )
+
+        def mock_refresh(obj):
+            obj.attestation_id = "boot-attest-123"
+            obj.verified_at = datetime.now(timezone.utc)
+
+        mock_db_session.refresh.side_effect = mock_refresh
+
+        with (
+            patch(
+                "api.server.service.generate_and_store_boot_token",
+                return_value="token-abc",
+            ),
+            patch("api.server.service._handle_boot_version_update", new_callable=AsyncMock),
+            patch(
+                "api.server.service._generate_and_store_vm_auth_key",
+                new_callable=AsyncMock,
+                return_value=mock_keypair,
+            ),
+        ):
+            result = await process_boot_attestation(
+                mock_db_session,
+                TEST_SERVER_IP,
+                boot_attestation_args,
+                TEST_NONCE,
+                TEST_CERT_HASH,
+            )
+
+    boot_token, luks_quote_nonce, vm_auth_ss58 = result
+    assert boot_token == "token-abc"
+    assert luks_quote_nonce is None
+    assert vm_auth_ss58 == "5EphemeralSS58AddressHere"
+
+
+@pytest.mark.asyncio
+async def test_boot_attestation_vm_auth_key_not_generated_on_failure(
+    mock_db_session, boot_attestation_args, sample_boot_quote
+):
+    """vm_auth_key is NOT generated when boot attestation verification fails."""
+    with (
+        patch(
+            "api.server.service.BootTdxQuote.from_base64",
+            return_value=sample_boot_quote,
+        ),
+        patch(
+            "api.server.service.verify_quote",
+            side_effect=MeasurementMismatchError("MRTD mismatch"),
+        ),
+        patch(
+            "api.server.service._generate_and_store_vm_auth_key",
+            new_callable=AsyncMock,
+        ) as mock_gen_key,
+    ):
+        with pytest.raises(MeasurementMismatchError):
+            await process_boot_attestation(
+                mock_db_session,
+                TEST_SERVER_IP,
+                boot_attestation_args,
+                TEST_NONCE,
+                TEST_CERT_HASH,
+            )
+
+    mock_gen_key.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tee_server_client_uses_per_vm_keypair(sample_server):
+    """TeeServerClient.create() reconstructs per-VM keypair from DB on every call."""
+    from api.server.client import TeeServerClient
+    import secrets as _secrets
+    from bittensor_wallet.keypair import Keypair
+
+    seed_hex = "0x" + _secrets.token_hex(32)
+    real_keypair = Keypair.create_from_seed(seed_hex)
+
+    vm_auth_key = VmAuthKey(
+        miner_hotkey=sample_server.miner_hotkey,
+        vm_name=sample_server.name,
+        auth_seed="encrypted_seed_placeholder",
+    )
+    mock_result = Mock()
+    mock_result.scalar_one_or_none.return_value = vm_auth_key
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute.return_value = mock_result
+
+    with patch("api.server.client.decrypt_passphrase", return_value=seed_hex):
+        client = await TeeServerClient.create(mock_db, sample_server)
+
+    assert client._keypair.ss58_address == real_keypair.ss58_address
+    mock_db.execute.assert_called_once()
+
+    # Signing uses the per-VM SS58 address as the hotkey header
+    headers, _ = client._sign_request(purpose="attest")
+    assert headers["X-Chutes-Hotkey"] == real_keypair.ss58_address
+
+
+@pytest.mark.asyncio
+async def test_tee_server_client_falls_back_to_validator_keypair(sample_server):
+    """TeeServerClient.create() falls back to validator keypair when no per-VM key in DB."""
+    from api.server.client import TeeServerClient
+
+    mock_validator_keypair = Mock()
+    mock_validator_keypair.ss58_address = "5ValidatorSS58"
+    mock_validator_keypair.sign = Mock(return_value=b"\x00" * 64)
+
+    mock_result = Mock()
+    mock_result.scalar_one_or_none.return_value = None  # no vm_auth_key in DB
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute.return_value = mock_result
+
+    with patch("api.server.client.settings") as mock_settings:
+        mock_settings.validator_keypair = mock_validator_keypair
+        client = await TeeServerClient.create(mock_db, sample_server)
+
+    assert client._keypair is mock_validator_keypair
+    mock_db.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_tee_server_client_always_reads_db(sample_server):
+    """TeeServerClient.create() always reads from DB (no in-process cache)."""
+    from api.server.client import TeeServerClient
+    import secrets as _secrets
+
+    seed_hex = "0x" + _secrets.token_hex(32)
+    vm_auth_key = VmAuthKey(
+        miner_hotkey=sample_server.miner_hotkey,
+        vm_name=sample_server.name,
+        auth_seed="encrypted_seed_placeholder",
+    )
+    mock_result = Mock()
+    mock_result.scalar_one_or_none.return_value = vm_auth_key
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute.return_value = mock_result
+
+    with patch("api.server.client.decrypt_passphrase", return_value=seed_hex):
+        await TeeServerClient.create(mock_db, sample_server)
+        await TeeServerClient.create(mock_db, sample_server)
+
+    # DB is queried on every call -- no caching
+    assert mock_db.execute.call_count == 2
 
 
 # Performance and Concurrency Tests
@@ -1415,7 +1642,8 @@ async def test_runtime_attestation_database_rollback_on_error(
 
     with patch("api.server.service.check_server_ownership", return_value=sample_server):
         with patch(
-            "api.server.service.RuntimeTdxQuote.from_base64", return_value=sample_runtime_quote
+            "api.server.service.RuntimeTdxQuote.from_base64",
+            return_value=sample_runtime_quote,
         ):
             with patch("api.server.service.verify_quote") as mock_verify:
                 mock_verify.return_value = TdxVerificationResult(
@@ -1586,7 +1814,10 @@ async def test_get_root_passphrase_for_boot_first_boot_no_prior_state(
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
-        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="root-nonce-123")),
+        patch(
+            "api.server.util.generate_confirm_nonce",
+            AsyncMock(return_value="root-nonce-123"),
+        ),
     ):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
             mock_db_session,
@@ -1619,7 +1850,10 @@ async def test_get_root_passphrase_for_boot_first_boot_with_prior_root(
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
-        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-abc")),
+        patch(
+            "api.server.util.generate_confirm_nonce",
+            AsyncMock(return_value="nonce-abc"),
+        ),
     ):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
             mock_db_session,
@@ -1646,7 +1880,10 @@ async def test_get_root_passphrase_for_boot_normal_boot_stored_root(mock_db_sess
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
-        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-xyz")),
+        patch(
+            "api.server.util.generate_confirm_nonce",
+            AsyncMock(return_value="nonce-xyz"),
+        ),
     ):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
             mock_db_session,
@@ -1673,7 +1910,10 @@ async def test_get_root_passphrase_for_boot_normal_boot_no_stored_root(
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
-        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-new")),
+        patch(
+            "api.server.util.generate_confirm_nonce",
+            AsyncMock(return_value="nonce-new"),
+        ),
     ):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
             mock_db_session,
@@ -1722,7 +1962,10 @@ async def test_get_root_passphrase_for_boot_discards_stale_pending(mock_db_sessi
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
-        patch("api.server.util.generate_confirm_nonce", AsyncMock(return_value="nonce-fresh")),
+        patch(
+            "api.server.util.generate_confirm_nonce",
+            AsyncMock(return_value="nonce-fresh"),
+        ),
     ):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
             mock_db_session,
@@ -1782,7 +2025,11 @@ async def test_process_boot_attestation_returns_root_rotation_fields(
             ) as mock_root,
         ):
             result = await process_boot_attestation(
-                mock_db_session, TEST_SERVER_IP, boot_attestation_args, TEST_NONCE, TEST_CERT_HASH
+                mock_db_session,
+                TEST_SERVER_IP,
+                boot_attestation_args,
+                TEST_NONCE,
+                TEST_CERT_HASH,
             )
 
     assert isinstance(result, BootAttestationResult)

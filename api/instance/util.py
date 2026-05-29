@@ -1056,7 +1056,7 @@ async def verify_tee_chute(
             )
 
         # Use the TeeServerClient to get evidence from the chute proxy
-        client = TeeServerClient(server)
+        client = await TeeServerClient.create(db, server)
 
         # Get quote, GPU evidence, cert from chute verify endpoint (no nonce; chute uses stored nonce)
         quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id)

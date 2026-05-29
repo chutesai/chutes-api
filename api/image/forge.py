@@ -653,7 +653,7 @@ async def sign_image(
         image_digest = await get_image_digest(image_tag)
         image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
 
-        external_registry = f"{settings.validator_ss58}.localregistry.chutes.ai"
+        external_registry = "localregistry.chutes.ai"
         internal_registry = "registry"
 
         # Rebuild the full reference

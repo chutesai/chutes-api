@@ -12,8 +12,10 @@ from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
 from sqlalchemy import delete, or_, select, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from bittensor_wallet.keypair import Keypair
 
 from api.config import settings
 from api.constants import NONCE_HEADER, NoncePurpose, HOTKEY_HEADER, LUKS_STORAGE_VOLUME
@@ -38,6 +40,7 @@ from api.server.schemas import (
     LuksAttestResult,
     LuksConfirmRequest,
     LuksConfirmResult,
+    VmAuthKey,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -194,7 +197,8 @@ def validate_request_nonce(purpose: NoncePurpose):
         except NonceError as e:
             logger.error(f"Request nonce validation failed: {e}")
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid nonce supplied"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied",
             )
 
     return _validate_request_nonce
@@ -224,7 +228,8 @@ def validate_boot_nonce():
         except NonceError as e:
             logger.error(f"Boot nonce validation failed: {e}")
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid nonce supplied"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied",
             )
 
         if not stored_hotkey:
@@ -386,6 +391,39 @@ class BootAttestationResult:
     luks_quote_nonce: Optional[str] = None
     root_next: Optional[str] = None
     root_confirm_nonce: Optional[str] = None
+    vm_auth_ss58: Optional[str] = None
+
+
+async def _generate_and_store_vm_auth_key(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+) -> Keypair:
+    """Generate a fresh SR25519 keypair for this VM, encrypt the seed, and upsert into vm_auth_keys.
+
+    Called on every successful boot attestation so the key rotates each boot.
+    Returns the new Keypair (seed already committed to DB before return).
+    """
+    seed_hex = "0x" + secrets.token_hex(32)
+    keypair = Keypair.create_from_seed(seed_hex)
+    encrypted_seed = encrypt_passphrase(seed_hex)
+
+    stmt = pg_insert(VmAuthKey).values(
+        miner_hotkey=miner_hotkey,
+        vm_name=vm_name,
+        auth_seed=encrypted_seed,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["miner_hotkey", "vm_name"],
+        set_={"auth_seed": encrypted_seed, "created_at": func.now()},
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    logger.info(
+        f"Generated ephemeral auth key for VM {vm_name} (miner: {miner_hotkey}): {keypair.ss58_address}"
+    )
+    return keypair
 
 
 async def process_boot_attestation(
@@ -407,8 +445,8 @@ async def process_boot_attestation(
 
     Returns:
         BootAttestationResult with root_key, optional boot_token/luks_quote_nonce
-        (mutually exclusive by measurement version), and optional root_next/root_confirm_nonce
-        for VMs >= 1.4.0.
+        (mutually exclusive by measurement version), optional root_next/root_confirm_nonce
+        for VMs >= 1.4.0, and vm_auth_ss58 (always set on successful attestation).
 
     Raises:
         NonceError: If nonce validation fails
@@ -469,6 +507,12 @@ async def process_boot_attestation(
             measurement_config.version,
         )
 
+        # Generate a fresh per-VM ephemeral SR25519 keypair. The SS58 is returned to
+        # the VM so it can trust requests signed with this key; the encrypted seed is
+        # stored in vm_auth_keys for the validator backend to use when calling this VM.
+        vm_keypair = await _generate_and_store_vm_auth_key(db, args.miner_hotkey, args.vm_name)
+        vm_auth_ss58 = vm_keypair.ss58_address
+
         # Version-gate: legacy VMs (< 1.3.0) get a boot token for POST /luks;
         # new VMs (>= 1.3.0) get a luks_quote_nonce for POST /luks/attest instead.
         boot_token: Optional[str] = None
@@ -484,6 +528,7 @@ async def process_boot_attestation(
             luks_quote_nonce=luks_quote_nonce,
             root_next=root_next,
             root_confirm_nonce=root_confirm_nonce,
+            vm_auth_ss58=vm_auth_ss58,
         )
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
@@ -628,7 +673,7 @@ async def verify_server(
     quote = None
     measurement_config = None
     try:
-        client = TeeServerClient(server)
+        client = await TeeServerClient.create(db, server)
 
         nonce = generate_nonce()
         logger.info(
@@ -1178,7 +1223,10 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     query = (
         select(Instance)
         .where(Instance.instance_id == instance_id)
-        .options(joinedload(Instance.chute), joinedload(Instance.nodes).joinedload(Node.server))
+        .options(
+            joinedload(Instance.chute),
+            joinedload(Instance.nodes).joinedload(Node.server),
+        )
     )
     result = await db.execute(query)
     instance = result.unique().scalar_one_or_none()
@@ -1195,25 +1243,6 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     server = node.server
 
     return (server, instance)
-
-
-async def _get_instance_evidence(
-    server: Server, deployment_id: str, nonce: str
-) -> TeeInstanceEvidence:
-    """
-    Get TEE instance evidence via the chute's evidence endpoint (third-party flow).
-    Caller supplies nonce; we call chute-service-{deployment_id}/evidence?nonce=...
-    Verification flow (no caller nonce) uses get_chute_evidence(deployment_id) → verify endpoint.
-    """
-    client = TeeServerClient(server)
-    quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id, nonce=nonce)
-
-    quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
-    cert_base64 = cert_to_base64_der(cert)
-
-    return TeeInstanceEvidence(
-        quote=quote_base64, gpu_evidence=gpu_evidence, certificate=cert_base64
-    )
 
 
 async def get_instance_evidence(
@@ -1236,20 +1265,31 @@ async def get_instance_evidence(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Instance has no deployment_id; evidence is only available after TEE verification",
         )
-    return await _get_instance_evidence(server, instance.deployment_id, nonce)
+    client = await TeeServerClient.create(db, server)
+    quote, gpu_evidence, cert = await client.get_chute_evidence(instance.deployment_id, nonce=nonce)
+    return TeeInstanceEvidence(
+        quote=base64.b64encode(quote.raw_bytes).decode("utf-8"),
+        gpu_evidence=gpu_evidence,
+        certificate=cert_to_base64_der(cert),
+    )
 
 
-async def _fetch_instance_evidence(instance: Instance, nonce: str) -> TeeInstanceEvidence | None:
-    """Fetch evidence for a single instance, returning None on failure."""
+async def _fetch_instance_evidence(
+    db: AsyncSession, instance: Instance, nonce: str
+) -> TeeInstanceEvidence | None:
+    """Fetch evidence for a single instance, returning None on failure (used by bulk gather)."""
     try:
         node = instance.nodes[0]
         server = node.server
-        evidence = await _get_instance_evidence(server, instance.deployment_id, nonce)
+        client = await TeeServerClient.create(db, server)
+        quote, gpu_evidence, cert = await client.get_chute_evidence(
+            instance.deployment_id, nonce=nonce
+        )
         return TeeInstanceEvidence(
-            quote=evidence.quote,
-            gpu_evidence=evidence.gpu_evidence,
+            quote=base64.b64encode(quote.raw_bytes).decode("utf-8"),
+            gpu_evidence=gpu_evidence,
+            certificate=cert_to_base64_der(cert),
             instance_id=instance.instance_id,
-            certificate=evidence.certificate,
         )
     except GetEvidenceError as e:
         logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
@@ -1298,7 +1338,9 @@ async def get_chute_instances_evidence(
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
-    results = await asyncio.gather(*[_fetch_instance_evidence(inst, nonce) for inst in instances])
+    results = await asyncio.gather(
+        *[_fetch_instance_evidence(db, inst, nonce) for inst in instances]
+    )
     evidence_list: list[TeeInstanceEvidence] = []
     failed_instance_ids: list[str] = []
     for instance, result in zip(instances, results):
@@ -1507,7 +1549,8 @@ async def confirm_maintenance(
             purged_ids.append(inst.instance_id)
         except Exception:
             logger.error(
-                f"Failed to purge instance {inst.instance_id} during maintenance", exc_info=True
+                f"Failed to purge instance {inst.instance_id} during maintenance",
+                exc_info=True,
             )
 
     return ConfirmMaintenanceResult(

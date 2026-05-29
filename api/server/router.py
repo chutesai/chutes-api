@@ -150,6 +150,7 @@ async def verify_boot_attestation(
             luks_quote_nonce=result.luks_quote_nonce,
             root_next=result.root_next,
             root_confirm_nonce=result.root_confirm_nonce,
+            vm_auth_ss58=result.vm_auth_ss58,
         )
     except NonceError as e:
         logger.warning(f"Boot attestation nonce error: {str(e)}")

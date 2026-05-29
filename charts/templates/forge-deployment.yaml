@@ -17,18 +17,12 @@ spec:
       initContainers:
       - name: update-hosts
         image: busybox:1.36
-        env:
-          - name: VALIDATOR_SS58
-            valueFrom:
-              secretKeyRef:
-                key: ss58
-                name: validator-credentials
         command:
           - sh
           - -c
           - |
             set -e
-            DOMAIN="${VALIDATOR_SS58}.localregistry.chutes.ai"
+            DOMAIN="localregistry.chutes.ai"
             echo "Adding host entry for $DOMAIN -> $REGISTRY_SERVICE_HOST"
 
             cp /etc/hosts /mnt/hosts
