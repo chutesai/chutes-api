@@ -186,7 +186,7 @@ ENV PATH="$DEPOT_INSTALL_DIR:$PATH"
 
 # Install cosign (for signing - lightweight, doesn't pull images)
 USER root
-ENV COSIGN_VERSION=3.0.6
+ENV COSIGN_VERSION=2.5.3
 RUN curl -LO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_${COSIGN_VERSION}_amd64.deb" && \
     dpkg -i cosign_${COSIGN_VERSION}_amd64.deb && \
     rm cosign_${COSIGN_VERSION}_amd64.deb
