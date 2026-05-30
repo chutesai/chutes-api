@@ -5,7 +5,7 @@ import hashlib
 import json
 import ssl
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 import aiohttp
@@ -14,7 +14,12 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from cryptography.x509 import Certificate
-from api.constants import ATTESTATION_SIGNATURE_HEADER, HOTKEY_HEADER, NONCE_HEADER, SIGNATURE_HEADER
+from api.constants import (
+    ATTESTATION_SIGNATURE_HEADER,
+    HOTKEY_HEADER,
+    NONCE_HEADER,
+    SIGNATURE_HEADER,
+)
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
 from api.server.schemas import Server, VmAuthKey
@@ -186,7 +191,9 @@ class TeeServerClient:
                     signature = resp.headers.get(ATTESTATION_SIGNATURE_HEADER)
                     raw_body = await resp.read()
                     data = json.loads(raw_body)
-                    attested_body_b64 = base64.b64encode(raw_body).decode("ascii") if signature else None
+                    attested_body_b64 = (
+                        base64.b64encode(raw_body).decode("ascii") if signature else None
+                    )
                     quote = RuntimeTdxQuote.from_base64(data["evidence"]["tdx_quote"])
                     gpu_evidence = json.loads(data["evidence"]["nvtrust_evidence"])
                     return ChuteEvidenceResponse(
