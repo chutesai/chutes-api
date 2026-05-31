@@ -1266,11 +1266,15 @@ async def get_instance_evidence(
             detail="Instance has no deployment_id; evidence is only available after TEE verification",
         )
     client = await TeeServerClient.create(db, server)
-    quote, gpu_evidence, cert = await client.get_chute_evidence(instance.deployment_id, nonce=nonce)
+    evidence = await client.get_chute_evidence(instance.deployment_id, nonce=nonce)
+    quote_base64 = base64.b64encode(evidence.quote.raw_bytes).decode("utf-8")
+    cert_base64 = cert_to_base64_der(evidence.cert)
     return TeeInstanceEvidence(
-        quote=base64.b64encode(quote.raw_bytes).decode("utf-8"),
-        gpu_evidence=gpu_evidence,
-        certificate=cert_to_base64_der(cert),
+        quote=quote_base64,
+        gpu_evidence=evidence.gpu_evidence,
+        certificate=cert_base64,
+        signature=evidence.signature,
+        attested_body=evidence.attested_body,
     )
 
 

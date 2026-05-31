@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import base64
+from dataclasses import dataclass
 import hashlib
 import json
 import ssl
@@ -12,13 +14,33 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from cryptography.x509 import Certificate
-
-from api.constants import HOTKEY_HEADER, NONCE_HEADER, SIGNATURE_HEADER
+from api.constants import (
+    ATTESTATION_SIGNATURE_HEADER,
+    HOTKEY_HEADER,
+    NONCE_HEADER,
+    SIGNATURE_HEADER,
+)
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
 from api.server.schemas import Server, VmAuthKey
 from api.server.util import _get_server_certificate, decrypt_passphrase
 from api.config import settings
+
+
+@dataclass
+class ChuteEvidenceResponse:
+    """Structured response from TeeServerClient.get_chute_evidence().
+
+    quote, gpu_evidence, and cert are always present.
+    signature and attested_body are set only when the attestation proxy returns
+    an X-Signature header (proxy >= 0.2.0); both are None on older proxies.
+    """
+
+    quote: TdxQuote
+    gpu_evidence: Dict[str, Any]
+    cert: Certificate
+    signature: Optional[str] = None
+    attested_body: Optional[str] = None
 
 
 class TeeServerClient:
@@ -140,7 +162,7 @@ class TeeServerClient:
 
     async def get_chute_evidence(
         self, deployment_id: str, nonce: Optional[str] = None
-    ) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
+    ) -> ChuteEvidenceResponse:
         """Get attestation evidence for a specific chute deployment.
 
         Two flows:
@@ -148,6 +170,15 @@ class TeeServerClient:
           verify endpoint; chute uses its stored nonce to prove it is the same instance.
         - Third-party runtime evidence: call with nonce=caller_nonce. Hits chute's
           evidence endpoint with ?nonce=...; chute returns evidence bound to that nonce.
+
+        Args:
+            deployment_id: The chute deployment ID (or instance identifier for the chute service).
+            nonce: Optional. If set, request goes to evidence endpoint with this nonce as query param.
+
+        Returns:
+            ChuteEvidenceResponse with quote, gpu_evidence, cert always populated.
+            signature and attested_body are set when the proxy returns X-Signature (>= 0.2.0),
+            otherwise both are None.
         """
         try:
             target_endpoint = "evidence" if nonce else "verify"
@@ -157,10 +188,21 @@ class TeeServerClient:
             async with self._attestation_session() as session:
                 async with session.get(url, headers=headers, params=params) as resp:
                     cert = _get_server_certificate(resp)
-                    data = await resp.json()
+                    signature = resp.headers.get(ATTESTATION_SIGNATURE_HEADER)
+                    raw_body = await resp.read()
+                    data = json.loads(raw_body)
+                    attested_body_b64 = (
+                        base64.b64encode(raw_body).decode("ascii") if signature else None
+                    )
                     quote = RuntimeTdxQuote.from_base64(data["evidence"]["tdx_quote"])
                     gpu_evidence = json.loads(data["evidence"]["nvtrust_evidence"])
-                    return quote, gpu_evidence, cert
+                    return ChuteEvidenceResponse(
+                        quote=quote,
+                        gpu_evidence=gpu_evidence,
+                        cert=cert,
+                        signature=signature,
+                        attested_body=attested_body_b64,
+                    )
         except Exception as exc:
             logger.error(f"Failed to get chute evidence from {self._url}: {exc}")
             raise GetEvidenceError()
