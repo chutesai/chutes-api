@@ -7,33 +7,58 @@ metadata:
 data:
   nginx.conf.template: |
     user www-data;
-    worker_processes {{ .Values.registryProxy.config.workerProcesses }};
+    worker_processes {{ .Values.registryProxy.config.workerProcesses | default 64 }};
     pid /run/nginx.pid;
     include /etc/nginx/modules-enabled/*.conf;
     events {
-        worker_connections {{ .Values.registryProxy.config.workerConnections }};
+        worker_connections {{ .Values.registryProxy.config.workerConnections | default 4096 }};
     }
     http {
         server_tokens off;
         ignore_invalid_headers off;
         client_max_body_size 0;
+
+        # Rewrite service param: clients see registry.chutes.ai, Depot expects its own hostname.
+        map $arg_service $rewritten_service {
+            "registry.chutes.ai"       "${DEPOT_REGISTRY}";
+            default                    "${DEPOT_REGISTRY}";
+        }
         log_format proxylog '$remote_addr\t$http_x_chutes_hotkey\t[$time_local] ($request_time) '
-                    '"$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $content_length';
+                    '"$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $content_length $http_host';
+
         server {
-            access_log {{ .Values.registryProxy.config.accessLogPath }} proxylog;
+            access_log /var/log/nginx/access.log proxylog;
             sendfile on;
             tcp_nopush on;
-            listen {{ .Values.registryProxy.service.port }};
+            listen 443 ssl;
+            ssl_certificate     /etc/nginx/ssl/tls.crt;
+            ssl_certificate_key /etc/nginx/ssl/tls.key;
+            ssl_protocols       TLSv1.2 TLSv1.3;
 
             # Block pulls of intermediate build tags (never externally accessible).
             location ~ "^/v2/.+/manifests/forgebuild-" {
                 return 403;
             }
 
+            # Token endpoint - verify hotkey, then proxy to Depot's token service with Depot creds.
+            location /v2/_token {
+                auth_request /auth;
+
+                resolver kube-dns.kube-system.svc.cluster.local;
+                proxy_pass https://api.depot.dev/auth/registry/token?service=$rewritten_service&scope=$arg_scope;
+                proxy_ssl_server_name on;
+                proxy_ssl_name api.depot.dev;
+                proxy_set_header Host api.depot.dev;
+
+                # Inject Depot registry credentials (substituted at runtime by init container)
+                proxy_set_header Authorization "Basic ${DEPOT_BASIC_AUTH}";
+            }
+
             location /v2/ {
                 limit_except GET HEAD {
                     deny all;
                 }
+                resolver kube-dns.kube-system.svc.cluster.local;
                 proxy_pass https://${DEPOT_REGISTRY};
 
                 proxy_ssl_server_name on;
@@ -43,9 +68,11 @@ data:
                 # Pass through bearer tokens from Docker client
                 proxy_set_header Authorization $http_authorization;
 
-                # Rewrite Www-Authenticate to point to our /token endpoint
+                # Hide upstream identity from clients.
                 proxy_hide_header Www-Authenticate;
-                add_header Www-Authenticate 'Bearer realm="https://registry.chutes.ai/token",service="${DEPOT_REGISTRY}"' always;
+                proxy_hide_header Docker-Distribution-Api-Version;
+                proxy_hide_header X-Registry-Supports-Signatures;
+                add_header Www-Authenticate 'Bearer realm="https://registry.chutes.ai/v2/_token",service="registry.chutes.ai"' always;
 
                 proxy_request_buffering off;
                 proxy_buffering off;
@@ -54,23 +81,13 @@ data:
                 proxy_send_timeout 900s;
             }
 
-            # Token endpoint - verify hotkey, then proxy to Depot's token service with Depot creds
-            location /token {
-                auth_request /auth;
-
-                proxy_pass https://api.depot.dev/auth/registry/token$is_args$args;
-                proxy_ssl_server_name on;
-                proxy_ssl_name api.depot.dev;
-                proxy_set_header Host api.depot.dev;
-
-                # Inject Depot registry credentials (substituted at runtime by init container)
-                proxy_set_header Authorization "Basic ${DEPOT_BASIC_AUTH}";
-            }
-
             location = /auth {
                 internal;
-                proxy_pass http://api:{{ .Values.api.service.port }}/registry/auth;
+                proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000/registry/auth;
                 auth_request_set $auth_resp_authorization $upstream_http_authorization;
+                proxy_set_header X-Chutes-Hotkey $http_x_chutes_hotkey;
+                proxy_set_header X-Chutes-Signature $http_x_chutes_signature;
+                proxy_set_header X-Chutes-Nonce $http_x_chutes_nonce;
                 proxy_pass_request_body off;
                 proxy_set_header Content-Length "";
                 error_page 401 403 500 502 503 504 = @block;

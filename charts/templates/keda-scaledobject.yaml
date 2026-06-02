@@ -1,0 +1,55 @@
+{{/*
+KEDA ScaledObject for the API deployment.
+Requires KEDA installed in the cluster — managed via the chutes-ops chart.
+See https://keda.sh for docs.
+
+When enabled:
+  - Scales on api_requests_in_progress (per-pod in-flight connections)
+  - Optionally also scales on P95 request latency (duration histogram)
+  - Replaces the CPU-based HPA for the API (api.hpa is ignored when this is enabled)
+
+Metric source: Prometheus at .Values.prometheusUrl
+Gauge:         api_requests_in_progress (emitted by api/metrics/capacity.py)
+*/}}
+{{- if .Values.api.keda.enabled }}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: api
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicaCount: {{ .Values.api.keda.minReplicas | default 2 }}
+  maxReplicaCount: {{ .Values.api.keda.maxReplicas | default 30 }}
+  cooldownPeriod: {{ .Values.api.keda.cooldownPeriod | default 300 }}
+  triggers:
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.prometheusUrl | quote }}
+        namespace: {{ .Release.Namespace }}
+        query: >-
+          sum(api_requests_in_progress)
+          /
+          max(kube_deployment_spec_replicas{
+            deployment="api",
+            namespace="{{ .Release.Namespace }}"
+          })
+        threshold: {{ .Values.api.keda.targetInflightPerPod | default "100" | quote }}
+{{- if .Values.api.keda.latencyTrigger.enabled }}
+    - type: prometheus
+      metadata:
+        serverAddress: {{ .Values.prometheusUrl | quote }}
+        namespace: {{ .Release.Namespace }}
+        # P95 end-to-end request latency (includes miner response time).
+        query: >-
+          histogram_quantile(0.95,
+            sum(rate(duration_bucket[2m])) by (le)
+          )
+        threshold: {{ .Values.api.keda.latencyTrigger.thresholdSeconds | default "30" | quote }}
+{{- end }}
+{{- end }}

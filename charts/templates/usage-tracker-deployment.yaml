@@ -1,4 +1,3 @@
-{{- if .Values.usageTracker.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,9 +5,7 @@ metadata:
   labels:
     {{- include "usageTracker.labels" . | nindent 4 }}
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate
+  replicas: {{ .Values.usageTracker.replicaCount }}
   selector:
     matchLabels:
       {{- include "usageTracker.labels" . | nindent 6 }}
@@ -16,7 +13,11 @@ spec:
     metadata:
       labels:
         {{- include "usageTracker.labels" . | nindent 8 }}
+      annotations:
+        chutes.ai/structured-logs: "true"
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.usageTracker.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -25,24 +26,85 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.usageTracker.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.usageTracker.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       volumes:
         - name: structured-logs
           emptyDir: {}
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: usage-tracker
-          image: "{{ .Values.usageTracker.image }}"
+          image: {{ include "chutes.image" (list . .Values.usageTracker.image) | quote }}
           imagePullPolicy: {{ .Values.usageTracker.imagePullPolicy }}
-          command: ["poetry", "run", "python", "api/payment/usage_tracker.py"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - python
+            - api/payment/usage_tracker.py
           env:
-            {{- include "chutes.commonEnv" . | nindent 12 }}
-            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: "/etc/redis-cacert/cacert.pem"
+            {{- end }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
           volumeMounts:
             - name: structured-logs
               mountPath: /var/log/app
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ .Values.usageTracker.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.usageTracker.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.usageTracker.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.usageTracker.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.usageTracker.livenessProbe.failureThreshold | default 3 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: {{ .Values.usageTracker.readinessProbe.initialDelaySeconds | default 10 }}
+            periodSeconds: {{ .Values.usageTracker.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.usageTracker.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.usageTracker.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.usageTracker.readinessProbe.failureThreshold | default 3 }}
           resources:
             {{- toYaml .Values.usageTracker.resources | nindent 12 }}
-{{- end }}

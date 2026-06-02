@@ -1,3 +1,4 @@
+{{- if .Values.cmRedis.enabled }}
 {{- range $i := until (int .Values.cmRedis.shard_count) }}
 ---
 apiVersion: apps/v1
@@ -58,4 +59,5 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml $.Values.cmRedis.resources | nindent 12 }}
+{{- end }}
 {{- end }}

@@ -5,7 +5,8 @@ metadata:
   labels:
     {{- include "chuteAutoscaler.labels" . | nindent 4 }}
 spec:
-  schedule: "*/30 * * * *"
+  schedule: {{ .Values.chuteAutoscaler.schedule | default "1,16,31,46 * * * *" | quote }}
+  suspend: {{ .Values.chuteAutoscaler.suspend | default false }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 10
   failedJobsHistoryLimit: 10
@@ -13,12 +14,20 @@ spec:
     spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 15000
+      activeDeadlineSeconds: 300
       template:
         metadata:
           labels:
             {{- include "chuteAutoscaler.labels" . | nindent 12 }}
         spec:
           restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.chuteAutoscaler.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.chuteAutoscaler.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
@@ -27,25 +36,23 @@ spec:
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.chuteAutoscaler.tolerations }}
-          tolerations:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           volumes:
-            - name: structured-logs
-              emptyDir: {}
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
           containers:
             - name: chute-autoscaler
-              image: "{{ .Values.chuteAutoscaler.image }}"
+              image: {{ include "chutes.image" (list . .Values.chuteAutoscaler.image) | quote }}
               imagePullPolicy: {{ .Values.chuteAutoscaler.imagePullPolicy }}
-              command: ["poetry", "run", "python", "chute_autoscaler.py"]
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - chute_autoscaler.py
+                - --refresh-multipliers
               env:
-                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
-                {{- include "chutes.commonEnv" . | nindent 16 }}
-                - name: MEMCACHED
-                  value: memcached
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
               volumeMounts:
-                - name: structured-logs
-                  mountPath: /var/log/app
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
                 {{- toYaml .Values.chuteAutoscaler.resources | nindent 16 }}

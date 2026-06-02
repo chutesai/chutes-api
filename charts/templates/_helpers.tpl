@@ -110,10 +110,6 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
-{{- define "redis.labels" -}}
-app.kubernetes.io/name: redis
-{{- end }}
-
 {{- define "cmRedis.labels" -}}
 app.kubernetes.io/name: cm-redis
 {{- end }}
@@ -122,9 +118,6 @@ app.kubernetes.io/name: cm-redis
 app.kubernetes.io/name: quota-redis
 {{- end }}
 
-{{- define "memcached.labels" -}}
-app.kubernetes.io/name: memcached
-{{- end }}
 
 {{- define "registry.labels" -}}
 app.kubernetes.io/name: registry
@@ -134,7 +127,39 @@ app.kubernetes.io/name: registry
 app.kubernetes.io/name: registry-proxy
 {{- end }}
 
+{{- define "attestationProxy.labels" -}}
+app.kubernetes.io/name: attestation-proxy
+{{- end }}
+
+{{- define "claudeProxy.labels" -}}
+app.kubernetes.io/name: claude-proxy
+{{- end }}
+
+{{- define "pgRouter.labels" -}}
+app.kubernetes.io/name: pg-router
+{{- end }}
+
+{{- define "responsesProxy.labels" -}}
+app.kubernetes.io/name: responses-proxy
+{{- end }}
+
+{{- define "connProber.labels" -}}
+app.kubernetes.io/name: conn-prober
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "chutes.sensitiveEnv" -}}
+- name: CLLMV_X25519_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      key: key
+      name: cllmv-pkey
+- name: PS_OP
+  valueFrom:
+    secretKeyRef:
+      key: key
+      name: inspecto
 - name: HCAPTCHA_SITEKEY
   valueFrom:
    secretKeyRef:
@@ -160,41 +185,6 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       key: token
       name: envdump
-- name: KUBECHECK_SALT
-  valueFrom:
-    secretKeyRef:
-      key: salt
-      name: kubecheck
-- name: KUBECHECK_PREFIX
-  valueFrom:
-    secretKeyRef:
-      key: prefix
-      name: kubecheck
-- name: KUBECHECK_SUFFIX
-  valueFrom:
-    secretKeyRef:
-      key: suffix
-      name: kubecheck
-- name: ENVCHECK_KEY_52
-  valueFrom:
-    secretKeyRef:
-      key: key
-      name: envcheck-52
-- name: ENVCHECK_SALT_52
-  valueFrom:
-    secretKeyRef:
-      key: salt
-      name: envcheck-52
-- name: ENVCHECK_KEY
-  valueFrom:
-    secretKeyRef:
-      key: key
-      name: envcheck
-- name: ENVCHECK_SALT
-  valueFrom:
-    secretKeyRef:
-      key: salt
-      name: envcheck
 - name: CODECHECK_KEY
   valueFrom:
     secretKeyRef:
@@ -229,7 +219,7 @@ app.kubernetes.io/name: registry-proxy
 
 {{- define "chutes.commonEnv" -}}
 - name: CHUTES_VERSION
-  value: {{ .Values.chutes_version }}
+  value: {{ .Values.chutes_version | quote }}
 - name: PROMETHEUS_URL
   value: {{ .Values.prometheusUrl }}
 - name: GRAVAL_URL
@@ -244,6 +234,19 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       name: redis-secret
       key: password
+- name: REDIS_HOST
+  value: {{ .Values.redis.host | quote }}
+- name: REDIS_PORT
+  value: {{ .Values.redis.port | quote }}
+{{- if .Values.redis.cacertSecret }}
+- name: REDIS_CACERT
+  value: "/etc/redis-cacert/cacert.pem"
+{{- end }}
+- name: REDIS_URL
+  valueFrom:
+    secretKeyRef:
+      name: redis-secret
+      key: url
 - name: POSTGRES_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -259,40 +262,47 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       name: postgres-secret
       key: readonly_url
-- name: INVOCATIONS_DB_URL
+- name: LEGACY_DB_URL
   valueFrom:
     secretKeyRef:
-      name: invocations-db
+      name: postgres-secret
       key: url
-- name: REDIS_URL
+{{- if .Values.chuteDb.enabled }}
+- name: DB_RW_URL
   valueFrom:
     secretKeyRef:
-      name: redis-secret
-      key: url
+      name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
+      key: rw_url
+- name: DB_RO_URL
+  valueFrom:
+    secretKeyRef:
+      name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
+      key: ro_url
+{{- end }}
 - name: AWS_ACCESS_KEY_ID
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: access-key-id
 - name: AWS_SECRET_ACCESS_KEY
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: secret-access-key
 - name: AWS_ENDPOINT_URL
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: endpoint-url
 - name: AWS_REGION
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: aws-region
 - name: STORAGE_BUCKET
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: bucket
 - name: REGISTRY_PASSWORD
   valueFrom:
@@ -302,3 +312,115 @@ app.kubernetes.io/name: registry-proxy
 - name: REGISTRY_INSECURE
   value: "true"
 {{- end -}}
+
+{{/*
+Volume definition for the managed Redis TLS CA certificate.
+Only emits when redis.cacertSecret is set.
+*/}}
+{{- define "chutes.redisCacertVolume" -}}
+{{- if .Values.redis.cacertSecret }}
+- name: redis-cacert
+  secret:
+    secretName: {{ .Values.redis.cacertSecret }}
+    items:
+    - key: ca
+      path: cacert.pem
+{{- end }}
+{{- end }}
+
+{{/*
+VolumeMount for the managed Redis TLS CA certificate.
+Only emits when redis.cacertSecret is set.
+*/}}
+{{- define "chutes.redisCacertMount" -}}
+{{- if .Values.redis.cacertSecret }}
+- mountPath: /etc/redis-cacert
+  name: redis-cacert
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{/*
+Pod-level security context (seccompProfile).
+*/}}
+{{- define "chutes.podSecurityContext" -}}
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{/*
+Container-level security context (drops NET_RAW capability).
+*/}}
+{{- define "chutes.containerSecurityContext" -}}
+capabilities:
+  drop:
+  - NET_RAW
+{{- end }}
+
+{{/*
+Build a fully-qualified image reference.
+Usage: {{ include "chutes.image" (list . .Values.api.image) | quote }}
+Prepends .Values.imageRegistry (with trailing slash stripped) when set.
+Public Docker Hub images (redis, etc.) are passed directly
+via their own values keys without going through this helper.
+*/}}
+{{- define "chutes.image" -}}
+{{- $root := index . 0 -}}
+{{- $img  := index . 1 -}}
+{{- $reg  := $root.Values.imageRegistry | default "" | trimSuffix "/" -}}
+{{- if $reg -}}
+{{- printf "%s/%s" $reg $img -}}
+{{- else -}}
+{{- $img -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Default node tolerations for amd64 architecture.
+*/}}
+{{- define "chutes.defaultTolerations" -}}
+- effect: NoSchedule
+  key: kubernetes.io/arch
+  operator: Equal
+  value: amd64
+{{- end }}
+
+{{/*
+Minimal env block used by most CronJobs:
+Redis connection + Validator SS58 + Postgres credentials.
+*/}}
+{{- define "chutes.cronjobEnv" -}}
+- name: VALIDATOR_SS58
+  valueFrom:
+    secretKeyRef:
+      name: validator-credentials
+      key: ss58
+- name: REDIS_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: redis-secret
+      key: password
+- name: REDIS_HOST
+  value: {{ .Values.redis.host | quote }}
+- name: REDIS_PORT
+  value: {{ .Values.redis.port | quote }}
+{{- if .Values.redis.cacertSecret }}
+- name: REDIS_CACERT
+  value: "/etc/redis-cacert/cacert.pem"
+{{- end }}
+- name: POSTGRES_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: password
+- name: POSTGRESQL
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: url
+- name: POSTGRESQL_RO
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: readonly_url
+{{- end }}

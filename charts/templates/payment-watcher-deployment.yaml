@@ -6,9 +6,7 @@ metadata:
   labels:
     {{- include "paymentWatcher.labels" . | nindent 4 }}
 spec:
-  replicas: 1
-  strategy:
-    type: Recreate
+  replicas: {{ .Values.paymentWatcher.replicaCount }}
   selector:
     matchLabels:
       {{- include "paymentWatcher.labels" . | nindent 6 }}
@@ -17,6 +15,8 @@ spec:
       labels:
         {{- include "paymentWatcher.labels" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.paymentWatcher.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -25,52 +25,77 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.paymentWatcher.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.paymentWatcher.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       volumes:
-        - name: structured-logs
-          emptyDir: {}
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: payment-watcher
-          image: "{{ .Values.paymentWatcher.image }}"
+          image: {{ include "chutes.image" (list . .Values.paymentWatcher.image) | quote }}
           imagePullPolicy: {{ .Values.paymentWatcher.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.payment.watcher:app", "--host", "0.0.0.0", "--port", "{{ .Values.paymentWatcher.service.targetPort }}"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - uvicorn
+            - api.payment.watcher:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
           env:
-            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
-            {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: SUBTENSOR_ADDRESS
-              value: {{ .Values.paymentWatcher.subtensor }}
-            - name: PAYMENT_RECOVERY_BLOCKS
-              value: "{{ .Values.paymentWatcher.recovery_blocks }}"
-            - name: DEVELOPER_DEPOSIT
-              value: "{{ .Values.account_settings.developer_deposit }}"
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: "/etc/redis-cacert/cacert.pem"
+            {{- end }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
           volumeMounts:
-            - name: structured-logs
-              mountPath: /var/log/app
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
           ports:
             - name: http
-              containerPort: {{ .Values.paymentWatcher.service.targetPort }}
+              containerPort: 8000
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /status
+              path: /health
               port: http
             initialDelaySeconds: {{ .Values.paymentWatcher.livenessProbe.initialDelaySeconds | default 30 }}
-            periodSeconds: {{ .Values.paymentWatcher.livenessProbe.periodSeconds | default 10 }}
+            periodSeconds: {{ .Values.paymentWatcher.livenessProbe.periodSeconds | default 30 }}
             timeoutSeconds: {{ .Values.paymentWatcher.livenessProbe.timeoutSeconds | default 5 }}
             successThreshold: {{ .Values.paymentWatcher.livenessProbe.successThreshold | default 1 }}
-            failureThreshold: {{ .Values.paymentWatcher.livenessProbe.failureThreshold | default 3 }}
-          readinessProbe:
-            httpGet:
-              path: /status
-              port: http
-            initialDelaySeconds: {{ .Values.paymentWatcher.readinessProbe.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ .Values.paymentWatcher.readinessProbe.periodSeconds | default 10 }}
-            timeoutSeconds: {{ .Values.paymentWatcher.readinessProbe.timeoutSeconds | default 5 }}
-            successThreshold: {{ .Values.paymentWatcher.readinessProbe.successThreshold | default 1 }}
-            failureThreshold: {{ .Values.paymentWatcher.readinessProbe.failureThreshold | default 3 }}
+            failureThreshold: {{ .Values.paymentWatcher.livenessProbe.failureThreshold | default 15 }}
           resources:
             {{- toYaml .Values.paymentWatcher.resources | nindent 12 }}
 {{- end }}

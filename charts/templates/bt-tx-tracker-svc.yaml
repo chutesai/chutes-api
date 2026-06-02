@@ -6,12 +6,12 @@ metadata:
   labels:
     {{- include "btTxTracker.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.btTxTracker.service.type }}
+  type: {{ .Values.btTxTracker.service.type | default "ClusterIP" }}
   ports:
-    - nodePort: {{ .Values.btTxTracker.service.nodePort }}
-      port: {{ .Values.btTxTracker.service.port }}
+    - port: {{ .Values.btTxTracker.service.port }}
       targetPort: {{ .Values.btTxTracker.service.targetPort }}
-      name: validator-api
+      protocol: TCP
+      name: http
   selector:
     {{- include "btTxTracker.labels" . | nindent 4 }}
 {{- end }}

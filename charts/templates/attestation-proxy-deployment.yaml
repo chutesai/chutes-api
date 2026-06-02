@@ -1,0 +1,55 @@
+{{- if .Values.attestationProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: attestation-proxy
+  labels:
+    {{- include "attestationProxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.attestationProxy.replicaCount | default 2 }}
+  selector:
+    matchLabels:
+      {{- include "attestationProxy.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "attestationProxy.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.attestationProxy.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.attestationProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: attestation-proxy-config
+          configMap:
+            name: attestation-proxy-config
+        - name: chutes-tls
+          secret:
+            secretName: {{ .Values.attestationProxy.tlsSecretName | default "chutes-tls" }}
+      containers:
+        - name: proxy
+          image: {{ include "chutes.image" (list . .Values.attestationProxy.image) | quote }}
+          imagePullPolicy: {{ .Values.attestationProxy.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.attestationProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: attestation-proxy-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: chutes-tls
+              mountPath: /etc/nginx/ssl
+              readOnly: true
+{{- end }}

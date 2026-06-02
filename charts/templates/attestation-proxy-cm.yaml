@@ -1,0 +1,97 @@
+{{- if .Values.attestationProxy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: attestation-proxy-config
+  labels:
+    {{- include "attestationProxy.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    user www-data;
+    worker_processes 64;
+    pid /run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+    events {
+        worker_connections 4096;
+    }
+    http {
+        server_tokens off;
+        ignore_invalid_headers off;
+        client_max_body_size 0;
+
+        log_format  main  '$remote_addr [$realip_remote_addr pp=$proxy_protocol_addr] - [$time_local] "$request" '
+            '$status $body_bytes_sent referer="$http_referer" $request_time '
+            '"$http_user_agent" "$http_x_forwarded_for" '
+            'upstream_addr="$upstream_addr" '
+            'upstream_response_time="$upstream_response_time" '
+            'gzip_ratio=$gzip_ratio '
+            'size=$http_content_length '
+            'origin=$http_origin '
+            'host=$http_host '
+            'cache_status=$upstream_cache_status';
+
+        server {
+            access_log /var/log/nginx/access.log main;
+            error_log /var/log/nginx/error.log;
+
+            listen 8443 ssl proxy_protocol;
+            set_real_ip_from 10.0.0.0/8;
+            {{- range .Values.attestationProxy.realIpFrom }}
+            set_real_ip_from {{ . }};
+            {{- end }}
+            real_ip_header proxy_protocol;
+            server_name {{ .Values.attestationProxy.serverName | default "tdx-attestation.chutes.ai" }};
+
+            ssl_certificate     /etc/nginx/ssl/tls.crt;
+            ssl_certificate_key /etc/nginx/ssl/tls.key;
+            ssl_protocols       TLSv1.2 TLSv1.3;
+
+            ssl_ciphers HIGH:!aNULL:!MD5;
+            ssl_prefer_server_ciphers on;
+            ssl_verify_client optional_no_ca;
+
+            location /servers/boot/attestation {
+                proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+                proxy_next_upstream_tries 3;
+                proxy_next_upstream_timeout 45s;
+                proxy_connect_timeout 3s;
+                proxy_http_version 1.1;
+                proxy_set_header Connection "";
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_send_timeout 60s;
+                proxy_read_timeout 600s;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Resolved-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
+                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+                proxy_set_header X-Client-Verify $ssl_client_verify;
+                proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
+            }
+
+            location ~ ^/servers/[^/]+/luks/attest$ {
+                proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+                proxy_next_upstream_tries 3;
+                proxy_next_upstream_timeout 45s;
+                proxy_connect_timeout 3s;
+                proxy_http_version 1.1;
+                proxy_set_header Connection "";
+                proxy_send_timeout 60s;
+                proxy_read_timeout 600s;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Resolved-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
+                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+                proxy_set_header X-Client-Verify $ssl_client_verify;
+                proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
+            }
+
+            location / {
+                return 404;
+            }
+        }
+    }
+{{- end }}

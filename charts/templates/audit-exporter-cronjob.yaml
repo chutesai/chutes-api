@@ -3,15 +3,19 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: audit-exporter
+  labels:
+    db-access: "true"
+    redis-access: "true"
 spec:
-  schedule: "1 * * * *"
+  schedule: {{ .Values.auditExporter.schedule | default "1 * * * *" | quote }}
+  suspend: {{ .Values.auditExporter.suspend | default false }}
   successfulJobsHistoryLimit: 3
   failedJobsHistoryLimit: 3
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 1800
-      ttlSecondsAfterFinished: 7200
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 21600
       backoffLimit: 5
       template:
         metadata:
@@ -19,23 +23,68 @@ spec:
             db-access: "true"
             redis-access: "true"
         spec:
+          restartPolicy: OnFailure
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
           {{- with .Values.auditExporter.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          containers:
-          - name: audit-export
-            image: {{ .Values.auditExporter.image }}
-            imagePullPolicy: Always
-            command: ["poetry", "run", "python", "audit_exporter.py"]
-            env:
-              {{- include "chutes.sensitiveEnv" . | nindent 14 }}
-              {{- include "chutes.commonEnv" . | nindent 14 }}
-            volumeMounts:
-            - name: tmpdir
-              mountPath: /tmp
           volumes:
-          - name: tmpdir
-            emptyDir: {}
-          restartPolicy: OnFailure
+            - name: tmpdir
+              emptyDir: {}
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
+          containers:
+            - name: audit-export
+              image: {{ include "chutes.image" (list . .Values.auditExporter.image) | quote }}
+              imagePullPolicy: Always
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - audit_exporter.py
+              env:
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
+                - name: SUBTENSOR_ADDRESS
+                  value: {{ .Values.auditExporter.subtensor | default "ws://subtensor:9944" | quote }}
+                - name: VALIDATOR_SEED
+                  valueFrom:
+                    secretKeyRef:
+                      key: seed
+                      name: validator-credentials
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: access-key-id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: secret-access-key
+                - name: AWS_ENDPOINT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: endpoint-url
+                - name: AWS_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: aws-region
+                - name: STORAGE_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: bucket
+              volumeMounts:
+                - name: tmpdir
+                  mountPath: /tmp
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.auditExporter.resources | nindent 16 }}
 {{- end }}

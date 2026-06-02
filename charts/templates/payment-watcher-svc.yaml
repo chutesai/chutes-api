@@ -6,12 +6,12 @@ metadata:
   labels:
     {{- include "paymentWatcher.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.paymentWatcher.service.type }}
+  type: {{ .Values.paymentWatcher.service.type | default "ClusterIP" }}
   ports:
-    - nodePort: {{ .Values.paymentWatcher.service.nodePort }}
-      port: {{ .Values.paymentWatcher.service.port }}
+    - port: {{ .Values.paymentWatcher.service.port }}
       targetPort: {{ .Values.paymentWatcher.service.targetPort }}
-      name: validator-api
+      protocol: TCP
+      name: http
   selector:
     {{- include "paymentWatcher.labels" . | nindent 4 }}
 {{- end }}

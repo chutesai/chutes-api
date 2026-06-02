@@ -3,34 +3,52 @@ apiVersion: batch/v1
 kind: CronJob
 metadata:
   name: failed-chute-cleanup
+  labels:
+    db-access: "true"
+    redis-access: "true"
 spec:
-  schedule: "*/15 * * * *"
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  schedule: {{ .Values.failedChuteCleanup.schedule | default "*/15 * * * *" | quote }}
+  suspend: {{ .Values.failedChuteCleanup.suspend | default false }}
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 10
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
   jobTemplate:
     spec:
       activeDeadlineSeconds: 300
       backoffLimit: 5
+      ttlSecondsAfterFinished: 15000
       template:
         metadata:
           labels:
             db-access: "true"
             redis-access: "true"
         spec:
+          restartPolicy: OnFailure
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
           {{- with .Values.failedChuteCleanup.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          volumes:
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
           containers:
-          - name: cleanup
-            image: {{ .Values.failedChuteCleanup.image }}
-            imagePullPolicy: Always
-            command: ["poetry", "run", "python", "failed_chute_cleanup.py"]
-            env:
-              {{- include "chutes.sensitiveEnv" . | nindent 14 }}
-              {{- include "chutes.commonEnv" . | nindent 14 }}
-          restartPolicy: OnFailure
+            - name: failed-chute-cleanup
+              image: {{ include "chutes.image" (list . .Values.failedChuteCleanup.image) | quote }}
+              imagePullPolicy: Always
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - failed_chute_cleanup.py
+              env:
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
+              volumeMounts:
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
+              resources:
+                {{- toYaml .Values.failedChuteCleanup.resources | nindent 16 }}
 {{- end }}

@@ -1,0 +1,21 @@
+{{- if .Values.attestationProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: attestation-proxy
+  labels:
+    {{- include "attestationProxy.labels" . | nindent 4 }}
+  {{- with .Values.attestationProxy.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.attestationProxy.service.type | default "LoadBalancer" }}
+  ports:
+    - name: https
+      port: {{ .Values.attestationProxy.service.port | default 8443 }}
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    {{- include "attestationProxy.labels" . | nindent 4 }}
+{{- end }}

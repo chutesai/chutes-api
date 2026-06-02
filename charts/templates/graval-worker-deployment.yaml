@@ -14,6 +14,8 @@ spec:
       labels:
         {{- include "gravalWorker.labels" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.gravalWorker.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -22,17 +24,114 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.gravalWorker.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.gravalWorker.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+      volumes:
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: graval-worker
-          image: "{{ .Values.gravalWorker.image }}"
+          image: {{ include "chutes.image" (list . .Values.gravalWorker.image) | quote }}
           imagePullPolicy: {{ .Values.gravalWorker.imagePullPolicy }}
-          command: ["poetry", "run", "taskiq", "worker", "api.graval_worker:broker", "--workers", "1", "--max-async-tasks", "4"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - taskiq
+            - worker
+            - api.graval_worker:broker
+            - --workers
+            - "1"
+            - --max-async-tasks
+            - {{ .Values.gravalWorker.maxAsyncTasks | default 1 | quote }}
           env:
-            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
-            {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: CFSV_OP
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: cfsvop
+            - name: IP_CHECK_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: ip-check-salt
+                  key: salt
+            - name: GRAVAL_URL
+              value: {{ .Values.gravalWorker.gravalUrl | default "https://graval.chutes.ai:11443" | quote }}
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: "/etc/redis-cacert/cacert.pem"
+            {{- end }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                  key: access-key-id
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                  key: secret-access-key
+            - name: AWS_ENDPOINT_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                  key: endpoint-url
+            - name: AWS_REGION
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                  key: aws-region
+            - name: STORAGE_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                  key: bucket
+          volumeMounts:
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
+          ports:
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: {{ .Values.gravalWorker.livenessProbe.initialDelaySeconds | default 30 }}
+            periodSeconds: {{ .Values.gravalWorker.livenessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.gravalWorker.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.gravalWorker.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.gravalWorker.livenessProbe.failureThreshold | default 3 }}
           resources:
             {{- toYaml .Values.gravalWorker.resources | nindent 12 }}

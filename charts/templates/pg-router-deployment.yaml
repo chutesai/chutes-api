@@ -1,0 +1,96 @@
+{{- if .Values.pgRouter.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pg-router
+  labels:
+    {{- include "pgRouter.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.pgRouter.replicaCount | default 3 }}
+  selector:
+    matchLabels:
+      {{- include "pgRouter.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "pgRouter.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.pgRouter.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.pgRouter.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: pg-router-config
+      containers:
+        - name: haproxy
+          image: {{ include "chutes.image" (list . .Values.pgRouter.haproxyImage) | quote }}
+          imagePullPolicy: {{ .Values.pgRouter.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+            - name: stats
+              containerPort: 8404
+              protocol: TCP
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.pgRouter.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /usr/local/etc/haproxy/haproxy.cfg
+              subPath: haproxy.cfg
+        - name: health-check
+          image: {{ include "chutes.image" (list . .Values.pgRouter.healthCheckImage) | quote }}
+          imagePullPolicy: {{ .Values.pgRouter.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - python
+            - /app/check_alloydb.py
+          env:
+            - name: DALLAS_DSN
+              valueFrom:
+                secretKeyRef:
+                  key: dallas-dsn
+                  name: {{ .Values.pgRouter.credentialsSecret | default "pg-router-credentials" }}
+            - name: IOWA_DSN
+              valueFrom:
+                secretKeyRef:
+                  key: iowa-dsn
+                  name: {{ .Values.pgRouter.credentialsSecret | default "pg-router-credentials" }}
+          ports:
+            - name: check-dallas
+              containerPort: 8008
+              protocol: TCP
+            - name: check-iowa
+              containerPort: 8009
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.pgRouter.healthCheckResources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/check_alloydb.py
+              subPath: check_alloydb.py
+{{- end }}

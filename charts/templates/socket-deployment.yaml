@@ -13,7 +13,11 @@ spec:
     metadata:
       labels:
         {{- include "socket.labels" . | nindent 8 }}
+      annotations:
+        chutes.ai/structured-logs: "true"
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.socket.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -22,26 +26,73 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.socket.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.socket.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       volumes:
         - name: structured-logs
           emptyDir: {}
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: socket
-          image: "{{ .Values.socket.image }}"
+          image: {{ include "chutes.image" (list . .Values.socket.image) | quote }}
           imagePullPolicy: {{ .Values.socket.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.socket_server:app", "--host", "0.0.0.0", "--port", "{{ .Values.socket.service.targetPort }}"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - uvicorn
+            - api.socket_server:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.socket.service.targetPort | quote }}
           env:
-            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
-            {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: MEMCACHED
-              value: memcached
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: "/etc/redis-cacert/cacert.pem"
+            {{- end }}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
           volumeMounts:
             - name: structured-logs
               mountPath: /var/log/app
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.socket.service.targetPort }}

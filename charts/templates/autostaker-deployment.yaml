@@ -23,20 +23,34 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.autostaker.tolerations }}
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.autostaker.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       containers:
         - name: autostaker
-          image: "{{ .Values.autostaker.image }}"
+          image: {{ include "chutes.image" (list . .Values.autostaker.image) | quote }}
           imagePullPolicy: {{ .Values.autostaker.imagePullPolicy }}
-          command: ["poetry", "run", "taskiq", "worker", "api.autostaker:broker", "--workers", "1", "--max-async-tasks", "4"]
+          command:
+            - uv
+            - run
+            - taskiq
+            - worker
+            - api.autostaker:broker
+            - --workers
+            - "1"
+            - --max-async-tasks
+            - "4"
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
             - name: SUBTENSOR_ADDRESS
-              value: {{ .Values.autostaker.subtensor }}
+              value: {{ .Values.autostaker.subtensor | quote }}
           resources:
             {{- toYaml .Values.autostaker.resources | nindent 12 }}
 {{- end }}
