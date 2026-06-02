@@ -928,6 +928,8 @@ async def hostname_invocation(
             payload["model"] = "Qwen/Qwen2.5-Coder-32B-Instruct-TEE"
         elif model == "zai-org/GLM-5-Turbo":
             payload["model"] = "zai-org/GLM-5-TEE"
+        elif model == "Qwen/Qwen3-235B-A22B-Thinking-2507":
+            payload["model"] = "Qwen/Qwen3-235B-A22B-Thinking-2507-TEE"
 
         # No file support currently.
         if isinstance(payload.get("messages"), list):
