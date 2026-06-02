@@ -33,7 +33,7 @@ spec:
         serverAddress: {{ .Values.prometheusUrl | quote }}
         namespace: {{ .Release.Namespace }}
         query: >-
-          sum(api_requests_in_progress)
+          sum(http_requests_inprogress)
           /
           max(kube_deployment_spec_replicas{
             deployment="api",
