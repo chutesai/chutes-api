@@ -15,6 +15,7 @@ import shutil
 import chutes
 import orjson as json
 from loguru import logger
+from api.log import configure_structured_logging
 from api.config import settings
 from api.database import get_session
 from api.exceptions import (
@@ -1481,6 +1482,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 
 async def main():
+    configure_structured_logging()
     await initialize()
 
     while True:

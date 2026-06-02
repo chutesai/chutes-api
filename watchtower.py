@@ -17,6 +17,7 @@ import traceback
 import tempfile
 from contextlib import asynccontextmanager
 from loguru import logger
+from api.log import configure_structured_logging
 from api.config import settings
 from api.util import (
     decrypt_instance_response,
@@ -1690,6 +1691,7 @@ async def main():
     """
     Main loop, continuously check all chutes and instances.
     """
+    configure_structured_logging()
 
     # Secondary process check.
     asyncio.create_task(procs_check())

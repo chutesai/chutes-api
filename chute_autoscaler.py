@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from functools import wraps
 from collections import defaultdict
 from loguru import logger
+from api.log import configure_structured_logging
 from datetime import timedelta, datetime, timezone
 from typing import Dict, Optional, Set, List, Tuple
 import aiohttp
@@ -3265,6 +3266,7 @@ async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_no
 
 if __name__ == "__main__":
     gc.set_threshold(5000, 50, 50)
+    configure_structured_logging()
     parser = argparse.ArgumentParser(description="Auto-scale chutes based on utilization")
     parser.add_argument(
         "--dry-run",

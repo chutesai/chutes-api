@@ -18,6 +18,7 @@ from async_substrate_interface.types import ss58_encode
 import asyncio
 from datetime import timedelta
 from loguru import logger
+from api.log import configure_structured_logging
 from typing import Tuple
 from api.fmv.fetcher import get_fetcher
 import api.database.orms  # noqa: F401
@@ -766,6 +767,7 @@ monitor = PaymentMonitor()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     gc.set_threshold(5000, 50, 50)
+    configure_structured_logging()
     logger.info("Inside the lifespan...")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

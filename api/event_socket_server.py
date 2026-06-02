@@ -8,6 +8,7 @@ from loguru import logger
 from fastapi import FastAPI
 import api.database.orms  # noqa
 from api.redis_pubsub import RedisListener
+from api.log import configure_structured_logging
 
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -20,6 +21,7 @@ async def initialize_socket_app():
     """
     Start our redis subscriber when the server starts.
     """
+    configure_structured_logging()
     fastapi_app.state.redis_listener = RedisListener(sio, "events")
     asyncio.create_task(fastapi_app.state.redis_listener.start())
 
