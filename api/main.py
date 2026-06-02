@@ -137,7 +137,6 @@ async def lifespan(_: FastAPI):
 
     yield
 
-
 app = FastAPI(default_response_class=ORJSONResponse, lifespan=lifespan)
 os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
 Instrumentator(
@@ -258,9 +257,6 @@ async def host_router_middleware(request: Request, call_next):
         request.state.body_sha256 = sha256_hash
     else:
         request.state.body_sha256 = None
-    resolved_ip = (request.headers.get("X-Resolved-IP") or "").strip()
-    request.state.client_ip = resolved_ip or request.client.host
-    request.state.has_resolved_ip = bool(resolved_ip)
 
     # Health/ping shortcut.
     if request.url.path == "/ping":
