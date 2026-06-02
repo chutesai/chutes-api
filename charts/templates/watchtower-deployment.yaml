@@ -26,6 +26,9 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: structured-logs
+          emptyDir: {}
       containers:
         - name: watchtower
           image: "{{ .Values.watchtower.image }}"
@@ -36,5 +39,8 @@ spec:
             {{- include "chutes.commonEnv" . | nindent 12 }}
             - name: MEMCACHED
               value: memcached
+          volumeMounts:
+            - name: structured-logs
+              mountPath: /var/log/app
           resources:
             {{- toYaml .Values.watchtower.resources | nindent 12 }}

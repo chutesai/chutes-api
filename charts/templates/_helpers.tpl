@@ -230,6 +230,8 @@ app.kubernetes.io/name: registry-proxy
 {{- define "chutes.commonEnv" -}}
 - name: CHUTES_VERSION
   value: {{ .Values.chutes_version }}
+- name: PROMETHEUS_URL
+  value: {{ .Values.prometheusUrl }}
 - name: GRAVAL_URL
   value: https://graval.chutes.ai
 - name: VALIDATOR_SS58

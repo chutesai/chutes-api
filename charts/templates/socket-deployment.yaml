@@ -26,6 +26,9 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      volumes:
+        - name: structured-logs
+          emptyDir: {}
       containers:
         - name: socket
           image: "{{ .Values.socket.image }}"
@@ -36,6 +39,9 @@ spec:
             {{- include "chutes.commonEnv" . | nindent 12 }}
             - name: MEMCACHED
               value: memcached
+          volumeMounts:
+            - name: structured-logs
+              mountPath: /var/log/app
           ports:
             - name: http
               containerPort: {{ .Values.socket.service.targetPort }}

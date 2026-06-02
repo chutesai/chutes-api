@@ -13,12 +13,15 @@ chutes_version: 0.2.42
 
 consecutive_failure_limit: 7
 
-datadog_enabled: false
+prometheusUrl: "http://prometheus-server.monitoring.svc.cluster.local"
 
 api:
   replicaCount: 12
   image: parachutes/validator:latest
   imagePullPolicy: Always
+  # Larger rotation for the API -- high request volume can easily fill 100 MB in minutes.
+  # count-based retention is set in api/log.py (default 3 files).
+  structuredLogRotation: "500 MB"
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -35,9 +38,12 @@ api:
     requests:
       cpu: "4"
       memory: "20Gi"
+      # 500 MB current file + 10 compressed rotated files (~100 MB each after ~80% gzip) + headroom
+      ephemeral-storage: "2Gi"
     limits:
       cpu: "4"
       memory: "20Gi"
+      ephemeral-storage: "2Gi"
   service:
     type: NodePort
     nodePort: 32000
@@ -79,9 +85,11 @@ socket:
     requests:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
   service:
     type: NodePort
     nodePort: 32001
@@ -123,9 +131,11 @@ eventSocket:
     requests:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
   service:
     type: NodePort
     nodePort: 32004
@@ -155,9 +165,11 @@ forge:
     requests:
       cpu: "8"
       memory: "32Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "8"
       memory: "32Gi"
+      ephemeral-storage: "500Mi"
   nodeSelector: {}
   affinity:
     nodeAffinity: {}
@@ -235,9 +247,11 @@ watchtower:
     requests:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
   affinity: {}
   tolerations: []
 
@@ -262,9 +276,11 @@ chuteAutoscaler:
     requests:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "1"
       memory: "4Gi"
+      ephemeral-storage: "500Mi"
   affinity: {}
   tolerations: []
 
@@ -290,9 +306,11 @@ paymentWatcher:
     requests:
       cpu: "1"
       memory: "8Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "1"
       memory: "8Gi"
+      ephemeral-storage: "500Mi"
   service:
     type: ClusterIP
     port: 8000
@@ -343,9 +361,11 @@ usageTracker:
     requests:
       cpu: "1"
       memory: "2Gi"
+      ephemeral-storage: "500Mi"
     limits:
       cpu: "1"
       memory: "2Gi"
+      ephemeral-storage: "500Mi"
   nodeSelector: {}
   affinity: {}
   tolerations: []

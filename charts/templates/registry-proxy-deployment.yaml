@@ -66,9 +66,11 @@ spec:
             - name: registry-proxy-rendered
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
+            - name: nginx-logs
+              mountPath: /var/log/nginx
       volumes:
         - name: registry-proxy-template
           configMap:
             name: registry-proxy-config
-        - name: registry-proxy-rendered
+        - name: nginx-logs
           emptyDir: {}

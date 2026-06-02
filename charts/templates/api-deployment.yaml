@@ -4,11 +4,6 @@ metadata:
   name: api
   labels:
     {{- include "api.labels" . | nindent 4 }}
-    {{- if .Values.datadog_enabled }}
-    tags.datadoghq.com/env: chutes-prod
-    tags.datadoghq.com/service: api
-    tags.datadoghq.com/version: 0.0.1
-    {{- end }}
 spec:
   replicas: {{ .Values.api.replicaCount }}
   strategy:
@@ -23,19 +18,10 @@ spec:
     metadata:
       labels:
         {{- include "api.labels" . | nindent 8 }}
-        {{- if .Values.datadog_enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
         prometheus.io/path: /_metrics
         prometheus.io/port: "8000"
-        prometheus.io/scrape: "true"
-        tags.datadoghq.com/env: chutes-prod
-        tags.datadoghq.com/service: api
-        tags.datadoghq.com/version: 0.0.1
-        admission.datadoghq.com/enabled: "true"
-        {{- end }}
-      {{- if .Values.datadog_enabled }}
-      annotations:
-        admission.datadoghq.com/python-lib.version: v2.20.0
-      {{- end }}
     spec:
       {{- with .Values.api.nodeSelector }}
       nodeSelector:
@@ -61,6 +47,8 @@ spec:
         - name: tee-measurements
           configMap:
             name: tee-measurements
+        - name: structured-logs
+          emptyDir: {}
       containers:
         - name: api
           image: "{{ .Values.api.image }}"
@@ -69,10 +57,6 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
-            {{- if .Values.datadog_enabled }}
-            - name: DD_LOGS_INJECTION
-              value: "true"
-            {{- end }}
             - name: MEMCACHED
               value: memcached
             - name: FIRST_PAYMENT_BONUS
@@ -91,6 +75,8 @@ spec:
             {{- end }}
             - name: CM_REDIS_SHARD_COUNT
               value: "{{ .Values.cmRedis.shard_count }}"
+            - name: STRUCTURED_LOG_ROTATION
+              value: "{{ .Values.api.structuredLogRotation }}"
             {{- if .Values.squad_enabled }}
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
@@ -104,6 +90,8 @@ spec:
             - name: tee-measurements
               mountPath: "/etc/config"
               readOnly: true
+            - name: structured-logs
+              mountPath: /var/log/app
           ports:
             - name: http
               containerPort: {{ .Values.api.service.targetPort }}

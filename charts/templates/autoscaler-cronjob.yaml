@@ -31,6 +31,9 @@ spec:
           tolerations:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          volumes:
+            - name: structured-logs
+              emptyDir: {}
           containers:
             - name: chute-autoscaler
               image: "{{ .Values.chuteAutoscaler.image }}"
@@ -41,5 +44,8 @@ spec:
                 {{- include "chutes.commonEnv" . | nindent 16 }}
                 - name: MEMCACHED
                   value: memcached
+              volumeMounts:
+                - name: structured-logs
+                  mountPath: /var/log/app
               resources:
                 {{- toYaml .Values.chuteAutoscaler.resources | nindent 16 }}

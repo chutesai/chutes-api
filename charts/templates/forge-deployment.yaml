@@ -112,6 +112,8 @@ spec:
             {{- with .Values.forge.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+            - name: structured-logs
+              mountPath: /var/log/app
           resources:
             {{- toYaml .Values.forge.resources | nindent 12 }}
       volumes:
@@ -127,6 +129,8 @@ spec:
               path: cosign.key
               mode: 0400  # read-only for owner only
         - name: etc-hosts
+          emptyDir: {}
+        - name: structured-logs
           emptyDir: {}
         {{- with .Values.forge.volumes }}
         {{- toYaml . | nindent 8 }}
