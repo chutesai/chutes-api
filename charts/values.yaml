@@ -818,3 +818,24 @@ gmp:
   # instead for a self-managed Prometheus instance.
   enabled: false
   interval: "30s"
+
+teeMeasurements:
+  # List of TDX measurement configs used for GPU attestation.
+  # Override in environment-specific values files with real MRTD/RTMR hashes.
+  # Format per entry:
+  #   - version: "1.0.0"
+  #     mrtd: "<96 hex chars>"
+  #     name: "8xh200"
+  #     description: "8x H200 GPU configuration"
+  #     boot_rtmrs:
+  #       rtmr0: "<96 hex chars>"
+  #       rtmr1: "<96 hex chars>"
+  #       rtmr2: "<96 hex chars>"
+  #       rtmr3: "<96 hex chars>"
+  #     runtime_rtmrs:
+  #       rtmr0: "<96 hex chars>"
+  #       ...
+  #     expected_gpus:
+  #       - "h200"
+  #     gpu_count: 8
+  measurements: []
