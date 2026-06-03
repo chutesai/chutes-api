@@ -101,7 +101,6 @@ from api.util import (
     notify_disabled,
     load_shared_object,
     has_legacy_private_billing,
-    extract_ip,
 )
 from api.encrypted_logs.capture import start_encrypted_log_capture
 from api.bounty.util import check_bounty_exists, delete_bounty
@@ -1197,8 +1196,7 @@ async def _validate_launch_config_instance(
             raise
 
     # IP matches?
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+    actual_ip = request.state.client_ip
     if actual_ip != args.host:
         logger.warning(
             f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} EGRESS INGRESS mismatch!: {actual_ip=} {args.host=}"
@@ -2875,7 +2873,7 @@ async def get_instance_nonce(request: Request):
     The nonce is used to bind the attestation evidence to this specific verification request.
     """
     try:
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
         nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.INSTANCE_VERIFICATION)
 
         # Return just the nonce string as JSON (library expects this format)
@@ -2890,7 +2888,7 @@ async def get_instance_nonce(request: Request):
 
 @router.get("/token_check")
 async def get_token(salt: str = None, request: Request = None):
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    origin_ip = request.state.client_ip
     return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
 
 
@@ -3081,7 +3079,7 @@ async def delete_instance(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance with {chute_id=} {instance_id} associated with {hotkey=} not found",
         )
-    origin_ip = request.headers.get("x-forwarded-for")
+    origin_ip = request.state.client_ip
     logger.info(f"INSTANCE DELETION INITIALIZED: {instance_id=} {hotkey=} {origin_ip=}")
 
     # Fail the job.

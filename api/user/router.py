@@ -27,7 +27,6 @@ from api.user.schemas import (
     InvocationDiscount,
 )
 from api.util import (
-    is_cloudflare_ip,
     has_minimum_balance_for_registration,
 )
 from api.user.response import RegistrationResponse, SelfResponse
@@ -366,7 +365,7 @@ async def admin_balance_change(
     user.balance += balance_req.amount
     event_id = str(uuid.uuid4())
 
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    origin_ip = request.state.client_ip
     raw_request_data = {}
     try:
         payload = await request.json()
@@ -548,7 +547,7 @@ async def balance_transfer(
     # and the balance check is enforced atomically — no race conditions.
     debit_event_id = str(uuid.uuid4())
     credit_event_id = str(uuid.uuid4())
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    origin_ip = request.state.client_ip
 
     debit_raw = {"source_ip": origin_ip, "type": "balance_transfer", "direction": "debit"}
     credit_raw = {"source_ip": origin_ip, "type": "balance_transfer", "direction": "credit"}
@@ -1517,8 +1516,7 @@ async def register(
     """
     Register a user.
     """
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+    actual_ip = request.state.client_ip
     attempts = await settings.redis_client.get(f"user_signup:{actual_ip}")
     if attempts and int(attempts) > 2:
         logger.warning(
@@ -1531,9 +1529,7 @@ async def register(
 
     # Check the registration token.
     if not token:
-        logger.warning(
-            f"RTOK: Attempted registration without token: {x_forwarded_for=} {actual_ip=}"
-        )
+        logger.warning(f"RTOK: Attempted registration without token: {actual_ip=}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Missing registration token in URL query params, please ensure you have upgraded to chutes>=0.3.33 and try again.",
@@ -1610,16 +1606,11 @@ async def get_registration_token(request: Request):
     """
     Initial form with cloudflare + hcaptcha to generate a registration token.
     """
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    ip_chain = (x_forwarded_for or "").split(",")
-    cf_ip = ip_chain[1].strip() if len(ip_chain) >= 2 else None
-    actual_ip = ip_chain[0].strip() if ip_chain else None
-    logger.info(f"RTOK [get token]: {x_forwarded_for=} {actual_ip=} {cf_ip=}")
+    actual_ip = request.state.client_ip
+    logger.info(f"RTOK [get token]: {actual_ip=}")
     hostname = (request.headers.get("host", "") or "").lower()
-    if not cf_ip or not await is_cloudflare_ip(cf_ip) or hostname != "rtok.chutes.ai":
-        logger.warning(
-            f"RTOK [get token]: request attempted to bypass cloudflare: {x_forwarded_for=} {actual_ip=} {cf_ip=}"
-        )
+    if hostname != "rtok.chutes.ai":
+        logger.warning(f"RTOK [get token]: invalid registration token host: {hostname=}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Request blocked, are you trying to bypass security measures?",
@@ -1645,15 +1636,11 @@ async def post_rtok(request: Request):
     Verify hCaptcha and get a short-lived registration token.
     """
     # Check Cloudflare IP
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    ip_chain = (x_forwarded_for or "").split(",")
-    cf_ip = ip_chain[1].strip() if len(ip_chain) >= 2 else None
-    actual_ip = ip_chain[0].strip() if ip_chain else None
-    logger.info(f"RTOK: {x_forwarded_for=} {actual_ip=} {cf_ip=}")
-    if not cf_ip or not await is_cloudflare_ip(cf_ip):
-        logger.warning(
-            f"RTOK: request attempted to bypass cloudflare: {x_forwarded_for=} {actual_ip=} {cf_ip=}"
-        )
+    actual_ip = request.state.client_ip
+    logger.info(f"RTOK: {actual_ip=}")
+    hostname = (request.headers.get("host", "") or "").lower()
+    if hostname != "rtok.chutes.ai":
+        logger.warning(f"RTOK: invalid registration token host: {hostname=}")
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Request blocked; are you trying to bypass security measures?",
@@ -1709,11 +1696,7 @@ async def admin_create_user(
     """
     Create a new user manually from an admin account, no bittensor stuff necessary.
     """
-    actual_ip = (
-        request.headers.get("CF-Connecting-IP", request.headers.get("X-Forwarded-For"))
-        or request.client.host
-    )
-    actual_ip = actual_ip.split(",")[0]
+    actual_ip = request.state.client_ip
     logger.info(f"USERCREATION: {actual_ip} username={user_args.username}")
 
     # Only admins can create users.
