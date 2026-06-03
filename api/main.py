@@ -10,7 +10,6 @@ import asyncio
 # import fickling
 import hashlib
 from loguru import logger
-from urllib.parse import quote
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, APIRouter, HTTPException, status, Response
 from fastapi.responses import ORJSONResponse
@@ -220,7 +219,7 @@ async def ping():
 
 # Prometheus metrics endpoint.
 async def get_latest_metrics(request: Request):
-    if request.headers.get("x-forwarded-for"):
+    if request.state.has_resolved_ip:
         raise HTTPException(status_code=403, detail="Forbidden")
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
@@ -281,6 +280,18 @@ async def host_router_middleware(request: Request, call_next):
     """
     Route differentiation for hostname-based simple invocations.
     """
+    # Calculate request body integrity hashes (for miner/signed requests).
+    if request.method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        sha256_hash = hashlib.sha256(body).hexdigest()
+        request.state.body_sha256 = sha256_hash
+    else:
+        request.state.body_sha256 = None
+    resolved_ip = (request.headers.get("X-Resolved-IP") or "").strip()
+    request.state.client_ip = resolved_ip or request.client.host
+    request.state.has_resolved_ip = bool(resolved_ip)
+
+    # Health/ping shortcut.
     if request.url.path == "/ping":
         app.router = default_router
         return await call_next(request)
@@ -384,15 +395,4 @@ async def host_router_middleware(request: Request, call_next):
                 else:
                     request.state.auth_object_id = "__list_or_invalid__"
         app.router = default_router
-    return await call_next(request)
-
-
-@app.middleware("http")
-async def request_body_checksum(request: Request, call_next):
-    if request.method in ["POST", "PUT", "PATCH"]:
-        body = await request.body()
-        sha256_hash = hashlib.sha256(body).hexdigest()
-        request.state.body_sha256 = sha256_hash
-    else:
-        request.state.body_sha256 = None
     return await call_next(request)

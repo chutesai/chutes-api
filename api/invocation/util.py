@@ -507,7 +507,7 @@ async def check_quota_and_balance(request, current_user, chute):
             )
 
     # Prevent calling private chutes when the owner has no balance.
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    origin_ip = request.state.client_ip
     if (
         not chute.public
         and not has_legacy_private_billing(chute)

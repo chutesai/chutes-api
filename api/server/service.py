@@ -76,7 +76,7 @@ from api.node.schemas import Node
 from sqlalchemy.orm import joinedload
 from api.server.schemas import TeeInstanceEvidence
 from api.node.schemas import NodeArgs
-from api.util import extract_ip, semcomp
+from api.util import semcomp
 
 
 async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
@@ -172,7 +172,7 @@ def validate_request_nonce(purpose: NoncePurpose):
     async def _validate_request_nonce(
         request: Request, nonce: str | None = Header(None, alias=NONCE_HEADER)
     ):
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
 
         try:
             await validate_and_consume_nonce(nonce, server_ip, purpose)
