@@ -809,3 +809,12 @@ responsesProxy:
     port: 8181
   tolerations: []
   affinity: {}
+
+gmp:
+  # Set true when using GKE Managed Prometheus.
+  # When enabled: PodMonitoring CRDs are created and prometheus.io/scrape
+  # annotations are suppressed (GMP ignores them).
+  # When disabled: standard prometheus.io/scrape annotations are rendered
+  # instead for a self-managed Prometheus instance.
+  enabled: false
+  interval: "30s"

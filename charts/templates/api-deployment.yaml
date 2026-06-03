@@ -19,9 +19,11 @@ spec:
       labels:
         {{- include "api.labels" . | nindent 8 }}
       annotations:
+        {{- if not .Values.gmp.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: /_metrics
-        prometheus.io/port: "8000"
+        prometheus.io/port: {{ .Values.api.service.targetPort | quote }}
+        {{- end }}
         chutes.ai/structured-logs: "true"
     spec:
       terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds | default 180 }}
