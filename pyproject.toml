@@ -58,6 +58,7 @@ dependencies = [
   "rbcl>=1.0.0,<2.0.0",
   "cryptography>=46.0.5",
   "prometheus-fastapi-instrumentator>=7.1.0",
+  "ecdsa>=0.19.1,<0.20.0",
 ]
 
 # Dev dependencies go under optional-dependencies

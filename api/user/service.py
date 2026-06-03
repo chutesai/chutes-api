@@ -102,13 +102,12 @@ def get_current_user(
         #   My cold key is 5C5zpdLSSxFeFkLFw9tAc7DdxdK82GCAjnoe5pub73GMvKLt
         # miner hotkey 5FhMaRd59y5nyDEtCz1JMMEMZzAGimtmC8m5AfCeXVE3vzCx
         if purpose not in ("sockets", "registry"):
-            origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
-            client_ip = request.client.host
+            client_ip = request.state.client_ip
             if hotkey == "5FhMaRd59y5nyDEtCz1JMMEMZzAGimtmC8m5AfCeXVE3vzCx":
-                if origin_ip != "207.246.94.14" and client_ip != "207.246.94.14":
+                if client_ip != "207.246.94.14":
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail=f"Unauthorized IP address: {origin_ip=} {client_ip}",
+                        detail=f"Unauthorized IP address: {client_ip=}",
                     )
 
         # Now get the Signing message

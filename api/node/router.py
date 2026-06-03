@@ -312,7 +312,7 @@ async def delete_node(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Node does not exist, or does not belong to you",
         )
-    origin_ip = request.headers.get("x-forwarded-for")
+    origin_ip = request.state.client_ip
     logger.info(f"NODE DELETION REQUEST: {hotkey=} {origin_ip=} {node_id=}")
     if (
         origin_ip

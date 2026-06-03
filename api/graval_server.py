@@ -53,6 +53,12 @@ def main():
     )
     gpu_lock = asyncio.Lock()
 
+    @app.middleware("http")
+    async def resolved_ip_middleware(request: Request, call_next):
+        resolved_ip = (request.headers.get("X-Resolved-IP") or "").strip()
+        request.state.client_ip = resolved_ip or request.client.host
+        return await call_next(request)
+
     def verify_request(request: Request, whitelist: list[str], extra_key: str = "graval") -> None:
         """
         Verify the authenticity of a request.
@@ -109,8 +115,7 @@ def main():
         Encrypt an input payload for the specified device.
         """
         data = await request.json()
-        x_forwarded_for = request.headers.get("X-Forwarded-For")
-        actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+        actual_ip = request.state.client_ip
         ip = ip_address(actual_ip)
         is_private = ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
         if not is_private:
@@ -139,8 +144,7 @@ def main():
 
     @app.get("/device_challenge")
     async def generate_device_info_challenge(request: Request, device_count: int = 1):
-        x_forwarded_for = request.headers.get("X-Forwarded-For")
-        actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+        actual_ip = request.state.client_ip
         ip = ip_address(actual_ip)
         is_private = ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
         if not is_private:
@@ -155,8 +159,7 @@ def main():
         Verify a device info challenge.
         """
         data = await request.json()
-        x_forwarded_for = request.headers.get("X-Forwarded-For")
-        actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+        actual_ip = request.state.client_ip
         ip = ip_address(actual_ip)
         is_private = ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
         if not is_private:
