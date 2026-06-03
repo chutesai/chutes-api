@@ -114,12 +114,6 @@ async def lifespan(_: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    # NOTE: Could we use dbmate container in docker compose to do this instead?
-    # Manual DB migrations.
-    db_url = quote(settings.sqlalchemy.replace("+asyncpg", ""), safe=":/@")
-    if "127.0.0.1" in db_url or "@postgres:" in db_url:
-        db_url += "?sslmode=disable"
-
     # dbmate migrations, make sure we only run them in a single process since we use workers > 1
     worker_pid_file = "/tmp/api.pid"
     is_migration_process = False
@@ -139,38 +133,6 @@ async def lifespan(_: FastAPI):
     if not is_migration_process:
         yield
         return
-
-    ## Run the migrations.
-    # process = await asyncio.create_subprocess_exec(
-    #    "dbmate",
-    #    "--url",
-    #    db_url,
-    #    "--migrations-dir",
-    #    "api/migrations",
-    #    "migrate",
-    #    stdout=asyncio.subprocess.PIPE,
-    #    stderr=asyncio.subprocess.PIPE,
-    # )
-
-    # async def log_migrations(stream, name):
-    #    log_method = logger.info if name == "stdout" else logger.warning
-    #    while True:
-    #        line = await stream.readline()
-    #        if line:
-    #            decoded_line = line.decode().strip()
-    #            log_method(decoded_line)
-    #        else:
-    #            break
-
-    # await asyncio.gather(
-    #    log_migrations(process.stdout, "stdout"),
-    #    log_migrations(process.stderr, "stderr"),
-    #    process.wait(),
-    # )
-    # if process.returncode == 0:
-    #    logger.success("successfull applied all DB migrations")
-    # else:
-    #    logger.error(f"failed to run db migrations returncode={process.returncode}")
 
     yield
 
