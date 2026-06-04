@@ -137,6 +137,7 @@ async def lifespan(_: FastAPI):
 
     yield
 
+
 app = FastAPI(default_response_class=ORJSONResponse, lifespan=lifespan)
 os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
 Instrumentator(
