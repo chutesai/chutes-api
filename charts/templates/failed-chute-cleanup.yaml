@@ -4,8 +4,7 @@ kind: CronJob
 metadata:
   name: failed-chute-cleanup
   labels:
-    db-access: "true"
-    redis-access: "true"
+    {{- include "failedChuteCleanup.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.failedChuteCleanup.schedule | default "*/15 * * * *" | quote }}
   suspend: {{ .Values.failedChuteCleanup.suspend | default false }}
@@ -14,14 +13,13 @@ spec:
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:
-      activeDeadlineSeconds: 300
-      backoffLimit: 5
+      activeDeadlineSeconds: {{ .Values.failedChuteCleanup.activeDeadlineSeconds | default 900 }}
+      backoffLimit: {{ .Values.failedChuteCleanup.backoffLimit | default 2 }}
       ttlSecondsAfterFinished: 15000
       template:
         metadata:
           labels:
-            db-access: "true"
-            redis-access: "true"
+            {{- include "failedChuteCleanup.labels" . | nindent 12 }}
         spec:
           restartPolicy: OnFailure
           securityContext:

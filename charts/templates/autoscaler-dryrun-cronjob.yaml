@@ -3,7 +3,7 @@ kind: CronJob
 metadata:
   name: chute-autoscaler-dryrun
   labels:
-    {{- include "chuteAutoscaler.labels" . | nindent 4 }}
+    {{- include "chuteAutoscalerDryrun.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.chuteAutoscaler.dryrunSchedule | default "*/2 * * * *" | quote }}
   suspend: {{ .Values.chuteAutoscaler.dryrunSuspend | default false }}
@@ -18,7 +18,7 @@ spec:
       template:
         metadata:
           labels:
-            {{- include "chuteAutoscaler.labels" . | nindent 12 }}
+            {{- include "chuteAutoscalerDryrun.labels" . | nindent 12 }}
         spec:
           restartPolicy: Never
           securityContext:

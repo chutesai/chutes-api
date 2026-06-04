@@ -654,6 +654,7 @@ registryProxy:
   config:
     workerProcesses: 64
     workerConnections: 4096
+    # tokenRealm: override the Www-Authenticate Bearer realm URL (default: https://registry.chutes.ai/v2/_token)
   replicaCount: 1
   nodeSelector: {}
   hpa:

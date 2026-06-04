@@ -4,8 +4,7 @@ kind: CronJob
 metadata:
   name: audit-exporter
   labels:
-    db-access: "true"
-    redis-access: "true"
+    {{- include "auditExporter.labels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.auditExporter.schedule | default "1 * * * *" | quote }}
   suspend: {{ .Values.auditExporter.suspend | default false }}
@@ -20,8 +19,7 @@ spec:
       template:
         metadata:
           labels:
-            db-access: "true"
-            redis-access: "true"
+            {{- include "auditExporter.labels" . | nindent 12 }}
         spec:
           restartPolicy: OnFailure
           securityContext:
