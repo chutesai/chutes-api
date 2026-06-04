@@ -221,7 +221,7 @@ db-access: "true"
 - name: CHUTES_VERSION
   value: {{ .Values.chutes_version | quote }}
 - name: PROMETHEUS_URL
-  value: {{ .Values.prometheusUrl }}
+  value: {{ .Values.prometheusUrl | default "http://prometheus" }}
 - name: GRAVAL_URL
   value: https://graval.chutes.ai
 - name: VALIDATOR_SS58

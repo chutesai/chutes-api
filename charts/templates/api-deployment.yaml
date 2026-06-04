@@ -105,8 +105,6 @@ spec:
               value: {{ .Values.api.openclGravalUrl | default "https://new-graval.chutes.ai:8443" | quote }}
             - name: CONSECUTIVE_FAILURE_LIMIT
               value: "{{ .Values.consecutive_failure_limit }}"
-            - name: CM_REDIS_SHARD_COUNT
-              value: "{{ .Values.cmRedis.shard_count }}"
             - name: STRUCTURED_LOG_ROTATION
               value: "{{ .Values.api.structuredLogRotation }}"
             {{- if .Values.teeMinimumBootVersion }}

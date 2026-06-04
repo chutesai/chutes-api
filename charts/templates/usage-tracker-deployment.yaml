@@ -6,6 +6,8 @@ metadata:
     {{- include "usageTracker.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.usageTracker.replicaCount }}
+  strategy:
+    type: {{ .Values.usageTracker.strategy | default "Recreate" }}
   selector:
     matchLabels:
       {{- include "usageTracker.labels" . | nindent 6 }}

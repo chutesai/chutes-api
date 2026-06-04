@@ -53,6 +53,26 @@ spec:
                 secretKeyRef:
                   key: key
                   name: cfsvop
+            - name: ENVDUMP_UNLOCK
+              valueFrom:
+                secretKeyRef:
+                  name: envdump
+                  key: token
+            - name: KUBECHECK_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: kubecheck
+                  key: salt
+            - name: KUBECHECK_PREFIX
+              valueFrom:
+                secretKeyRef:
+                  name: kubecheck
+                  key: prefix
+            - name: KUBECHECK_SUFFIX
+              valueFrom:
+                secretKeyRef:
+                  name: kubecheck
+                  key: suffix
             - name: IP_CHECK_SALT
               valueFrom:
                 secretKeyRef:

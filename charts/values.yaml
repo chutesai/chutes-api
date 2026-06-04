@@ -10,7 +10,9 @@ imageRegistry: "us-central1-docker.pkg.dev/chutes-443309/chutes-prod-docker-regi
 
 consecutive_failure_limit: 7
 
-prometheusUrl: "http://prometheus-server.monitoring.svc.cluster.local"
+# URL of the Prometheus service used for subscription quota queries (api/invocation/util.py).
+# The service name varies by deployment — override in environment values.
+prometheusUrl: "http://prometheus"
 
 # S3/object-storage credentials secret name (key: access-key-id, secret-access-key, endpoint-url, aws-region, bucket)
 s3SecretName: "s3-credentials"
