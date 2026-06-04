@@ -1,29 +1,43 @@
 {{- define "api.labels" -}}
 app.kubernetes.io/name: api
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "socket.labels" -}}
 app.kubernetes.io/name: socket
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "eventSocket.labels" -}}
 app.kubernetes.io/name: event-socket
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "paymentWatcher.labels" -}}
 app.kubernetes.io/name: payment-watcher
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "btTxTracker.labels" -}}
 app.kubernetes.io/name: bt-tx-tracker
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "usageTracker.labels" -}}
 app.kubernetes.io/name: usage-tracker
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "balanceRefresher.labels" -}}
 app.kubernetes.io/name: balance-refresher
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "logProber.labels" -}}
@@ -32,6 +46,8 @@ app.kubernetes.io/name: log-prober
 
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "gravaldb.labels" -}}
@@ -40,6 +56,8 @@ app.kubernetes.io/name: gravaldb
 
 {{- define "gravalWorker.labels" -}}
 app.kubernetes.io/name: graval-worker
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "watchtower.labels" -}}
@@ -48,6 +66,8 @@ app.kubernetes.io/name: watchtower
 
 {{- define "cacher.labels" -}}
 app.kubernetes.io/name: cacher
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "chuteAutoscaler.labels" -}}
@@ -64,6 +84,8 @@ app.kubernetes.io/name: autostaker
 
 {{- define "forge.labels" -}}
 app.kubernetes.io/name: forge
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "remoteForge.labels" -}}
@@ -119,6 +141,8 @@ app.kubernetes.io/name: conn-prober
 
 {{- define "auditExporter.labels" -}}
 app.kubernetes.io/name: audit-exporter
+redis-access: "true"
+db-access: "true"
 {{- end }}
 
 {{- define "failedChuteCleanup.labels" -}}
