@@ -20,6 +20,8 @@ spec:
         metadata:
           labels:
             {{- include "auditExporter.labels" . | nindent 12 }}
+            {{- include "chutes.dbAccess" . | nindent 12 }}
+            {{- include "chutes.redisAccess" . | nindent 12 }}
         spec:
           restartPolicy: OnFailure
           securityContext:

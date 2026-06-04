@@ -12,10 +12,14 @@ spec:
   selector:
     matchLabels:
       {{- include "btTxTracker.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "btTxTracker.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
     spec:
       securityContext:
         {{- include "chutes.podSecurityContext" . | nindent 8 }}

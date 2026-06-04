@@ -18,6 +18,8 @@ spec:
         metadata:
           labels:
             {{- include "cacher.labels" . | nindent 12 }}
+            {{- include "chutes.dbAccess" . | nindent 12 }}
+            {{- include "chutes.redisAccess" . | nindent 12 }}
         spec:
           restartPolicy: Never
           securityContext:

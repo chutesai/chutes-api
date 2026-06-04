@@ -14,10 +14,14 @@ spec:
   selector:
     matchLabels:
       {{- include "api.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "api.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
       annotations:
         {{- if not .Values.gmp.enabled }}
         prometheus.io/scrape: "true"

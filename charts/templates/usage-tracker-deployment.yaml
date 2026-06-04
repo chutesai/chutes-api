@@ -11,10 +11,14 @@ spec:
   selector:
     matchLabels:
       {{- include "usageTracker.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "usageTracker.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
       annotations:
         chutes.ai/structured-logs: "true"
     spec:
