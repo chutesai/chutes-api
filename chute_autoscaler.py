@@ -210,7 +210,7 @@ async def get_scale_down_permission(
 
 
 # Constants
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus.chutes.svc.cluster.local:9090")
 MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
 AUTOSCALER_FULL_INTERVAL_SECONDS = int(os.getenv("AUTOSCALER_FULL_INTERVAL_SECONDS", "1200"))
