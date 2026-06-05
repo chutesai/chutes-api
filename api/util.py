@@ -1063,7 +1063,9 @@ async def fetch_vlm_asset(url: str) -> bytes:
                             detail=f"Failed to fetch {url}: {response.status=}",
                         )
                     content_type = response.headers.get("Content-Type", "").lower()
-                    if not content_type.startswith(("image/", "video/")):
+                    if not content_type.startswith(
+                        ("image/", "video/", "application/octet-stream")
+                    ):
                         logger.error(
                             f"VLM sixtyfourer: invalid image URL: {content_type=} for {url=}"
                         )
