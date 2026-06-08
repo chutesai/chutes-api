@@ -578,7 +578,16 @@ async def rotate_luks_passphrases(
         stored.pop(f"pending_{vol}", None)
 
         new_passphrase = generate_cache_passphrase()
-        stored[f"pending_{vol}"] = encrypt_passphrase(new_passphrase)
+        encrypted_new = encrypt_passphrase(new_passphrase)
+        stored[f"pending_{vol}"] = encrypted_new
+
+        if current is None:
+            # WORKAROUND: remove once setup_storage sets STORAGE_KEY_ADDED=1
+            # after luksFormat (so confirm sends rotated=true on first boot).
+            # Until then the VM confirms with rotated=false, which discards
+            # the pending key — this duplicate write ensures the passphrase
+            # used to format the volume survives the discard.
+            stored[vol] = encrypted_new
 
         result[vol] = LuksVolumeRotation(current=current, next=new_passphrase)
 
