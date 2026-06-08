@@ -25,7 +25,7 @@ async def get_miner_by_hotkey(hotkey, db):
 async def get_inventory_history():
     query = text(INVENTORY_HISTORY_QUERY.format(interval=INVENTORY_INTERVAL))
     values = {}
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(query)
         for timepoint, hotkey, unique_count, total_count in result:
             if hotkey not in values:

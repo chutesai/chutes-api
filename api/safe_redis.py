@@ -161,10 +161,15 @@ class SafeRedis:
         health_check_interval: int = 30,
         retry_on_timeout: bool = False,
         retry: Any = None,
+        ssl_ca_certs: Optional[str] = None,
         **kwargs,
     ):
         self.default = default
         self.timeout = op_timeout
+        if ssl_ca_certs:
+            kwargs["ssl"] = True
+            kwargs["ssl_cert_reqs"] = "required"
+            kwargs["ssl_ca_certs"] = ssl_ca_certs
         self.client = redis.Redis(
             host=host,
             port=port,

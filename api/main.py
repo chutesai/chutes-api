@@ -10,13 +10,13 @@ import asyncio
 # import fickling
 import hashlib
 from loguru import logger
-from urllib.parse import quote
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, APIRouter, HTTPException, status, Response
 from fastapi.responses import ORJSONResponse
 from sqlalchemy import text
 import api.database.orms  # noqa: F401
 from prometheus_client import generate_latest, CollectorRegistry, multiprocess, CONTENT_TYPE_LATEST
+from prometheus_fastapi_instrumentator import Instrumentator
 from concurrent.futures import ThreadPoolExecutor
 from api.api_key.router import router as api_key_router
 from api.chute.router import router as chute_router
@@ -108,18 +108,9 @@ async def lifespan(_: FastAPI):
     asyncio.create_task(keep_gauges_fresh())
     asyncio.create_task(start_instance_invalidation_listener())
 
-    # Prom multi-proc dir.
-    os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
-
     # Normal table creation stuff.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-
-    # NOTE: Could we use dbmate container in docker compose to do this instead?
-    # Manual DB migrations.
-    db_url = quote(settings.sqlalchemy.replace("+asyncpg", ""), safe=":/@")
-    if "127.0.0.1" in db_url or "@postgres:" in db_url:
-        db_url += "?sslmode=disable"
 
     # dbmate migrations, make sure we only run them in a single process since we use workers > 1
     worker_pid_file = "/tmp/api.pid"
@@ -141,42 +132,16 @@ async def lifespan(_: FastAPI):
         yield
         return
 
-    ## Run the migrations.
-    # process = await asyncio.create_subprocess_exec(
-    #    "dbmate",
-    #    "--url",
-    #    db_url,
-    #    "--migrations-dir",
-    #    "api/migrations",
-    #    "migrate",
-    #    stdout=asyncio.subprocess.PIPE,
-    #    stderr=asyncio.subprocess.PIPE,
-    # )
-
-    # async def log_migrations(stream, name):
-    #    log_method = logger.info if name == "stdout" else logger.warning
-    #    while True:
-    #        line = await stream.readline()
-    #        if line:
-    #            decoded_line = line.decode().strip()
-    #            log_method(decoded_line)
-    #        else:
-    #            break
-
-    # await asyncio.gather(
-    #    log_migrations(process.stdout, "stdout"),
-    #    log_migrations(process.stderr, "stderr"),
-    #    process.wait(),
-    # )
-    # if process.returncode == 0:
-    #    logger.success("successfull applied all DB migrations")
-    # else:
-    #    logger.error(f"failed to run db migrations returncode={process.returncode}")
-
     yield
 
 
 app = FastAPI(default_response_class=ORJSONResponse, lifespan=lifespan)
+os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
+Instrumentator(
+    should_instrument_requests_inprogress=True,
+    inprogress_name="http_requests_inprogress",
+    inprogress_labels=False,
+).instrument(app)
 
 default_router = APIRouter()
 default_router.include_router(user_router, prefix="/users", tags=["Users"])
@@ -210,6 +175,8 @@ async def ping():
     try:
         async with get_session() as session:
             await session.execute(text("SELECT 1"))
+            async with get_session(readonly=True) as ro_session:
+                await ro_session.execute(text("SELECT 1"))
             return {"message": "pong"}
     except Exception as e:
         raise HTTPException(
@@ -220,7 +187,7 @@ async def ping():
 
 # Prometheus metrics endpoint.
 async def get_latest_metrics(request: Request):
-    if request.headers.get("x-forwarded-for"):
+    if request.state.has_resolved_ip:
         raise HTTPException(status_code=403, detail="Forbidden")
     registry = CollectorRegistry()
     multiprocess.MultiProcessCollector(registry)
@@ -281,9 +248,22 @@ async def host_router_middleware(request: Request, call_next):
     """
     Route differentiation for hostname-based simple invocations.
     """
+    # Calculate request body integrity hashes (for miner/signed requests).
+    if request.method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        sha256_hash = hashlib.sha256(body).hexdigest()
+        request.state.body_sha256 = sha256_hash
+    else:
+        request.state.body_sha256 = None
+    resolved_ip = (request.headers.get("X-Resolved-IP") or "").strip()
+    request.state.client_ip = resolved_ip or request.client.host
+    request.state.has_resolved_ip = bool(resolved_ip)
+
+    # Health/ping shortcut.
     if request.url.path == "/ping":
         app.router = default_router
         return await call_next(request)
+
     request.state.chute_id = None
     request.state.free_invocation = False
     host = request.headers.get("host", "")
@@ -384,15 +364,4 @@ async def host_router_middleware(request: Request, call_next):
                 else:
                     request.state.auth_object_id = "__list_or_invalid__"
         app.router = default_router
-    return await call_next(request)
-
-
-@app.middleware("http")
-async def request_body_checksum(request: Request, call_next):
-    if request.method in ["POST", "PUT", "PATCH"]:
-        body = await request.body()
-        sha256_hash = hashlib.sha256(body).hexdigest()
-        request.state.body_sha256 = sha256_hash
-    else:
-        request.state.body_sha256 = None
     return await call_next(request)

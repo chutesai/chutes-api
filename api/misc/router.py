@@ -49,7 +49,7 @@ async def _get_llm_root_map() -> dict[str, str]:
             await settings.redis_client.delete(cache_key)
 
     root_map = {}
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         rows = await session.execute(
             select(LLMDetail.details).where(LLMDetail.details.is_not(None))
         )

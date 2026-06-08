@@ -41,7 +41,7 @@ class FMVFetcher:
         """
         Get the last stored price from database.
         """
-        async with get_session() as session:
+        async with get_session(readonly=True) as session:
             query = select(FMV).where(FMV.ticker == ticker)
             if not_older_than is not None:
                 query = query.where(FMV.timestamp >= func.now() - timedelta(seconds=not_older_than))

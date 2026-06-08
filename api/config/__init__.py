@@ -95,12 +95,6 @@ class Settings(BaseSettings):
     )
     postgres_ro: Optional[str] = os.getenv("POSTGRESQL_RO")
 
-    # Invocations database.
-    invocations_db_url: Optional[str] = os.getenv(
-        "INVOCATIONS_DB_URL",
-        os.getenv("POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"),
-    )
-
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "REPLACEME")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "REPLACEME")
     aws_endpoint_url: Optional[str] = os.getenv("AWS_ENDPOINT_URL", "http://minio:9000")
@@ -136,11 +130,11 @@ class Settings(BaseSettings):
 
     # Base redis settings.
     redis_host: str = Field(
-        default_factory=lambda: os.getenv("HOST_IP", "172.16.0.100"),
+        default_factory=lambda: os.getenv("REDIS_HOST", "172.16.0.100"),
         validation_alias="PRIMARY_REDIS_HOST",
     )
     redis_port: int = Field(
-        default=1600,
+        default_factory=lambda: int(os.getenv("REDIS_PORT", "6378")),
         validation_alias="PRIMARY_REDIS_PORT",
     )
     redis_password: str = str(os.getenv("REDIS_PASSWORD", "password"))
@@ -151,19 +145,22 @@ class Settings(BaseSettings):
     redis_op_timeout: float = float(
         os.getenv("REDIS_OP_TIMEOUT", os.getenv("REDIS_SOCKET_TIMEOUT", "2.5"))
     )
+    redis_cacert: Optional[str] = os.getenv("REDIS_CACERT")
 
     _redis_client: Optional[redis.Redis] = None
     _lite_redis_client: Optional[redis.Redis] = None
     _billing_redis_client: Optional[redis.Redis] = None
-    _cm_redis_clients: Optional[list[redis.Redis]] = None
-    cm_redis_shard_count: int = int(os.getenv("CM_REDIS_SHARD_COUNT", "6"))
-    cm_redis_start_port: int = int(os.getenv("CM_REDIS_START_PORT", "1700"))
-    cm_redis_socket_timeout: float = float(os.getenv("CM_REDIS_SOCKET_TIMEOUT", "30.0"))
-    cm_redis_op_timeout: float = float(os.getenv("CM_REDIS_OP_TIMEOUT", "2.5"))
+    _cm_redis_client: Optional[redis.Redis] = None
 
     @property
     def redis_url(self) -> str:
-        return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        scheme = "rediss" if self.redis_cacert else "redis"
+        base = (
+            f"{scheme}://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        )
+        if self.redis_cacert:
+            return f"{base}?ssl_cert_reqs=required&ssl_ca_certs={self.redis_cacert}"
+        return base
 
     @property
     def redis_client(self) -> redis.Redis:
@@ -181,6 +178,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
             )
         return self._redis_client
 
@@ -200,6 +198,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
             )
         return self._lite_redis_client
 
@@ -219,30 +218,29 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
             )
         return self._billing_redis_client
 
     @property
-    def cm_redis_client(self) -> list[redis.Redis]:
-        if self._cm_redis_clients is None:
-            self._cm_redis_clients = [
-                SafeRedis(
-                    host=self.redis_host,
-                    port=self.cm_redis_start_port + idx,
-                    db=self.redis_db,
-                    password=self.redis_password,
-                    socket_connect_timeout=self.redis_connect_timeout,
-                    socket_timeout=self.cm_redis_socket_timeout,
-                    op_timeout=self.cm_redis_op_timeout,
-                    max_connections=self.redis_max_connections,
-                    socket_keepalive=True,
-                    health_check_interval=30,
-                    retry_on_timeout=True,
-                    retry=Retry(ConstantBackoff(0.5), 2),
-                )
-                for idx in range(self.cm_redis_shard_count)
-            ]
-        return self._cm_redis_clients
+    def cm_redis_client(self) -> redis.Redis:
+        if self._cm_redis_client is None:
+            self._cm_redis_client = SafeRedis(
+                host=self.redis_host,
+                port=self.redis_port,
+                db=self.redis_db + 3,
+                password=self.redis_password,
+                socket_connect_timeout=self.redis_connect_timeout,
+                socket_timeout=self.redis_socket_timeout,
+                op_timeout=self.redis_op_timeout,
+                max_connections=self.redis_max_connections,
+                socket_keepalive=True,
+                health_check_interval=30,
+                retry_on_timeout=True,
+                retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
+            )
+        return self._cm_redis_client
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
@@ -319,6 +317,13 @@ class Settings(BaseSettings):
 
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "10.0"))
+
+    # Depot.dev settings (remote image building).
+    depot_token: str = os.getenv("DEPOT_TOKEN", "")
+    depot_project_id: str = os.getenv("DEPOT_PROJECT_ID", "")
+    depot_registry: str = os.getenv("DEPOT_REGISTRY", "")
+    depot_registry_token: str = os.getenv("DEPOT_REGISTRY_TOKEN", "")
+    depot_registry_rw_token: str = os.getenv("DEPOT_REGISTRY_RW_TOKEN", "")
 
     # Cosign Settings
     cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")

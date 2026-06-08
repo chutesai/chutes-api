@@ -71,7 +71,7 @@ from api.server.exceptions import (
     ServerRegistrationError,
 )
 from api.miner.util import is_miner_blacklisted
-from api.util import extract_ip, is_valid_host, semcomp
+from api.util import is_valid_host, semcomp
 
 
 router = APIRouter()
@@ -89,7 +89,7 @@ async def get_nonce(request: Request):
     No authentication required as the VM doesn't exist in the system yet.
     """
     try:
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
         nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.BOOT)
 
         return NonceResponse(nonce=nonce_info["nonce"], expires_at=nonce_info["expires_at"])
@@ -117,7 +117,7 @@ async def verify_boot_attestation(
     the subsequent POST /luks/attest call.
     """
     try:
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
         boot_token, luks_quote_nonce = await process_boot_attestation(
             db, server_ip, args, nonce, expected_cert_hash
         )
@@ -636,7 +636,7 @@ async def get_runtime_nonce(
     try:
         server = await check_server_ownership(db, server_id, hotkey)
 
-        actual_ip = extract_ip(request)
+        actual_ip = request.state.client_ip
         if server.ip != actual_ip:
             raise Exception()
 
@@ -673,7 +673,7 @@ async def verify_runtime_attestation(
     """
     try:
         server = await check_server_ownership(db, server_id, hotkey)
-        actual_ip = extract_ip(request)
+        actual_ip = request.state.client_ip
         result = await process_runtime_attestation(
             db, server.server_id, actual_ip, args, hotkey, nonce, expected_cert_hash
         )

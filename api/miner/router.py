@@ -98,7 +98,7 @@ async def _stream_items(clazz: Any, selector: Any = None, explicit_null: bool = 
     """
     Streaming results helper.
     """
-    async with get_session() as db:
+    async with get_session(readonly=True) as db:
         query = selector if selector is not None else select(clazz)
         if clazz is Chute:
             result = await db.execute(query)
@@ -326,7 +326,7 @@ async def get_chute(
     version: str,
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
-    async with get_session() as db:
+    async with get_session(readonly=True) as db:
         chute = (
             (
                 await db.execute(

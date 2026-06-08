@@ -92,6 +92,12 @@ redis-access: "true"
 db-access: "true"
 {{- end }}
 
+{{- define "remoteForge.labels" -}}
+app.kubernetes.io/name: remote-forge
+redis-access: "true"
+db-access: "true"
+{{- end }}
+
 {{- define "metasync.labels" -}}
 app.kubernetes.io/name: metasync
 redis-access: "true"

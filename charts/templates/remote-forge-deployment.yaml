@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: remote-forge
+  labels:
+    {{- include "remoteForge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.remoteForge.replicaCount | default 1 }}
+  selector:
+    matchLabels:
+      {{- include "remoteForge.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "remoteForge.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: remote-forge
+          image: "{{ .Values.remoteForge.image }}"
+          imagePullPolicy: {{ .Values.remoteForge.imagePullPolicy | default "IfNotPresent" }}
+          env:
+            {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: DEPOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: depot-credentials
+                  key: token
+            - name: DEPOT_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: depot-credentials
+                  key: project-id
+            - name: DEPOT_REGISTRY
+              valueFrom:
+                secretKeyRef:
+                  name: depot-credentials
+                  key: registry
+            - name: DEPOT_REGISTRY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: depot-credentials
+                  key: registry-token
+            - name: DEPOT_REGISTRY_RW_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: depot-credentials
+                  key: registry-rw-token
+            - name: CFSV_OP
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: cfsvop
+            - name: PS_OP
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: psop
+                  optional: true
+            - name: DOCKER_PULL_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: docker-pull
+                  key: username
+            - name: DOCKER_PULL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: docker-pull
+                  key: password
+            - name: PYTHONPATH
+              value: "/forge"
+            - name: COSIGN_KEY
+              value: /etc/cosign/cosign.key
+            - name: COSIGN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: cosign-signing-key
+                  key: cosign.password
+          securityContext: {}
+          volumeMounts:
+            - name: cosign-key
+              mountPath: /etc/cosign
+              readOnly: true
+          resources:
+            {{- toYaml .Values.remoteForge.resources | nindent 12 }}
+      volumes:
+        - name: cosign-key
+          secret:
+            secretName: cosign-signing-key
+            items:
+            - key: cosign.key
+              path: cosign.key
+              mode: 0444
+      {{- with .Values.remoteForge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.remoteForge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.remoteForge.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

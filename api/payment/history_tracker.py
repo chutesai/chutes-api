@@ -280,6 +280,9 @@ class BTTransferMonitor:
 
                             amount = event["attributes"]["amount"]
                             extrinsic_idx = raw_event.get("extrinsic_idx")
+                            if not extrinsic_idx:
+                                logger.warning(f"No extrinsic_idx specified: {event['attributes']}")
+                                continue
 
                             # Record the transfer
                             await self._record_transfer(
