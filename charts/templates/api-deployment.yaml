@@ -124,6 +124,11 @@ spec:
                 secretKeyRef:
                   key: passphrase
                   name: luks-key
+            - name: CACHE_PASSPHRASE_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: cache-passphrase-key
           volumeMounts:
             {{- if .Values.squad_enabled }}
             - name: squad-certs
