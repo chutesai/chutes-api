@@ -9,8 +9,6 @@ Covers:
 - Legacy sync flow (sync_server_luks_passphrases)
 """
 
-import secrets
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -156,9 +154,7 @@ class TestRotateLuksPassphrases:
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
     @patch("api.server.util._create_vm_cache_config")
-    async def test_first_boot_no_existing_config(
-        self, mock_create, mock_get, mock_settings
-    ):
+    async def test_first_boot_no_existing_config(self, mock_create, mock_get, mock_settings):
         """First boot: no VmCacheConfig row exists → creates one, current=None."""
         mock_settings.fernet_key = Fernet(Fernet.generate_key())
 
@@ -199,9 +195,7 @@ class TestRotateLuksPassphrases:
         mock_create.return_value = new_config
         db = AsyncMock()
 
-        volumes, vm_config = await rotate_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"]
-        )
+        volumes, vm_config = await rotate_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
         stored = vm_config.volume_passphrases
         # Both current and pending must exist after first-boot rotate
@@ -209,7 +203,9 @@ class TestRotateLuksPassphrases:
         assert "pending_storage" in stored
         # Both must decrypt to the same passphrase (the one returned as next)
         assert fernet.decrypt(stored["storage"].encode()).decode() == volumes["storage"].next
-        assert fernet.decrypt(stored["pending_storage"].encode()).decode() == volumes["storage"].next
+        assert (
+            fernet.decrypt(stored["pending_storage"].encode()).decode() == volumes["storage"].next
+        )
 
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
@@ -222,14 +218,10 @@ class TestRotateLuksPassphrases:
         original_passphrase = generate_cache_passphrase()
         encrypted = fernet.encrypt(original_passphrase.encode()).decode()
 
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={"storage": encrypted}
-        )
+        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
         db = AsyncMock()
 
-        volumes, vm_config = await rotate_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"]
-        )
+        volumes, vm_config = await rotate_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
         assert volumes["storage"].current == original_passphrase
         assert volumes["storage"].is_first_boot is False
@@ -244,20 +236,18 @@ class TestRotateLuksPassphrases:
 
         original = generate_cache_passphrase()
         encrypted = fernet.encrypt(original.encode()).decode()
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={"storage": encrypted}
-        )
+        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
         db = AsyncMock()
 
-        volumes, vm_config = await rotate_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"]
-        )
+        volumes, vm_config = await rotate_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
         stored = vm_config.volume_passphrases
         # Current must be the original passphrase, not overwritten
         assert fernet.decrypt(stored["storage"].encode()).decode() == original
         # Pending must be the new passphrase
-        assert fernet.decrypt(stored["pending_storage"].encode()).decode() == volumes["storage"].next
+        assert (
+            fernet.decrypt(stored["pending_storage"].encode()).decode() == volumes["storage"].next
+        )
         assert volumes["storage"].next != original
 
     @patch("api.server.util.settings")
@@ -271,9 +261,7 @@ class TestRotateLuksPassphrases:
         encrypted_with_old = old_fernet.encrypt(original_passphrase.encode()).decode()
 
         mock_settings.fernet_key = new_fernet
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={"storage": encrypted_with_old}
-        )
+        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted_with_old})
         db = AsyncMock()
 
         with pytest.raises(InvalidToken):
@@ -296,9 +284,7 @@ class TestRotateLuksPassphrases:
         )
         db = AsyncMock()
 
-        volumes, vm_config = await rotate_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"]
-        )
+        volumes, vm_config = await rotate_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
         stored = vm_config.volume_passphrases
         assert "pending_storage" in stored
@@ -323,9 +309,7 @@ class TestRotateLuksPassphrases:
         )
         db = AsyncMock()
 
-        volumes, _ = await rotate_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage", "tdx-cache"]
-        )
+        volumes, _ = await rotate_luks_passphrases(db, "hotkey1", "vm1", ["storage", "tdx-cache"])
 
         assert volumes["storage"].current == storage_pp
         assert volumes["tdx-cache"].current == cache_pp
@@ -390,17 +374,13 @@ class TestSyncServerLuksPassphrases:
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
     @patch("api.server.util._create_vm_cache_config")
-    async def test_first_boot_creates_passphrases(
-        self, mock_create, mock_get, mock_settings
-    ):
+    async def test_first_boot_creates_passphrases(self, mock_create, mock_get, mock_settings):
         mock_settings.fernet_key = Fernet(Fernet.generate_key())
         mock_get.return_value = None
         mock_create.return_value = _make_vm_config()
         db = AsyncMock()
 
-        result = await sync_server_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage", "tdx-cache"]
-        )
+        result = await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage", "tdx-cache"])
 
         assert "storage" in result
         assert "tdx-cache" in result
@@ -414,14 +394,10 @@ class TestSyncServerLuksPassphrases:
 
         original = generate_cache_passphrase()
         encrypted = fernet.encrypt(original.encode()).decode()
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={"storage": encrypted}
-        )
+        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
         db = AsyncMock()
 
-        result = await sync_server_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"]
-        )
+        result = await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
         assert result["storage"] == original
 
@@ -434,15 +410,11 @@ class TestSyncServerLuksPassphrases:
 
         encrypted = old_fernet.encrypt(b"passphrase").decode()
         mock_settings.fernet_key = new_fernet
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={"storage": encrypted}
-        )
+        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
         db = AsyncMock()
 
         with pytest.raises(InvalidToken):
-            await sync_server_luks_passphrases(
-                db, "hotkey1", "vm1", ["storage"]
-            )
+            await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
@@ -452,9 +424,7 @@ class TestSyncServerLuksPassphrases:
 
         original = generate_cache_passphrase()
         encrypted = fernet.encrypt(original.encode()).decode()
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={"storage": encrypted}
-        )
+        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
         db = AsyncMock()
 
         result = await sync_server_luks_passphrases(
@@ -478,9 +448,7 @@ class TestSyncServerLuksPassphrases:
         )
         db = AsyncMock()
 
-        await sync_server_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"]
-        )
+        await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
 
         stored = mock_get.return_value.volume_passphrases
         assert "storage" in stored
@@ -522,9 +490,7 @@ class TestFirstBootRestartLifecycle:
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
     @patch("api.server.util._create_vm_cache_config")
-    async def test_passphrase_survives_confirm_false(
-        self, mock_create, mock_get, mock_settings
-    ):
+    async def test_passphrase_survives_confirm_false(self, mock_create, mock_get, mock_settings):
         """After first boot + confirm(rotated=false), passphrase must persist."""
         fernet = Fernet(Fernet.generate_key())
         mock_settings.fernet_key = fernet
@@ -567,9 +533,7 @@ class TestFirstBootRestartLifecycle:
         mock_create.return_value = config
         db = AsyncMock()
 
-        volumes_boot, vm_config = await rotate_luks_passphrases(
-            db, "hk", "vm1", ["storage"]
-        )
+        volumes_boot, vm_config = await rotate_luks_passphrases(db, "hk", "vm1", ["storage"])
         format_key = volumes_boot["storage"].next
 
         # ---- Step 2: confirm(rotated=false) ----
@@ -580,9 +544,7 @@ class TestFirstBootRestartLifecycle:
         restart_config = _make_vm_config(volume_passphrases=stored)
         mock_get.return_value = restart_config
 
-        volumes_restart, _ = await rotate_luks_passphrases(
-            db, "hk", "vm1", ["storage"]
-        )
+        volumes_restart, _ = await rotate_luks_passphrases(db, "hk", "vm1", ["storage"])
 
         # Current must be the same key used to format the volume on first boot
         assert volumes_restart["storage"].current == format_key
@@ -593,9 +555,7 @@ class TestFirstBootRestartLifecycle:
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
     @patch("api.server.util._create_vm_cache_config")
-    async def test_full_rotation_cycle(
-        self, mock_create, mock_get, mock_settings
-    ):
+    async def test_full_rotation_cycle(self, mock_create, mock_get, mock_settings):
         """Full cycle: first boot → confirm → restart → confirm(rotated=true).
 
         Validates the passphrase is rotated correctly over the full lifecycle.
@@ -609,9 +569,7 @@ class TestFirstBootRestartLifecycle:
         config = _make_vm_config()
         mock_create.return_value = config
 
-        vol_boot, vm_config = await rotate_luks_passphrases(
-            db, "hk", "vm1", ["storage"]
-        )
+        vol_boot, vm_config = await rotate_luks_passphrases(db, "hk", "vm1", ["storage"])
         original_key = vol_boot["storage"].next
         stored = dict(vm_config.volume_passphrases)
 
@@ -622,9 +580,7 @@ class TestFirstBootRestartLifecycle:
         restart_config = _make_vm_config(volume_passphrases=stored)
         mock_get.return_value = restart_config
 
-        vol_restart, vm_config2 = await rotate_luks_passphrases(
-            db, "hk", "vm1", ["storage"]
-        )
+        vol_restart, vm_config2 = await rotate_luks_passphrases(db, "hk", "vm1", ["storage"])
         assert vol_restart["storage"].current == original_key
         rotation_key = vol_restart["storage"].next
         assert rotation_key != original_key
@@ -640,9 +596,7 @@ class TestFirstBootRestartLifecycle:
     @patch("api.server.util.settings")
     @patch("api.server.util._get_vm_cache_config")
     @patch("api.server.util._create_vm_cache_config")
-    async def test_confirm_true_on_first_boot_also_safe(
-        self, mock_create, mock_get, mock_settings
-    ):
+    async def test_confirm_true_on_first_boot_also_safe(self, mock_create, mock_get, mock_settings):
         """Even if confirm(rotated=true) is sent on first boot, passphrase survives."""
         fernet = Fernet(Fernet.generate_key())
         mock_settings.fernet_key = fernet
@@ -652,9 +606,7 @@ class TestFirstBootRestartLifecycle:
         config = _make_vm_config()
         mock_create.return_value = config
 
-        vol_boot, vm_config = await rotate_luks_passphrases(
-            db, "hk", "vm1", ["storage"]
-        )
+        vol_boot, vm_config = await rotate_luks_passphrases(db, "hk", "vm1", ["storage"])
         key = vol_boot["storage"].next
         stored = dict(vm_config.volume_passphrases)
 
