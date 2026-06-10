@@ -40,6 +40,7 @@ from api.image.forge import (
     BCM_SO_PATH,
     MANIFEST_DRIVER_PATH,
 )
+from api.permissions import Permissioning
 from sqlalchemy import func, text
 from sqlalchemy.orm import selectinload
 from sqlalchemy.future import select
@@ -454,7 +455,8 @@ async def build_and_push_image(image, build_dir):
         oci_tag = f"{oci_tag}-{image.patch_version}"
     short_tag = f"{repo}:{oci_tag}"
 
-    _validate_dockerfile_bases(os.path.join(build_dir, "Dockerfile"))
+    if not image.user.has_role(Permissioning.unlimited_dev):
+        _validate_dockerfile_bases(os.path.join(build_dir, "Dockerfile"))
     _copy_cfsv_binary(image, build_dir)
 
     started_at = time.time()
