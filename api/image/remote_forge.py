@@ -514,7 +514,7 @@ async def build_and_push_image(image, build_dir):
         chutes_dockerfile_content = f"""FROM {original_ref}
 USER root
 ENV LD_PRELOAD=""
-RUN rm -f /etc/chutesfs.index
+RUN rm -f /etc/chutesfs.index /usr/bin/cautious-launcher /etc/ld.so.preload
 RUN usermod -aG root chutes || true
 RUN chmod g+rwx /usr/local/lib /usr/local/bin /usr/local/share /usr/local/share/man
 RUN chmod g+rwx /usr/local/lib/python3.12/dist-packages || true
@@ -523,7 +523,7 @@ RUN find / -xdev -type d -name __pycache__ -exec rm -rf {{}} \\; || true
 USER chutes
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN pip install chutes=={image.chutes_version}
-RUN uv cache clean --force
+RUN uv cache clean --force || true
 """
         if semcomp(image.chutes_version or "0.0.0", "0.5.5") >= 0:
             chutes_dockerfile_content += """RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-aegis.so"))') /usr/local/lib/chutes-aegis.so
@@ -1001,7 +1001,7 @@ RUN find / -xdev -type d -name __pycache__ -exec rm -rf {{}} \\; || true
 USER chutes
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN pip install chutes=={chutes_version}
-RUN uv cache clean --force
+RUN uv cache clean --force || true
 """
             if semcomp(chutes_version or "0.0.0", "0.5.5") >= 0:
                 dockerfile_content += """RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-aegis.so"))') /usr/local/lib/chutes-aegis.so
