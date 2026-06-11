@@ -51,6 +51,7 @@ _DEPOT_ENV = {
     "HOME": os.environ.get("HOME", "/home/chutes"),
     "DEPOT_TOKEN": settings.depot_token,
 }
+_REGISTRY_AUTHENTICATED = False
 
 
 def _depot_saved_ref(tag: str) -> str:
@@ -68,7 +69,7 @@ def _depot_repo_ref(repo: str, tag: str) -> str:
     Format: {org_registry}/{repo}:{tag}
     Example: foo.registry.depot.dev/alice/model:v1
 
-    Used for the final user-facing image path and for crane copy targets.
+    Used for the final user-facing image path and Depot push targets.
     """
     return f"{settings.depot_registry}/{repo}:{tag}"
 
@@ -140,6 +141,20 @@ async def _depot_push(build_id: str, tag: str) -> None:
     logger.info(f"Pushed build {build_id} -> {_safe_ref(tag)}")
 
 
+def _read_depot_build_id(metadata_path: str) -> str:
+    """Read the Depot build ID emitted by --metadata-file."""
+    with open(metadata_path) as f:
+        metadata = json.loads(f.read())
+    build_id = metadata.get("buildID")
+    if not build_id:
+        nested = metadata.get("depot.build")
+        if isinstance(nested, dict):
+            build_id = nested.get("buildID")
+    if not build_id:
+        raise BuildFailure(f"Could not find buildID in metadata: {list(metadata.keys())}")
+    return build_id
+
+
 async def _is_real_image_tag(repo: str, oci_tag: str) -> bool:
     """Check the database to see if any image actually uses this tag.
 
@@ -206,54 +221,80 @@ async def initialize():
     """
     import api.database.orms  # noqa: F401
 
-    # Login cosign + crane to Depot registry (needed for sign_image and get_image_digest).
-    # depot build --save uses DEPOT_TOKEN directly, no docker login needed.
-    registry_token = settings.depot_registry_rw_token or settings.depot_registry_token
-    if settings.depot_registry and registry_token:
-        process = await asyncio.create_subprocess_exec(
-            "cosign",
-            "login",
-            "-u",
-            "x-token",
-            "-p",
-            registry_token,
-            settings.depot_registry,
-        )
-        await process.wait()
-        if process.returncode == 0:
-            logger.success("cosign authenticated to depot registry")
-        else:
-            logger.warning("cosign failed to authenticate to depot registry")
+    await _ensure_registry_auth()
 
-        process = await asyncio.create_subprocess_exec(
+
+async def _ensure_registry_auth() -> bool:
+    """Login cosign + crane to Depot's registry when registry tokens are configured."""
+    global _REGISTRY_AUTHENTICATED
+
+    if _REGISTRY_AUTHENTICATED:
+        return True
+
+    registry_token = settings.depot_registry_rw_token or settings.depot_registry_token
+    if not settings.depot_registry or not registry_token:
+        return False
+
+    for name, cmd in (
+        (
+            "cosign",
+            [
+                "cosign",
+                "login",
+                "-u",
+                "x-token",
+                "-p",
+                registry_token,
+                settings.depot_registry,
+            ],
+        ),
+        (
             "crane",
-            "auth",
-            "login",
-            "-u",
-            "x-token",
-            "-p",
-            registry_token,
-            settings.depot_registry,
+            [
+                "crane",
+                "auth",
+                "login",
+                "-u",
+                "x-token",
+                "-p",
+                registry_token,
+                settings.depot_registry,
+            ],
+        ),
+    ):
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=PIPE,
+            stderr=PIPE,
         )
-        await process.wait()
-        if process.returncode == 0:
-            logger.success("crane authenticated to depot registry")
-        else:
-            logger.warning("crane failed to authenticate to depot registry")
+        stdout, stderr = await process.communicate()
+        if process.returncode != 0:
+            detail = _sanitize_log(stderr.decode().strip() or stdout.decode().strip())
+            raise SignFailure(f"{name} failed to authenticate to depot registry: {detail}")
+        logger.success(f"{name} authenticated to depot registry")
+
+    _REGISTRY_AUTHENTICATED = True
+    return True
 
 
 async def get_image_digest(image_tag: str) -> str:
     """Get the image digest from the registry using crane."""
-    process = await asyncio.create_subprocess_exec(
-        "crane",
-        "digest",
-        image_tag,
-        stdout=PIPE,
-        stderr=PIPE,
-    )
-    stdout, stderr = await process.communicate()
 
-    if process.returncode != 0:
+    async def _digest():
+        process = await asyncio.create_subprocess_exec(
+            "crane",
+            "digest",
+            image_tag,
+            stdout=PIPE,
+            stderr=PIPE,
+        )
+        return await process.communicate(), process.returncode
+
+    (stdout, stderr), returncode = await _digest()
+    if returncode != 0 and await _ensure_registry_auth():
+        (stdout, stderr), returncode = await _digest()
+
+    if returncode != 0:
         raise SignFailure(
             f"Failed to get digest for {_safe_ref(image_tag)}: {_sanitize_log(stderr.decode())}"
         )
@@ -521,7 +562,7 @@ RUN find / -xdev -type d -name __pycache__ -exec rm -rf {{}} \\; || true
 USER chutes
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN pip install chutes=={image.chutes_version}
-RUN uv cache clean --force
+RUN uv cache clean --force || true
 """
         if semcomp(image.chutes_version or "0.0.0", "0.5.5") >= 0:
             chutes_dockerfile_content += """RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-aegis.so"))') /usr/local/lib/chutes-aegis.so
@@ -745,16 +786,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
             raise BuildFailure("Final build failed!")
 
         # Parse build ID from metadata and push to user-facing repo path.
-        with open(metadata_path) as f:
-            metadata = json.loads(f.read())
-        build_id = metadata.get("buildID")
-        if not build_id:
-            nested = metadata.get("depot.build")
-            if isinstance(nested, dict):
-                build_id = nested.get("buildID")
-        if not build_id:
-            raise BuildFailure(f"Could not find buildID in metadata: {list(metadata.keys())}")
-
+        build_id = _read_depot_build_id(metadata_path)
         logger.info(f"Pushing build {build_id} -> {_safe_ref(final_repo_ref)}")
         await _depot_push(build_id, final_repo_ref)
 
@@ -982,12 +1014,44 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
         try:
             _copy_cfsv_binary(image, build_dir)
 
-            # Stage 1: Build updated base image with new chutes lib.
+            # Stage 1: Mirror the source image into the Depot project scope.
+            #
+            # Depot build can pull repo-scoped refs, but depot build --save
+            # currently fails with 403 when a Dockerfile FROM points at refs
+            # like {registry}/{repo}:{tag}. Push the source image directly
+            # into a project-scoped ref that later --save stages can use in
+            # FROM.
+            source_tag = await _safe_intermediate_tag(repo)
+            source_ref = _depot_saved_ref(source_tag)
+            logger.info(
+                f"Stage 1: Mirroring source image {_safe_ref(source_repo_ref)} as {source_tag}"
+            )
+            source_dockerfile_path = os.path.join(build_dir, "Dockerfile.source")
+            with open(source_dockerfile_path, "w") as f:
+                f.write(f"FROM {source_repo_ref}\n")
+
+            process = await _depot_build(
+                [
+                    "--push",
+                    "-t",
+                    source_ref,
+                    "-f",
+                    source_dockerfile_path,
+                    ".",
+                ],
+                cwd=build_dir,
+                capture_logs=lambda s, n: _drain_logs(s, n, label=f"source {target_tag}"),
+                timeout=settings.build_timeout,
+            )
+            if process.returncode != 0:
+                raise BuildFailure("Failed to mirror source image!")
+
+            # Stage 2: Build updated base image with new chutes lib.
             updated_tag = await _safe_intermediate_tag(repo)
             updated_ref = _depot_saved_ref(updated_tag)
-            logger.info(f"Stage 1: Building updated image as {updated_tag}")
+            logger.info(f"Stage 2: Building updated image as {updated_tag}")
 
-            dockerfile_content = f"""FROM {source_repo_ref}
+            dockerfile_content = f"""FROM {source_ref}
 USER root
 ENV LD_PRELOAD=""
 RUN rm -f /etc/chutesfs.index /usr/bin/cautious-launcher /etc/ld.so.preload
@@ -999,7 +1063,7 @@ RUN find / -xdev -type d -name __pycache__ -exec rm -rf {{}} \\; || true
 USER chutes
 ENV PYTHONDONTWRITEBYTECODE=1
 RUN pip install chutes=={chutes_version}
-RUN uv cache clean --force
+RUN uv cache clean --force || true
 """
             if semcomp(chutes_version or "0.0.0", "0.5.5") >= 0:
                 dockerfile_content += """RUN cp -f $(python -c 'import chutes; import os; print(os.path.join(os.path.dirname(chutes.__file__), "chutes-aegis.so"))') /usr/local/lib/chutes-aegis.so
@@ -1031,8 +1095,8 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             if process.returncode != 0:
                 raise BuildFailure("Failed to build updated image!")
 
-            # Stage 2: Filesystem verification + extract.
-            logger.info("Stage 2: Building filesystem verification image")
+            # Stage 3: Filesystem verification + extract.
+            logger.info("Stage 3: Building filesystem verification image")
 
             fsv_dockerfile_content = f"""FROM {updated_ref}
 USER chutes
@@ -1182,8 +1246,8 @@ RUN --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op
                     )
                 logger.success(f"Uploaded bytecode manifest JSON to {manifest_json_s3_key}")
 
-            # Stage 3: Build final image, save to cache, then push by build ID.
-            logger.info(f"Stage 3: Building final image for {_safe_ref(target_repo_ref)}")
+            # Stage 4: Build final image, save to cache, then push by build ID.
+            logger.info(f"Stage 4: Building final image for {_safe_ref(target_repo_ref)}")
 
             index_path = os.path.join(extracted_dir, "chutesfs.index")
             final_index_path = os.path.join(build_dir, "chutesfs.index")
@@ -1228,16 +1292,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
                 raise BuildFailure("Failed to build final image!")
 
             # Parse build ID from metadata and push to user-facing repo path.
-            with open(metadata_path) as f:
-                metadata = json.loads(f.read())
-            build_id = metadata.get("buildID")
-            if not build_id:
-                nested = metadata.get("depot.build")
-                if isinstance(nested, dict):
-                    build_id = nested.get("buildID")
-            if not build_id:
-                raise BuildFailure(f"Could not find buildID in metadata: {list(metadata.keys())}")
-
+            build_id = _read_depot_build_id(metadata_path)
             logger.info(f"Pushing build {build_id} -> {_safe_ref(target_repo_ref)}")
             await _depot_push(build_id, target_repo_ref)
 
