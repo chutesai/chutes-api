@@ -100,6 +100,8 @@ class Settings(BaseSettings):
     aws_endpoint_url: Optional[str] = os.getenv("AWS_ENDPOINT_URL", "http://minio:9000")
     aws_region: str = os.getenv("AWS_REGION", "local")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "chutes")
+    s3_proxy_url: Optional[str] = os.getenv("S3_PROXY_URL")
+
 
     @property
     def s3_session(self) -> aioboto3.Session:
@@ -116,7 +118,10 @@ class Settings(BaseSettings):
         async with session.client(
             "s3",
             endpoint_url=self.aws_endpoint_url,
-            config=Config(signature_version="s3v4"),
+            config=Config(
+                signature_version="s3v4",
+                proxies={"https": self.s3_proxy_url} if self.s3_proxy_url else None,
+            ),
         ) as client:
             yield client
 
