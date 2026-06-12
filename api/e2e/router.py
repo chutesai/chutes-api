@@ -74,7 +74,6 @@ MAX_INSTANCES_RETURNED = 5
 async def get_e2e_instances(
     chute_id: str,
     current_user: User = Depends(get_current_user(raise_not_found=True, allow_api_key=True)),
-    _rate_limit: None = Depends(rate_limit("e2e_instances", requests_per_minute=10)),
 ):
     """
     Discover E2E-capable instances for a chute and get nonces for invocation.
