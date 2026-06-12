@@ -240,6 +240,100 @@ def test_tdx_verification_result_to_dict():
     assert dict_result["rtmrs"]["rtmr0"] == "b" * 96
 
 
+# debug_enabled property tests (endianness)
+def test_debug_enabled_le_debug_bit_set():
+    """td_attributes with DEBUG bit set in little-endian must return True.
+
+    "0100000000000000" means byte[0]=0x01, i.e. bit 0 of the 64-bit LE value
+    is set. The old (big-endian) interpretation evaluated this as 2**56
+    and missed the DEBUG flag entirely.
+    """
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=[],
+        td_attributes="0100000000000000",
+    )
+    assert result.debug_enabled is True
+    assert result.is_valid is False
+
+
+def test_debug_enabled_no_bits_set():
+    """td_attributes with no bits set must return False."""
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=[],
+        td_attributes="0000000000000000",
+    )
+    assert result.debug_enabled is False
+    assert result.is_valid is True
+
+
+def test_debug_enabled_sept_ve_disable_non_debug():
+    """Realistic non-debug value (SEPT_VE_DISABLE, bit 28 in LE) must return False."""
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=[],
+        td_attributes="0000001000000000",
+    )
+    assert result.debug_enabled is False
+    assert result.is_valid is True
+
+
+def test_debug_enabled_missing_td_attributes():
+    """Missing td_attributes must be treated as unsafe (True)."""
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=[],
+        td_attributes="",
+    )
+    assert result.debug_enabled is True
+
+
+def test_debug_enabled_odd_length_hex():
+    """Odd-length hex string should be treated as unsafe (True)."""
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=[],
+        td_attributes="0100000000000",
+    )
+    assert result.debug_enabled is True
+
+
 # Utility function tests
 def test_generate_nonce():
     """Test nonce generation."""

@@ -222,11 +222,18 @@ class TdxVerificationResult:
 
     @property
     def debug_enabled(self) -> bool:
-        """True if the TD has debug mode enabled (bit 0 set in td_attributes)."""
+        """True if the TD has debug mode enabled (bit 0 set in td_attributes).
+
+        td_attributes is a hex-encoded byte array in little-endian (memory)
+        order as emitted by dcap_qvl's JSON serialization, so we must
+        reconstruct the integer with LE byte order before testing bits.
+        """
         if not self.td_attributes:
             return True  # treat missing as unsafe
         try:
-            value = int(self.td_attributes, 16)
+            value = int.from_bytes(
+                bytes.fromhex(self.td_attributes), byteorder="little"
+            )
             return bool(value & (1 << TDX_ATTR_DEBUG_BIT))
         except (ValueError, TypeError):
             return True  # treat unparseable as unsafe
