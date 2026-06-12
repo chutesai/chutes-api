@@ -220,6 +220,11 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       name: wallet-secret
       key: pg-key
+- name: LUKS_PASSPHRASES
+  valueFrom:
+    secretKeyRef:
+      name: luks-passphrases
+      key: passphrases
 {{- end }}
 
 {{- define "chutes.commonEnv" -}}

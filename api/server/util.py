@@ -374,18 +374,26 @@ def _verify_measurements(
         raise AttestationError("Measurement verification failed due to an unexpected error.")
 
 
-def get_luks_passphrase() -> str:
+def get_luks_passphrase(version: str) -> str:
     """
-    Get the LUKS passphrase for disk decryption.
+    Get the root-volume LUKS passphrase for the given measurement version.
+
+    Each VM image bakes in a version-specific passphrase, so the passphrase returned by
+    /boot/attestation is keyed by the attested measurement version. There is no fallback.
+
+    Args:
+        version: Attested measurement version (e.g. "1.3.0").
 
     Returns:
-        LUKS passphrase string
-    """
+        LUKS passphrase string for that version.
 
-    passphrase = settings.luks_passphrase
+    Raises:
+        InvalidTdxConfiguration: If no passphrase is configured for the version.
+    """
+    passphrase = settings.luks_passphrases.get(version)
     if not passphrase:
-        logger.error("No LUKS passphrase configured")
-        raise InvalidTdxConfiguration("Missing LUKS passphrase configuration")
+        logger.error(f"No LUKS passphrase configured for version {version}")
+        raise InvalidTdxConfiguration(f"No LUKS passphrase configured for version {version}")
 
     return passphrase
 

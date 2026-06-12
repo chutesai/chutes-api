@@ -322,7 +322,7 @@ async def process_boot_attestation(
     args: BootAttestationArgs,
     nonce: str,
     expected_cert_hash: str,
-) -> tuple[Optional[str], Optional[str]]:
+) -> tuple[Optional[str], Optional[str], str]:
     """
     Process a boot attestation request.
 
@@ -334,9 +334,11 @@ async def process_boot_attestation(
         expected_cert_hash: Expected certificate hash
 
     Returns:
-        Tuple of (boot_token, luks_quote_nonce). Exactly one is set depending on
-        the VM's measurement version: boot_token for version < 1.3.0 (legacy POST
-        /luks flow), luks_quote_nonce for version >= 1.3.0 (POST /luks/attest flow).
+        Tuple of (boot_token, luks_quote_nonce, measurement_version). Exactly one of
+        boot_token/luks_quote_nonce is set depending on the VM's measurement version:
+        boot_token for version < 1.3.0 (legacy POST /luks flow), luks_quote_nonce for
+        version >= 1.3.0 (POST /luks/attest flow). measurement_version is the matched
+        config version, used to select the version-specific root LUKS passphrase.
 
     Raises:
         NonceError: If nonce validation fails
@@ -395,7 +397,7 @@ async def process_boot_attestation(
         else:
             boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
 
-        return boot_token, luks_quote_nonce
+        return boot_token, luks_quote_nonce, measurement_config.version
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record; set measurement_version if quote matched a config
