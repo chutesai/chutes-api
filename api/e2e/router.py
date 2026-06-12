@@ -42,7 +42,6 @@ from api.util import (
     semcomp,
 )
 from api.miner_client import sign_request
-from api.rate_limit import rate_limit
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.constants import DIFFUSION_PRICE_MULT_PER_STEP
 from api.user.service import chutes_user_id, subnet_role_accessible

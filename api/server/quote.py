@@ -231,9 +231,7 @@ class TdxVerificationResult:
         if not self.td_attributes:
             return True  # treat missing as unsafe
         try:
-            value = int.from_bytes(
-                bytes.fromhex(self.td_attributes), byteorder="little"
-            )
+            value = int.from_bytes(bytes.fromhex(self.td_attributes), byteorder="little")
             return bool(value & (1 << TDX_ATTR_DEBUG_BIT))
         except (ValueError, TypeError):
             return True  # treat unparseable as unsafe
