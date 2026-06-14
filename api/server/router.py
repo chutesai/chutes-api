@@ -118,12 +118,12 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = request.state.client_ip
-        boot_token, luks_quote_nonce = await process_boot_attestation(
+        boot_token, luks_quote_nonce, measurement_version = await process_boot_attestation(
             db, server_ip, args, nonce, expected_cert_hash
         )
 
         return BootAttestationResponse(
-            key=get_luks_passphrase(),
+            key=get_luks_passphrase(measurement_version),
             boot_token=boot_token,
             luks_quote_nonce=luks_quote_nonce,
         )
@@ -403,6 +403,7 @@ async def get_tee_measurements():
             detail="Failed to read TEE measurements",
         )
 
+    # Exclude release-candidate (rc) measurements
     result = [
         TeeMeasurementResponse(
             version=m.version,
@@ -414,6 +415,7 @@ async def get_tee_measurements():
             gpu_count=m.gpu_count,
         )
         for m in measurements
+        if not m.rc
     ]
     await settings.redis_client.set(
         TEE_MEASUREMENTS_CACHE_KEY,

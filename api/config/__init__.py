@@ -35,17 +35,56 @@ def load_launch_config_private_key():
     return None
 
 
+# Boot RTMR3 is always all-zeros: it cannot be extended until runtime (after the
+# boot process unlocks the root volume), so it is a constant rather than configured.
+ZERO_RTMR = "0" * 96
+
+
 @dataclass
 class TeeMeasurementConfig:
-    """Configuration for allowed measurements for a TEE VM."""
+    """Configuration for allowed measurements for a single TEE VM version + hardware variant.
+
+    RTMR0/RTMR1/RTMR2 are identical between boot and runtime; boot RTMR3 is always zero.
+    MRTD/RTMR1/RTMR2 and runtime RTMR3 are shared across hardware for a given version
+    (firmware, kernel/initrd, and guest measurements); only RTMR0 varies per hardware
+    (GPU topology). The verbose boot_rtmrs/runtime_rtmrs dicts consumed elsewhere are
+    derived from these scalar fields.
+
+    rc marks a release-candidate / actively-tested version: it is still accepted for
+    attestation, but is excluded from the public GET /tee/measurements endpoint and from
+    the tee_minimum_boot_version fallback so it does not affect released VMs.
+    """
 
     version: str
-    mrtd: str
     name: str
-    boot_rtmrs: Dict[str, str]
-    runtime_rtmrs: Dict[str, str]
+    mrtd: str  # shared across hardware for this version
+    rtmr0: str  # per-hardware (GPU topology)
+    rtmr1: str  # shared across hardware for this version
+    rtmr2: str  # shared across hardware for this version
+    runtime_rtmr3: str  # shared across hardware; runtime-only (boot RTMR3 is zero)
     expected_gpus: List[str]
     gpu_count: Optional[int] = None
+    rc: bool = False  # release candidate / in-test: attestable but unpublished
+
+    @property
+    def boot_rtmrs(self) -> Dict[str, str]:
+        """RTMRs expected in a boot quote (RTMR3 is never extended before runtime)."""
+        return {
+            "RTMR0": self.rtmr0,
+            "RTMR1": self.rtmr1,
+            "RTMR2": self.rtmr2,
+            "RTMR3": ZERO_RTMR,
+        }
+
+    @property
+    def runtime_rtmrs(self) -> Dict[str, str]:
+        """RTMRs expected in a runtime quote."""
+        return {
+            "RTMR0": self.rtmr0,
+            "RTMR1": self.rtmr1,
+            "RTMR2": self.rtmr2,
+            "RTMR3": self.runtime_rtmr3,
+        }
 
 
 class Settings(BaseSettings):
@@ -101,7 +140,6 @@ class Settings(BaseSettings):
     aws_region: str = os.getenv("AWS_REGION", "local")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "chutes")
     s3_proxy_url: Optional[str] = os.getenv("S3_PROXY_URL")
-
 
     @property
     def s3_session(self) -> aioboto3.Session:
@@ -359,63 +397,70 @@ class Settings(BaseSettings):
             logger.error(f"Failed to load TEE measurement config: {e}")
             return []
 
+        def _hex96(value: str, field_name: str, owner: str) -> str:
+            """Upper-case/strip a hex measurement and validate it is 96 chars."""
+            cleaned = str(value).upper().strip()
+            if len(cleaned) != 96:
+                raise ValueError(
+                    f"Invalid {field_name} length for measurement config '{owner}': "
+                    f"{len(cleaned)} chars (expected 96)."
+                )
+            return cleaned
+
         measurements: List[TeeMeasurementConfig] = []
-        for measurement_config in config.get("measurements", []):
-            config_name = measurement_config.get("name", "unnamed")
-            version = measurement_config.get("version")
+        for version_config in config.get("measurements", []):
+            version = version_config.get("version")
             if not version or not str(version).strip():
                 error_msg = (
-                    f"Missing or empty 'version' for measurement config '{config_name}'. "
+                    "Missing or empty 'version' for a measurement config. "
                     "Each measurement configuration must have a version."
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
+            version = str(version).strip()
 
-            rtmr0_upper = measurement_config["boot_rtmrs"]["rtmr0"].upper().strip()
-            if len(rtmr0_upper) != 96:
+            # MRTD/RTMR1/RTMR2 and runtime RTMR3 are shared across all hardware variants for
+            # a version (firmware, kernel/initrd, and guest measurements). Only RTMR0 varies
+            # per hardware (GPU topology). Boot RTMR3 is always zero (set on the config props).
+            mrtd = _hex96(version_config["mrtd"], "MRTD", version)
+            rtmr1 = _hex96(version_config["rtmr1"], "RTMR1", version)
+            rtmr2 = _hex96(version_config["rtmr2"], "RTMR2", version)
+            runtime_rtmr3 = _hex96(version_config["runtime_rtmr3"], "runtime RTMR3", version)
+            rc = bool(version_config.get("rc", False))
+
+            hardware = version_config.get("hardware") or []
+            if not hardware:
                 raise ValueError(
-                    f"Invalid RTMR0 length for measurement config '{config_name}': "
-                    f"{len(rtmr0_upper)} chars (expected 96)."
+                    f"Measurement config version '{version}' must define at least one "
+                    "'hardware' variant."
                 )
 
-            mrtd_upper = measurement_config["mrtd"].upper().strip()
-            if len(mrtd_upper) != 96:
-                raise ValueError(
-                    f"Invalid MRTD length for measurement config '{config_name}': "
-                    f"{len(mrtd_upper)} chars (expected 96)."
-                )
+            for hw in hardware:
+                hw_name = hw.get("name", "unnamed")
+                owner = f"{version}/{hw_name}"
+                rtmr0 = _hex96(hw["rtmr0"], "RTMR0", owner)
 
-            boot_rtmrs = {
-                k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()
-            }
-            runtime_rtmrs = {
-                k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()
-            }
+                gpu_count = hw.get("gpu_count")
+                if gpu_count is None:
+                    raise ValueError(
+                        f"Missing 'gpu_count' for measurement config '{owner}'. "
+                        "All TEE measurement hardware variants must specify gpu_count."
+                    )
 
-            if boot_rtmrs.get("RTMR0") != runtime_rtmrs.get("RTMR0"):
-                logger.warning(
-                    f"RTMR0 mismatch between boot and runtime for measurement config {config_name}. "
-                    "This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
+                measurements.append(
+                    TeeMeasurementConfig(
+                        version=version,
+                        name=hw_name,
+                        mrtd=mrtd,
+                        rtmr0=rtmr0,
+                        rtmr1=rtmr1,
+                        rtmr2=rtmr2,
+                        runtime_rtmr3=runtime_rtmr3,
+                        expected_gpus=[gpu.lower() for gpu in hw["expected_gpus"]],
+                        gpu_count=gpu_count,
+                        rc=rc,
+                    )
                 )
-
-            gpu_count = measurement_config.get("gpu_count")
-            if gpu_count is None:
-                raise ValueError(
-                    f"Missing 'gpu_count' for measurement config '{config_name}'. "
-                    "All TEE measurement configs must specify gpu_count."
-                )
-
-            measurements.append(
-                TeeMeasurementConfig(
-                    version=str(version).strip(),
-                    mrtd=mrtd_upper,
-                    name=measurement_config["name"],
-                    boot_rtmrs=boot_rtmrs,
-                    runtime_rtmrs=runtime_rtmrs,
-                    expected_gpus=[gpu.lower() for gpu in measurement_config["expected_gpus"]],
-                    gpu_count=gpu_count,
-                )
-            )
 
         logger.info(f"Loaded {len(measurements)} TEE measurement configurations")
         return measurements
@@ -426,15 +471,18 @@ class Settings(BaseSettings):
 
         Returns TEE_MINIMUM_BOOT_VERSION when set, allowing new platform measurement
         configs to be added to the YAML incrementally without immediately enforcing a
-        version bump for platforms not yet upgraded.  Falls back to the highest version
-        found across all loaded measurement configs, or "0.0.0" if the config file is
-        not present (e.g. pods that don't mount the TEE measurements ConfigMap).
+        version bump for platforms not yet upgraded.  Falls back to the highest non-rc
+        version found across all loaded measurement configs, or "0.0.0" if the config file
+        is not present (e.g. pods that don't mount the TEE measurements ConfigMap).
+
+        Release-candidate (rc) versions are excluded so an in-test version does not raise
+        the minimum and lock out released VMs.
         """
         if pinned := os.getenv("TEE_MINIMUM_BOOT_VERSION"):
             return pinned
         if not self.tee_measurement_config_path.exists():
             return "0.0.0"
-        versions = [m.version for m in self.tee_measurements if m.version]
+        versions = [m.version for m in self.tee_measurements if m.version and not m.rc]
         if not versions:
             return "0.0.0"
         latest = versions[0]
@@ -443,8 +491,36 @@ class Settings(BaseSettings):
                 latest = v
         return latest
 
-    luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     cache_passphrase_key: Optional[str] = os.getenv("CACHE_PASSPHRASE_KEY")
+
+    @cached_property
+    def luks_passphrases(self) -> Dict[str, str]:
+        """Root-volume LUKS passphrases keyed by measurement version.
+
+        Parsed from the LUKS_PASSPHRASES env var (a JSON object mapping version -> passphrase).
+        Each VM image bakes in a version-specific root-volume passphrase, so /boot/attestation
+        returns the passphrase matching the attested measurement version. There is no fallback:
+        every accepted version must have an entry.
+
+        Raises:
+            ValueError: If LUKS_PASSPHRASES is set but is not a non-empty {str: str} JSON object.
+        """
+        raw = os.getenv("LUKS_PASSPHRASES")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LUKS_PASSPHRASES must be valid JSON: {e}")
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError(
+                "LUKS_PASSPHRASES must be a non-empty JSON object mapping version -> passphrase."
+            )
+        if not all(isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()):
+            raise ValueError(
+                "LUKS_PASSPHRASES must map string versions to non-empty string passphrases."
+            )
+        return parsed
 
     # TDX verification service URLs (if using Intel's remote verification)
     tdx_verification_url: Optional[str] = os.getenv("TDX_VERIFICATION_URL")

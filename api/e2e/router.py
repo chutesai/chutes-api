@@ -42,7 +42,6 @@ from api.util import (
     semcomp,
 )
 from api.miner_client import sign_request
-from api.rate_limit import rate_limit
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.constants import DIFFUSION_PRICE_MULT_PER_STEP
 from api.user.service import chutes_user_id, subnet_role_accessible
@@ -74,7 +73,6 @@ MAX_INSTANCES_RETURNED = 5
 async def get_e2e_instances(
     chute_id: str,
     current_user: User = Depends(get_current_user(raise_not_found=True, allow_api_key=True)),
-    _rate_limit: None = Depends(rate_limit("e2e_instances", requests_per_minute=10)),
 ):
     """
     Discover E2E-capable instances for a chute and get nonces for invocation.
