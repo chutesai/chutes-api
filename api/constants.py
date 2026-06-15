@@ -132,6 +132,11 @@ INTEGRATED_SUBNETS = {
         "model_substring": "babelbit",
         "max_public_chutes": 3,
     },
+    "glyph": {
+        "netuid": 117,
+        "model_substring": "glyph",
+        "max_public_chutes": 3,
+    },
     "leoma": {
         "netuid": 99,
         "model_substring": "leoma",
