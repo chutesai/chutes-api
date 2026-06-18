@@ -982,6 +982,16 @@ async def hostname_invocation(
 
         # Normalize the chat template kwargs thinking keys since there are two...
         if "chat_template_kwargs" in payload:
+            reasoning_effort = payload["chat_template_kwargs"].get("reasoning_effort") or payload[
+                "chat_template_kwargs"
+            ].get("effective_reasoning_effort")
+            if reasoning_effort:
+                payload["chat_template_kwargs"].update(
+                    {
+                        "effective_reasoning_effort": reasoning_effort,
+                        "reasoning_effort": reasoning_effort,
+                    }
+                )
             if (
                 "thinking" in payload["chat_template_kwargs"]
                 and "enable_thinking" not in payload["chat_template_kwargs"]
