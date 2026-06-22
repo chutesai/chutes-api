@@ -10,6 +10,10 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.registryProxy.service.type | default "LoadBalancer" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  externalTrafficPolicy: Cluster
+  allocateLoadBalancerNodePorts: true
   ports:
     - port: {{ .Values.registryProxy.service.port | default 443 }}
       targetPort: 443

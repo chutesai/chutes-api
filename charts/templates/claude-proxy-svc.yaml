@@ -7,6 +7,8 @@ metadata:
     {{- include "claudeProxy.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.claudeProxy.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
     - name: http
       port: {{ .Values.claudeProxy.service.port | default 8181 }}

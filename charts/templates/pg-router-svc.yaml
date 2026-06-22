@@ -7,6 +7,8 @@ metadata:
     {{- include "pgRouter.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.pgRouter.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
     - name: postgres
       port: {{ .Values.pgRouter.service.port | default 5432 }}

@@ -6,6 +6,8 @@ metadata:
     {{- include "eventSocket.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.eventSocket.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
     - port: {{ .Values.eventSocket.service.port }}
       targetPort: {{ .Values.eventSocket.service.targetPort }}

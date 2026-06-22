@@ -6,6 +6,8 @@ metadata:
     {{- include "api.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.api.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
     - port: {{ .Values.api.service.port }}
       targetPort: {{ .Values.api.service.targetPort }}

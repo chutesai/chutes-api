@@ -6,6 +6,8 @@ metadata:
     {{- include "socket.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.socket.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
     - port: {{ .Values.socket.service.port }}
       targetPort: {{ .Values.socket.service.targetPort }}

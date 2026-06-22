@@ -7,6 +7,8 @@ metadata:
     {{- include "responsesProxy.labels" . | nindent 4 }}
 spec:
   type: {{ .Values.responsesProxy.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
     - name: http
       port: {{ .Values.responsesProxy.service.port | default 8181 }}
