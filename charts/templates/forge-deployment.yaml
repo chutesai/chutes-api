@@ -8,6 +8,13 @@ metadata:
     {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.forge.replicaCount | default 1 }}
+  strategy:
+    type: {{ .Values.forge.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.forge.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.forge.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.forge.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "forge.labels" . | nindent 6 }}

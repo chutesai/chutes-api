@@ -7,6 +7,13 @@ metadata:
     {{- include "responsesProxy.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.responsesProxy.replicaCount | default 2 }}
+  strategy:
+    type: {{ .Values.responsesProxy.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.responsesProxy.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.responsesProxy.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.responsesProxy.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "responsesProxy.labels" . | nindent 6 }}

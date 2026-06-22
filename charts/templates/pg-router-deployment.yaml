@@ -7,6 +7,13 @@ metadata:
     {{- include "pgRouter.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.pgRouter.replicaCount | default 3 }}
+  strategy:
+    type: {{ .Values.pgRouter.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.pgRouter.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.pgRouter.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.pgRouter.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "pgRouter.labels" . | nindent 6 }}

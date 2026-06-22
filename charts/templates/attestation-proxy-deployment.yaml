@@ -7,6 +7,13 @@ metadata:
     {{- include "attestationProxy.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.attestationProxy.replicaCount | default 2 }}
+  strategy:
+    type: {{ .Values.attestationProxy.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.attestationProxy.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.attestationProxy.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.attestationProxy.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "attestationProxy.labels" . | nindent 6 }}

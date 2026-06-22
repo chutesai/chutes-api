@@ -8,6 +8,13 @@ metadata:
     {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.gravalWorker.replicaCount }}
+  strategy:
+    type: {{ .Values.gravalWorker.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.gravalWorker.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.gravalWorker.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.gravalWorker.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "gravalWorker.labels" . | nindent 6 }}

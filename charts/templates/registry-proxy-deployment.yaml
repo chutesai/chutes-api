@@ -6,6 +6,13 @@ metadata:
     {{- include "registryProxy.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.registryProxy.replicaCount }}
+  strategy:
+    type: {{ .Values.registryProxy.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.registryProxy.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.registryProxy.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.registryProxy.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "registryProxy.labels" . | nindent 6 }}

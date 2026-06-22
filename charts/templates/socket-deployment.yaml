@@ -8,6 +8,13 @@ metadata:
     {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.socket.replicaCount }}
+  strategy:
+    type: {{ .Values.socket.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.socket.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.socket.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.socket.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "socket.labels" . | nindent 6 }}
