@@ -8,7 +8,8 @@ data:
   tee_measurements.yaml: |
     # TEE Measurement Configuration
     # Managed via Helm values (teeMeasurements.measurements).
-    # Matching is by full MRTD + RTMRs. Multiple configs may share the same RTMR0
-    # (e.g. VM versions). Each config must have a version for audit trail.
+    # MRTD/RTMR1/RTMR2 (firmware, kernel/initrd) and runtime_rtmr3 are shared across all
+    # hardware for a version; only RTMR0 (GPU topology) varies per hardware. Set `rc: true`
+    # to mark a version a release candidate (attestable but excluded from the public list).
     measurements:
 {{ .Values.teeMeasurements.measurements | toYaml | indent 6 }}

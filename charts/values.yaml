@@ -241,6 +241,7 @@ forge:
   volumeMounts: []
 
 remoteForge:
+  enabled: false
   replicaCount: 4
   image: parachutes/remote-forge:latest
   imagePullPolicy: Always

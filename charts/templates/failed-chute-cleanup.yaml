@@ -48,5 +48,5 @@ spec:
               volumeMounts:
                 {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.failedChuteCleanup.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.failedChuteCleanup.resources | nindent 16 }}
 {{- end }}

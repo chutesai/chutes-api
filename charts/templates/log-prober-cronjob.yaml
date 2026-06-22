@@ -59,4 +59,4 @@ spec:
               volumeMounts:
                 {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.logProber.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.logProber.resources | nindent 16 }}

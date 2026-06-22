@@ -48,11 +48,17 @@ spec:
               port: 5432
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
           readinessProbe:
             tcpSocket:
               port: 5432
             initialDelaySeconds: 5
             periodSeconds: 5
+            timeoutSeconds: 1
+            successThreshold: 1
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.pgRouter.resources | nindent 12 }}
           volumeMounts:

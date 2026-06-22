@@ -33,6 +33,15 @@ spec:
         - name: render-config
           image: {{ include "chutes.image" (list . (.Values.registryProxy.busyboxImage | default "busybox:1.36")) | quote }}
           imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          resources:
+            limits:
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
           command:
             - sh
             - -c

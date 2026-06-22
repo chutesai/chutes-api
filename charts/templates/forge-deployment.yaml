@@ -4,6 +4,8 @@ metadata:
   name: forge
   labels:
     {{- include "forge.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.forge.replicaCount | default 1 }}
   selector:
@@ -48,6 +50,15 @@ spec:
         - name: update-hosts
           image: {{ include "chutes.image" (list . (.Values.forge.busyboxImage | default "busybox:1.36")) | quote }}
           imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          resources:
+            limits:
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
           env:
             - name: VALIDATOR_SS58
               valueFrom:
@@ -61,6 +72,7 @@ spec:
               set -e
               DOMAIN="${VALIDATOR_SS58}.localregistry.chutes.ai"
               echo "Adding host entry for $DOMAIN -> $REGISTRY_SERVICE_HOST"
+
               cp /etc/hosts /mnt/hosts
               echo "$REGISTRY_SERVICE_HOST  $DOMAIN" >> /mnt/hosts
           volumeMounts:
@@ -74,6 +86,35 @@ spec:
             {{- include "chutes.containerSecurityContext" . | nindent 12 }}
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: CHUTES_VERSION
+              value: {{ .Values.chutes_version | quote }}
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: LEGACY_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            {{- if .Values.chuteDb.enabled }}
+            - name: DB_RW_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
+                  key: rw_url
+            - name: DB_RO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
+                  key: ro_url
+            {{- end }}
             - name: CFSV_OP
               valueFrom:
                 secretKeyRef:
@@ -176,7 +217,7 @@ spec:
             items:
               - key: cosign.key
                 path: cosign.key
-                mode: 0400
+                mode: 0444
         - name: etc-hosts
           emptyDir: {}
         - name: structured-logs

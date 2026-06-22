@@ -17,4 +17,10 @@ spec:
     - port: http
       path: /_metrics
       interval: {{ .Values.gmp.interval | default "30s" }}
+  targetLabels:
+    metadata:
+      - container
+      - pod
+      - top_level_controller_name
+      - top_level_controller_type
 {{- end }}

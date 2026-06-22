@@ -48,7 +48,11 @@ spec:
                 - python
                 - audit_exporter.py
               env:
-                {{- include "chutes.cronjobEnv" . | nindent 16 }}
+                {{- include "chutes.cronjobEnv" (dict "Values" .Values "ss58Literal" .Values.auditExporter.validatorSs58) | nindent 16 }}
+                {{- if .Values.auditExporter.s3ProxyUrl }}
+                - name: S3_PROXY_URL
+                  value: {{ .Values.auditExporter.s3ProxyUrl | quote }}
+                {{- end }}
                 - name: SUBTENSOR_ADDRESS
                   value: {{ .Values.auditExporter.subtensor | default "ws://subtensor:9944" | quote }}
                 - name: VALIDATOR_SEED
@@ -86,5 +90,5 @@ spec:
                   mountPath: /tmp
                 {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.auditExporter.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.auditExporter.resources | nindent 16 }}
 {{- end }}

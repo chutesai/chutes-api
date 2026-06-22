@@ -52,7 +52,9 @@ spec:
                 - --soft
               env:
                 {{- include "chutes.cronjobEnv" . | nindent 16 }}
+                - name: PROMETHEUS_URL
+                  value: {{ .Values.chuteAutoscaler.prometheusUrl | default "http://prometheus.chutes.svc.cluster.local:9090" | quote }}
               volumeMounts:
                 {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.chuteAutoscaler.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.chuteAutoscaler.resources | nindent 16 }}

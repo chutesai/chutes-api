@@ -4,16 +4,21 @@ metadata:
   name: cacher
   labels:
     {{- include "cacher.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   schedule: {{ .Values.cacher.schedule | default "*/10 * * * *" | quote }}
   suspend: {{ .Values.cacher.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: {{ .Values.cacher.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.cacher.failedJobsHistoryLimit | default 3 }}
   jobTemplate:
     spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 15000
+      {{- if .Values.cacher.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ .Values.cacher.activeDeadlineSeconds }}
+      {{- end }}
       template:
         metadata:
           labels:
@@ -52,7 +57,12 @@ spec:
                 - cacher.py
               env:
                 {{- include "chutes.cronjobEnv" . | nindent 16 }}
+                - name: VALIDATOR_SEED
+                  valueFrom:
+                    secretKeyRef:
+                      name: validator-credentials
+                      key: seed
               volumeMounts:
                 {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.cacher.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.cacher.resources | nindent 16 }}

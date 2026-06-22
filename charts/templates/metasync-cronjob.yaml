@@ -33,12 +33,6 @@ spec:
           nodeSelector:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.metasync.affinity }}
-          affinity:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          volumes:
-            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
           containers:
             - name: metagraph-syncer
               image: {{ include "chutes.image" (list . .Values.metasync.image) | quote }}
@@ -54,8 +48,6 @@ spec:
                 {{- include "chutes.cronjobEnv" . | nindent 16 }}
                 - name: SUBTENSOR_ADDRESS
                   value: {{ .Values.metasync.subtensor | quote }}
-              volumeMounts:
-                {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.metasync.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.metasync.resources | nindent 16 }}
 {{- end }}

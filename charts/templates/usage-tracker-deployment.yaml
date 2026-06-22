@@ -4,6 +4,8 @@ metadata:
   name: usage-tracker
   labels:
     {{- include "usageTracker.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.usageTracker.replicaCount }}
   strategy:

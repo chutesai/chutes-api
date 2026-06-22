@@ -207,17 +207,8 @@ redis-access: "true"
 {{- end }}
 
 {{- define "chutes.commonEnv" -}}
-- name: CHUTES_VERSION
-  value: {{ .Values.chutes_version | quote }}
-- name: PROMETHEUS_URL
-  value: {{ .Values.prometheusUrl | default "http://prometheus" }}
 - name: GRAVAL_URL
   value: https://graval.chutes.ai
-- name: VALIDATOR_SS58
-  valueFrom:
-    secretKeyRef:
-      name: validator-credentials
-      key: ss58
 - name: REDIS_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -231,11 +222,6 @@ redis-access: "true"
 - name: REDIS_CACERT
   value: "/etc/redis-cacert/cacert.pem"
 {{- end }}
-- name: REDIS_URL
-  valueFrom:
-    secretKeyRef:
-      name: redis-secret
-      key: url
 - name: POSTGRES_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -251,22 +237,9 @@ redis-access: "true"
     secretKeyRef:
       name: postgres-secret
       key: readonly_url
-- name: LEGACY_DB_URL
-  valueFrom:
-    secretKeyRef:
-      name: postgres-secret
-      key: url
-{{- if .Values.chuteDb.enabled }}
-- name: DB_RW_URL
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
-      key: rw_url
-- name: DB_RO_URL
-  valueFrom:
-    secretKeyRef:
-      name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
-      key: ro_url
+{{- if .Values.s3ProxyUrl }}
+- name: S3_PROXY_URL
+  value: {{ .Values.s3ProxyUrl | quote }}
 {{- end }}
 - name: AWS_ACCESS_KEY_ID
   valueFrom:
@@ -375,15 +348,32 @@ Default node tolerations for amd64 architecture.
 {{- end }}
 
 {{/*
+CronJob container resources. CronJobs in prod carry only an ephemeral-storage
+limit (cpu/memory are requests-only); render that shape regardless of any
+cpu/memory limits present in merged values.
+*/}}
+{{- define "chutes.cronjobResources" -}}
+{{- $lim := .limits | default dict -}}
+requests:
+  {{- toYaml .requests | nindent 2 }}
+limits:
+  ephemeral-storage: {{ index $lim "ephemeral-storage" | default "1Gi" | quote }}
+{{- end }}
+
+{{/*
 Minimal env block used by most CronJobs:
 Redis connection + Validator SS58 + Postgres credentials.
 */}}
 {{- define "chutes.cronjobEnv" -}}
 - name: VALIDATOR_SS58
+{{- if .ss58Literal }}
+  value: {{ .ss58Literal | quote }}
+{{- else }}
   valueFrom:
     secretKeyRef:
       name: validator-credentials
       key: ss58
+{{- end }}
 - name: REDIS_PASSWORD
   valueFrom:
     secretKeyRef:

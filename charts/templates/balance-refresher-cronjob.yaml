@@ -4,6 +4,8 @@ metadata:
   name: balance-refresher
   labels:
     {{- include "balanceRefresher.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   schedule: {{ .Values.balanceRefresher.schedule | default "* * * * *" | quote }}
   suspend: {{ .Values.balanceRefresher.suspend | default false }}
@@ -38,8 +40,6 @@ spec:
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          volumes:
-            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
           containers:
             - name: balance-refresher
               image: {{ include "chutes.image" (list . .Values.balanceRefresher.image) | quote }}
@@ -53,7 +53,5 @@ spec:
                 - balance_refresher.py
               env:
                 {{- include "chutes.cronjobEnv" . | nindent 16 }}
-              volumeMounts:
-                {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.balanceRefresher.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.balanceRefresher.resources | nindent 16 }}

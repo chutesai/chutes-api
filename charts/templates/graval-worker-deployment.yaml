@@ -4,6 +4,8 @@ metadata:
   name: graval-worker
   labels:
     {{- include "gravalWorker.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.gravalWorker.replicaCount }}
   selector:
@@ -84,6 +86,10 @@ spec:
                   key: salt
             - name: GRAVAL_URL
               value: {{ .Values.gravalWorker.gravalUrl | default "https://graval.chutes.ai:11443" | quote }}
+            {{- if .Values.s3ProxyUrl }}
+            - name: S3_PROXY_URL
+              value: {{ .Values.s3ProxyUrl | quote }}
+            {{- end }}
             - name: VALIDATOR_SS58
               valueFrom:
                 secretKeyRef:

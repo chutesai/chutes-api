@@ -4,6 +4,8 @@ metadata:
   name: api
   labels:
     {{- include "api.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.api.replicaCount }}
   strategy:
@@ -95,6 +97,17 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            - name: CHUTES_VERSION
+              value: {{ .Values.api.chutesVersion | default .Values.chutes_version | quote }}
+            - name: VALIDATOR_SS58
+            {{- if .Values.api.validatorSs58 }}
+              value: {{ .Values.api.validatorSs58 | quote }}
+            {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            {{- end }}
             - name: LAUNCH_CONFIG_PRIVATE_KEY_PATH
               value: /etc/lc-certs/lc_jwt_private.pem
             - name: DB_POOL_SIZE
@@ -115,10 +128,8 @@ spec:
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
-            {{- if .Values.squad_enabled }}
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
-            {{- end }}
             - name: LUKS_PASSPHRASE
               valueFrom:
                 secretKeyRef:

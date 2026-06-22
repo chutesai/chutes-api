@@ -4,6 +4,8 @@ metadata:
   name: event-socket
   labels:
     {{- include "eventSocket.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.eventSocket.replicaCount }}
   selector:
