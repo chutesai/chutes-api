@@ -7,7 +7,11 @@ metadata:
     {{- include "chutes.dbAccess" . | nindent 4 }}
     {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
+  {{- if not (or .Values.api.hpa.enabled .Values.api.keda.enabled) }}
+  # Omitted when an autoscaler (HPA or KEDA) owns the replica count, so syncs don't
+  # fight it. Managed here only when neither is enabled.
   replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
   strategy:
     type: RollingUpdate
     rollingUpdate:

@@ -5,7 +5,9 @@ metadata:
   labels:
     {{- include "registryProxy.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.registryProxy.hpa.enabled }}
   replicas: {{ .Values.registryProxy.replicaCount }}
+  {{- end }}
   strategy:
     type: {{ .Values.registryProxy.strategy | default "RollingUpdate" }}
     {{- if eq (.Values.registryProxy.strategy | default "RollingUpdate") "RollingUpdate" }}

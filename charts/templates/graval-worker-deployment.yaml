@@ -7,7 +7,9 @@ metadata:
     {{- include "chutes.dbAccess" . | nindent 4 }}
     {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
+  {{- if not .Values.gravalWorker.hpa.enabled }}
   replicas: {{ .Values.gravalWorker.replicaCount }}
+  {{- end }}
   strategy:
     type: {{ .Values.gravalWorker.strategy | default "RollingUpdate" }}
     {{- if eq (.Values.gravalWorker.strategy | default "RollingUpdate") "RollingUpdate" }}

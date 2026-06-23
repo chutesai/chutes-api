@@ -1,55 +1,67 @@
 {{/*
 KEDA ScaledObject for the API deployment.
-Requires KEDA installed in the cluster — managed via the chutes-ops chart.
-See https://keda.sh for docs.
 
-When enabled:
-  - Scales on api_requests_in_progress (per-pod in-flight connections)
-  - Optionally also scales on P95 request latency (duration histogram)
-  - Replaces the CPU-based HPA for the API (api.hpa is ignored when this is enabled)
+Reproduces the live prod `api-scaler` so enabling it is a no-op; tune via .Values.api.keda.
+Requires KEDA installed in the cluster (managed via the chutes-ops chart). See https://keda.sh.
 
-Metric source: Prometheus at .Values.prometheusUrl
-Gauge:         api_requests_in_progress (emitted by api/metrics/capacity.py)
+When enabled, api.hpa is skipped (see hpa.yaml) and the api Deployment omits `replicas`
+(see api-deployment.yaml) so KEDA owns the count.
+
+NOTE: the prometheus trigger carries `metricType: Value` inside `metadata` (rather than at
+the trigger level) to byte-match the live object and avoid perpetual Argo drift. KEDA ignores
+it there; it is reproduced only for diff parity.
 */}}
 {{- if .Values.api.keda.enabled }}
+{{- $k := .Values.api.keda }}
+{{- $ns := .Release.Namespace }}
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
-  name: api
-  namespace: {{ .Release.Namespace }}
+  name: {{ $k.name | default "api-scaler" }}
+  namespace: {{ $ns }}
   labels:
     {{- include "api.labels" . | nindent 4 }}
 spec:
   scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
     name: api
-  minReplicaCount: {{ .Values.api.keda.minReplicas | default 2 }}
-  maxReplicaCount: {{ .Values.api.keda.maxReplicas | default 30 }}
-  cooldownPeriod: {{ .Values.api.keda.cooldownPeriod | default 300 }}
+  minReplicaCount: {{ $k.minReplicas | default 50 }}
+  maxReplicaCount: {{ $k.maxReplicas | default 200 }}
+  cooldownPeriod: {{ $k.cooldownPeriod | default 120 }}
+  pollingInterval: {{ $k.pollingInterval | default 15 }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleDown:
+          stabilizationWindowSeconds: {{ $k.behavior.scaleDown.stabilizationWindowSeconds | default 300 }}
+          policies:
+            - type: Pods
+              value: {{ $k.behavior.scaleDown.pods | default 2 }}
+              periodSeconds: {{ $k.behavior.scaleDown.periodSeconds | default 120 }}
+        scaleUp:
+          stabilizationWindowSeconds: {{ $k.behavior.scaleUp.stabilizationWindowSeconds | default 30 }}
+          policies:
+            - type: Pods
+              value: {{ $k.behavior.scaleUp.pods | default 3 }}
+              periodSeconds: {{ $k.behavior.scaleUp.periodSeconds | default 60 }}
   triggers:
+    {{- if $k.cpu.enabled }}
+    - type: cpu
+      metricType: Utilization
+      metadata:
+        value: {{ $k.cpu.utilization | default 65 | quote }}
+    {{- end }}
+    {{- if $k.memory.enabled }}
+    - type: memory
+      metricType: Utilization
+      metadata:
+        value: {{ $k.memory.utilization | default 75 | quote }}
+    {{- end }}
+    {{- if $k.inflight.enabled }}
     - type: prometheus
       metadata:
-        serverAddress: {{ .Values.prometheusUrl | quote }}
-        namespace: {{ .Release.Namespace }}
-        query: >-
-          sum(http_requests_inprogress)
-          /
-          max(kube_deployment_spec_replicas{
-            deployment="api",
-            namespace="{{ .Release.Namespace }}"
-          })
-        threshold: {{ .Values.api.keda.targetInflightPerPod | default "100" | quote }}
-{{- if .Values.api.keda.latencyTrigger.enabled }}
-    - type: prometheus
-      metadata:
-        serverAddress: {{ .Values.prometheusUrl | quote }}
-        namespace: {{ .Release.Namespace }}
-        # P95 end-to-end request latency (includes miner response time).
-        query: >-
-          histogram_quantile(0.95,
-            sum(rate(duration_bucket[2m])) by (le)
-          )
-        threshold: {{ .Values.api.keda.latencyTrigger.thresholdSeconds | default "30" | quote }}
-{{- end }}
+        metricType: Value
+        serverAddress: {{ $k.inflight.serverAddress | default (printf "http://prometheus.%s.svc.cluster.local:9090" $ns) | quote }}
+        query: {{ $k.inflight.query | default (printf "avg(avg_over_time(http_requests_inprogress{namespace=\"%s\",pod=~\"api-.*\"}[2m]))" $ns) | quote }}
+        threshold: {{ $k.inflight.threshold | default "200" | quote }}
+    {{- end }}
 {{- end }}

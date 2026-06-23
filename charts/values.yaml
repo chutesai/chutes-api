@@ -68,19 +68,40 @@ api:
     maxReplicas: 30
     targetCPUUtilizationPercentage: 70
 
-  # KEDA ScaledObject — when enabled, replaces the CPU-based HPA above.
-  # Requires KEDA to be installed in the cluster.
+  # KEDA ScaledObject — when enabled, replaces the CPU-based HPA above (api.hpa is skipped).
+  # Requires KEDA to be installed in the cluster. Defaults mirror the live prod `api-scaler`
+  # so enabling it is a no-op; override per-environment as needed.
   keda:
     enabled: false
-    minReplicas: 2
-    maxReplicas: 30
-    cooldownPeriod: 300
-    # Scale up when average in-flight requests per pod exceeds this value.
-    targetInflightPerPod: "100"
-    # Optional latency trigger (P95 end-to-end duration, includes miner time).
-    latencyTrigger:
-      enabled: false
-      thresholdSeconds: "30"
+    name: api-scaler          # must match the live ScaledObject name to adopt it (KEDA names its HPA keda-hpa-<name>)
+    minReplicas: 50
+    maxReplicas: 200
+    cooldownPeriod: 120
+    pollingInterval: 15
+    # HPA scaling behaviour (advanced.horizontalPodAutoscalerConfig.behavior)
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        periodSeconds: 120
+        pods: 2
+      scaleUp:
+        stabilizationWindowSeconds: 30
+        periodSeconds: 60
+        pods: 3
+    # Resource triggers (Utilization %). Set enabled: false to drop a trigger.
+    cpu:
+      enabled: true
+      utilization: 65
+    memory:
+      enabled: true
+      utilization: 75
+    # Prometheus in-flight-requests trigger. serverAddress/query default in-template to the
+    # in-cluster prometheus and the live prod query (namespace-substituted); override here if needed.
+    inflight:
+      enabled: true
+      serverAddress: ""
+      query: ""
+      threshold: "200"
 
   affinity:
     nodeAffinity: {}
@@ -579,6 +600,11 @@ redis:
   port: 6379
   # Name of a secret with a 'ca' key containing the TLS CA certificate (optional)
   cacertSecret: ""
+  # File mode for the mounted CA cert, as an OCTAL integer (write the leading zero!).
+  # 0444 = r--r--r-- (read-only): least-privilege-correct, since a mounted CA cert is only
+  # ever read, never written (the owner-write bit in the k8s default 0644 is pure noise).
+  # Non-functional regardless (secret volumes mount read-only). Renders to decimal 292.
+  cacertMode: 0444
 
 cmRedis:
   enabled: true

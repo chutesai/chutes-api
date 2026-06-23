@@ -7,7 +7,9 @@ metadata:
     {{- include "chutes.dbAccess" . | nindent 4 }}
     {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
+  {{- if not .Values.eventSocket.hpa.enabled }}
   replicas: {{ .Values.eventSocket.replicaCount }}
+  {{- end }}
   strategy:
     type: {{ .Values.eventSocket.strategy | default "RollingUpdate" }}
     {{- if eq (.Values.eventSocket.strategy | default "RollingUpdate") "RollingUpdate" }}
