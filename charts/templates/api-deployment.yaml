@@ -126,11 +126,6 @@ spec:
             {{- end }}
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
-            - name: LUKS_PASSPHRASE
-              valueFrom:
-                secretKeyRef:
-                  key: passphrase
-                  name: luks-key
             - name: CACHE_PASSPHRASE_KEY
               valueFrom:
                 secretKeyRef:

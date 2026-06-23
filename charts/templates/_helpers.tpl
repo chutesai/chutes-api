@@ -298,9 +298,7 @@ Only emits when redis.cacertSecret is set.
 - name: redis-cacert
   secret:
     secretName: {{ .Values.redis.cacertSecret }}
-    # 0o444 (r--r--r--) = 292 decimal. Matches the live prod manifest; without it k8s
-    # defaults to 0o644 (420), which would loosen the CA cert mode and bounce pods on sync.
-    defaultMode: 0444
+    defaultMode: {{ .Values.redis.cacertMode | default 0444 }}
     items:
     - key: ca
       path: cacert.pem
