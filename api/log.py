@@ -54,9 +54,9 @@ class _InterceptHandler(logging.Handler):
         # the frame walk makes {name}/{function}/{line} point at the calling module, which
         # loses the logger the record actually came from. The sink surfaces _channel as the
         # top-level `logger` field.
-        logger.bind(_channel=record.name).opt(
-            depth=depth, exception=record.exc_info
-        ).log(level, record.getMessage())
+        logger.bind(_channel=record.name).opt(depth=depth, exception=record.exc_info).log(
+            level, record.getMessage()
+        )
 
 
 def configure_structured_logging() -> None:
@@ -110,9 +110,9 @@ def configure_structured_logging() -> None:
     sys.excepthook = _excepthook
 
     def _thread_excepthook(args):
-        logger.opt(
-            exception=(args.exc_type, args.exc_value, args.exc_traceback)
-        ).critical("Uncaught thread exception")
+        logger.opt(exception=(args.exc_type, args.exc_value, args.exc_traceback)).critical(
+            "Uncaught thread exception"
+        )
 
     threading.excepthook = _thread_excepthook
 
