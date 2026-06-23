@@ -26,8 +26,6 @@ spec:
         {{- include "forge.labels" . | nindent 8 }}
         {{- include "chutes.dbAccess" . | nindent 8 }}
         {{- include "chutes.redisAccess" . | nindent 8 }}
-      annotations:
-        chutes.ai/structured-logs: "true"
     spec:
       securityContext:
         {{- include "chutes.podSecurityContext" . | nindent 8 }}
@@ -93,6 +91,7 @@ spec:
             {{- include "chutes.containerSecurityContext" . | nindent 12 }}
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: CHUTES_VERSION
               value: {{ .Values.chutes_version | quote }}
             - name: VALIDATOR_SS58
@@ -213,8 +212,6 @@ spec:
             {{- with .Values.forge.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-            - name: structured-logs
-              mountPath: /var/log/app
           resources:
             {{- toYaml .Values.forge.resources | nindent 12 }}
       volumes:
@@ -226,8 +223,6 @@ spec:
                 path: cosign.key
                 mode: 0444
         - name: etc-hosts
-          emptyDir: {}
-        - name: structured-logs
           emptyDir: {}
         {{- include "chutes.redisCacertVolume" . | nindent 8 }}
         {{- with .Values.forge.volumes }}

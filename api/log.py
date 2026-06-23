@@ -1,34 +1,46 @@
 """
 Structured logging configuration for in-cluster deployments.
 
-Adds a JSON file sink for Fluent Bit collection alongside the default
-human-readable stderr sink. Safe to call in all entrypoints -- the JSON
-sink only activates when the /var/log/app emptyDir volume is mounted.
+When LOG_FORMAT=json (set in-cluster via the chart), loguru's default sink is
+replaced with a single stdout sink that emits one JSON object per line. The node
+Fluent Bit DaemonSet already collects and enriches container stdout with the full
+kubernetes.* metadata, so the application does not stamp any cluster metadata itself.
 
-Rotation/retention are tunable per-deployment via env vars:
-  STRUCTURED_LOG_ROTATION  default "100 MB"  (e.g. "500 MB" for high-traffic services)
-  STRUCTURED_LOG_RETENTION default 3          (number of rotated files to keep on disk)
+Each JSON line is FLAT (bound fields from logger.bind(...) land at the top level)
+and includes a top-level "text" field holding the rendered human-readable line, so
+client-side `kubectl logs ... | jq -r .text` reproduces a clean log.
 
-Count-based retention is intentional: time-based retention ("1 day") can accumulate
-hundreds of rotated files for high-traffic services, exhausting ephemeral storage.
+When LOG_FORMAT is unset (local dev) this is a no-op -- loguru keeps its default
+human-readable stderr sink.
 """
 
 import os
+import sys
+import json
 from loguru import logger
+
+_HUMAN = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
 
 
 def configure_structured_logging() -> None:
-    structured_log_path = os.environ.get("STRUCTURED_LOG_PATH", "/var/log/app/structured.log")
-    log_dir = os.path.dirname(structured_log_path)
-    if not os.path.isdir(log_dir):
+    if os.environ.get("LOG_FORMAT", "").lower() != "json":
         return
-    rotation = os.environ.get("STRUCTURED_LOG_ROTATION", "100 MB")
-    retention = int(os.environ.get("STRUCTURED_LOG_RETENTION", "10"))
-    logger.add(
-        structured_log_path,
-        serialize=True,
-        rotation=rotation,
-        retention=retention,
-        compression="gz",
-        enqueue=True,
-    )
+
+    def _sink(message):
+        r = message.record
+        payload = {
+            "text": str(message).rstrip("\n"),  # human-readable line for `jq -r .text`
+            "timestamp": r["time"].isoformat(),
+            "level": r["level"].name,
+            "logger": r["name"],
+            "function": r["function"],
+            "line": r["line"],
+            "message": r["message"],
+            **r["extra"],  # logger.bind(...) context, flat at top level
+        }
+        if r["exception"]:
+            payload["exception"] = str(r["exception"])
+        sys.stdout.write(json.dumps(payload, default=str) + "\n")
+
+    logger.remove()
+    logger.add(_sink, level=os.environ.get("LOG_LEVEL", "INFO"), format=_HUMAN)

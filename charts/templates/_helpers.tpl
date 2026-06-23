@@ -276,6 +276,20 @@ redis-access: "true"
 {{- end -}}
 
 {{/*
+Logging env for long-running services. LOG_FORMAT=json switches loguru to emit one
+JSON object per line on stdout (see api/log.py configure_structured_logging); the node
+Fluent Bit DaemonSet collects and enriches that stdout. Unset = human-readable stderr.
+*/}}
+{{- define "chutes.loggingEnv" -}}
+- name: LOG_FORMAT
+  value: {{ .Values.logFormat | default "json" | quote }}
+{{- if .Values.logLevel }}
+- name: LOG_LEVEL
+  value: {{ .Values.logLevel | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
 Volume definition for the managed Redis TLS CA certificate.
 Only emits when redis.cacertSecret is set.
 */}}

@@ -52,6 +52,7 @@ spec:
             - --port
             - "8000"
           env:
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: VALIDATOR_SS58
               valueFrom:
                 secretKeyRef:

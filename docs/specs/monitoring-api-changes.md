@@ -21,8 +21,8 @@ Companion changes in `chutes-api` required by the monitoring stack deployed in `
   - `charts/templates/quota-redis-np.yaml` -- monitoring namespace ingress
   - `charts/templates/_helpers.tpl` -- `PROMETHEUS_URL` env var
   - `charts/values.yaml` -- remove `datadog_enabled`, add `prometheusUrl`
-  - `api/main.py` -- loguru dual-sink configuration
-  - Various deployment templates -- `emptyDir` volume for structured logs
+  - `api/log.py` -- `configure_structured_logging`: JSON-to-stdout sink when `LOG_FORMAT=json`
+  - Long-running service deployment templates -- `LOG_FORMAT=json` env via `chutes.loggingEnv`
 
 ---
 
@@ -30,7 +30,7 @@ Companion changes in `chutes-api` required by the monitoring stack deployed in `
 
 - **Remove Datadog entirely** rather than keeping it as a disabled option. The `datadog_enabled` flag, all `tags.datadoghq.com/*` labels, `admission.datadoghq.com/*` annotations, and `DD_LOGS_INJECTION` env vars are all removed.
 - **Prometheus annotations always present** on API pods (no longer gated behind a flag).
-- **Dual-sink loguru**: human-readable to stdout (for `kubectl logs`), JSON to a file on an `emptyDir` volume (for Fluent Bit). No changes to existing log call syntax.
+- **Structured JSON to stdout** (not a file): when `LOG_FORMAT=json`, loguru emits one flat JSON object per line to stdout, which the node Fluent Bit collects and enriches. Each line carries a top-level `text` field for client-side `jq -r .text`. Unset `LOG_FORMAT` keeps human-readable stderr (local dev). No changes to existing log call syntax. Supersedes the abandoned emptyDir file-sink (PR #155).
 - **`PROMETHEUS_URL`** added to Helm values and `commonEnv` so it's configurable per environment. Defaults to `http://prometheus-server` for backward compatibility, updated to Mimir endpoint when monitoring stack is deployed.
 
 ---
@@ -110,61 +110,60 @@ Add to each NetworkPolicy's `ingress:` array:
 
 This is a scoped rule: only pods with the `prometheus-redis-exporter` label in the `monitoring` namespace can connect, and only on the Redis port.
 
-### 5. Dual-sink loguru configuration
+### 5. Structured JSON logging to stdout
 
-**`api/main.py`** (at app startup, in or near the `lifespan` function):
-- Keep the default loguru stderr sink (human-readable, for `kubectl logs`)
-- Add a JSON file sink:
+> **Note:** This supersedes the earlier emptyDir/file-sink approach (PR #155). A node
+> Fluent Bit DaemonSet cannot read a pod's `emptyDir`, and the file/sidecar/hostPath
+> routes all add cost or ops burden. Instead we emit JSON to **stdout**, which the node
+> Fluent Bit already collects and fully enriches (namespace, pod, container, labels,
+> annotations) with zero extra config. No volumes, annotations, or Downward API are used.
 
-```python
-import sys
-from loguru import logger
+**`api/log.py`** — `configure_structured_logging()` (called from each entrypoint:
+`api/main.py`, `api/socket_server.py`, `api/event_socket_server.py`,
+`api/payment/usage_tracker.py`, `api/payment/watcher.py`, `api/image/forge.py`):
+- When `LOG_FORMAT=json`, remove loguru's default sink and add a single **stdout** sink
+  emitting one JSON object per line.
+- When `LOG_FORMAT` is unset (local dev), do nothing — keep loguru's default
+  human-readable stderr sink.
+- Each JSON line is **flat** (so `logger.bind(...)` context lands at the top level) and
+  includes a top-level `text` field holding the rendered human-readable line, so
+  `kubectl logs ... | jq -r .text` reproduces a clean log.
+- The app does **not** stamp kubernetes metadata — the node Fluent Bit adds the full
+  `kubernetes.*` object automatically from the stdout path.
 
-log_path = os.environ.get("STRUCTURED_LOG_PATH", "/var/log/app/structured.log")
-if os.path.isdir(os.path.dirname(log_path)):
-    logger.add(
-        log_path,
-        serialize=True,
-        rotation="100 MB",
-        retention="1 day",
-        compression="gz",
-    )
-```
-
-The sink only activates if the directory exists (i.e., the `emptyDir` volume is mounted). This makes it safe for local dev where the volume isn't present.
-
-**Deployment templates** (all deployments/cronjobs that should emit structured logs):
-- Add `emptyDir` volume:
+**Deployment templates** — the only chart addition is `LOG_FORMAT=json` (and optional
+`LOG_LEVEL`) on the long-running service containers, via the `chutes.loggingEnv` helper:
 
 ```yaml
-volumes:
-  - name: structured-logs
-    emptyDir: {}
+env:
+  {{- include "chutes.loggingEnv" . | nindent 12 }}
 ```
 
-- Add volumeMount to the container:
+`LOG_FORMAT` / `LOG_LEVEL` are driven by the top-level `logFormat` / `logLevel` values
+(default `json` / unset → `INFO`). No `structured-logs` volume, volumeMount, or
+`chutes.ai/structured-logs` annotation is needed anymore.
 
-```yaml
-volumeMounts:
-  - name: structured-logs
-    mountPath: /var/log/app
-```
-
-**Which templates need this** (at minimum, the high-traffic services):
+**Which containers ship structured logs** (those whose entrypoints call
+`configure_structured_logging`):
 - `api-deployment.yaml`
 - `socket-deployment.yaml`
 - `event-socket-deployment.yaml`
 - `forge-deployment.yaml`
 - `watchtower-deployment.yaml`
-- `payment-watcher-deployment.yaml`
 - `usage-tracker-deployment.yaml`
-- `autoscaler-cronjob.yaml`
 
-Lower-priority (can add later):
-- `graval-worker-deployment.yaml`
-- `autostaker-deployment.yaml`
-- `bt-tx-tracker-deployment.yaml`
-- Other cronjobs
+**Client-side readability** — the JSON is rendered human-readable on the client:
+
+```bash
+kubectl logs -f deploy/api | jq -r '.text // .message'
+# convenience alias:
+klogs() { kubectl logs "$@" | jq -r '.text // .message'; }
+# or tools that auto-detect JSON: humanlog, fblog, stern
+```
+
+In OpenSearch (`api-logs-*`) each doc has the flat app fields (including any
+`logger.bind(...)` context at top level) plus a `kubernetes` object
+(`namespace_name`/`pod_name`/`container_name`/`labels`) added by the node agent.
 
 ### 6. Fix nginx registry-proxy access log
 
@@ -197,20 +196,21 @@ Success =
 2. Prometheus scrape annotations (`prometheus.io/*`) are present unconditionally on API pod template as `annotations` (not `labels`).
 3. `PROMETHEUS_URL` is configurable via `values.yaml` and available to all pods via `commonEnv`.
 4. Redis NetworkPolicies allow ingress from `monitoring` namespace for `redis_exporter` pods.
-5. Loguru dual-sink is configured: stdout remains human-readable, JSON written to `/var/log/app/structured.log` when the volume is mounted.
-6. `emptyDir` volumes are mounted on all primary deployment templates for structured log output.
-7. Registry-proxy nginx access log directory has an `emptyDir` volume mount.
-8. All existing functionality is unchanged -- no log call modifications, no behavior changes.
+5. When `LOG_FORMAT=json`, `kubectl logs <pod>` shows one JSON object per line; `| jq -r .text` renders clean human-readable lines. With `LOG_FORMAT` unset (local dev), logs stay human-readable on stderr.
+6. `logger.bind(request_id=...).info("x")` puts `request_id` at the **top level** of the JSON.
+7. `LOG_FORMAT=json` env is present (via `chutes.loggingEnv`) on the long-running service containers; no `emptyDir`/`hostPath` volumes, no `structured-logs` annotation, no Downward API for logging.
+8. In OpenSearch (`api-logs-*`), docs have the flat app fields plus a `kubernetes` object added by the node agent.
+9. All existing functionality is unchanged -- no log call modifications, no behavior changes.
 
 ---
 
 ## Constraints
 
-- No new Python dependencies (loguru `serialize=True` and `rotation` are built-in)
+- No new Python dependencies (loguru is already a dependency)
 - No changes to existing log call syntax (all `logger.info(f"...")` calls remain as-is)
 - `PROMETHEUS_URL` default must use the full cross-namespace form (`http://prometheus-server.monitoring.svc.cluster.local`) since Prometheus lives in the `monitoring` namespace
 - NetworkPolicy changes must be scoped (namespace + pod label selector) -- do not open blanket cross-namespace access
-- Dual-sink loguru must fail gracefully if the volume isn't mounted (local dev without Docker volumes)
+- `configure_structured_logging()` must be a no-op when `LOG_FORMAT` is unset (local dev keeps human-readable stderr)
 
 ---
 
@@ -223,9 +223,9 @@ Success =
 5. Modified `charts/templates/cm-redis-np.yaml` -- add monitoring namespace ingress
 6. Modified `charts/templates/quota-redis-np.yaml` -- add monitoring namespace ingress
 7. Modified `charts/templates/_helpers.tpl` -- add `PROMETHEUS_URL` to `commonEnv`
-8. Modified `api/main.py` -- add loguru JSON file sink
-9. Modified deployment templates (8+) -- add `emptyDir` volume + volumeMount for structured logs
-10. Modified `charts/templates/registry-proxy-deployment.yaml` -- add nginx log `emptyDir` volume
+8. Modified `api/log.py` -- `configure_structured_logging` emits flat JSON to stdout when `LOG_FORMAT=json`
+9. Modified `charts/templates/_helpers.tpl` -- add `chutes.loggingEnv` helper; `charts/values.yaml` -- add `logFormat`/`logLevel`
+10. Modified long-running service deployment templates -- add `LOG_FORMAT=json` env; removed `structured-logs` volume/mount/annotation
 
 ---
 
@@ -233,16 +233,16 @@ Success =
 
 - Any Datadog reference remains in the codebase after changes
 - Prometheus annotations are missing or placed as `labels` instead of `annotations`
-- `kubectl logs <api-pod>` output changes from human-readable to JSON
+- `LOG_FORMAT=json` produces nested/non-flat JSON (bound fields buried under `extra` instead of top level), or omits the top-level `text` field
 - Existing log calls in Python code require modification
 - Redis NetworkPolicies allow unrestricted cross-namespace access (must be scoped to monitoring namespace + exporter label)
 - `PROMETHEUS_URL` env var is missing from autoscaler or invocation code's runtime environment
-- App crashes on startup when structured log volume is not mounted (local dev)
+- Local dev (no `LOG_FORMAT`) stops logging human-readable to stderr, or the app reintroduces any `emptyDir`/`hostPath`/Downward API for logging
 
 ---
 
 ## Rollout Notes
 
 - These changes can be deployed independently of the monitoring stack. The Prometheus annotations and `PROMETHEUS_URL` default are backward-compatible with the existing Prometheus deployment.
-- The `emptyDir` volumes are harmless even if Fluent Bit isn't deployed yet -- loguru writes to the file, it just doesn't get collected until Fluent Bit is running.
+- `LOG_FORMAT=json` is harmless even if Fluent Bit isn't deployed yet -- the app just writes JSON to stdout, which is collected once the node agent is running.
 - `prometheusUrl` is a permanent value pointing at Prometheus. Mimir only receives `remote_write` from Prometheus for long-term storage and is queried by Grafana -- application code always queries Prometheus directly.

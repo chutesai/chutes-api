@@ -14,8 +14,6 @@ spec:
     metadata:
       labels:
         {{- include "watchtower.labels" . | nindent 8 }}
-      annotations:
-        chutes.ai/structured-logs: "true"
     spec:
       securityContext:
         {{- include "chutes.podSecurityContext" . | nindent 8 }}
@@ -33,8 +31,6 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       volumes:
-        - name: structured-logs
-          emptyDir: {}
         {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: watchtower
@@ -50,9 +46,8 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
           volumeMounts:
-            - name: structured-logs
-              mountPath: /var/log/app
             {{- include "chutes.redisCacertMount" . | nindent 12 }}
           resources:
             {{- toYaml .Values.watchtower.resources | nindent 12 }}

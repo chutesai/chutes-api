@@ -24,13 +24,12 @@ spec:
         {{- include "api.labels" . | nindent 8 }}
         {{- include "chutes.dbAccess" . | nindent 8 }}
         {{- include "chutes.redisAccess" . | nindent 8 }}
+      {{- if not .Values.gmp.enabled }}
       annotations:
-        {{- if not .Values.gmp.enabled }}
         prometheus.io/scrape: "true"
         prometheus.io/path: /_metrics
         prometheus.io/port: {{ .Values.api.service.targetPort | quote }}
-        {{- end }}
-        chutes.ai/structured-logs: "true"
+      {{- end }}
     spec:
       terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds | default 180 }}
       securityContext:
@@ -60,8 +59,6 @@ spec:
         - name: tee-measurements
           configMap:
             name: tee-measurements
-        - name: structured-logs
-          emptyDir: {}
         {{- include "chutes.redisCacertVolume" . | nindent 8 }}
         - name: lc-certs
           secret:
@@ -97,6 +94,7 @@ spec:
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: CHUTES_VERSION
               value: {{ .Values.api.chutesVersion | default .Values.chutes_version | quote }}
             - name: VALIDATOR_SS58
@@ -122,8 +120,6 @@ spec:
               value: {{ .Values.api.openclGravalUrl | default "https://new-graval.chutes.ai:8443" | quote }}
             - name: CONSECUTIVE_FAILURE_LIMIT
               value: "{{ .Values.consecutive_failure_limit }}"
-            - name: STRUCTURED_LOG_ROTATION
-              value: "{{ .Values.api.structuredLogRotation }}"
             {{- if .Values.teeMinimumBootVersion }}
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
@@ -149,8 +145,6 @@ spec:
             - name: tee-measurements
               mountPath: "/etc/config"
               readOnly: true
-            - name: structured-logs
-              mountPath: /var/log/app
             {{- include "chutes.redisCacertMount" . | nindent 12 }}
             - name: lc-certs
               mountPath: /etc/lc-certs
