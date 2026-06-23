@@ -26,7 +26,6 @@ api:
   replicaCount: 1
   image: validator:latest
   imagePullPolicy: Always
-  structuredLogRotation: "500 MB"
   limitConcurrency: 1024
   timeoutGracefulShutdown: 120
   terminationGracePeriodSeconds: 180
