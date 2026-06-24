@@ -73,7 +73,7 @@ db-access: "true"
 {{- end }}
 
 {{- define "metasync.labels" -}}
-app.kubernetes.io/name: metasync
+app.kubernetes.io/name: metagraph-syncer
 {{- end }}
 
 {{- define "weightsetter.labels" -}}
