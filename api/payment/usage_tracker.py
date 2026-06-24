@@ -23,6 +23,7 @@ This gives us:
 - Simple recovery (completed minutes are self-contained)
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import gc
 import sys
 import time

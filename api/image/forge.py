@@ -2,6 +2,7 @@
 Image forge -- build images and push to local registry with buildah.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import asyncio
 from typing import Any, Callable
 import zipfile

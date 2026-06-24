@@ -2,6 +2,7 @@
 Socket.IO poowered websocket server for event broadcasting.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import asyncio
 import socketio
 from loguru import logger

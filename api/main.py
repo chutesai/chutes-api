@@ -2,6 +2,7 @@
 Main API entrypoint.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import os
 import re
 import gc

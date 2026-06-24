@@ -2,6 +2,7 @@
 Socket.IO poowered websocket server for continuous bi-directional vali/miner comms.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import asyncio
 import socketio
 import api.constants as cst

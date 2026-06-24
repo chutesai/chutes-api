@@ -44,10 +44,12 @@ class _InterceptHandler(logging.Handler):
             level = logger.level(record.levelname).name
         except ValueError:
             level = record.levelno
-        # Walk out of the logging machinery so {name}/{function}/{line} point at the
-        # real caller rather than this handler.
-        frame, depth = logging.currentframe(), 2
-        while frame and frame.f_code.co_filename == logging.__file__:
+        # Walk out of this handler and the stdlib logging machinery so {name}/{function}/{line}
+        # point at the originating call site rather than logging.callHandlers. Start at this
+        # frame (depth 0) and skip every frame inside logging/__init__.py. (Canonical loguru
+        # intercept recipe; the older logging.currentframe()+2 form lands on callHandlers.)
+        frame, depth = sys._getframe(), 0
+        while frame and (depth == 0 or frame.f_code.co_filename == logging.__file__):
             frame = frame.f_back
             depth += 1
         # Preserve the stdlib channel name (e.g. "uvicorn.access", "sqlalchemy.engine") --
