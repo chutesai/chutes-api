@@ -415,6 +415,12 @@ paymentWatcher:
     timeoutSeconds: 5
     successThreshold: 1
     failureThreshold: 15
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
   resources:
     requests:
       cpu: "500m"
@@ -745,8 +751,7 @@ autostaker:
       ephemeral-storage: "1Gi"
     limits:
       ephemeral-storage: "1Gi"
-  affinity:
-    nodeAffinity: {}
+  affinity: {}
   tolerations: []
 
 # New services (disabled by default -- enable in your overlay values)

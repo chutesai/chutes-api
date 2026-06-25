@@ -5,6 +5,8 @@ metadata:
   name: bt-tx-tracker
   labels:
     {{- include "btTxTracker.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   replicas: {{ .Values.btTxTracker.replicaCount | default 0 }}
   strategy:
@@ -36,8 +38,6 @@ spec:
         {{- with .Values.btTxTracker.tolerations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      volumes:
-        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: bt-tx-tracker
           image: {{ include "chutes.image" (list . .Values.btTxTracker.image) | quote }}
@@ -77,15 +77,30 @@ spec:
                 secretKeyRef:
                   name: postgres-secret
                   key: url
-            - name: POSTGRESQL_RO
-              valueFrom:
-                secretKeyRef:
-                  name: postgres-secret
-                  key: readonly_url
             - name: SUBTENSOR_ADDRESS
               value: {{ .Values.btTxTracker.subtensor | quote }}
-          volumeMounts:
-            {{- include "chutes.redisCacertMount" . | nindent 12 }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.btTxTracker.service.targetPort }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 15
+          readinessProbe:
+            httpGet:
+              path: /status
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.btTxTracker.resources | nindent 12 }}
 {{- end }}
