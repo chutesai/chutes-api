@@ -1,0 +1,55 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: socket-servers-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/server-snippet: "proxy_set_header X-Resolved-IP $http_cf_connecting_ip;"
+    # socket-servers uses its own list in the overlay (the other ingresses carry an extra
+    # trailing ops IP); falls back to the shared whitelist if not set.
+    {{- with (.Values.ingress.socketWhitelistSourceRange | default .Values.ingress.whitelistSourceRange) }}
+    nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className | default "nginx" }}
+  rules:
+  - host: socket.chutes.ai
+    http:
+      paths:
+      - backend:
+          service:
+            name: socket
+            port:
+              number: 8000
+        path: /
+        pathType: Prefix
+  - host: ws.chutes.ai
+    http:
+      paths:
+      - backend:
+          service:
+            name: socket
+            port:
+              number: 8000
+        path: /
+        pathType: Prefix
+  - host: event-socket.chutes.ai
+    http:
+      paths:
+      - backend:
+          service:
+            name: event-socket
+            port:
+              number: 8000
+        path: /
+        pathType: Prefix
+  tls:
+  - hosts:
+    - socket.chutes.ai
+    - ws.chutes.ai
+    - event-socket.chutes.ai
+    secretName: {{ .Values.ingress.tlsSecretName | default "ingress-tls" }}
+{{- end }}

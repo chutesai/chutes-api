@@ -10,6 +10,26 @@ imageRegistry: "us-central1-docker.pkg.dev/chutes-443309/chutes-prod-docker-regi
 
 consecutive_failure_limit: 7
 
+# NetworkPolicies for the workloads (reproduced from the live cluster). NOTE: 7 of the 8 select
+# pods by `app: <name>`, but chart pods are labeled app.kubernetes.io/name -- so those policies
+# currently match no pods and enforce nothing (only pg-router-np is active). Kept faithful for a
+# no-op adoption; fixing the selectors is a deliberate, test-gated change (see template warnings).
+networkPolicies:
+  enabled: true
+
+# nginx Ingresses for externally-routed services. Templated from the live cluster state.
+# The prometheus ingress is intentionally excluded (owned by the prometheus/GMP app).
+ingress:
+  enabled: true
+  className: "nginx"
+  tlsSecretName: "ingress-tls"
+  # Source-IP allowlists are infra-specific (Cloudflare ranges, GCP NAT egress, ops IPs) and are
+  # set per-environment in the overlay values. Left empty here so the whitelist annotation is
+  # omitted entirely when unset (no allowlist == nginx allows all).
+  whitelistSourceRange: ""
+  # socket-servers uses its own list (the other ingresses add a trailing ops IP); set in overlay.
+  socketWhitelistSourceRange: ""
+
 # URL of the Prometheus service used for subscription quota queries (api/invocation/util.py).
 # The service name varies by deployment — override in environment values.
 prometheusUrl: "http://prometheus"
@@ -388,6 +408,7 @@ paymentWatcher:
   image: validator:latest
   imagePullPolicy: Always
   replicaCount: 1
+  subtensor: "ws://subtensor:9944"
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 30
@@ -706,20 +727,23 @@ registryProxy:
     port: 443
     annotations: {}
 
+# autostaker runs as a CronJob (one-shot api/autostaker.py per tick), not a long-running
+# worker. validatorSs58 left empty here -> cronjobEnv falls back to the validator-credentials
+# secret; set a literal in the overlay to match prod.
 autostaker:
   enabled: true
-  replicaCount: 1
   image: validator:latest
   imagePullPolicy: Always
+  schedule: "* * * * *"
+  suspend: false
   subtensor: "wss://entrypoint-finney.opentensor.ai"
+  validatorSs58: ""
   resources:
     requests:
-      cpu: "1"
+      cpu: "500m"
       memory: "2Gi"
       ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
-      memory: "2Gi"
       ephemeral-storage: "1Gi"
   affinity:
     nodeAffinity: {}
