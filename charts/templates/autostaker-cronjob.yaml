@@ -2,11 +2,8 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
+  # Live autostaker (hand-applied) carries no labels on the CronJob metadata; matched for no-op.
   name: autostaker
-  labels:
-    {{- include "autostaker.labels" . | nindent 4 }}
-    {{- include "chutes.dbAccess" . | nindent 4 }}
-    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
   schedule: {{ .Values.autostaker.schedule | default "* * * * *" | quote }}
   suspend: {{ .Values.autostaker.suspend | default false }}
@@ -20,8 +17,8 @@ spec:
       activeDeadlineSeconds: 1800
       template:
         metadata:
+          # Live pod template has only db-access/redis-access (no app.kubernetes.io/name); matched.
           labels:
-            {{- include "autostaker.labels" . | nindent 12 }}
             {{- include "chutes.dbAccess" . | nindent 12 }}
             {{- include "chutes.redisAccess" . | nindent 12 }}
         spec:
