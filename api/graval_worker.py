@@ -2,6 +2,7 @@
 GraVal node validation worker.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import api.database.orms  # noqa
 import os
 import subprocess

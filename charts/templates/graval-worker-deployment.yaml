@@ -63,6 +63,7 @@ spec:
             - --max-async-tasks
             - {{ .Values.gravalWorker.maxAsyncTasks | default 1 | quote }}
           env:
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: CFSV_OP
               valueFrom:
                 secretKeyRef:

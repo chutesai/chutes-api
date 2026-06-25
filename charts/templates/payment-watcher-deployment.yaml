@@ -94,7 +94,7 @@ spec:
               protocol: TCP
           livenessProbe:
             httpGet:
-              path: /health
+              path: /status
               port: http
             initialDelaySeconds: {{ .Values.paymentWatcher.livenessProbe.initialDelaySeconds | default 30 }}
             periodSeconds: {{ .Values.paymentWatcher.livenessProbe.periodSeconds | default 30 }}
