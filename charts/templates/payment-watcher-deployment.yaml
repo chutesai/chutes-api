@@ -56,9 +56,7 @@ spec:
             - --port
             - "8000"
           env:
-            # NOTE: LOG_FORMAT (structured JSON logging) is intentionally NOT set here yet --
-            # it's deferred to a separate functional change along with the validator:latest bump.
-            # Adopting payment-watcher as a no-op match of the live (validator:nuevo) workload.
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: SUBTENSOR_ADDRESS
               value: {{ .Values.paymentWatcher.subtensor | quote }}
             - name: VALIDATOR_SS58

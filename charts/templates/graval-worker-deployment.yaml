@@ -63,8 +63,7 @@ spec:
             - --max-async-tasks
             - {{ .Values.gravalWorker.maxAsyncTasks | default 1 | quote }}
           env:
-            # LOG_FORMAT (JSON logging) deferred to the functional PR alongside the image bump --
-            # graval-worker's live image (validator:nuevo) lacks the logging bootstrap anyway.
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: CFSV_OP
               valueFrom:
                 secretKeyRef:

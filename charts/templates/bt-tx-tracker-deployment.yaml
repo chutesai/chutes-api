@@ -54,6 +54,7 @@ spec:
             - --port
             - {{ .Values.btTxTracker.service.targetPort | quote }}
           env:
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
             - name: REDIS_PASSWORD
               valueFrom:
                 secretKeyRef:

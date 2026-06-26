@@ -1,3 +1,5 @@
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
+from api.log import install_asyncio_exception_handler
 import traceback
 import uuid
 import backoff
@@ -325,6 +327,7 @@ async def lifespan(app: FastAPI):
     """
     Manage application lifecycle.
     """
+    install_asyncio_exception_handler()
     logger.info("Starting BT Transfer Monitor application...")
     await monitor.initialize()
     monitor_task = asyncio.create_task(monitor.monitor_transfers())
