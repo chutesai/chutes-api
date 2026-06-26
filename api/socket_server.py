@@ -14,7 +14,7 @@ from api.config import settings
 from api.user.router import get_current_user
 from api.socket_shared import SyntheticRequest
 from api.redis_pubsub import RedisListener
-from api.log import configure_structured_logging
+from api.log import install_asyncio_exception_handler
 
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -29,7 +29,7 @@ async def initialize_socket_app():
     """
     Start our redis subscriber when the server starts.
     """
-    configure_structured_logging()
+    install_asyncio_exception_handler()
     fastapi_app.state.redis_listener = RedisListener(sio, "miner_broadcast")
     asyncio.create_task(fastapi_app.state.redis_listener.start())
 

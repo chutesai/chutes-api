@@ -61,8 +61,18 @@ class _InterceptHandler(logging.Handler):
         )
 
 
+def _json_logging_enabled() -> bool:
+    return os.environ.get("LOG_FORMAT", "").lower() == "json"
+
+
 def configure_structured_logging() -> None:
-    if os.environ.get("LOG_FORMAT", "").lower() != "json":
+    """Install the JSON stdout sink and route stdlib logging + synchronous exception hooks
+    through it. Safe to call once at import time -- before any event loop exists -- which is how
+    api.logging_bootstrap invokes it. The asyncio event-loop exception handler is NOT installed
+    here (no running loop yet); call install_asyncio_exception_handler() from an async entrypoint
+    for that. No-op unless LOG_FORMAT=json.
+    """
+    if not _json_logging_enabled():
         return
 
     def _sink(message):
@@ -118,15 +128,22 @@ def configure_structured_logging() -> None:
 
     threading.excepthook = _thread_excepthook
 
+
+def install_asyncio_exception_handler() -> None:
+    """Route uncaught asyncio event-loop exceptions through the JSON sink. Must be called from
+    within a running event loop (e.g. a FastAPI lifespan or async main), since there is no loop
+    at import time -- this is the one piece configure_structured_logging() cannot do. Idempotent
+    and a no-op unless LOG_FORMAT=json or when called with no running loop.
+    """
+    if not _json_logging_enabled():
+        return
+
     def _aioloop_handler(loop, ctx):
         # ctx["exception"] may be absent for non-exception loop errors (e.g. transport msgs).
         logger.opt(exception=ctx.get("exception")).critical(
             "Uncaught asyncio exception: {}", ctx.get("message")
         )
 
-    # All entrypoints call this from within an async context, so there's a running loop to
-    # attach to. The guard keeps it safe for any synchronous caller (the main-thread and
-    # thread excepthooks still cover those).
     try:
         asyncio.get_running_loop().set_exception_handler(_aioloop_handler)
     except RuntimeError:
