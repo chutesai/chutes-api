@@ -26,5 +26,5 @@ spec:
       protocol: TCP
     to:
     - ipBlock:
-        cidr: 34.111.142.178/32
+        cidr: {{ .Values.networkPolicies.proxyUpstreamCidr }}
 {{- end }}

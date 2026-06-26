@@ -16,6 +16,11 @@ consecutive_failure_limit: 7
 # no-op adoption; fixing the selectors is a deliberate, test-gated change (see template warnings).
 networkPolicies:
   enabled: true
+  # Egress CIDRs are environment-specific -- placeholders here (RFC5737 docs net), real ranges
+  # set in the overlay. internalCidr = private range for redis/postgres/internal services;
+  # proxyUpstreamCidr = the external upstream the claude/responses proxies are allowed to reach.
+  internalCidr: "192.0.2.0/24"
+  proxyUpstreamCidr: "192.0.2.4/32"
 
 # nginx Ingresses for externally-routed services. Templated from the live cluster state.
 # The prometheus ingress is intentionally excluded (owned by the prometheus/GMP app).
@@ -762,10 +767,12 @@ attestationProxy:
   imagePullPolicy: IfNotPresent
   tlsSecretName: "chutes-tls"
   serverName: "tdx-attestation.chutes.ai"
+  # Placeholder source ranges (RFC5737 docs net). Set the real trusted real-IP sources in the
+  # overlay -- these are environment-specific load-balancer/NAT addresses.
   realIpFrom:
-    - "34.174.24.75"
-    - "34.174.17.174"
-    - "34.174.89.0"
+    - "192.0.2.1"
+    - "192.0.2.2"
+    - "192.0.2.3"
   resources:
     requests:
       cpu: 250m
@@ -812,13 +819,15 @@ pgRouter:
   healthCheckImage: validator:latest
   imagePullPolicy: IfNotPresent
   credentialsSecret: "pg-router-credentials"
+  # Placeholder backend addresses (RFC5737 docs net). Real Postgres endpoints are
+  # environment-specific -- set pgRouter.backends in the overlay.
   backends:
     - name: dallas
-      address: "10.245.112.2:5432"
+      address: "192.0.2.10:5432"
       healthPort: 8008
       backup: false
     - name: iowa
-      address: "10.245.113.13:5432"
+      address: "192.0.2.11:5432"
       healthPort: 8009
       backup: true
   resources:
