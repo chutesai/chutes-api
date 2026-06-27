@@ -1,0 +1,32 @@
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: claude-proxy-netpol
+spec:
+  # WARNING: live policy selects `app: claude-proxy`, but chart pods are labeled
+  # app.kubernetes.io/name -- so this selector matches NO pods and the policy is inert.
+  # Reproduced verbatim for no-op adoption; change to app.kubernetes.io/name to enforce.
+  podSelector:
+    matchLabels:
+      app: claude-proxy
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - ports:
+    - port: 8181
+      protocol: TCP
+  egress:
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - ports:
+    - port: 443
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: {{ .Values.networkPolicies.proxyUpstreamCidr }}
+{{- end }}

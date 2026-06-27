@@ -1,3 +1,4 @@
+{{- if .Values.watchtower.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -14,6 +15,8 @@ spec:
       labels:
         {{- include "watchtower.labels" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.watchtower.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -22,19 +25,30 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.watchtower.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.watchtower.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+      volumes:
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: watchtower
-          image: "{{ .Values.watchtower.image }}"
+          image: {{ include "chutes.image" (list . .Values.watchtower.image) | quote }}
           imagePullPolicy: {{ .Values.watchtower.imagePullPolicy }}
-          command: ["poetry", "run", "python", "watchtower.py"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - python
+            - watchtower.py
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: MEMCACHED
-              value: memcached
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
+          volumeMounts:
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
           resources:
             {{- toYaml .Values.watchtower.resources | nindent 12 }}
+{{- end }}

@@ -18,6 +18,7 @@ demo*.sh
 *.so
 data/chutes
 .vllmcache
+local
 
 # Distribution / packaging
 .Python

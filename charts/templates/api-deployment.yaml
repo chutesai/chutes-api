@@ -4,39 +4,40 @@ metadata:
   name: api
   labels:
     {{- include "api.labels" . | nindent 4 }}
-    {{- if .Values.datadog_enabled }}
-    tags.datadoghq.com/env: chutes-prod
-    tags.datadoghq.com/service: api
-    tags.datadoghq.com/version: 0.0.1
-    {{- end }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
+  {{- if not (or .Values.api.hpa.enabled .Values.api.keda.enabled) }}
+  # Omitted when an autoscaler (HPA or KEDA) owns the replica count, so syncs don't
+  # fight it. Managed here only when neither is enabled.
   replicas: {{ .Values.api.replicaCount }}
+  {{- end }}
   strategy:
     type: RollingUpdate
     rollingUpdate:
-      maxSurge: 0
-      maxUnavailable: 3
+      maxSurge: {{ .Values.api.rollingUpdate.maxSurge | default "25%" }}
+      maxUnavailable: {{ .Values.api.rollingUpdate.maxUnavailable | default "25%" }}
   selector:
     matchLabels:
       {{- include "api.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "api.labels" . | nindent 8 }}
-        {{- if .Values.datadog_enabled }}
-        prometheus.io/path: /_metrics
-        prometheus.io/port: "8000"
-        prometheus.io/scrape: "true"
-        tags.datadoghq.com/env: chutes-prod
-        tags.datadoghq.com/service: api
-        tags.datadoghq.com/version: 0.0.1
-        admission.datadoghq.com/enabled: "true"
-        {{- end }}
-      {{- if .Values.datadog_enabled }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
+      {{- if not .Values.gmp.enabled }}
       annotations:
-        admission.datadoghq.com/python-lib.version: v2.20.0
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /_metrics
+        prometheus.io/port: {{ .Values.api.service.targetPort | quote }}
       {{- end }}
     spec:
+      terminationGracePeriodSeconds: {{ .Values.api.terminationGracePeriodSeconds | default 180 }}
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.api.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -45,10 +46,11 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.api.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.api.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       volumes:
         {{- if .Values.squad_enabled }}
         - name: squad-certs
@@ -61,40 +63,78 @@ spec:
         - name: tee-measurements
           configMap:
             name: tee-measurements
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
+        - name: lc-certs
+          secret:
+            secretName: launch-config-certs
+            items:
+              - key: lc_jwt_public.pem
+                path: lc_jwt_public.pem
+              - key: lc_jwt_private.pem
+                path: lc_jwt_private.pem
       containers:
         - name: api
-          image: "{{ .Values.api.image }}"
+          image: {{ include "chutes.image" (list . .Values.api.image) | quote }}
           imagePullPolicy: {{ .Values.api.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "{{ .Values.api.service.targetPort }}", "--workers", "{{ .Values.api.resources.limits.cpu }}", "--limit-concurrency", "2048", "--limit-max-requests", "1000"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - uvicorn
+            - api.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.api.service.targetPort | quote }}
+            - --limit-concurrency
+            - {{ .Values.api.limitConcurrency | default 1024 | quote }}
+            - --timeout-graceful-shutdown
+            - {{ .Values.api.timeoutGracefulShutdown | default 120 | quote }}
+            - --loop
+            - uvloop
+            - --http
+            - httptools
           env:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
-            {{- if .Values.datadog_enabled }}
-            - name: DD_LOGS_INJECTION
-              value: "true"
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: CHUTES_VERSION
+              value: {{ .Values.api.chutesVersion | default .Values.chutes_version | quote }}
+            - name: VALIDATOR_SS58
+            {{- if .Values.api.validatorSs58 }}
+              value: {{ .Values.api.validatorSs58 | quote }}
+            {{- else }}
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
             {{- end }}
-            - name: MEMCACHED
-              value: memcached
-            - name: FIRST_PAYMENT_BONUS
-              value: "{{ .Values.account_settings.first_payment_bonus.bonus }}"
-            - name: FIRST_PAYMENT_BONUS_THRESHOLD
-              value: "{{ .Values.account_settings.first_payment_bonus.threshold }}"
-            - name: ALL_ACCOUNTS_FREE
-              value: "{{ .Values.account_settings.all_accounts_free }}"
-            - name: DEVELOPER_DEPOSIT
-              value: "{{ .Values.account_settings.developer_deposit }}"
+            - name: LAUNCH_CONFIG_PRIVATE_KEY_PATH
+              value: /etc/lc-certs/lc_jwt_private.pem
+            - name: DB_POOL_SIZE
+              value: {{ .Values.api.dbPoolSize | default 24 | quote }}
+            - name: DB_OVERFLOW
+              value: {{ .Values.api.dbOverflow | default 8 | quote }}
+            - name: PROMETHEUS_MULTIPROC_DIR
+              value: /tmp/prometheus_multiproc
+            - name: RATE_LIMIT_COUNT
+              value: {{ .Values.api.rateLimitCount | default 10 | quote }}
+            - name: OPENCL_GRAVAL_URL
+              value: {{ .Values.api.openclGravalUrl | default "https://new-graval.chutes.ai:8443" | quote }}
             - name: CONSECUTIVE_FAILURE_LIMIT
               value: "{{ .Values.consecutive_failure_limit }}"
             {{- if .Values.teeMinimumBootVersion }}
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
-            - name: CM_REDIS_SHARD_COUNT
-              value: "{{ .Values.cmRedis.shard_count }}"
-            {{- if .Values.squad_enabled }}
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
-            {{- end }}
+            - name: CACHE_PASSPHRASE_KEY
+              valueFrom:
+                secretKeyRef:
+                  key: key
+                  name: cache-passphrase-key
           volumeMounts:
             {{- if .Values.squad_enabled }}
             - name: squad-certs
@@ -103,6 +143,10 @@ spec:
             {{- end }}
             - name: tee-measurements
               mountPath: "/etc/config"
+              readOnly: true
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
+            - name: lc-certs
+              mountPath: /etc/lc-certs
               readOnly: true
           ports:
             - name: http

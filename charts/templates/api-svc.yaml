@@ -5,11 +5,13 @@ metadata:
   labels:
     {{- include "api.labels" . | nindent 4 }}
 spec:
-  type: NodePort
+  type: {{ .Values.api.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
-    - nodePort: {{ .Values.api.service.nodePort }}
-      port: {{ .Values.api.service.port }}
+    - port: {{ .Values.api.service.port }}
       targetPort: {{ .Values.api.service.targetPort }}
-      name: validator-api
+      protocol: TCP
+      name: {{ .Values.api.service.portName | default "api" }}
   selector:
-    {{- include "api.labels" . | nindent 4 }}
+    app.kubernetes.io/name: api

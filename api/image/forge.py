@@ -2,6 +2,7 @@
 Image forge -- build images and push to local registry with buildah.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import asyncio
 from typing import Any, Callable
 import zipfile
@@ -15,6 +16,7 @@ import shutil
 import chutes
 import orjson as json
 from loguru import logger
+from api.log import install_asyncio_exception_handler
 from api.config import settings
 from api.database import get_session
 from api.exceptions import (
@@ -1481,6 +1483,7 @@ ENV PYTHONDONTWRITEBYTECODE=1
 
 
 async def main():
+    install_asyncio_exception_handler()
     await initialize()
 
     while True:

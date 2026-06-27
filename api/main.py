@@ -2,6 +2,7 @@
 Main API entrypoint.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import os
 import re
 import gc
@@ -46,6 +47,7 @@ from api.database import Base, engine, get_session
 from api.config import settings
 from api.metrics.util import keep_gauges_fresh
 from api.instance.util import start_instance_invalidation_listener
+from api.log import install_asyncio_exception_handler
 
 
 async def loop_lag_monitor(interval: float = 0.1, warn_threshold: float = 0.2):
@@ -99,6 +101,8 @@ async def lifespan(_: FastAPI):
     Execute all initialization/startup code, e.g. ensuring tables exist and such.
     """
     gc.set_threshold(5000, 50, 50)
+
+    install_asyncio_exception_handler()
 
     loop = asyncio.get_event_loop()
     executor = ThreadPoolExecutor(max_workers=64)

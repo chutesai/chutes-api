@@ -2,12 +2,14 @@
 Socket.IO poowered websocket server for event broadcasting.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import asyncio
 import socketio
 from loguru import logger
 from fastapi import FastAPI
 import api.database.orms  # noqa
 from api.redis_pubsub import RedisListener
+from api.log import install_asyncio_exception_handler
 
 
 sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
@@ -20,6 +22,7 @@ async def initialize_socket_app():
     """
     Start our redis subscriber when the server starts.
     """
+    install_asyncio_exception_handler()
     fastapi_app.state.redis_listener = RedisListener(sio, "events")
     asyncio.create_task(fastapi_app.state.redis_listener.start())
 

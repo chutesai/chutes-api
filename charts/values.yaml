@@ -1,30 +1,72 @@
 teeMinimumBootVersion: ""
 
-account_settings:
-  first_payment_bonus:
-    threshold: 100.00
-    bonus: 25.00
-  all_accounts_free: false
-  developer_deposit: 5000.00
+squad_enabled: false
 
-squad_enabled: true
+chutes_version: "0.6.9"
 
-chutes_version: 0.2.42
+# Container image registry prefix. All private images are stored under this path.
+# Set to empty string to use fully-qualified image values as-is.
+imageRegistry: "us-central1-docker.pkg.dev/chutes-443309/chutes-prod-docker-registry"
 
 consecutive_failure_limit: 7
 
-datadog_enabled: false
+# NetworkPolicies for the workloads (reproduced from the live cluster). NOTE: 7 of the 8 select
+# pods by `app: <name>`, but chart pods are labeled app.kubernetes.io/name -- so those policies
+# currently match no pods and enforce nothing (only pg-router-np is active). Kept faithful for a
+# no-op adoption; fixing the selectors is a deliberate, test-gated change (see template warnings).
+networkPolicies:
+  enabled: true
+  # Egress CIDRs are environment-specific -- placeholders here (RFC5737 docs net), real ranges
+  # set in the overlay. internalCidr = private range for redis/postgres/internal services;
+  # proxyUpstreamCidr = the external upstream the claude/responses proxies are allowed to reach.
+  internalCidr: "192.0.2.0/24"
+  proxyUpstreamCidr: "192.0.2.4/32"
+
+# nginx Ingresses for externally-routed services. Templated from the live cluster state.
+# The prometheus ingress is intentionally excluded (owned by the prometheus/GMP app).
+ingress:
+  enabled: true
+  className: "nginx"
+  tlsSecretName: "ingress-tls"
+  # Source-IP allowlists are infra-specific (Cloudflare ranges, GCP NAT egress, ops IPs) and are
+  # set per-environment in the overlay values. Left empty here so the whitelist annotation is
+  # omitted entirely when unset (no allowlist == nginx allows all).
+  whitelistSourceRange: ""
+  # socket-servers uses its own list (the other ingresses add a trailing ops IP); set in overlay.
+  socketWhitelistSourceRange: ""
+
+# URL of the Prometheus service used for subscription quota queries (api/invocation/util.py).
+# The service name varies by deployment — override in environment values.
+prometheusUrl: "http://prometheus"
+
+# S3/object-storage credentials secret name (key: access-key-id, secret-access-key, endpoint-url, aws-region, bucket)
+s3SecretName: "s3-credentials"
+
+# External managed Postgres (chutes-db secret) for DB_RW_URL / DB_RO_URL
+chuteDb:
+  enabled: false
+  secretName: "chutes-db"
 
 api:
-  replicaCount: 12
-  image: parachutes/validator:latest
+  replicaCount: 1
+  image: validator:latest
   imagePullPolicy: Always
+  limitConcurrency: 1024
+  timeoutGracefulShutdown: 120
+  terminationGracePeriodSeconds: 180
+  dbPoolSize: 24
+  dbOverflow: 8
+  rateLimitCount: 10
+  openclGravalUrl: "https://new-graval.chutes.ai:8443"
+  rollingUpdate:
+    maxSurge: "25%"
+    maxUnavailable: "25%"
   livenessProbe:
-    initialDelaySeconds: 30
-    periodSeconds: 10
-    timeoutSeconds: 5
+    initialDelaySeconds: 40
+    periodSeconds: 15
+    timeoutSeconds: 7
     successThreshold: 1
-    failureThreshold: 3
+    failureThreshold: 4
   readinessProbe:
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -33,17 +75,59 @@ api:
     failureThreshold: 3
   resources:
     requests:
-      cpu: "4"
-      memory: "20Gi"
+      cpu: "2"
+      memory: "8Gi"
+      ephemeral-storage: "2Gi"
     limits:
-      cpu: "4"
-      memory: "20Gi"
+      cpu: "2"
+      memory: "8Gi"
+      ephemeral-storage: "2Gi"
   service:
-    type: NodePort
-    nodePort: 32000
+    type: ClusterIP
     port: 8000
     targetPort: 8000
   nodeSelector: {}
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 70
+
+  # KEDA ScaledObject — when enabled, replaces the CPU-based HPA above (api.hpa is skipped).
+  # Requires KEDA to be installed in the cluster. Defaults mirror the live prod `api-scaler`
+  # so enabling it is a no-op; override per-environment as needed.
+  keda:
+    enabled: false
+    name: api-scaler          # must match the live ScaledObject name to adopt it (KEDA names its HPA keda-hpa-<name>)
+    minReplicas: 50
+    maxReplicas: 200
+    cooldownPeriod: 120
+    pollingInterval: 15
+    # HPA scaling behaviour (advanced.horizontalPodAutoscalerConfig.behavior)
+    behavior:
+      scaleDown:
+        stabilizationWindowSeconds: 300
+        periodSeconds: 120
+        pods: 2
+      scaleUp:
+        stabilizationWindowSeconds: 30
+        periodSeconds: 60
+        pods: 3
+    # Resource triggers (Utilization %). Set enabled: false to drop a trigger.
+    cpu:
+      enabled: true
+      utilization: 65
+    memory:
+      enabled: true
+      utilization: 75
+    # Prometheus in-flight-requests trigger. serverAddress/query default in-template to the
+    # in-cluster prometheus and the live prod query (namespace-substituted); override here if needed.
+    inflight:
+      enabled: true
+      serverAddress: ""
+      query: ""
+      threshold: "200"
+
   affinity:
     nodeAffinity: {}
     podAntiAffinity:
@@ -60,51 +144,7 @@ api:
   tolerations: []
 
 socket:
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-  replicaCount: 2
-  livenessProbe:
-    initialDelaySeconds: 30
-    periodSeconds: 10
-    timeoutSeconds: 5
-    successThreshold: 1
-    failureThreshold: 3
-  readinessProbe:
-    initialDelaySeconds: 10
-    periodSeconds: 10
-    timeoutSeconds: 5
-    successThreshold: 1
-    failureThreshold: 3
-  resources:
-    requests:
-      cpu: "1"
-      memory: "4Gi"
-    limits:
-      cpu: "1"
-      memory: "4Gi"
-  service:
-    type: NodePort
-    nodePort: 32001
-    port: 8000
-    targetPort: 8000
-  nodeSelector: {}
-  affinity:
-    nodeAffinity: {}
-    podAntiAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchExpressions:
-            - key: app.kubernetes.io/name
-              operator: In
-              values:
-              - socket
-          topologyKey: kubernetes.io/hostname
-  tolerations: []
-
-eventSocket:
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
   replicaCount: 1
   livenessProbe:
@@ -122,16 +162,74 @@ eventSocket:
   resources:
     requests:
       cpu: "1"
-      memory: "4Gi"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
       cpu: "1"
-      memory: "4Gi"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
   service:
-    type: NodePort
-    nodePort: 32004
+    type: ClusterIP
     port: 8000
     targetPort: 8000
   nodeSelector: {}
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
+  affinity:
+    nodeAffinity: {}
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - socket
+          topologyKey: kubernetes.io/hostname
+  tolerations: []
+
+eventSocket:
+  image: validator:latest
+  imagePullPolicy: Always
+  replicaCount: 1
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "1"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
   affinity:
     nodeAffinity: {}
     podAntiAffinity:
@@ -148,17 +246,28 @@ eventSocket:
   tolerations: []
 
 forge:
-  replicaCount: 4
-  image: parachutes/forge:latest
+  replicaCount: 1
+  image: forge:latest
   imagePullPolicy: Always
+  busyboxImage: busybox:1.36
+  depot:
+    enabled: false
   resources:
     requests:
-      cpu: "8"
-      memory: "32Gi"
+      cpu: "500m"
+      memory: "1Gi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "8"
-      memory: "32Gi"
+      cpu: "500m"
+      memory: "1Gi"
+      ephemeral-storage: "1Gi"
   nodeSelector: {}
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+
   affinity:
     nodeAffinity: {}
     podAntiAffinity:
@@ -173,8 +282,11 @@ forge:
               - forge
           topologyKey: kubernetes.io/hostname
   tolerations: []
+  volumes: []
+  volumeMounts: []
 
 remoteForge:
+  enabled: false
   replicaCount: 4
   image: parachutes/remote-forge:latest
   imagePullPolicy: Always
@@ -202,16 +314,32 @@ remoteForge:
   tolerations: []
 
 gravalWorker:
-  replicaCount: 16
-  image: parachutes/validator:latest
+  replicaCount: 1
+  image: validator:latest
   imagePullPolicy: Always
+  maxAsyncTasks: 1
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
   resources:
     requests:
       cpu: "1"
-      memory: "1Gi"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
       cpu: "1"
-      memory: "1Gi"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  nodeSelector: {}
+  hpa:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 20
+    targetCPUUtilizationPercentage: 70
+
   affinity:
     nodeAffinity: {}
     podAntiAffinity:
@@ -228,58 +356,70 @@ gravalWorker:
   tolerations: []
 
 watchtower:
+  enabled: true
   replicaCount: 1
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
   resources:
     requests:
       cpu: "1"
-      memory: "4Gi"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
       cpu: "1"
-      memory: "4Gi"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
   affinity: {}
   tolerations: []
 
-
 cacher:
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
+  schedule: "*/10 * * * *"
+  suspend: false
   resources:
     requests:
-      cpu: "1"
-      memory: "4Gi"
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
-      memory: "4Gi"
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
   affinity: {}
   tolerations: []
 
 chuteAutoscaler:
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
+  schedule: "1,16,31,46 * * * *"
+  suspend: false
+  dryrunSchedule: "*/2 * * * *"
+  dryrunSuspend: false
   resources:
     requests:
-      cpu: "1"
-      memory: "4Gi"
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
-      memory: "4Gi"
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
   affinity: {}
   tolerations: []
 
 paymentWatcher:
   enabled: true
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
-  subtensor: wss://entrypoint-finney.opentensor.ai
-  recovery_blocks: 500
+  replicaCount: 1
+  subtensor: "ws://subtensor:9944"
   livenessProbe:
     initialDelaySeconds: 30
-    periodSeconds: 10
+    periodSeconds: 30
     timeoutSeconds: 5
     successThreshold: 1
-    failureThreshold: 3
+    failureThreshold: 15
   readinessProbe:
     initialDelaySeconds: 10
     periodSeconds: 10
@@ -288,11 +428,13 @@ paymentWatcher:
     failureThreshold: 3
   resources:
     requests:
-      cpu: "1"
-      memory: "8Gi"
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
-      memory: "8Gi"
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
   service:
     type: ClusterIP
     port: 8000
@@ -304,9 +446,33 @@ paymentWatcher:
 
 btTxTracker:
   enabled: true
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
-  subtensor: wss://entrypoint-finney.opentensor.ai
+  replicaCount: 0
+  subtensor: "ws://subtensor:9944"
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+  nodeSelector: {}
+  affinity:
+    nodeAffinity: {}
+  tolerations: []
+
+usageTracker:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  replicaCount: 1
   livenessProbe:
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -321,93 +487,159 @@ btTxTracker:
     failureThreshold: 3
   resources:
     requests:
-      cpu: "1"
-      memory: "8Gi"
-    limits:
-      cpu: "1"
-      memory: "8Gi"
-  service:
-    type: ClusterIP
-    port: 8000
-    targetPort: 8000
-  nodeSelector: {}
-  affinity:
-    nodeAffinity: {}
-  tolerations: []
-
-usageTracker:
-  enabled: true
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-  resources:
-    requests:
-      cpu: "1"
+      cpu: "500m"
       memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
+      cpu: "500m"
       memory: "2Gi"
+      ephemeral-storage: "1Gi"
   nodeSelector: {}
   affinity: {}
   tolerations: []
 
 metasync:
   enabled: true
-  replicaCount: 1
-  image: parachutes/metasync:latest
+  image: validator:latest
   imagePullPolicy: Always
+  schedule: "*/3 * * * *"
+  suspend: false
   resources:
     requests:
-      cpu: "1"
+      cpu: "500m"
       memory: "512Mi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
+      cpu: "500m"
       memory: "512Mi"
-  subtensor: wss://entrypoint-finney.opentensor.ai
+      ephemeral-storage: "1Gi"
+  subtensor: "wss://entrypoint-finney.opentensor.ai"
   nodeSelector: {}
   affinity:
     nodeAffinity: {}
   tolerations: []
 
 weightsetter:
-  replicaCount: 1
   enabled: true
-  image: parachutes/metasync:latest
+  image: validator:latest
   imagePullPolicy: Always
   resources:
     requests:
-      cpu: "1"
+      cpu: "500m"
       memory: "512Mi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: "1"
+      cpu: "500m"
       memory: "512Mi"
-  subtensor: wss://entrypoint-finney.opentensor.ai
+      ephemeral-storage: "1Gi"
+  subtensor: "wss://entrypoint-finney.opentensor.ai"
   nodeSelector: {}
   affinity:
     nodeAffinity: {}
   tolerations: []
 
-redis:
-  image: redis:7
-  imagePullPolicy: IfNotPresent
-  replicaCount: 1
-  nodeSelector: {}
-  affinity:
-    nodeAffinity: {}
-  tolerations: []
+auditExporter:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "1 * * * *"
+  suspend: false
+  subtensor: "wss://entrypoint-finney.opentensor.ai"
   resources:
     requests:
-      cpu: 1
-      memory: 1Gi
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
     limits:
-      cpu: 1
-      memory: 1Gi
-  service:
-    type: ClusterIP
-    port: 6379
-  config:
-    customArgs: []
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  nodeSelector: {}
+
+failedChuteCleanup:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/15 * * * *"
+  suspend: false
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  nodeSelector: {}
+
+balanceRefresher:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "* * * * *"
+  suspend: false
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  affinity: {}
+  tolerations: []
+
+logProber:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/3 * * * *"
+  suspend: false
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  affinity: {}
+  tolerations: []
+
+connProber:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/3 * * * *"
+  suspend: false
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  nodeSelector: {}
+
+# Managed Redis connection (credentials from redis-secret)
+redis:
+  host: ""
+  port: 6379
+  # Name of a secret with a 'ca' key containing the TLS CA certificate (optional)
+  cacertSecret: ""
+  # File mode for the mounted CA cert, as an OCTAL integer (write the leading zero!).
+  # 0444 = r--r--r-- (read-only): least-privilege-correct, since a mounted CA cert is only
+  # ever read, never written (the owner-write bit in the k8s default 0644 is pure noise).
+  # Non-functional regardless (secret volumes mount read-only). Renders to decimal 292.
+  cacertMode: 0444
 
 cmRedis:
+  enabled: true
   shard_count: 1
   image: redis:7
   imagePullPolicy: IfNotPresent
@@ -429,7 +661,7 @@ cmRedis:
     customArgs: []
 
 quotaRedis:
-  redis:
+  enabled: true
   image: redis:7
   imagePullPolicy: IfNotPresent
   replicaCount: 1
@@ -450,6 +682,7 @@ quotaRedis:
     customArgs: []
 
 registry:
+  enabled: true
   image: registry:3.0.0-rc.3
   imagePullPolicy: IfNotPresent
   replicaCount: 2
@@ -474,13 +707,20 @@ registry:
 registryProxy:
   image: nginx:1.31
   imagePullPolicy: IfNotPresent
+  busyboxImage: busybox:1.36
+  tlsSecretName: "registry-proxy-tls"
   config:
-    workerProcesses: 4
-    workerConnections: 1024
-    accessLogPath: "/var/log/nginx/access.log"
-    errorLogPath: "/var/log/nginx/error.log"
+    workerProcesses: 64
+    workerConnections: 4096
+    # tokenRealm: override the Www-Authenticate Bearer realm URL (default: https://registry.chutes.ai/v2/_token)
   replicaCount: 1
   nodeSelector: {}
+  hpa:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 8
+    targetCPUUtilizationPercentage: 70
+
   affinity:
     nodeAffinity: {}
   tolerations: []
@@ -488,82 +728,182 @@ registryProxy:
     requests:
       cpu: 500m
       memory: 512Mi
+      ephemeral-storage: "1Gi"
     limits:
       cpu: 500m
       memory: 512Mi
+      ephemeral-storage: "1Gi"
   service:
-    type: NodePort
-    port: 5000
-    nodePort: 32003
-    targetPort: 5000
+    type: LoadBalancer
+    port: 443
+    annotations: {}
 
-auditExporter:
-  enabled: true
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-  nodeSelector:
-    kubernetes.io/hostname: chutes-prod-0
-
-failedChuteCleanup:
-  enabled: true
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-  nodeSelector:
-    kubernetes.io/hostname: chutes-prod-0
-
-balanceRefresher:
-  enabled: true
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-
-logProber:
-  enabled: true
-  image: parachutes/validator:latest
-  imagePullPolicy: Always
-
-memcached:
-  image: memcached:1.6.34
-  imagePullPolicy: IfNotPresent
-  replicaCount: 1
-  nodeSelector: {}
-  affinity: {}
-  tolerations: []
-  resources:
-    requests:
-      cpu: 1
-      memory: 1Gi
-    limits:
-      cpu: 1
-      memory: 1Gi
-  service:
-    type: ClusterIP
-    port: 11211
-  config:
-    memory_mb: 800
-
+# autostaker runs as a CronJob (one-shot api/autostaker.py per tick), not a long-running
+# worker. validatorSs58 left empty here -> cronjobEnv falls back to the validator-credentials
+# secret; set a literal in the overlay to match prod.
 autostaker:
   enabled: true
-  replicaCount: 2
-  image: parachutes/validator:latest
+  image: validator:latest
   imagePullPolicy: Always
+  schedule: "* * * * *"
+  suspend: false
+  subtensor: "wss://entrypoint-finney.opentensor.ai"
+  validatorSs58: ""
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      ephemeral-storage: "1Gi"
+  affinity: {}
+  tolerations: []
+
+# New services (disabled by default -- enable in your overlay values)
+attestationProxy:
+  enabled: false
+  replicaCount: 2
+  image: nginx:1.31
+  imagePullPolicy: IfNotPresent
+  tlsSecretName: "chutes-tls"
+  serverName: "tdx-attestation.chutes.ai"
+  # Placeholder source ranges (RFC5737 docs net). Set the real trusted real-IP sources in the
+  # overlay -- these are environment-specific load-balancer/NAT addresses.
+  realIpFrom:
+    - "192.0.2.1"
+    - "192.0.2.2"
+    - "192.0.2.3"
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: "1Gi"
+  service:
+    type: LoadBalancer
+    port: 8443
+    annotations: {}
+  tolerations: []
+  affinity: {}
+
+claudeProxy:
+  enabled: false
+  replicaCount: 2
+  image: claude-proxy:latest
+  imagePullPolicy: Always
+  backendUrl: "http://api.chutes.svc.cluster.local:8000/v1/chat/completions"
+  backendHostHeader: "llm.chutes.ai"
+  caddyDomain: "claude.chutes.ai"
+  resources:
+    requests:
+      cpu: 750m
+      memory: 2Gi
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: 750m
+      memory: 2Gi
+      ephemeral-storage: "1Gi"
+  service:
+    type: ClusterIP
+    port: 8181
+  tolerations: []
+  affinity: {}
+
+pgRouter:
+  enabled: false
+  replicaCount: 3
+  haproxyImage: haproxy:3.3.10
+  healthCheckImage: validator:latest
+  imagePullPolicy: IfNotPresent
+  credentialsSecret: "pg-router-credentials"
+  # Placeholder backend addresses (RFC5737 docs net). Real Postgres endpoints are
+  # environment-specific -- set pgRouter.backends in the overlay.
+  backends:
+    - name: dallas
+      address: "192.0.2.10:5432"
+      healthPort: 8008
+      backup: false
+    - name: iowa
+      address: "192.0.2.11:5432"
+      healthPort: 8009
+      backup: true
   resources:
     requests:
       cpu: "1"
-      memory: "4Gi"
+      memory: 2Gi
+      ephemeral-storage: "1Gi"
     limits:
       cpu: "1"
-      memory: "4Gi"
-  affinity:
-    nodeAffinity: {}
-    podAntiAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchExpressions:
-            - key: app.kubernetes.io/name
-              operator: In
-              values:
-              - autostaker
-          topologyKey: kubernetes.io/hostname
+      memory: 2Gi
+      ephemeral-storage: "1Gi"
+  healthCheckResources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: 100m
+      memory: 128Mi
+      ephemeral-storage: "1Gi"
+  service:
+    type: ClusterIP
+    port: 5432
   tolerations: []
+  affinity: {}
+
+responsesProxy:
+  enabled: false
+  replicaCount: 2
+  image: responses-proxy:latest
+  imagePullPolicy: Always
+  backendUrl: "http://api.chutes.svc.cluster.local:8000/v1/chat/completions"
+  backendHostHeader: "llm.chutes.ai"
+  caddyDomain: "responses.chutes.ai"
+  resources:
+    requests:
+      cpu: 750m
+      memory: 2Gi
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: 750m
+      memory: 2Gi
+      ephemeral-storage: "1Gi"
+  service:
+    type: ClusterIP
+    port: 8181
+  tolerations: []
+  affinity: {}
+
+gmp:
+  # Set true when using GKE Managed Prometheus.
+  # When enabled: PodMonitoring CRDs are created and prometheus.io/scrape
+  # annotations are suppressed (GMP ignores them).
+  # When disabled: standard prometheus.io/scrape annotations are rendered
+  # instead for a self-managed Prometheus instance.
+  enabled: false
+  interval: "30s"
+
+teeMeasurements:
+    # # Structure: one entry per VM version. MRTD/RTMR1/RTMR2 (firmware, kernel/initrd) and
+    # # runtime_rtmr3 (runtime guest measure) are shared across all hardware for a version; only
+    # # RTMR0 (GPU topology) varies per hardware. Boot RTMR3 is implicitly all-zeros (not
+    # # configured). Each version must be unique (stored on attestation for audit trail). Set
+    # # `rc: true` on a version to mark it a release candidate: attestable but excluded from
+    # # GET /tee/measurements and the minimum-version fallback.
+    # measurements:
+    #   # Example measurement configuration - replace with actual values
+    #   - version: "1.3.0"
+    #     mrtd: "PLACEHOLDER_MRTD_96_HEX_CHARS"
+    #     rtmr1: "PLACEHOLDER_RTMR1_96_HEX_CHARS"
+    #     rtmr2: "PLACEHOLDER_RTMR2_96_HEX_CHARS"
+    #     runtime_rtmr3: "PLACEHOLDER_RUNTIME_RTMR3_96_HEX_CHARS"
+    #     hardware:
+    #       - name: "8xh200"
+    #         rtmr0: "PLACEHOLDER_H200_RTMR0_96_HEX_CHARS"
+    #         expected_gpus:
+    #           - "h200"
+    #         gpu_count: 8
+  measurements: []

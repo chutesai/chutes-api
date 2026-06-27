@@ -8,6 +8,23 @@ The miner code is available [here](https://github.com/chutesai/chutes-miner), an
 
 View the dev docs [here](dev/dev.md).  The entire chutes API can be run via docker-compose locally, although some components require GPUs (GraVal, vLLM example, etc.).
 
+## 📜 Logging
+
+In-cluster, long-running services run with `LOG_FORMAT=json` (set by the Helm chart), so loguru emits **one JSON object per line to stdout**. The node Fluent Bit DaemonSet collects that stdout and auto-enriches each record with `kubernetes.*` metadata (namespace, pod, container, labels) before shipping it to OpenSearch (`api-logs-*`) — no sidecars, volumes, or app-side metadata.
+
+Each line is flat (so `logger.bind(request_id=...)` context lands at the top level) and carries a top-level `text` field with the rendered human-readable line, so you can tail it cleanly client-side:
+
+```bash
+kubectl logs -f deploy/api | jq -r '.text // .message'
+
+# convenience alias
+klogs() { kubectl logs "$@" | jq -r '.text // .message'; }
+
+# or tools that auto-detect JSON: humanlog, fblog, stern
+```
+
+Locally (without `LOG_FORMAT=json`) logging stays human-readable on stderr — no JSON.
+
 ## 🛡️ Validators
 
 While you absolutely *can* run a full validator on the chutes subnet, we strongly suggest making use of the child hotkey feature instead, with hotkey `5Dt7HZ7Zpw4DppPxFM7Ke3Cm7sDAWhsZXmM5ZAmE7dSVJbcQ` at this stage in the subnet's lifecycle.
