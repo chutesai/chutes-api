@@ -8,6 +8,7 @@ import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -155,44 +156,89 @@ async def exchange_authorization_code(
     Exchange an authorization code for access and refresh tokens.
     Returns (access_token, refresh_token, expires_in, scopes, error).
     """
+    log = logger.bind(
+        grant_type="authorization_code",
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        has_client_secret=bool(client_secret),
+        has_code_verifier=bool(code_verifier),
+    )
     # Look up the code in Redis (atomic get-and-delete for single use)
     code_hash = OAuthAuthorizationCode.hash_code(code)
     redis_key = OAuthAuthorizationCode.redis_key(code_hash)
     code_data = await settings.redis_client.getdel(redis_key)
 
     if not code_data:
+        log.warning(
+            "token exchange failed: authorization code not found or already used (invalid_grant)"
+        )
         return None, None, None, None, "invalid_grant"
 
     try:
         auth_code = OAuthAuthorizationCode.from_json(code_data)
     except Exception:
+        log.warning("token exchange failed: authorization code payload unparseable (invalid_grant)")
         return None, None, None, None, "invalid_grant"
+
+    log = log.bind(app_id=auth_code.app_id, user_id=auth_code.user_id)
 
     # Verify redirect_uri matches
     if auth_code.redirect_uri != redirect_uri:
+        log.bind(expected_redirect_uri=auth_code.redirect_uri).warning(
+            "token exchange failed: redirect_uri does not match the one used at authorization "
+            "(invalid_grant)"
+        )
         return None, None, None, None, "invalid_grant"
 
     # Load the app to verify client credentials
     app = await get_app_by_client_id(client_id)
-    if not app or app.app_id != auth_code.app_id:
+    if not app:
+        log.warning("token exchange failed: no app found for client_id (invalid_client)")
+        return None, None, None, None, "invalid_client"
+    if app.app_id != auth_code.app_id:
+        log.bind(token_app_id=app.app_id).warning(
+            "token exchange failed: client_id belongs to a different app than the one the code "
+            "was issued to (invalid_client)"
+        )
         return None, None, None, None, "invalid_client"
 
     # Always verify client secret for confidential clients (those with a secret hash).
-    if app.client_secret_hash and (not client_secret or not app.verify_secret(client_secret)):
-        return None, None, None, None, "invalid_client"
+    if app.client_secret_hash:
+        if not client_secret:
+            log.warning(
+                "token exchange failed: confidential client did not send a client_secret "
+                "(invalid_client)"
+            )
+            return None, None, None, None, "invalid_client"
+        if not app.verify_secret(client_secret):
+            log.warning(
+                "token exchange failed: client_secret did not match (invalid_client)"
+            )
+            return None, None, None, None, "invalid_client"
 
     # Verify PKCE code_verifier if a code_challenge was present during authorization.
     if auth_code.code_challenge:
         if not code_verifier:
+            log.warning(
+                "token exchange failed: authorization used PKCE but no code_verifier was sent "
+                "(invalid_grant)"
+            )
             return None, None, None, None, "invalid_grant"
 
         if auth_code.code_challenge_method != "S256":
+            log.bind(code_challenge_method=auth_code.code_challenge_method).warning(
+                "token exchange failed: unsupported PKCE code_challenge_method (invalid_grant)"
+            )
             return None, None, None, None, "invalid_grant"
 
         # RFC 7636: BASE64URL(SHA256(code_verifier))
         sha256_hash = hashlib.sha256(code_verifier.encode()).digest()
         expected = base64.urlsafe_b64encode(sha256_hash).rstrip(b"=").decode("ascii")
         if expected != auth_code.code_challenge:
+            log.warning(
+                "token exchange failed: PKCE code_verifier did not match code_challenge "
+                "(invalid_grant)"
+            )
             return None, None, None, None, "invalid_grant"
 
     async with get_session() as session:
@@ -262,6 +308,9 @@ async def exchange_authorization_code(
 
         await session.commit()
 
+        log.bind(
+            authorization_id=auth.authorization_id, scopes=auth_code.scopes
+        ).info("token exchange succeeded: issued access + refresh token")
         return access_token, refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, auth_code.scopes, None
 
 
@@ -274,10 +323,18 @@ async def refresh_access_token(
     Use a refresh token to get a new access token.
     Returns (access_token, refresh_token, expires_in, scopes, error).
     """
+    log = logger.bind(
+        grant_type="refresh_token",
+        client_id=client_id,
+        has_client_secret=bool(client_secret),
+    )
     # Parse token to get token_id for O(1) lookup
     token_id, _ = OAuthRefreshToken.parse_token(refresh_token)
     if not token_id:
+        log.warning("refresh failed: refresh_token is malformed / unparseable (invalid_grant)")
         return None, None, None, None, "invalid_grant"
+
+    log = log.bind(refresh_token_id=token_id)
 
     async with get_session() as session:
         # O(1) lookup by token_id (primary key)
@@ -289,38 +346,58 @@ async def refresh_access_token(
         refresh_obj = result.unique().scalar_one_or_none()
 
         if not refresh_obj:
+            log.warning("refresh failed: no refresh token found for token_id (invalid_grant)")
             return None, None, None, None, "invalid_grant"
 
         # Verify the token secret (single argon2 verify)
         if not refresh_obj.verify_secret(refresh_token):
+            log.warning("refresh failed: refresh_token secret did not match (invalid_grant)")
             return None, None, None, None, "invalid_grant"
 
         # Check if already used or revoked
         if refresh_obj.used or refresh_obj.revoked:
+            log.bind(used=refresh_obj.used, revoked=refresh_obj.revoked).warning(
+                "refresh failed: refresh token already used or revoked (invalid_grant)"
+            )
             return None, None, None, None, "invalid_grant"
 
         # Check expiration
         if refresh_obj.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
             refresh_obj.revoked = True
             await session.commit()
+            log.bind(expires_at=refresh_obj.expires_at).warning(
+                "refresh failed: refresh token expired (invalid_grant)"
+            )
             return None, None, None, None, "invalid_grant"
 
         auth = refresh_obj.authorization
+        log = log.bind(
+            app_id=auth.app_id, user_id=auth.user_id, authorization_id=auth.authorization_id
+        )
 
         # Check authorization isn't revoked
         if auth.revoked:
+            log.warning("refresh failed: underlying authorization has been revoked (invalid_grant)")
             return None, None, None, None, "invalid_grant"
 
         # Verify client
         if auth.app.client_id != client_id:
+            log.bind(authorization_client_id=auth.app.client_id).warning(
+                "refresh failed: client_id does not match the app the token was issued to "
+                "(invalid_client)"
+            )
             return None, None, None, None, "invalid_client"
 
         # For confidential clients (those with a secret), require client auth on refresh
         if auth.app.client_secret_hash and not client_secret:
+            log.warning(
+                "refresh failed: confidential client did not send a client_secret (invalid_client)"
+            )
             return None, None, None, None, "invalid_client"
 
         # Verify client secret if provided
         if client_secret and not auth.app.verify_secret(client_secret):
+            log.warning("refresh failed: client_secret did not match (invalid_client)")
             return None, None, None, None, "invalid_client"
 
         # Mark old refresh token as used
@@ -357,6 +434,9 @@ async def refresh_access_token(
 
         await session.commit()
 
+        log.bind(scopes=auth.scopes).info(
+            "refresh succeeded: rotated refresh token and issued new access token"
+        )
         return new_access_token, new_refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, auth.scopes, None
 
 

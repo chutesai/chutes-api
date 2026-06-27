@@ -686,8 +686,16 @@ async def authorize_get(
     Displays login page if not authenticated, consent page if authenticated.
     Checks for existing chutes-session-token cookie for SSO.
     """
+    log = logger.bind(
+        endpoint="authorize",
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        response_type=response_type,
+        scope=scope,
+    )
     # Validate response_type
     if response_type != "code":
+        log.warning("authorize rejected: unsupported response_type, only 'code' is supported")
         return HTMLResponse(
             content=error_page(
                 "unsupported_response_type", "Only 'code' response type is supported"
@@ -698,13 +706,21 @@ async def authorize_get(
     # Validate client
     app = await get_app_by_client_id(client_id)
     if not app:
+        log.warning("authorize rejected: no app found for client_id (invalid_client)")
         return HTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
 
+    log = log.bind(app_id=app.app_id)
+
     # Validate redirect_uri
     if not app.is_valid_redirect_uri(redirect_uri):
+        # redirect_uri is matched exactly against the registered list -- log both so the mismatch
+        # (trailing slash, scheme, port, path) is visible without a DB round-trip.
+        log.bind(registered_redirect_uris=app.redirect_uris).warning(
+            "authorize rejected: redirect_uri not registered for this app (invalid_redirect_uri)"
+        )
         return HTMLResponse(
             content=error_page(
                 "invalid_redirect_uri", "Redirect URI not registered for this application"
@@ -714,6 +730,10 @@ async def authorize_get(
 
     # Validate PKCE if provided (only S256 is allowed per RFC 7636 recommendation)
     if code_challenge and code_challenge_method != "S256":
+        log.bind(code_challenge_method=code_challenge_method).warning(
+            "authorize rejected: unsupported PKCE code_challenge_method, only S256 is supported "
+            "(invalid_request)"
+        )
         return HTMLResponse(
             content=error_page("invalid_request", "Only S256 code_challenge_method is supported"),
             status_code=400,
@@ -728,6 +748,9 @@ async def authorize_get(
             user = await get_user_from_token(session_token, request)
             if user:
                 # User is already authenticated - skip to consent page
+                log.bind(user_id=user.user_id).info(
+                    "authorize: valid session cookie, redirecting to consent (SSO)"
+                )
                 session_id = str(uuid.uuid4())
                 session_data = json.dumps(
                     {
@@ -749,9 +772,12 @@ async def authorize_get(
                     url=f"/idp/authorize/consent?session_id={session_id}",
                     status_code=302,
                 )
-        except Exception:
-            # Invalid session token - fall through to login page
-            pass
+        except Exception as exc:
+            # Invalid/expired session token - fall through to login page. diagnose=False on the
+            # sink keeps locals (the token) out of the traceback; the token itself is never bound.
+            log.opt(exception=exc).debug(
+                "authorize: session cookie invalid, falling through to login page"
+            )
 
     # Build the current authorization URL for the create account redirect
     current_url = str(request.url)
@@ -760,6 +786,7 @@ async def authorize_get(
     nonce = await create_login_nonce()
 
     # Show login page
+    log.debug("authorize: presenting login page (no valid session)")
     return HTMLResponse(
         content=login_page(
             client_id=client_id,
@@ -1173,11 +1200,21 @@ async def token_endpoint(
             header_client_id, header_client_secret = decoded.split(":", 1)
             client_id = client_id or header_client_id
             client_secret = client_secret or header_client_secret
-        except Exception:
-            pass
+        except Exception as exc:
+            # Malformed Basic auth header -- client credentials silently won't be picked up here,
+            # which typically surfaces downstream as invalid_client. Log so it's traceable.
+            logger.opt(exception=exc).warning(
+                "token endpoint: failed to decode Basic Authorization header for client credentials"
+            )
 
     if grant_type == "authorization_code":
         if not code or not redirect_uri or not client_id:
+            logger.bind(
+                grant_type=grant_type,
+                client_id=client_id,
+                has_code=bool(code),
+                has_redirect_uri=bool(redirect_uri),
+            ).warning("token endpoint: missing required parameters for authorization_code grant")
             return JSONResponse(
                 content={
                     "error": "invalid_request",
@@ -1210,6 +1247,11 @@ async def token_endpoint(
 
     elif grant_type == "refresh_token":
         if not refresh_token or not client_id:
+            logger.bind(
+                grant_type=grant_type,
+                client_id=client_id,
+                has_refresh_token=bool(refresh_token),
+            ).warning("token endpoint: missing required parameters for refresh_token grant")
             return JSONResponse(
                 content={
                     "error": "invalid_request",
@@ -1239,6 +1281,9 @@ async def token_endpoint(
         )
 
     else:
+        logger.bind(grant_type=grant_type, client_id=client_id).warning(
+            "token endpoint: unsupported grant_type"
+        )
         return JSONResponse(
             content={"error": "unsupported_grant_type"},
             status_code=400,
