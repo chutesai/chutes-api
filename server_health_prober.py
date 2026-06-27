@@ -40,82 +40,51 @@ async def probe(ip: str) -> bool:
         return False
 
 
-def _status_for(last_health_at, now, threshold_seconds: int) -> str:
-    """
-    Derive health status from the (post-probe) last_health_at timestamp.
-    """
-    if last_health_at is None:
-        return ServerHealthStatus.UNKNOWN.value
-    age = (now - last_health_at).total_seconds()
-    if age <= threshold_seconds:
-        return ServerHealthStatus.HEALTHY.value
-    return ServerHealthStatus.STALE.value
-
-
 async def sweep(max_concurrent: int = None):
     """
     Probe all TEE servers concurrently and bulk-update their health columns.
     """
     max_concurrent = max_concurrent or settings.server_health_max_concurrent
-    threshold = settings.server_health_stale_threshold_seconds
     semaphore = asyncio.Semaphore(max_concurrent)
     now = datetime.now(timezone.utc)
 
     async with get_session(readonly=True) as session:
-        result = await session.execute(
-            select(Server.server_id, Server.ip, Server.last_health_at).where(Server.is_tee.is_(True))
-        )
-        servers = result.all()
+        result = await session.execute(select(Server).where(Server.is_tee.is_(True)))
+        servers = result.scalars().all()
 
-    logger.info(f"Probing {len(servers)} TEE servers (threshold={threshold}s)")
-
-    async def probe_one(server_id: str, ip: str, last_health_at):
-        async with semaphore:
-            reachable = await probe(ip)
-            new_last = now if reachable else last_health_at
-            status = _status_for(new_last, now, threshold)
-            return {"server_id": server_id, "last_health_at": new_last, "health_status": status}
-
-    updates = await asyncio.gather(
-        *[probe_one(s.server_id, s.ip, s.last_health_at) for s in servers]
+    logger.info(
+        f"Probing {len(servers)} TEE servers "
+        f"(degraded>{settings.server_health_degraded_threshold_seconds}s, "
+        f"offline>{settings.server_health_offline_threshold_seconds}s)"
     )
 
-    if not updates:
-        logger.info("No TEE servers to update.")
-        return
+    async def probe_one(server: Server) -> bool:
+        async with semaphore:
+            reachable = await probe(server.ip)
+            if reachable:
+                server.last_health_at = now  # in-memory, so the count below reflects it
+            return reachable
 
-    # Single bulk update: unnest parallel arrays and join on server_id.
-    ids = [u["server_id"] for u in updates]
-    timestamps = [u["last_health_at"] for u in updates]
-    statuses = [u["health_status"] for u in updates]
-    async with get_session() as session:
-        await session.execute(
-            text(
-                """
-                UPDATE servers AS s
-                SET last_health_at = v.last_health_at,
-                    health_status = v.health_status
-                FROM (
-                    SELECT * FROM unnest(
-                        CAST(:ids AS text[]),
-                        CAST(:timestamps AS timestamptz[]),
-                        CAST(:statuses AS text[])
-                    ) AS t(server_id, last_health_at, health_status)
-                ) AS v
-                WHERE s.server_id = v.server_id
-                """
-            ),
-            {"ids": ids, "timestamps": timestamps, "statuses": statuses},
-        )
+    reachable_flags = await asyncio.gather(*[probe_one(s) for s in servers])
+
+    # The only persisted state is last_health_at; health_status is derived live from it.
+    reachable_ids = [s.server_id for s, ok in zip(servers, reachable_flags) if ok]
+    if reachable_ids:
+        async with get_session() as session:
+            await session.execute(
+                text("UPDATE servers SET last_health_at = :now WHERE server_id = ANY(:ids)"),
+                {"now": now, "ids": reachable_ids},
+            )
 
     counts = {s.value: 0 for s in ServerHealthStatus}
-    for u in updates:
-        counts[u["health_status"]] += 1
+    for server in servers:
+        counts[server.health_status.value] += 1
     logger.success("=" * 80)
     logger.success(
         f"Health sweep complete: "
         f"\t{counts[ServerHealthStatus.HEALTHY.value]} healthy, "
-        f"\t{counts[ServerHealthStatus.STALE.value]} stale, "
+        f"\t{counts[ServerHealthStatus.DEGRADED.value]} degraded, "
+        f"\t{counts[ServerHealthStatus.OFFLINE.value]} offline, "
         f"\t{counts[ServerHealthStatus.UNKNOWN.value]} unknown"
     )
 

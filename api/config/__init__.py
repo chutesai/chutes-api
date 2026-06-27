@@ -538,8 +538,12 @@ class Settings(BaseSettings):
     agent_registration_ttl_hours: int = int(os.getenv("AGENT_REGISTRATION_TTL_HOURS", "24"))
 
     # TEE server health prober settings.
-    server_health_stale_threshold_seconds: int = int(
-        os.getenv("SERVER_HEALTH_STALE_THRESHOLD_SECONDS", "1800")
+    # Age of last successful probe past which a server is flagged degraded (default 12h) / offline (default 72h).
+    server_health_degraded_threshold_seconds: int = int(
+        os.getenv("SERVER_HEALTH_DEGRADED_THRESHOLD_SECONDS", str(12 * 3600))
+    )
+    server_health_offline_threshold_seconds: int = int(
+        os.getenv("SERVER_HEALTH_OFFLINE_THRESHOLD_SECONDS", str(72 * 3600))
     )
     server_health_max_concurrent: int = int(os.getenv("SERVER_HEALTH_MAX_CONCURRENT", "32"))
 
