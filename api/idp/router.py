@@ -63,19 +63,26 @@ from api.idp.templater import authorize_page, error_page, login_page
 router = APIRouter()
 
 
-class NoStoreHTMLResponse(HTMLResponse):
-    """HTMLResponse that always sets Cache-Control: no-store.
+# Responses that depend on the current session shouldn't be reused from a browser or proxy cache.
+NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 
-    Every IDP HTML page (login, consent, error) reflects authentication state, so it must never
-    be served from the HTTP cache or restored from the browser's back/forward cache as a stale,
-    logged-out view -- e.g. after the user returns from authenticating. no-store also makes the
-    page ineligible for bfcache restore, forcing a re-fetch so the server can re-evaluate the
-    session cookie and render the correct (signed-in) state.
-    """
+
+class _NoStoreMixin:
+    """Stamps NO_STORE_HEADERS onto a Response subclass so the browser re-fetches each time
+    (including from the back/forward cache) rather than reusing a cached copy."""
 
     def init_headers(self, headers=None):
         super().init_headers(headers)
-        self.headers["Cache-Control"] = "no-store"
+        for key, value in NO_STORE_HEADERS.items():
+            self.headers[key] = value
+
+
+class NoStoreHTMLResponse(_NoStoreMixin, HTMLResponse):
+    """HTML pages (login, consent, error) that reflect the current session."""
+
+
+class NoStoreJSONResponse(_NoStoreMixin, JSONResponse):
+    """JSON responses (token issuance/errors) that carry session-dependent data."""
 
 
 @router.get("/scopes")
@@ -1230,7 +1237,7 @@ async def token_endpoint(
                 has_code=bool(code),
                 has_redirect_uri=bool(redirect_uri),
             ).warning("token endpoint: missing required parameters for authorization_code grant")
-            return JSONResponse(
+            return NoStoreJSONResponse(
                 content={
                     "error": "invalid_request",
                     "error_description": "Missing required parameters",
@@ -1247,17 +1254,16 @@ async def token_endpoint(
         )
 
         if error:
-            return JSONResponse(
-                content={"error": error},
-                status_code=400,
-            )
+            return NoStoreJSONResponse(content={"error": error}, status_code=400)
 
-        return TokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=refresh_tok,
-            scope=" ".join(scopes) if scopes else None,
+        return NoStoreJSONResponse(
+            content=TokenResponse(
+                access_token=access_token,
+                token_type="Bearer",
+                expires_in=expires_in,
+                refresh_token=refresh_tok,
+                scope=" ".join(scopes) if scopes else None,
+            ).model_dump()
         )
 
     elif grant_type == "refresh_token":
@@ -1267,7 +1273,7 @@ async def token_endpoint(
                 client_id=client_id,
                 has_refresh_token=bool(refresh_token),
             ).warning("token endpoint: missing required parameters for refresh_token grant")
-            return JSONResponse(
+            return NoStoreJSONResponse(
                 content={
                     "error": "invalid_request",
                     "error_description": "Missing required parameters",
@@ -1282,24 +1288,23 @@ async def token_endpoint(
         )
 
         if error:
-            return JSONResponse(
-                content={"error": error},
-                status_code=400,
-            )
+            return NoStoreJSONResponse(content={"error": error}, status_code=400)
 
-        return TokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=new_refresh,
-            scope=" ".join(scopes) if scopes else None,
+        return NoStoreJSONResponse(
+            content=TokenResponse(
+                access_token=access_token,
+                token_type="Bearer",
+                expires_in=expires_in,
+                refresh_token=new_refresh,
+                scope=" ".join(scopes) if scopes else None,
+            ).model_dump()
         )
 
     else:
         logger.bind(grant_type=grant_type, client_id=client_id).warning(
             "token endpoint: unsupported grant_type"
         )
-        return JSONResponse(
+        return NoStoreJSONResponse(
             content={"error": "unsupported_grant_type"},
             status_code=400,
         )
