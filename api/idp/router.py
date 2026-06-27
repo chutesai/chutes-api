@@ -63,6 +63,21 @@ from api.idp.templater import authorize_page, error_page, login_page
 router = APIRouter()
 
 
+class NoStoreHTMLResponse(HTMLResponse):
+    """HTMLResponse that always sets Cache-Control: no-store.
+
+    Every IDP HTML page (login, consent, error) reflects authentication state, so it must never
+    be served from the HTTP cache or restored from the browser's back/forward cache as a stale,
+    logged-out view -- e.g. after the user returns from authenticating. no-store also makes the
+    page ineligible for bfcache restore, forcing a re-fetch so the server can re-evaluate the
+    session cookie and render the correct (signed-in) state.
+    """
+
+    def init_headers(self, headers=None):
+        super().init_headers(headers)
+        self.headers["Cache-Control"] = "no-store"
+
+
 @router.get("/scopes")
 async def list_scopes():
     """
@@ -93,7 +108,7 @@ async def cli_login(
     """
     # Verify nonce exists and hasn't been used
     if not await verify_and_consume_login_nonce(nonce):
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_nonce", "Invalid or expired nonce. Please try again."),
             status_code=400,
         )
@@ -103,13 +118,13 @@ async def cli_login(
         signature_bytes = bytes.fromhex(signature)
         keypair = Keypair(hotkey)
         if not keypair.verify(nonce, signature_bytes):
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=error_page("invalid_signature", "Invalid signature."),
                 status_code=400,
             )
     except Exception as e:
         logger.warning(f"CLI login signature verification failed: {e}")
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_signature", "Invalid signature format."),
             status_code=400,
         )
@@ -118,7 +133,7 @@ async def cli_login(
     user = (await db.execute(select(User).where(User.hotkey == hotkey))).scalar_one_or_none()
 
     if not user:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("no_account", "No account found for this hotkey."),
             status_code=404,
         )
@@ -696,7 +711,7 @@ async def authorize_get(
     # Validate response_type
     if response_type != "code":
         log.warning("authorize rejected: unsupported response_type, only 'code' is supported")
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page(
                 "unsupported_response_type", "Only 'code' response type is supported"
             ),
@@ -707,7 +722,7 @@ async def authorize_get(
     app = await get_app_by_client_id(client_id)
     if not app:
         log.warning("authorize rejected: no app found for client_id (invalid_client)")
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
@@ -721,7 +736,7 @@ async def authorize_get(
         log.bind(registered_redirect_uris=app.redirect_uris).warning(
             "authorize rejected: redirect_uri not registered for this app (invalid_redirect_uri)"
         )
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page(
                 "invalid_redirect_uri", "Redirect URI not registered for this application"
             ),
@@ -734,7 +749,7 @@ async def authorize_get(
             "authorize rejected: unsupported PKCE code_challenge_method, only S256 is supported "
             "(invalid_request)"
         )
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Only S256 code_challenge_method is supported"),
             status_code=400,
         )
@@ -787,7 +802,7 @@ async def authorize_get(
 
     # Show login page
     log.debug("authorize: presenting login page (no valid session)")
-    return HTMLResponse(
+    return NoStoreHTMLResponse(
         content=login_page(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -824,14 +839,14 @@ async def login_post(
     # Validate client
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
 
     # Validate redirect_uri
     if not app.is_valid_redirect_uri(redirect_uri):
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_redirect_uri", "Redirect URI not registered"),
             status_code=400,
         )
@@ -842,7 +857,7 @@ async def login_post(
         # Fingerprint authentication
         if not fingerprint:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -864,7 +879,7 @@ async def login_post(
 
         if not user:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -883,7 +898,7 @@ async def login_post(
         # Hotkey signature authentication
         if not hotkey or not signature or not nonce:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -901,7 +916,7 @@ async def login_post(
         # Verify nonce exists and hasn't been used
         if not await verify_and_consume_login_nonce(nonce):
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -922,7 +937,7 @@ async def login_post(
             keypair = Keypair(hotkey)
             if not keypair.verify(nonce, signature_bytes):
                 new_nonce = await create_login_nonce()
-                return HTMLResponse(
+                return NoStoreHTMLResponse(
                     content=login_page(
                         client_id=client_id,
                         redirect_uri=redirect_uri,
@@ -939,7 +954,7 @@ async def login_post(
         except Exception as e:
             logger.warning(f"Hotkey signature verification failed: {e}")
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -959,7 +974,7 @@ async def login_post(
 
         if not user:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -974,7 +989,7 @@ async def login_post(
                 )
             )
     else:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Invalid authentication method"),
             status_code=400,
         )
@@ -1041,7 +1056,7 @@ async def authorize_consent_page(
     """Show authorization consent page."""
     session_data = await _get_session_data(session_id)
     if not session_data:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Session expired. Please try again."),
             status_code=400,
         )
@@ -1055,21 +1070,21 @@ async def authorize_consent_page(
 
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
 
     user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
     if not user:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "User not found"),
             status_code=400,
         )
 
     scopes_list = scope.split() if scope else ["profile"]
 
-    return HTMLResponse(
+    return NoStoreHTMLResponse(
         content=authorize_page(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -1100,7 +1115,7 @@ async def authorize_consent(
     # Get session data (contains all authorization context)
     session_data = await _get_session_data(session_id)
     if not session_data:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Session expired. Please try again."),
             status_code=400,
         )
@@ -1117,7 +1132,7 @@ async def authorize_consent(
     # Get app
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
@@ -1125,7 +1140,7 @@ async def authorize_consent(
     # Get user
     user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
     if not user:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "User not found"),
             status_code=400,
         )
