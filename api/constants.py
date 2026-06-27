@@ -9,6 +9,14 @@ class NoncePurpose(str, Enum):
     INSTANCE_VERIFICATION = "instance_verification"
 
 
+class ServerHealthStatus(str, Enum):
+    """TEE server liveness, materialized on servers.health_status by the health prober."""
+
+    HEALTHY = "healthy"  # probed successfully within the stale threshold
+    STALE = "stale"  # last_health_at older than the threshold
+    UNKNOWN = "unknown"  # last_health_at IS NULL — never seen healthy
+
+
 ZERO_ADDRESS_HOTKEY = "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM"  # Public key is 0x00000...
 HOTKEY_HEADER = "X-Chutes-Hotkey"
 COLDKEY_HEADER = "X-Chutes-Coldkey"

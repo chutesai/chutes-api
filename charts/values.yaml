@@ -609,6 +609,24 @@ logProber:
   affinity: {}
   tolerations: []
 
+serverHealthProber:
+  enabled: true
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/5 * * * *"
+  suspend: false
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "250m"
+      memory: "512Mi"
+      ephemeral-storage: "1Gi"
+  affinity: {}
+  tolerations: []
+
 connProber:
   enabled: true
   image: validator:latest

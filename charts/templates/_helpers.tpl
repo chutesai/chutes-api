@@ -30,6 +30,10 @@ app.kubernetes.io/name: balance-refresher
 app.kubernetes.io/name: log-prober
 {{- end }}
 
+{{- define "serverHealthProber.labels" -}}
+app.kubernetes.io/name: server-health-prober
+{{- end }}
+
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 {{- end }}

@@ -537,6 +537,12 @@ class Settings(BaseSettings):
     agent_registration_tolerance: float = float(os.getenv("AGENT_REGISTRATION_TOLERANCE", "0.10"))
     agent_registration_ttl_hours: int = int(os.getenv("AGENT_REGISTRATION_TTL_HOURS", "24"))
 
+    # TEE server health prober settings.
+    server_health_stale_threshold_seconds: int = int(
+        os.getenv("SERVER_HEALTH_STALE_THRESHOLD_SECONDS", "1800")
+    )
+    server_health_max_concurrent: int = int(os.getenv("SERVER_HEALTH_MAX_CONCURRENT", "32"))
+
 
 # Subscription tier: quota -> monthly price in USD (canonical values only).
 SUBSCRIPTION_TIERS = {

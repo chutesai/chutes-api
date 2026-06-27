@@ -22,6 +22,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from api.database import Base, generate_uuid
+from api.constants import ServerHealthStatus
 from api.node.schemas import NodeArgs
 
 
@@ -370,6 +371,15 @@ class Server(Base):
     # Current attested measurement version, updated on every successful boot attestation.
     version = Column(Text, nullable=True)
 
+    # TEE /status/health liveness, maintained by server_health_prober.py.
+    last_health_at = Column(DateTime(timezone=True), nullable=True)  # last successful probe
+    health_status = Column(
+        String,
+        nullable=False,
+        default=ServerHealthStatus.UNKNOWN.value,
+        server_default=ServerHealthStatus.UNKNOWN.value,
+    )
+
     @property
     def in_maintenance(self) -> bool:
         return self.maintenance_pending_window_id is not None
@@ -394,6 +404,8 @@ class Server(Base):
             "miner_hotkey",
             postgresql_where=maintenance_pending_window_id.isnot(None),
         ),
+        Index("idx_servers_health_status", "health_status"),
+        Index("idx_servers_last_health", "last_health_at"),
         ForeignKeyConstraint(
             ["netuid", "miner_hotkey"], ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"]
         ),
