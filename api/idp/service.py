@@ -211,9 +211,7 @@ async def exchange_authorization_code(
             )
             return None, None, None, None, "invalid_client"
         if not app.verify_secret(client_secret):
-            log.warning(
-                "token exchange failed: client_secret did not match (invalid_client)"
-            )
+            log.warning("token exchange failed: client_secret did not match (invalid_client)")
             return None, None, None, None, "invalid_client"
 
     # Verify PKCE code_verifier if a code_challenge was present during authorization.
@@ -308,9 +306,9 @@ async def exchange_authorization_code(
 
         await session.commit()
 
-        log.bind(
-            authorization_id=auth.authorization_id, scopes=auth_code.scopes
-        ).info("token exchange succeeded: issued access + refresh token")
+        log.bind(authorization_id=auth.authorization_id, scopes=auth_code.scopes).info(
+            "token exchange succeeded: issued access + refresh token"
+        )
         return access_token, refresh_token, ACCESS_TOKEN_EXPIRY_SECONDS, auth_code.scopes, None
 
 
