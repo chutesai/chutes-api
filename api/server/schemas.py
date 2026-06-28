@@ -283,6 +283,7 @@ class MaintenancePolicyResponse(BaseModel):
     """Response for GET /servers/maintenance/policy."""
 
     active_window: Optional[UpgradeWindowInfo] = None
+    window_open: bool = False
     current_slots: int = 0
     servers: List[ServerUpgradeStatus] = Field(default_factory=list)
 

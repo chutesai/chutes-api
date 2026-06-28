@@ -55,7 +55,8 @@ from api.server.service import (
     require_confirm_nonce,
     process_luks_attest_request,
     process_luks_confirm,
-    get_active_upgrade_window,
+    get_latest_upgrade_window,
+    is_window_open,
     preflight_maintenance,
     confirm_maintenance,
     _count_active_maintenance_slots,
@@ -433,25 +434,35 @@ async def get_maintenance_policy(
         get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
     ),
 ):
-    """Return the active upgrade window, concurrency limits, and the miner's pending servers."""
+    """Return the upgrade window, concurrency limits, and the miner's server version status.
+
+    When a window is currently open, ``window_open`` is true and ``active_window`` describes it.
+    When no window is open, we fall back to the most recently created window (``window_open``
+    false) so miners can still see which servers remain out of date against the last target.
+    """
     if not hotkey:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Hotkey header required")
 
-    active_window = await get_active_upgrade_window(db)
+    # The latest window is always the relevant upgrade target; window_open just says whether
+    # it is currently open. Reporting it even when closed lets miners see which servers are
+    # out of date (we enforce a minimum boot version even outside of an open window).
+    window = await get_latest_upgrade_window(db)
+    window_open = window is not None and is_window_open(window)
+
     window_info: UpgradeWindowInfo | None = None
     current_slots = 0
     server_statuses: list[ServerUpgradeStatus] = []
 
-    if active_window is not None:
-        target_version = active_window.target_measurement_version
+    if window is not None:
+        target_version = window.target_measurement_version
         window_info = UpgradeWindowInfo(
-            id=active_window.id,
+            id=window.id,
             target_measurement_version=target_version,
-            upgrade_window_start=str(active_window.upgrade_window_start),
-            upgrade_window_end=str(active_window.upgrade_window_end),
-            max_concurrent_per_miner=active_window.max_concurrent_per_miner,
+            upgrade_window_start=str(window.upgrade_window_start),
+            upgrade_window_end=str(window.upgrade_window_end),
+            max_concurrent_per_miner=window.max_concurrent_per_miner,
         )
-        current_slots = await _count_active_maintenance_slots(db, hotkey, active_window)
+        current_slots = await _count_active_maintenance_slots(db, hotkey, window)
 
         tee_servers = (
             (
@@ -476,6 +487,7 @@ async def get_maintenance_policy(
 
     return MaintenancePolicyResponse(
         active_window=window_info,
+        window_open=window_open,
         current_slots=current_slots,
         servers=server_statuses,
     )

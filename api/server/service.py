@@ -1253,6 +1253,26 @@ async def get_active_upgrade_window(
     return rows[0]
 
 
+async def get_latest_upgrade_window(
+    db: AsyncSession,
+) -> Optional[TeeUpgradeWindow]:
+    """Return the most recently created tee_upgrade_windows row, regardless of its time bounds.
+
+    The latest window is the relevant upgrade target whether or not it is currently open;
+    use is_window_open() to tell the two apart. This lets the maintenance policy report a
+    miner's version status (which servers remain out of date) even after a window has closed.
+    """
+    query = select(TeeUpgradeWindow).order_by(TeeUpgradeWindow.created_at.desc()).limit(1)
+    result = await db.execute(query)
+    return result.scalars().first()
+
+
+def is_window_open(window: TeeUpgradeWindow) -> bool:
+    """Whether the given upgrade window is currently open (start <= now <= end)."""
+    now = datetime.now(timezone.utc)
+    return window.upgrade_window_start <= now <= window.upgrade_window_end
+
+
 async def _get_instances_on_server(db: AsyncSession, server_id: str) -> list[Instance]:
     """Return all instances hosted on a server via Instance → instance_nodes → Node → Server."""
     query = (
