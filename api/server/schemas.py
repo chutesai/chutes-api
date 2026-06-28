@@ -406,8 +406,14 @@ class Server(Base):
         age = func.extract("epoch", func.now() - cls.last_health_at)
         return case(
             (cls.last_health_at.is_(None), ServerHealthStatus.UNKNOWN.value),
-            (age >= settings.server_health_offline_threshold_seconds, ServerHealthStatus.OFFLINE.value),
-            (age >= settings.server_health_degraded_threshold_seconds, ServerHealthStatus.DEGRADED.value),
+            (
+                age >= settings.server_health_offline_threshold_seconds,
+                ServerHealthStatus.OFFLINE.value,
+            ),
+            (
+                age >= settings.server_health_degraded_threshold_seconds,
+                ServerHealthStatus.DEGRADED.value,
+            ),
             else_=ServerHealthStatus.HEALTHY.value,
         )
 
