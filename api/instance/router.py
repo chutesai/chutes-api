@@ -2963,7 +2963,6 @@ async def stream_logs(
     instance_id: str,
     request: Request,
     backfill: Optional[int] = 100,
-    db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     current_user: User = Depends(get_current_user(purpose="logs")),
 ):
@@ -2974,52 +2973,59 @@ async def stream_logs(
     include prompts, responses, etc. Used for troubleshooting and checking
     status of warmup, etc.
     """
-    # These are raw application (k8s pod) logs
-    instance = (
-        (
-            await db.execute(
-                select(Instance)
-                .where(Instance.instance_id == instance_id)
-                .options(joinedload(Instance.chute))
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
-    )
-    if not instance:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Instance not found.",
-        )
-    if not current_user.has_role(Permissioning.chutes_support):
-        if (
-            instance.chute.user_id != current_user.user_id
-            and not await is_shared(instance.chute.chute_id, current_user.user_id)
-        ) or instance.chute.public:
-            if not subnet_role_accessible(instance.chute, current_user, admin=True):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You may only view logs for your own (private) chutes.",
+    # Load + authorize in a short-lived session, then CLOSE it before streaming.
+    # Holding the request-scoped session open across the stream is what previously
+    # left transactions "idle in transaction" for hours. Streaming itself is unchanged.
+    async with get_session(readonly=True) as session:
+        instance = (
+            (
+                await session.execute(
+                    select(Instance)
+                    .where(Instance.instance_id == instance_id)
+                    .options(joinedload(Instance.chute))
                 )
-    if not 0 <= backfill <= 10000:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="`backfill` must be between 0 and 10000 (lines of logs)",
+            )
+            .unique()
+            .scalar_one_or_none()
         )
+        if not instance:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Instance not found.",
+            )
+        if not current_user.has_role(Permissioning.chutes_support):
+            if (
+                instance.chute.user_id != current_user.user_id
+                and not await is_shared(instance.chute.chute_id, current_user.user_id)
+            ) or instance.chute.public:
+                if not subnet_role_accessible(instance.chute, current_user, admin=True):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You may only view logs for your own (private) chutes.",
+                    )
+        if not 0 <= backfill <= 10000:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="`backfill` must be between 0 and 10000 (lines of logs)",
+            )
+        # Snapshot what the stream needs so the session can close before we stream.
+        host = instance.host
+        miner_hotkey = instance.miner_hotkey
+        port_mappings = instance.port_mappings
 
     async def _stream():
-        log_port = next(p for p in instance.port_mappings if p["internal_port"] == 8001)[
+        log_port = next(p for p in port_mappings if p["internal_port"] == 8001)[
             "external_port"
         ]
         # Build a temporary client for the log port (always plain HTTP, even for v4/TLS instances).
         import httpx as _httpx
 
         client = _httpx.AsyncClient(
-            base_url=f"http://{instance.host}:{log_port}",
+            base_url=f"http://{host}:{log_port}",
             timeout=_httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
         )
 
-        headers, _ = miner_client.sign_request(instance.miner_hotkey, purpose="chutes")
+        headers, _ = miner_client.sign_request(miner_hotkey, purpose="chutes")
         try:
             async with client.stream(
                 "GET",
