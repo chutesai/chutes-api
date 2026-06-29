@@ -23,20 +23,19 @@ from api.database import get_session
 from api.constants import ServerHealthStatus
 from api.server.schemas import Server
 
-HEALTH_PORT = 8080
 PROBE_TIMEOUT = _httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 
 
-async def probe(ip: str) -> bool:
+async def probe(server: Server) -> bool:
     """
-    Hit a single server's /status/health endpoint. Returns True only on 200 + {"status": "ok"}.
+    Hit a server's own health endpoint. Returns True only on 200 + {"status": "ok"}.
     """
     try:
         async with _httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
-            resp = await client.get(f"http://{ip}:{HEALTH_PORT}/status/health")
+            resp = await client.get(server.health_check_url)
             return resp.status_code == 200 and resp.json().get("status") == "ok"
     except Exception as exc:
-        logger.debug(f"Health probe failed for {ip}: {exc}")
+        logger.debug(f"Health probe failed for {server.server_id} ({server.health_check_url}): {exc}")
         return False
 
 
@@ -60,7 +59,7 @@ async def sweep(max_concurrent: int = None):
 
     async def probe_one(server: Server) -> bool:
         async with semaphore:
-            reachable = await probe(server.ip)
+            reachable = await probe(server)
             if reachable:
                 server.last_health_at = now  # in-memory, so the count below reflects it
             return reachable

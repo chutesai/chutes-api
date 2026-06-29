@@ -10,12 +10,17 @@ class NoncePurpose(str, Enum):
 
 
 class ServerHealthStatus(str, Enum):
-    """TEE server liveness, materialized on servers.health_status by the health prober."""
+    """TEE server liveness, derived live from servers.last_health_at by Server.health_status."""
 
     HEALTHY = "healthy"  # last successful probe within the degraded threshold
     DEGRADED = "degraded"  # no comms past the degraded threshold (e.g. >12h)
     OFFLINE = "offline"  # no comms past the offline threshold (e.g. >72h)
     UNKNOWN = "unknown"  # last_health_at IS NULL — never seen healthy
+
+
+# TEE system-manager liveness endpoint (unauthenticated). See Server.health_check_url.
+TEE_HEALTH_PORT = 8080
+TEE_HEALTH_PATH = "/status/health"
 
 
 ZERO_ADDRESS_HOTKEY = "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM"  # Public key is 0x00000...
