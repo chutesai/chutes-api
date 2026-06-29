@@ -61,6 +61,7 @@ from api.bounty.util import (
     delete_bounty,
     create_bounty_if_not_exists,
     set_chute_disabled,
+    bounty_lifetime_for,
 )
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager, cleanup_instance_conn_tracking
@@ -76,6 +77,7 @@ from api.database import get_db_session, get_session
 from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
+from api.metrics.warmup import track_warmup_request, WarmupTrigger
 from api.constants import (
     DIFFUSION_PRICE_MULT_PER_STEP,
     INTEGRATED_SUBNETS,
@@ -1251,6 +1253,22 @@ async def warm_up_chute(
         )
 
     if quick:
+        # Stamp the first warmup request time for this chute (set-if-absent); activation reads it
+        # back to observe request->hot. The TTL matches this chute's bounty lifetime so the demand
+        # window and the bounty never drift. Count exactly one demand signal per episode -- only when
+        # we actually win the set -- so repeated polls/warmups don't inflate the counter or move the
+        # start time. This mirrors the bounty path, which counts once per created bounty. The key is
+        # cleared when the chute goes hot (getdel at activation), so a later warmup of a cooled-down
+        # chute starts a fresh episode.
+        first_request = await settings.redis_client.set(
+            f"warmup_requested_at:{chute.chute_id}",
+            str(time.time()),
+            nx=True,
+            ex=await bounty_lifetime_for(chute),
+        )
+        if first_request:
+            track_warmup_request(chute.chute_id, WarmupTrigger.EXPLICIT)
+
         # Single status check + bounty creation, return immediately.
         tm = await get_chute_target_manager(chute=chute, max_wait=0, dynonce=True)
         is_hot = tm is not None

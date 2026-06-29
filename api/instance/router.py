@@ -29,6 +29,8 @@ from sqlalchemy.dialects.postgresql import insert
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER
 from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
+from api.metrics.warmup import track_warmup_seconds, track_warmup_seconds_since, WarmupTrigger
+from api.metrics.launch_config import track_failure as track_launch_config_failure
 from api.constants import (
     TEE_BONUS,
     HOTKEY_HEADER,
@@ -1578,6 +1580,9 @@ async def _validate_launch_config_instance(
                 {"config_id": config_id},
             )
             await error_session.commit()
+        # This failure path updates verification_error via raw SQL, bypassing the ORM 'set'
+        # listener, so count it explicitly here.
+        track_launch_config_failure(launch_config.chute_id, "invalid GPU/nodes configuration provided")
         raise
 
     # Use the actual GPU's rate/multiplier instead of the
@@ -2452,6 +2457,20 @@ async def activate_launch_config_instance(
 
         instance.active = True
         instance.activated_at = func.now()
+
+        # Record time-to-hot (warmup demand -> active) per trigger as a Prometheus metric. The
+        # bounty path's age_seconds is the public-chute demand age; the explicit /warmup path stamps
+        # a request timestamp in Redis which we read+delete here. Both helpers no-op when their input
+        # is absent (no bounty / no stamped request), so neither needs a call-site guard.
+        track_warmup_seconds(
+            chute.chute_id, WarmupTrigger.BOUNTY, bounty["age_seconds"] if bounty else None
+        )
+        track_warmup_seconds_since(
+            chute.chute_id,
+            WarmupTrigger.EXPLICIT,
+            await settings.redis_client.getdel(f"warmup_requested_at:{chute.chute_id}"),
+        )
+
         if launch_config.job_id or (
             not chute.public
             and not has_legacy_private_billing(chute)

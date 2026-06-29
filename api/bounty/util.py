@@ -3,13 +3,20 @@ import json
 from loguru import logger
 from datetime import datetime, timezone
 from typing import Optional
+from api.chute.schemas import Chute
 from api.config import settings
 from metasync.constants import (
     BOUNTY_BOOST_MIN,
     BOUNTY_BOOST_MAX,
     BOUNTY_BOOST_RAMP_MINUTES,
 )
-from api.constants import BOUNTY_COOLDOWN_SECONDS
+from api.constants import (
+    BOUNTY_COOLDOWN_SECONDS,
+    BOUNTY_LIFETIME_PUBLIC,
+    BOUNTY_LIFETIME_PRIVATE,
+    BOUNTY_LIFETIME_AFFINE,
+)
+from api.metrics.warmup import track_warmup_request, WarmupTrigger
 
 
 # Key prefix for bounty timestamps (v2 format: plain timestamp string)
@@ -81,6 +88,27 @@ async def set_chute_disabled(chute_id: str, disabled: bool):
         logger.warning(f"Failed to set chute disabled state: {exc}")
 
 
+async def bounty_lifetime_for(chute: Chute) -> int:
+    """
+    Seconds a bounty -- and the matching explicit-warmup demand window -- stays open for this chute.
+
+    Public chutes keep a long window; private non-legacy chutes get a short one so users aren't
+    billed for idle time (affine chutes a bit longer). Used by both the bounty-creation path and the
+    warmup request->hot correlation key so the two TTLs never drift.
+    """
+    # Imported lazily to avoid an import cycle (api.util / api.user.service pull in bounty helpers).
+    from api.util import has_legacy_private_billing
+    from api.user.service import chutes_user_id
+
+    if (
+        not chute.public
+        and not has_legacy_private_billing(chute)
+        and chute.user_id != await chutes_user_id()
+    ):
+        return BOUNTY_LIFETIME_AFFINE if "/affine" in chute.name.lower() else BOUNTY_LIFETIME_PRIVATE
+    return BOUNTY_LIFETIME_PUBLIC
+
+
 async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> bool:
     """
     Create a bounty timestamp if one doesn't already exist.
@@ -114,6 +142,10 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
         if result:
             # Set cooldown to prevent rapid bounty recreation
             await settings.lite_redis_client.set(cooldown_key, "1", ex=BOUNTY_COOLDOWN_SECONDS)
+            # Record the demand signal (a newly created bounty means the chute is wanted hot).
+            # The bounty's creation timestamp (stored above) is the request->hot start time, read
+            # back at activation via claim_bounty()'s age_seconds.
+            track_warmup_request(chute_id, WarmupTrigger.BOUNTY)
         return bool(result)
     except Exception as exc:
         logger.warning(f"Failed to create bounty: {exc}")

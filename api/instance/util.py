@@ -29,9 +29,13 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
-from api.util import has_legacy_private_billing, notify_deleted, notify_job_deleted, semcomp
-from api.user.service import chutes_user_id
-from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
+from api.util import notify_deleted, notify_job_deleted, semcomp
+from api.bounty.util import (
+    create_bounty_if_not_exists,
+    get_bounty_amount,
+    send_bounty_notification,
+    bounty_lifetime_for,
+)
 from sqlalchemy.future import select
 from sqlalchemy import text, func
 from sqlalchemy.exc import MultipleResultsFound
@@ -717,14 +721,9 @@ async def get_chute_target_manager(
     instances = await load_chute_targets(chute_id, nonce=nonce)
     started_at = time.time()
     while not instances:
-        # Private chutes have a very short-lived bounty, so users aren't billed if they stop making requests.
-        bounty_lifetime = 86400
-        if (
-            not chute.public
-            and not has_legacy_private_billing(chute)
-            and chute.user_id != await chutes_user_id()
-        ):
-            bounty_lifetime = 3600 if "/affine" not in chute.name.lower() else 7200
+        # Private chutes have a very short-lived bounty, so users aren't billed if they stop making
+        # requests. The warmup request->hot key uses this same value (see bounty_lifetime_for).
+        bounty_lifetime = await bounty_lifetime_for(chute)
 
         # Increase the bounty.
         if not no_bounty:
