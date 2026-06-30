@@ -35,7 +35,9 @@ async def probe(server: Server) -> bool:
             resp = await client.get(server.health_check_url)
             return resp.status_code == 200 and resp.json().get("status") == "ok"
     except Exception as exc:
-        logger.debug(f"Health probe failed for {server.server_id} ({server.health_check_url}): {exc}")
+        logger.debug(
+            f"Health probe failed for {server.server_id} ({server.health_check_url}): {exc}"
+        )
         return False
 
 
