@@ -1261,8 +1261,15 @@ async def get_latest_upgrade_window(
     The latest window is the relevant upgrade target whether or not it is currently open;
     use is_window_open() to tell the two apart. This lets the maintenance policy report a
     miner's version status (which servers remain out of date) even after a window has closed.
+
+    Ordered by upgrade_window_start: windows never overlap, so the most recently started
+    window is always the newest target. This keys off the field the non-overlap invariant
+    actually constrains (rather than the administrative created_at) and can use the existing
+    idx_tee_upgrade_window_bounds index.
     """
-    query = select(TeeUpgradeWindow).order_by(TeeUpgradeWindow.created_at.desc()).limit(1)
+    query = (
+        select(TeeUpgradeWindow).order_by(TeeUpgradeWindow.upgrade_window_start.desc()).limit(1)
+    )
     result = await db.execute(query)
     return result.scalars().first()
 
