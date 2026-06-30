@@ -26,7 +26,11 @@ from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from api.config import settings
 from api.database import Base, generate_uuid
-from api.constants import ServerHealthStatus, TEE_HEALTH_PORT, TEE_HEALTH_PATH
+from api.constants import (
+    ServerHealthStatus,
+    ATTESTATION_PROXY_PORT,
+    ATTESTATION_PROXY_HEALTH_PATH,
+)
 from api.node.schemas import NodeArgs
 
 
@@ -386,8 +390,8 @@ class Server(Base):
 
     @property
     def health_check_url(self) -> str:
-        """Unauthenticated TEE system-manager liveness endpoint this server serves."""
-        return f"http://{self.ip}:{TEE_HEALTH_PORT}{TEE_HEALTH_PATH}"
+        """Attestation-proxy health endpoint (HTTPS, self-signed) — the workload-readiness signal."""
+        return f"https://{self.ip}:{ATTESTATION_PROXY_PORT}{ATTESTATION_PROXY_HEALTH_PATH}"
 
     @hybrid_property
     def health_status(self) -> ServerHealthStatus:

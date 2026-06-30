@@ -18,9 +18,9 @@ class ServerHealthStatus(str, Enum):
     UNKNOWN = "unknown"  # last_health_at IS NULL — never seen healthy
 
 
-# TEE system-manager liveness endpoint (unauthenticated). See Server.health_check_url.
-TEE_HEALTH_PORT = 8080
-TEE_HEALTH_PATH = "/status/health"
+# Attestation-proxy health endpoint (HTTPS, self-signed cert: CN=attestation-service).
+ATTESTATION_PROXY_PORT = 30443
+ATTESTATION_PROXY_HEALTH_PATH = "/health"
 
 
 ZERO_ADDRESS_HOTKEY = "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM"  # Public key is 0x00000...

@@ -1,8 +1,8 @@
 """
 Stale-inventory sweep for TEE servers.
 
-Probes each TEE server's unauthenticated liveness endpoint
-(GET http://<ip>:8080/status/health -> 200 {"status": "ok"}), then materializes
+Probes each TEE server's attestation-proxy health endpoint
+(GET https://<ip>:30443/health -> 200 {"status": "healthy"}), then materializes
 both `last_health_at` (timestamp of the last successful probe) and `health_status`
 (healthy / stale / unknown) on the servers row in a single bulk update per sweep.
 
@@ -28,15 +28,19 @@ PROBE_TIMEOUT = _httpx.Timeout(connect=5.0, read=10.0, write=10.0, pool=5.0)
 
 async def probe(server: Server) -> bool:
     """
-    Hit a server's own health endpoint. Returns True only on 200 + {"status": "ok"}.
+    Hit a server's attestation-proxy health endpoint. Returns True only on
+    200 + {"status": "healthy"}. The cert is self-signed (CN=attestation-service),
+    so TLS verification is disabled.
     """
     try:
-        async with _httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
+        async with _httpx.AsyncClient(timeout=PROBE_TIMEOUT, verify=False) as client:
             resp = await client.get(server.health_check_url)
-            return resp.status_code == 200 and resp.json().get("status") == "ok"
+            return resp.status_code == 200 and resp.json().get("status") == "healthy"
     except Exception as exc:
+        # Some httpx errors (e.g. ConnectTimeout) stringify to "", so include the type name.
         logger.debug(
-            f"Health probe failed for {server.server_id} ({server.health_check_url}): {exc}"
+            f"Health probe failed for {server.server_id} ({server.health_check_url}): "
+            f"{type(exc).__name__}: {exc}"
         )
         return False
 
