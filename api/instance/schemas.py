@@ -25,6 +25,7 @@ from sqlalchemy import (
 from typing import Optional
 from api.database import Base, generate_uuid
 from api.metrics import launch_config as launch_config_metrics
+from api.log import instance_logger, launch_config_logger, LifecycleEvent
 
 # Association table.
 instance_nodes = Table(
@@ -196,17 +197,17 @@ class LaunchConfig(Base):
 
 
 # ---------------------------------------------------------------------------
-# Deployment-funnel metrics, driven entirely by ORM events on LaunchConfig so the Prometheus
-# counters stay in lock-step with the table without any call-site instrumentation to remember.
-# Each lifecycle phase corresponds to a column transition:
-#   created        -> after_insert
-#   retrieved      -> retrieved_at set (NULL -> value)
-#   verified       -> verified_at set (NULL -> value)
-#   failed         -> verification_error set (-> bucketed reason)
-# These 'set' events fire only on Python-level assignment, NOT on ORM load/refresh, so reading an
-# existing row never double-counts. Each phase is reached at most once per row, so a simple
-# "value is not None" guard is sufficient. The one raw-SQL failure path (invalid GPU/nodes config)
-# bypasses the ORM and is counted explicitly at its call site in api/instance/router.py.
+# Deployment lifecycle observability, driven entirely by ORM events on the models so the Prometheus
+# counters AND the structured logs stay in lock-step with the tables -- no call-site instrumentation
+# to keep in sync. Each lifecycle phase maps to a column transition:
+#   LaunchConfig:  created -> after_insert; retrieved/verified -> *_at set; failed -> verification_error set
+#   Instance:      created -> after_insert; activated -> activated_at set; deleted -> after_delete
+# These 'set'/insert/delete events fire only on Python-level ORM operations, NOT on load/refresh, so
+# reading an existing row never double-fires; each phase is reached at most once per row, so a simple
+# "value is not None" guard suffices. State changes done via raw SQL (for DB-performance reasons)
+# bypass these events -- instance verification (_mark_instance_verified), raw-SQL deletes (purge,
+# chute bulk deletes), and the redis-based instance disable -- and are logged explicitly at those
+# chokepoints instead.
 # ---------------------------------------------------------------------------
 
 
@@ -226,23 +227,51 @@ def _safe_metric(fn, *args):
 
 
 @event.listens_for(LaunchConfig, "after_insert")
-def _track_launch_config_attempt(mapper, connection, target):
+def _on_launch_config_created(mapper, connection, target):
     _safe_metric(launch_config_metrics.track_attempt, target.chute_id)
+    launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_CREATE).info(
+        "launch config created (deployment attempt)"
+    )
 
 
 @event.listens_for(LaunchConfig.retrieved_at, "set")
-def _track_launch_config_retrieved(target, value, oldvalue, initiator):
+def _on_launch_config_retrieved(target, value, oldvalue, initiator):
     if value is not None:
         _safe_metric(launch_config_metrics.track_retrieved, target.chute_id)
+        launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_RETRIEVE).info(
+            "launch config retrieved by miner"
+        )
 
 
 @event.listens_for(LaunchConfig.verified_at, "set")
-def _track_launch_config_verified(target, value, oldvalue, initiator):
+def _on_launch_config_verified(target, value, oldvalue, initiator):
     if value is not None:
         _safe_metric(launch_config_metrics.track_verified, target.chute_id)
+        launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_VERIFY).success(
+            "launch config verified"
+        )
 
 
 @event.listens_for(LaunchConfig.verification_error, "set")
-def _track_launch_config_failure(target, value, oldvalue, initiator):
+def _on_launch_config_failed(target, value, oldvalue, initiator):
     if value is not None:
         _safe_metric(launch_config_metrics.track_failure, target.chute_id, value)
+        launch_config_logger(
+            target, event=LifecycleEvent.LAUNCH_CONFIG_FAIL, verification_error=value
+        ).warning("launch config verification failed")
+
+
+@event.listens_for(Instance, "after_insert")
+def _on_instance_created(mapper, connection, target):
+    instance_logger(target, event=LifecycleEvent.INSTANCE_CREATE).info("instance created")
+
+
+@event.listens_for(Instance.activated_at, "set")
+def _on_instance_activated(target, value, oldvalue, initiator):
+    if value is not None:
+        instance_logger(target, event=LifecycleEvent.INSTANCE_ACTIVATE).success("instance activated")
+
+
+@event.listens_for(Instance, "after_delete")
+def _on_instance_deleted(mapper, connection, target):
+    instance_logger(target, event=LifecycleEvent.INSTANCE_DELETE).warning("instance deleted")

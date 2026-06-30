@@ -30,6 +30,7 @@ import asyncio
 import logging
 import threading
 import traceback
+from enum import Enum
 
 from loguru import logger
 
@@ -148,3 +149,104 @@ def install_asyncio_exception_handler() -> None:
         asyncio.get_running_loop().set_exception_handler(_aioloop_handler)
     except RuntimeError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Structured lifecycle logging helpers.
+#
+# The JSON sink above spreads every logger.bind(...) field at the top level of the emitted line, so
+# binding chute_id/instance_id/etc. makes them first-class searchable fields in OpenSearch -- a
+# single `chute_id:abc123` query reconstructs a chute's whole lifecycle across the chute, launch
+# config, instance, bounty and autoscaler subsystems. These helpers build a logger bound with the
+# canonical field names from an ORM object (dropping None and the sink's reserved keys) and tag the
+# lifecycle stage with a bounded `event` vocabulary. They live here (not in a domain module) because
+# they are cross-cutting and depend only on loguru, so foundational modules like ORM schemas can
+# import them without an import cycle.
+#
+# loguru's bind() returns a NEW logger; it does not mutate the global one. Callers MUST use the
+# returned object (`log = instance_logger(instance, ...); log.info(...)`).
+# ---------------------------------------------------------------------------
+
+# Keys the JSON sink populates itself (_sink above); binding any of these would collide, so we drop
+# them from bound context.
+_RESERVED_LOG_KEYS = frozenset(
+    {"text", "timestamp", "level", "logger", "function", "line", "message", "exception", "_channel"}
+)
+
+
+class LifecycleEvent(str, Enum):
+    """Bounded `event` tags for chute lifecycle log lines (searchable/alertable in OpenSearch)."""
+
+    # Chute
+    CHUTE_CREATE = "chute_create"
+    CHUTE_UPDATE = "chute_update"
+    CHUTE_DELETE = "chute_delete"
+    CHUTE_WARMUP = "chute_warmup"
+    # Launch config (deployment attempt)
+    LAUNCH_CONFIG_CREATE = "launch_config_create"
+    LAUNCH_CONFIG_RETRIEVE = "launch_config_retrieve"
+    LAUNCH_CONFIG_VERIFY = "launch_config_verify"
+    LAUNCH_CONFIG_FAIL = "launch_config_fail"
+    # Instance
+    INSTANCE_CREATE = "instance_create"
+    INSTANCE_VERIFY = "instance_verify"
+    INSTANCE_ACTIVATE = "instance_activate"
+    INSTANCE_DISABLE = "instance_disable"
+    INSTANCE_DELETE = "instance_delete"
+    # Bounty
+    BOUNTY_CREATE = "bounty_create"
+    BOUNTY_CLAIM = "bounty_claim"
+    # Autoscaler
+    SCALE_UP = "scale_up"
+    SCALE_DOWN = "scale_down"
+
+
+def bound_logger(event: LifecycleEvent = None, **fields):
+    """
+    Return a loguru logger bound with the given lifecycle fields (dropping None + reserved keys).
+
+    Use this for call sites that only have ids in scope; prefer the typed helpers below when an ORM
+    object is available. The returned logger must be used for the subsequent log call.
+    """
+    ctx = {k: v for k, v in fields.items() if v is not None and k not in _RESERVED_LOG_KEYS}
+    if event is not None:
+        ctx["event"] = event.value if isinstance(event, Enum) else event
+    return logger.bind(**ctx)
+
+
+def chute_logger(chute, *, event: LifecycleEvent = None, **extra):
+    """Logger bound with a chute's canonical fields."""
+    return bound_logger(
+        event=event,
+        chute_id=getattr(chute, "chute_id", None),
+        user_id=getattr(chute, "user_id", None),
+        version=getattr(chute, "version", None),
+        **extra,
+    )
+
+
+def instance_logger(instance, *, event: LifecycleEvent = None, **extra):
+    """Logger bound with an instance's canonical fields."""
+    return bound_logger(
+        event=event,
+        instance_id=getattr(instance, "instance_id", None),
+        chute_id=getattr(instance, "chute_id", None),
+        config_id=getattr(instance, "config_id", None),
+        miner_hotkey=getattr(instance, "miner_hotkey", None),
+        miner_uid=getattr(instance, "miner_uid", None),
+        version=getattr(instance, "version", None),
+        **extra,
+    )
+
+
+def launch_config_logger(launch_config, *, event: LifecycleEvent = None, **extra):
+    """Logger bound with a launch config's canonical fields."""
+    return bound_logger(
+        event=event,
+        config_id=getattr(launch_config, "config_id", None),
+        chute_id=getattr(launch_config, "chute_id", None),
+        job_id=getattr(launch_config, "job_id", None),
+        miner_hotkey=getattr(launch_config, "miner_hotkey", None),
+        miner_uid=getattr(launch_config, "miner_uid", None),
+        **extra,
+    )
