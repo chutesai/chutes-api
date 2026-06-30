@@ -1,0 +1,53 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: server-health-prober
+  labels:
+    {{- include "serverHealthProber.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.serverHealthProber.schedule | default "*/5 * * * *" | quote }}
+  suspend: {{ .Values.serverHealthProber.suspend | default false }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.serverHealthProber) }}
+  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.serverHealthProber) }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.serverHealthProber) }}
+      activeDeadlineSeconds: 900
+      template:
+        metadata:
+          labels:
+            {{- include "serverHealthProber.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.serverHealthProber.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.serverHealthProber.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.serverHealthProber.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: server-health-prober
+              image: {{ include "chutes.image" (list . .Values.serverHealthProber.image) | quote }}
+              imagePullPolicy: {{ .Values.serverHealthProber.imagePullPolicy }}
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - server_health_prober.py
+              env:
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
+              resources:
+                {{- include "chutes.cronjobResources" .Values.serverHealthProber.resources | nindent 16 }}

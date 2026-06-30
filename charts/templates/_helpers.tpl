@@ -30,6 +30,10 @@ app.kubernetes.io/name: balance-refresher
 app.kubernetes.io/name: log-prober
 {{- end }}
 
+{{- define "serverHealthProber.labels" -}}
+app.kubernetes.io/name: server-health-prober
+{{- end }}
+
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
 {{- end }}
@@ -417,4 +421,26 @@ Redis connection + Validator SS58 + Postgres credentials.
     secretKeyRef:
       name: postgres-secret
       key: readonly_url
+{{- end }}
+
+{{/*
+CronJob Job/pod retention. Resolution order: per-job override -> global .Values.cronjobDefaults -> hard default.
+Call with: (dict "root" . "job" .Values.<jobKey>)
+*/}}
+{{- define "chutes.successfulJobsHistoryLimit" -}}
+{{- $job := .job | default dict -}}
+{{- $def := .root.Values.cronjobDefaults | default dict -}}
+{{- $job.successfulJobsHistoryLimit | default $def.successfulJobsHistoryLimit | default 3 -}}
+{{- end }}
+
+{{- define "chutes.failedJobsHistoryLimit" -}}
+{{- $job := .job | default dict -}}
+{{- $def := .root.Values.cronjobDefaults | default dict -}}
+{{- $job.failedJobsHistoryLimit | default $def.failedJobsHistoryLimit | default 3 -}}
+{{- end }}
+
+{{- define "chutes.ttlSecondsAfterFinished" -}}
+{{- $job := .job | default dict -}}
+{{- $def := .root.Values.cronjobDefaults | default dict -}}
+{{- $job.ttlSecondsAfterFinished | default $def.ttlSecondsAfterFinished | default 3600 -}}
 {{- end }}
