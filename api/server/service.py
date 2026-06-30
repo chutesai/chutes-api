@@ -1267,9 +1267,7 @@ async def get_latest_upgrade_window(
     actually constrains (rather than the administrative created_at) and can use the existing
     idx_tee_upgrade_window_bounds index.
     """
-    query = (
-        select(TeeUpgradeWindow).order_by(TeeUpgradeWindow.upgrade_window_start.desc()).limit(1)
-    )
+    query = select(TeeUpgradeWindow).order_by(TeeUpgradeWindow.upgrade_window_start.desc()).limit(1)
     result = await db.execute(query)
     return result.scalars().first()
 
