@@ -4,6 +4,14 @@ squad_enabled: false
 
 chutes_version: "0.6.9"
 
+# Default Job/pod retention for all CronJobs. Each cronjob inherits these unless it
+# sets the same key under its own values block (e.g. logProber.ttlSecondsAfterFinished).
+# Lower these to keep fewer completed/failed Job pods lingering in the namespace.
+cronjobDefaults:
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  ttlSecondsAfterFinished: 3600 # delete finished Jobs (and their pods) after 1h
+
 # Container image registry prefix. All private images are stored under this path.
 # Set to empty string to use fully-qualified image values as-is.
 imageRegistry: "us-central1-docker.pkg.dev/chutes-443309/chutes-prod-docker-registry"

@@ -8,12 +8,12 @@ spec:
   schedule: {{ .Values.serverHealthProber.schedule | default "*/5 * * * *" | quote }}
   suspend: {{ .Values.serverHealthProber.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 10
-  failedJobsHistoryLimit: 10
+  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.serverHealthProber) }}
+  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.serverHealthProber) }}
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: 15000
+      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.serverHealthProber) }}
       activeDeadlineSeconds: 900
       template:
         metadata:
