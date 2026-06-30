@@ -3014,9 +3014,7 @@ async def stream_logs(
         port_mappings = instance.port_mappings
 
     async def _stream():
-        log_port = next(p for p in port_mappings if p["internal_port"] == 8001)[
-            "external_port"
-        ]
+        log_port = next(p for p in port_mappings if p["internal_port"] == 8001)["external_port"]
         # Build a temporary client for the log port (always plain HTTP, even for v4/TLS instances).
         import httpx as _httpx
 
