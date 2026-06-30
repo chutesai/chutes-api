@@ -105,7 +105,9 @@ async def bounty_lifetime_for(chute: Chute) -> int:
         and not has_legacy_private_billing(chute)
         and chute.user_id != await chutes_user_id()
     ):
-        return BOUNTY_LIFETIME_AFFINE if "/affine" in chute.name.lower() else BOUNTY_LIFETIME_PRIVATE
+        return (
+            BOUNTY_LIFETIME_AFFINE if "/affine" in chute.name.lower() else BOUNTY_LIFETIME_PRIVATE
+        )
     return BOUNTY_LIFETIME_PUBLIC
 
 

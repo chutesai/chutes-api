@@ -1582,7 +1582,9 @@ async def _validate_launch_config_instance(
             await error_session.commit()
         # This failure path updates verification_error via raw SQL, bypassing the ORM 'set'
         # listener, so count it explicitly here.
-        track_launch_config_failure(launch_config.chute_id, "invalid GPU/nodes configuration provided")
+        track_launch_config_failure(
+            launch_config.chute_id, "invalid GPU/nodes configuration provided"
+        )
         raise
 
     # Use the actual GPU's rate/multiplier instead of the
