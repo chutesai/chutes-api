@@ -100,6 +100,14 @@ SCALE_DOWN_MAX_DROP_RATIO = 0.6
 # Cooldown between bounty creations per chute to prevent race conditions.
 BOUNTY_COOLDOWN_SECONDS = 600
 
+# How long a bounty (and the matching warmup demand window) stays open, per chute type. Public
+# chutes keep a long window; private non-legacy chutes get a short one so users aren't billed for
+# idle time (affine chutes get a slightly longer window). The warmup request->hot correlation key
+# uses the same value so the two never drift -- see bounty_lifetime_for().
+BOUNTY_LIFETIME_PUBLIC = 86400
+BOUNTY_LIFETIME_PRIVATE = 3600
+BOUNTY_LIFETIME_AFFINE = 7200
+
 # Maximum size of VLM asset (video/image).
 VLM_MAX_SIZE = 100 * 1024 * 1024
 

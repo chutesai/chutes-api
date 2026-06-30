@@ -3,6 +3,7 @@ ORM definitions for instances (deployments of chutes and/or inventory announceme
 """
 
 import secrets
+from loguru import logger
 from pydantic import BaseModel, Field, constr
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
@@ -19,9 +20,11 @@ from sqlalchemy import (
     Numeric,
     Double,
     UniqueConstraint,
+    event,
 )
 from typing import Optional
 from api.database import Base, generate_uuid
+from api.metrics import launch_config as launch_config_metrics
 
 # Association table.
 instance_nodes = Table(
@@ -190,3 +193,56 @@ class LaunchConfig(Base):
     job = relationship("Job", back_populates="launch_config")
 
     __table_args__ = (UniqueConstraint("job_id", name="uq_job_launch_config"),)
+
+
+# ---------------------------------------------------------------------------
+# Deployment-funnel metrics, driven entirely by ORM events on LaunchConfig so the Prometheus
+# counters stay in lock-step with the table without any call-site instrumentation to remember.
+# Each lifecycle phase corresponds to a column transition:
+#   created        -> after_insert
+#   retrieved      -> retrieved_at set (NULL -> value)
+#   verified       -> verified_at set (NULL -> value)
+#   failed         -> verification_error set (-> bucketed reason)
+# These 'set' events fire only on Python-level assignment, NOT on ORM load/refresh, so reading an
+# existing row never double-counts. Each phase is reached at most once per row, so a simple
+# "value is not None" guard is sufficient. The one raw-SQL failure path (invalid GPU/nodes config)
+# bypasses the ORM and is counted explicitly at its call site in api/instance/router.py.
+# ---------------------------------------------------------------------------
+
+
+def _safe_metric(fn, *args):
+    """Run a metric update, never letting a metrics error break a deployment/verification path.
+
+    A failure here is not expected and points at a problem in the metrics layer itself, so log it
+    (WARNING) for visibility -- the stable "failed to record launch_config metric" prefix is a good
+    thing to alert on -- rather than swallowing it silently.
+    """
+    try:
+        fn(*args)
+    except Exception as exc:
+        logger.warning(
+            f"failed to record launch_config metric via {getattr(fn, '__name__', fn)!r}: {exc}"
+        )
+
+
+@event.listens_for(LaunchConfig, "after_insert")
+def _track_launch_config_attempt(mapper, connection, target):
+    _safe_metric(launch_config_metrics.track_attempt, target.chute_id)
+
+
+@event.listens_for(LaunchConfig.retrieved_at, "set")
+def _track_launch_config_retrieved(target, value, oldvalue, initiator):
+    if value is not None:
+        _safe_metric(launch_config_metrics.track_retrieved, target.chute_id)
+
+
+@event.listens_for(LaunchConfig.verified_at, "set")
+def _track_launch_config_verified(target, value, oldvalue, initiator):
+    if value is not None:
+        _safe_metric(launch_config_metrics.track_verified, target.chute_id)
+
+
+@event.listens_for(LaunchConfig.verification_error, "set")
+def _track_launch_config_failure(target, value, oldvalue, initiator):
+    if value is not None:
+        _safe_metric(launch_config_metrics.track_failure, target.chute_id, value)
