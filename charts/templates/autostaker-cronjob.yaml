@@ -8,12 +8,12 @@ spec:
   schedule: {{ .Values.autostaker.schedule | default "* * * * *" | quote }}
   suspend: {{ .Values.autostaker.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 15
-  failedJobsHistoryLimit: 15
+  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.autostaker) }}
+  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.autostaker) }}
   jobTemplate:
     spec:
       backoffLimit: 7
-      ttlSecondsAfterFinished: 21600
+      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.autostaker) }}
       activeDeadlineSeconds: 1800
       template:
         metadata:

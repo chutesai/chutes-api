@@ -8,13 +8,13 @@ metadata:
 spec:
   schedule: {{ .Values.auditExporter.schedule | default "1 * * * *" | quote }}
   suspend: {{ .Values.auditExporter.suspend | default false }}
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.auditExporter) }}
+  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.auditExporter) }}
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:
       activeDeadlineSeconds: 3600
-      ttlSecondsAfterFinished: 21600
+      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.auditExporter) }}
       backoffLimit: 5
       template:
         metadata:

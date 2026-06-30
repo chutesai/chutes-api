@@ -8,12 +8,12 @@ spec:
   schedule: {{ .Values.chuteAutoscaler.dryrunSchedule | default "*/2 * * * *" | quote }}
   suspend: {{ .Values.chuteAutoscaler.dryrunSuspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 10
-  failedJobsHistoryLimit: 10
+  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.chuteAutoscaler) }}
+  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.chuteAutoscaler) }}
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: 15000
+      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.chuteAutoscaler) }}
       activeDeadlineSeconds: 300
       template:
         metadata:
