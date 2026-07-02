@@ -8,7 +8,7 @@ import pytest
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, AsyncMock
 
 from api.config import TeeMeasurementConfig
 from api.server.util import (
@@ -29,6 +29,7 @@ from api.server.quote import (
 )
 from api.server.exceptions import (
     InvalidQuoteError,
+    InvalidSignatureError,
     InvalidTdxConfiguration,
     MeasurementMismatchError,
 )
@@ -189,6 +190,40 @@ def test_tdx_verification_result_creation():
     assert result.is_valid is True
     assert result.user_data == "test_data"
     assert isinstance(result.parsed_at, datetime)
+
+
+def test_is_valid_false_when_advisories_present():
+    """A quote carrying Intel security advisories must not verify, even UpToDate."""
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=["INTEL-SA-01036"],
+        td_attributes="0000000000000000",
+    )
+    assert result.is_valid is False
+
+
+def test_is_valid_false_when_status_not_uptodate():
+    """Any non-UpToDate status (e.g. OutOfDate) must not verify."""
+    result = TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="OutOfDate",
+        advisory_ids=[],
+        td_attributes="0000000000000000",
+    )
+    assert result.is_valid is False
 
 
 def test_tdx_verification_result_rtmrs_property():
@@ -602,18 +637,19 @@ async def test_verify_quote_signature_success(sample_boot_quote):
     )
 
     with patch(
-        "api.server.util.get_collateral_and_verify", return_value=mock_verified_report
-    ) as mock_verify:
+        "api.server.util.get_collateral", new=AsyncMock(return_value=Mock())
+    ), patch("api.server.util.verify", return_value=mock_verified_report) as mock_verify:
         result = await verify_quote_signature(sample_boot_quote)
 
         assert isinstance(result, TdxVerificationResult)
         assert result.is_valid is True
-        mock_verify.assert_called_once_with(sample_boot_quote.raw_bytes)
+        mock_verify.assert_called_once()
+        assert mock_verify.call_args[0][0] == sample_boot_quote.raw_bytes
 
 
 @pytest.mark.asyncio
 async def test_verify_quote_signature_failure(sample_boot_quote):
-    """Test failed quote signature verification (util wraps in InvalidQuoteError)."""
+    """A non-UpToDate status surfaces as InvalidSignatureError (fail-closed)."""
     mock_verified_report = Mock()
     mock_verified_report.to_json.return_value = (
         '{"status": "Unknown", "advisory_ids": [], '
@@ -621,8 +657,10 @@ async def test_verify_quote_signature_failure(sample_boot_quote):
         '"rt_mr3": "e", "report_data": "test", "td_attributes": "0000001000000000"}}}'
     )
 
-    with patch("api.server.util.get_collateral_and_verify", return_value=mock_verified_report):
-        with pytest.raises(InvalidQuoteError, match="Unable to parse provided quote"):
+    with patch(
+        "api.server.util.get_collateral", new=AsyncMock(return_value=Mock())
+    ), patch("api.server.util.verify", return_value=mock_verified_report):
+        with pytest.raises(InvalidSignatureError):
             await verify_quote_signature(sample_boot_quote)
 
 

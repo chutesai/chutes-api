@@ -16,7 +16,8 @@ from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
 from fastapi import Request, status
 from loguru import logger
-from dcap_qvl import get_collateral_and_verify
+import time
+from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
 from api.config import settings, TeeMeasurementConfig
 from cryptography import x509
 from cryptography.x509 import Certificate
@@ -35,7 +36,7 @@ from api.server.exceptions import (
     NoServerCertError,
     NonceError,
 )
-from api.server.quote import TdxQuote, TdxVerificationResult
+from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
 
 from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
@@ -219,10 +220,24 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
     logger.info("Verifying TDX quote signature using dcap-qvl")
 
     try:
-        # Perform quote verification
-        verified_report = await get_collateral_and_verify(quote.raw_bytes)
-
-        result = TdxVerificationResult.from_report(verified_report)
+        # Fetch Intel-signed collateral once, then verify. We split this out of
+        # dcap-qvl's get_collateral_and_verify so the same (already
+        # signature-verified) collateral is available to the TDX module-identity
+        # fallback below without an extra fetch.
+        collateral = await get_collateral(PHALA_PCCS_URL, quote.raw_bytes)
+        try:
+            verified_report = verify(quote.raw_bytes, collateral, int(time.time()))
+            result = TdxVerificationResult.from_report(verified_report)
+        except ValueError as e:
+            # dcap-qvl (through >=0.5.x) compares all 16 TDX TCB components at the
+            # platform level, so newer-generation TDX hosts whose SEAM module SVN
+            # restarts low fail here even when Intel reports them UpToDate. This
+            # error is raised only after all signature/cert/QE checks pass, so we
+            # re-resolve *just* the TCB verdict via Intel's TDX module-identity
+            # algorithm. Any other error propagates and fails closed.
+            if "No matching TCB level found" not in str(e):
+                raise
+            result = _resolve_tdx_tcb_via_module_identity(quote, collateral, e)
 
         if result.is_valid:
             logger.success("TDX quote signature verification successful")
@@ -234,9 +249,59 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
             raise InvalidSignatureError("TDX quote signature verification failed")
 
         return result
+    except AttestationError:
+        # Already a structured, fail-closed attestation error; don't mask it.
+        raise
     except Exception as e:
         logger.error(f"Unexpected error during quote verification: {e}")
         raise InvalidQuoteError("Unable to parse provided quote for verification.")
+
+
+def _resolve_tdx_tcb_via_module_identity(
+    quote: TdxQuote, collateral, original_error: Exception
+) -> TdxVerificationResult:
+    """
+    Recompute a TDX quote's TCB verdict using Intel's TDX module-identity
+    algorithm after dcap-qvl verified the quote cryptographically but could not
+    match a platform TCB level.
+
+    All signatures (root CA, TCB Info, QE identity, PCK chain, QE report, and the
+    TD report itself) were already validated by ``verify`` before it raised, and
+    ``collateral.tcb_info`` is the Intel-signed TCB Info it verified. We only
+    re-derive the TCB status here; measurements come from dcap-qvl's own parse of
+    the (signature-verified) TD report. Fails closed on anything unexpected.
+    """
+    parsed = Quote.parse(quote.raw_bytes)
+    if not parsed.is_tdx():
+        # SGX quotes never use TDX module identity; the original failure stands.
+        raise original_error
+    report = parsed.report
+    pck = parsed.pck_extension()
+
+    tcb_info = json.loads(collateral.tcb_info)
+    status, advisory_ids = resolve_tdx_tcb_status(
+        tcb_info=tcb_info,
+        tee_tcb_svn=list(report.tee_tcb_svn),
+        sgx_tcb_components=list(pck.cpu_svn),
+        pce_svn=pck.pce_svn,
+        mr_signer_seam=report.mr_signer_seam,
+        seam_attributes=report.seam_attributes,
+    )
+    logger.info(
+        "Resolved TDX TCB via module identity fallback: "
+        f"status={status}, tee_tcb_svn={list(report.tee_tcb_svn)[:2]}..."
+    )
+    return TdxVerificationResult.from_fields(
+        mr_td=report.mr_td,
+        rt_mr0=report.rt_mr0,
+        rt_mr1=report.rt_mr1,
+        rt_mr2=report.rt_mr2,
+        rt_mr3=report.rt_mr3,
+        report_data=report.report_data,
+        td_attributes=report.td_attributes,
+        status=status,
+        advisory_ids=advisory_ids,
+    )
 
 
 def get_latest_measurement_version() -> str:

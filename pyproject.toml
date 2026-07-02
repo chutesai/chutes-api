@@ -46,7 +46,7 @@ dependencies = [
   "dnslib>=0.9.26,<0.10.0",
   "semver>=3.0.4,<4.0.0",
   "bittensor-wallet>=4.0.1",
-  "dcap-qvl==0.3.12",
+  "dcap-qvl==0.5.3",
   "huggingface-hub==0.34.6",
   "tokenizers==0.21.4",
   "redis>=7.0,<7.1",
