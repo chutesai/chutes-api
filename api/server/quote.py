@@ -239,14 +239,9 @@ class TdxVerificationResult:
     @property
     def is_valid(self) -> bool:
         """
-        True only if the TCB status is UpToDate, no Intel security advisories
-        apply, and TD debug mode is disabled.
-
-        Intel attaches ``advisoryIDs`` (INTEL-SA-*) to TCB levels affected by a
-        published security advisory. dcap-qvl surfaces them but only hard-fails
-        on ``Revoked``; we additionally reject any quote carrying advisories so a
-        host flagged for a CVE can never verify, even in the unusual case where
-        Intel leaves such a level marked UpToDate.
+        True only if TCB status is UpToDate, no Intel advisories (INTEL-SA-*)
+        apply, and TD debug mode is disabled. We reject on any advisory so a host
+        flagged by a security advisory can never verify.
         """
         return (
             self.status == "UpToDate"
@@ -302,14 +297,9 @@ class TdxVerificationResult:
         advisory_ids: Optional[List[str]] = None,
     ) -> "TdxVerificationResult":
         """
-        Build a result from already-parsed TD report fields plus an externally
-        resolved TCB ``status``.
-
-        Used by the TDX module-identity fallback in ``api.server.util`` when
-        dcap-qvl has cryptographically verified a quote but cannot itself
-        resolve the TCB level (see ``resolve_tdx_tcb_status``). Field values may
-        be ``bytes`` or hex ``str``; they are normalized to lowercase hex to
-        match ``from_report``.
+        Build a result from parsed TD report fields plus an externally resolved
+        TCB ``status`` (used by the module-identity fallback in ``api.server.util``).
+        Field values may be ``bytes`` or hex ``str``; normalized to lowercase hex.
         """
         return cls(
             mrtd=_hex(mr_td),
@@ -387,14 +377,11 @@ def _match_platform_tcb_level(
     pce_svn: int,
 ) -> "tuple[str, List[str]]":
     """
-    Select the platform TCB level per Intel's DCAP algorithm.
-
-    For every level (Intel publishes them most-current first), the platform must
-    meet: PCESVN, every SGX TCB component, and every TDX TCB component. Per
-    Intel's TDX TCB mapping, the first two ``tee_tcb_svn`` bytes are the TDX
-    module SVN/version and are governed by ``tdxModuleIdentities`` instead of the
-    platform components whenever ``tee_tcb_svn[1] > 0``; in that case only TDX
-    components 2..15 are compared here. Raises (fail-closed) if no level matches.
+    Select the platform TCB level per Intel's DCAP algorithm: the platform must
+    meet PCESVN and every SGX and TDX component. Per Intel's TDX TCB mapping,
+    ``tee_tcb_svn`` bytes 0-1 are the module SVN/version (governed by
+    ``tdxModuleIdentities``), so they are skipped here when ``tee_tcb_svn[1] > 0``.
+    Fail-closed if no level matches.
     """
     # Intel: compare tdx components 0..15 when tee_tcb_svn[1] == 0, else 2..15.
     tdx_start = 2 if tee_tcb_svn[1] > 0 else 0
@@ -423,14 +410,13 @@ def _verify_tdx_module(
     seam_attributes: Any,
 ) -> "Optional[tuple[str, List[str]]]":
     """
-    Corroborate the TDX (SEAM) module identity and derive its TCB status.
+    Verify the TDX (SEAM) module identity and derive its TCB status.
 
-    Follows Intel DCAP / dcap-qvl: pick module identity ``TDX_{version:02X}``
-    (version = ``tee_tcb_svn[1]``), verify MR_SIGNER_SEAM and masked
-    SEAMATTRIBUTES against it, then read the status of the highest module TCB
-    level whose ``isvsvn`` is <= the module ISVSVN (``tee_tcb_svn[0]``). Returns
-    ``None`` when there is no module-specific status to merge (legacy hosts /
-    non-TDX TCB Info). Raises (fail-closed) on any mismatch.
+    Selects identity ``TDX_{version:02X}`` (version = ``tee_tcb_svn[1]``), checks
+    MR_SIGNER_SEAM and masked SEAMATTRIBUTES, then reads the status of the highest
+    module level whose ``isvsvn`` <= the module ISVSVN (``tee_tcb_svn[0]``).
+    Returns ``None`` when there is no module status to merge; fail-closed on
+    mismatch.
     """
     if tcb_info.get("id") != "TDX" or tcb_info.get("version", 0) < 3:
         return None
@@ -496,20 +482,17 @@ def resolve_tdx_tcb_status(
     seam_attributes: Any,
 ) -> "tuple[str, List[str]]":
     """
-    Resolve a TDX quote's overall TCB status using Intel's TDX Module Identity
-    algorithm, reading everything from the (Intel-signed) ``tcb_info``.
+    Resolve a TDX quote's overall TCB status from the Intel-signed ``tcb_info``
+    using Intel's TDX Module Identity algorithm.
 
-    This exists because dcap-qvl (through at least 0.5.x) compares all 16 TDX TCB
-    components at the platform level instead of skipping the two module-governed
-    bytes, so newer-generation TDX hosts whose SEAM module SVN restarts low fail
-    with "No matching TCB level found" even when Intel reports them UpToDate. We
-    only invoke this after dcap-qvl has cryptographically verified the quote and
-    signed collateral; here we recompute just the TCB verdict per Intel's spec.
+    Needed because dcap-qvl compares all 16 TDX TCB components at the platform
+    level instead of skipping the two module-governed bytes (Phala dcap-qvl
+    issue #124), so current newer-generation TDX hosts fail to match a level.
+    Invoked only after dcap-qvl has verified all signatures.
 
-    Returns ``(status, advisory_ids)``; the status is the least-current of the
-    matched platform level and the TDX module identity. Raises
-    ``InvalidQuoteError`` (fail-closed) if no level matches or the module
-    identity cannot be verified.
+    Returns ``(status, advisory_ids)`` = the least-current of the matched
+    platform level and the TDX module identity. Fail-closed (raises
+    ``InvalidQuoteError``) if nothing matches or the module can't be verified.
     """
     if len(tee_tcb_svn) < 2:
         raise InvalidQuoteError("TEE_TCB_SVN too short to resolve TDX TCB status")

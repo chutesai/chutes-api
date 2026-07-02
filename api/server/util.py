@@ -220,21 +220,15 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
     logger.info("Verifying TDX quote signature using dcap-qvl")
 
     try:
-        # Fetch Intel-signed collateral once, then verify. We split this out of
-        # dcap-qvl's get_collateral_and_verify so the same (already
-        # signature-verified) collateral is available to the TDX module-identity
-        # fallback below without an extra fetch.
+        # Fetch collateral once so the module-identity fallback can reuse it.
         collateral = await get_collateral(PHALA_PCCS_URL, quote.raw_bytes)
         try:
             verified_report = verify(quote.raw_bytes, collateral, int(time.time()))
             result = TdxVerificationResult.from_report(verified_report)
         except ValueError as e:
-            # dcap-qvl (through >=0.5.x) compares all 16 TDX TCB components at the
-            # platform level, so newer-generation TDX hosts whose SEAM module SVN
-            # restarts low fail here even when Intel reports them UpToDate. This
-            # error is raised only after all signature/cert/QE checks pass, so we
-            # re-resolve *just* the TCB verdict via Intel's TDX module-identity
-            # algorithm. Any other error propagates and fails closed.
+            # dcap-qvl can't match a TCB level for newer TDX module generations
+            # (see resolve_tdx_tcb_status). This is raised only after all crypto
+            # checks pass, so re-resolve the TCB verdict; anything else fails closed.
             if "No matching TCB level found" not in str(e):
                 raise
             result = _resolve_tdx_tcb_via_module_identity(quote, collateral, e)
@@ -261,15 +255,13 @@ def _resolve_tdx_tcb_via_module_identity(
     quote: TdxQuote, collateral, original_error: Exception
 ) -> TdxVerificationResult:
     """
-    Recompute a TDX quote's TCB verdict using Intel's TDX module-identity
-    algorithm after dcap-qvl verified the quote cryptographically but could not
-    match a platform TCB level.
+    Re-resolve a TDX quote's TCB verdict via Intel's module-identity algorithm
+    when dcap-qvl could not match a platform TCB level.
 
-    All signatures (root CA, TCB Info, QE identity, PCK chain, QE report, and the
-    TD report itself) were already validated by ``verify`` before it raised, and
-    ``collateral.tcb_info`` is the Intel-signed TCB Info it verified. We only
-    re-derive the TCB status here; measurements come from dcap-qvl's own parse of
-    the (signature-verified) TD report. Fails closed on anything unexpected.
+    ``verify`` already validated every signature (and the Intel-signed
+    ``collateral.tcb_info``) before raising, so here we only recompute the TCB
+    status; measurements come from dcap-qvl's parse of the verified TD report.
+    Fails closed on anything unexpected.
     """
     parsed = Quote.parse(quote.raw_bytes)
     if not parsed.is_tdx():
