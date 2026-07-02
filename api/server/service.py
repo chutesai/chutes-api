@@ -59,7 +59,6 @@ from api.server.util import (
     get_nonce_expiry_seconds,
     verify_quote,
     verify_gpu_evidence,
-    sync_server_luks_passphrases,
     rotate_luks_passphrases,
     generate_confirm_nonce,
     generate_luks_quote_nonce,
@@ -295,34 +294,13 @@ def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> Non
     )
 
 
-async def generate_and_store_boot_token(miner_hotkey: str, vm_name: str) -> str:
-    """
-    Generate and store a boot token for a verified VM.
-
-    Args:
-        miner_hotkey: Miner hotkey that owns this VM
-        vm_name: VM name/identifier
-
-    Returns:
-        Boot token string
-    """
-    boot_token = generate_nonce()
-    redis_key = f"boot_token:{boot_token}"
-    # Store boot token with miner_hotkey:vm_name (10 minute TTL)
-    boot_token_value = f"{miner_hotkey}:{vm_name}"
-    await settings.redis_client.setex(redis_key, 10 * 60, boot_token_value)
-    logger.info(f"Generated boot token for VM {vm_name} (miner: {miner_hotkey})")
-
-    return boot_token
-
-
 async def process_boot_attestation(
     db: AsyncSession,
     server_ip: str,
     args: BootAttestationArgs,
     nonce: str,
     expected_cert_hash: str,
-) -> tuple[Optional[str], Optional[str], str]:
+) -> tuple[Optional[str], str]:
     """
     Process a boot attestation request.
 
@@ -334,10 +312,8 @@ async def process_boot_attestation(
         expected_cert_hash: Expected certificate hash
 
     Returns:
-        Tuple of (boot_token, luks_quote_nonce, measurement_version). Exactly one of
-        boot_token/luks_quote_nonce is set depending on the VM's measurement version:
-        boot_token for version < 1.3.0 (legacy POST /luks flow), luks_quote_nonce for
-        version >= 1.3.0 (POST /luks/attest flow). measurement_version is the matched
+        Tuple of (luks_quote_nonce, measurement_version). The luks_quote_nonce is used
+        for the subsequent POST /luks/attest flow. measurement_version is the matched
         config version, used to select the version-specific root LUKS passphrase.
 
     Raises:
@@ -388,16 +364,11 @@ async def process_boot_attestation(
             db, args.miner_hotkey, args.vm_name, measurement_config.version
         )
 
-        # Version-gate: legacy VMs (< 1.3.0) get a boot token for POST /luks;
-        # new VMs (>= 1.3.0) get a luks_quote_nonce for POST /luks/attest instead.
-        boot_token: Optional[str] = None
-        luks_quote_nonce: Optional[str] = None
-        if semcomp(measurement_config.version, "1.3.0") >= 0:
-            luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
-        else:
-            boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
+        # All accepted VMs use the POST /luks/attest flow; the tee_minimum_boot_version
+        # gate above already rejects any VM older than the current minimum (>= 1.3.1).
+        luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
 
-        return boot_token, luks_quote_nonce, measurement_config.version
+        return luks_quote_nonce, measurement_config.version
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record; set measurement_version if quote matched a config
@@ -912,72 +883,6 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
 
     logger.info(f"Deleted server: {server_id}")
     return True
-
-
-async def _get_boot_token_context(boot_token: str) -> tuple[str, str]:
-    """
-    Validate boot token and return the VM identity (miner_hotkey, vm_name).
-
-    Args:
-        boot_token: Boot token from initial attestation
-
-    Returns:
-        Tuple of (miner_hotkey, vm_name)
-
-    Raises:
-        NonceError: If boot token is invalid or expired
-    """
-    # Validate boot token
-    redis_key = f"boot_token:{boot_token}"
-    redis_value = await settings.redis_client.get(redis_key)
-
-    if not redis_value:
-        raise NonceError("Boot token not found or expired")
-
-    # Parse miner_hotkey:vm_name from the stored value
-    try:
-        boot_token_value = redis_value.decode()
-        miner_hotkey, vm_name = boot_token_value.split(":", 1)
-    except (ValueError, AttributeError) as e:
-        logger.error(f"Failed to parse boot token value: {e}")
-        raise NonceError("Invalid boot token format")
-
-    logger.info(f"Retrieved boot token for VM {vm_name} (miner: {miner_hotkey})")
-
-    return miner_hotkey, vm_name
-
-
-async def _validate_boot_token_for_luks(boot_token: str, hotkey: str, vm_name: str) -> None:
-    """Validate boot token and verify hotkey/vm_name match. Raises NonceError on failure."""
-    token_hotkey, token_vm_name = await _get_boot_token_context(boot_token)
-    if token_hotkey != hotkey:
-        logger.warning(f"Hotkey mismatch: expected {token_hotkey}, got {hotkey}")
-        raise NonceError("Hotkey does not match boot token")
-    if token_vm_name != vm_name:
-        logger.warning(f"VM name mismatch: expected {token_vm_name}, got {vm_name}")
-        raise NonceError("VM name does not match boot token")
-
-
-async def _consume_boot_token(boot_token: str) -> None:
-    redis_key = f"boot_token:{boot_token}"
-    await settings.redis_client.delete(redis_key)
-
-
-async def process_luks_passphrase_request(
-    db: AsyncSession,
-    boot_token: str,
-    hotkey: str,
-    vm_name: str,
-    volume_names: list,
-    rekey_volume_names: Optional[list] = None,
-) -> Dict[str, str]:
-    """Validate boot token and run LUKS sync (ensure keys for volumes, prune others, rekey optional). Consumes token."""
-    await _validate_boot_token_for_luks(boot_token, hotkey, vm_name)
-    result = await sync_server_luks_passphrases(
-        db, hotkey, vm_name, volume_names, rekey_volume_names=rekey_volume_names
-    )
-    await _consume_boot_token(boot_token)
-    return result
 
 
 async def process_luks_attest_request(

@@ -6,7 +6,6 @@ Covers:
 - First-boot provisioning: passphrase must survive confirm(rotated=false)
 - Restart rotation: decrypt existing → generate pending → confirm promotes
 - Full lifecycle: first boot → confirm → restart → confirm
-- Legacy sync flow (sync_server_luks_passphrases)
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -19,7 +18,6 @@ from api.server.util import (
     decrypt_passphrase,
     generate_cache_passphrase,
     rotate_luks_passphrases,
-    sync_server_luks_passphrases,
     _get_fernet,
 )
 from api.server.exceptions import InvalidTdxConfiguration
@@ -360,99 +358,6 @@ class TestRotateLuksPassphrases:
         _simulate_confirm(stored, volumes, {"storage": True, "tdx-cache": False})
         assert fernet.decrypt(stored["storage"].encode()).decode() == volumes["storage"].next
         assert fernet.decrypt(stored["tdx-cache"].encode()).decode() == volumes["tdx-cache"].next
-
-
-# ---------------------------------------------------------------------------
-# sync_server_luks_passphrases (legacy flow, DB mocked)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-class TestSyncServerLuksPassphrases:
-    """Tests for the legacy POST /luks sync flow."""
-
-    @patch("api.server.util.settings")
-    @patch("api.server.util._get_vm_cache_config")
-    @patch("api.server.util._create_vm_cache_config")
-    async def test_first_boot_creates_passphrases(self, mock_create, mock_get, mock_settings):
-        mock_settings.fernet_key = Fernet(Fernet.generate_key())
-        mock_get.return_value = None
-        mock_create.return_value = _make_vm_config()
-        db = AsyncMock()
-
-        result = await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage", "tdx-cache"])
-
-        assert "storage" in result
-        assert "tdx-cache" in result
-        assert len(result["storage"]) == 128
-
-    @patch("api.server.util.settings")
-    @patch("api.server.util._get_vm_cache_config")
-    async def test_restart_returns_existing(self, mock_get, mock_settings):
-        fernet = Fernet(Fernet.generate_key())
-        mock_settings.fernet_key = fernet
-
-        original = generate_cache_passphrase()
-        encrypted = fernet.encrypt(original.encode()).decode()
-        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
-        db = AsyncMock()
-
-        result = await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
-
-        assert result["storage"] == original
-
-    @patch("api.server.util.settings")
-    @patch("api.server.util._get_vm_cache_config")
-    async def test_restart_wrong_key_raises(self, mock_get, mock_settings):
-        """Legacy sync also fails if Fernet key changed."""
-        old_fernet = Fernet(Fernet.generate_key())
-        new_fernet = Fernet(Fernet.generate_key())
-
-        encrypted = old_fernet.encrypt(b"passphrase").decode()
-        mock_settings.fernet_key = new_fernet
-        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
-        db = AsyncMock()
-
-        with pytest.raises(InvalidToken):
-            await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
-
-    @patch("api.server.util.settings")
-    @patch("api.server.util._get_vm_cache_config")
-    async def test_rekey_generates_new(self, mock_get, mock_settings):
-        fernet = Fernet(Fernet.generate_key())
-        mock_settings.fernet_key = fernet
-
-        original = generate_cache_passphrase()
-        encrypted = fernet.encrypt(original.encode()).decode()
-        mock_get.return_value = _make_vm_config(volume_passphrases={"storage": encrypted})
-        db = AsyncMock()
-
-        result = await sync_server_luks_passphrases(
-            db, "hotkey1", "vm1", ["storage"], rekey_volume_names=["storage"]
-        )
-
-        assert result["storage"] != original
-        assert len(result["storage"]) == 128
-
-    @patch("api.server.util.settings")
-    @patch("api.server.util._get_vm_cache_config")
-    async def test_prune_removes_unlisted_volumes(self, mock_get, mock_settings):
-        fernet = Fernet(Fernet.generate_key())
-        mock_settings.fernet_key = fernet
-
-        mock_get.return_value = _make_vm_config(
-            volume_passphrases={
-                "storage": fernet.encrypt(b"pp1").decode(),
-                "old-vol": fernet.encrypt(b"pp2").decode(),
-            }
-        )
-        db = AsyncMock()
-
-        await sync_server_luks_passphrases(db, "hotkey1", "vm1", ["storage"])
-
-        stored = mock_get.return_value.volume_passphrases
-        assert "storage" in stored
-        assert "old-vol" not in stored
 
 
 # ---------------------------------------------------------------------------
