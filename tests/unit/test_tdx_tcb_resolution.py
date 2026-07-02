@@ -191,9 +191,7 @@ def test_bytes_and_hex_inputs_are_equivalent():
     as_hex = resolve_tdx_tcb_status(
         mr_signer_seam=ZERO_MRSIGNER, seam_attributes=ZERO_SEAM_ATTRS, **common
     )
-    as_bytes = resolve_tdx_tcb_status(
-        mr_signer_seam=bytes(48), seam_attributes=bytes(8), **common
-    )
+    as_bytes = resolve_tdx_tcb_status(mr_signer_seam=bytes(48), seam_attributes=bytes(8), **common)
     assert as_hex == as_bytes == ("UpToDate", [])
 
 

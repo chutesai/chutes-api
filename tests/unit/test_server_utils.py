@@ -636,9 +636,10 @@ async def test_verify_quote_signature_success(sample_boot_quote):
         '"rt_mr3": "e", "report_data": "test", "td_attributes": "0000001000000000"}}}'
     )
 
-    with patch(
-        "api.server.util.get_collateral", new=AsyncMock(return_value=Mock())
-    ), patch("api.server.util.verify", return_value=mock_verified_report) as mock_verify:
+    with (
+        patch("api.server.util.get_collateral", new=AsyncMock(return_value=Mock())),
+        patch("api.server.util.verify", return_value=mock_verified_report) as mock_verify,
+    ):
         result = await verify_quote_signature(sample_boot_quote)
 
         assert isinstance(result, TdxVerificationResult)
@@ -657,9 +658,10 @@ async def test_verify_quote_signature_failure(sample_boot_quote):
         '"rt_mr3": "e", "report_data": "test", "td_attributes": "0000001000000000"}}}'
     )
 
-    with patch(
-        "api.server.util.get_collateral", new=AsyncMock(return_value=Mock())
-    ), patch("api.server.util.verify", return_value=mock_verified_report):
+    with (
+        patch("api.server.util.get_collateral", new=AsyncMock(return_value=Mock())),
+        patch("api.server.util.verify", return_value=mock_verified_report),
+    ):
         with pytest.raises(InvalidSignatureError):
             await verify_quote_signature(sample_boot_quote)
 

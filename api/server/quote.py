@@ -243,11 +243,7 @@ class TdxVerificationResult:
         apply, and TD debug mode is disabled. We reject on any advisory so a host
         flagged by a security advisory can never verify.
         """
-        return (
-            self.status == "UpToDate"
-            and not self.advisory_ids
-            and not self.debug_enabled
-        )
+        return self.status == "UpToDate" and not self.advisory_ids and not self.debug_enabled
 
     @classmethod
     def from_report(cls, verified_report: VerifiedReport) -> "TdxVerificationResult":
