@@ -195,16 +195,16 @@ def test_bytes_and_hex_inputs_are_equivalent():
     assert as_hex == as_bytes == ("UpToDate", [])
 
 
-# --- End-to-end regression against the real signed B200 quote ---------------
-# tests/assets/b200_boot.quote is the real quote that dcap-qvl 0.3.12 rejected
-# with "No matching TCB level found". This exercises the full path: dcap-qvl
-# verifies signatures/certs, raises on the TCB match, and our fallback resolves
-# UpToDate. Requires fetching live collateral, so it skips when offline.
+# --- End-to-end regression against a real signed B200 quote -----------------
+# Exercises the full path (dcap-qvl verifies signatures, raises on the TCB match,
+# our fallback resolves UpToDate). A real quote embeds host-identifying data
+# (PPID, measurements), so it is NOT committed; drop one at local/b200.quote (a
+# gitignored dir) to run this locally. Skips when the file is absent or offline.
 @pytest.mark.asyncio
 async def test_real_b200_quote_verifies_end_to_end():
-    quote_path = Path("tests/assets/b200_boot.quote")
+    quote_path = Path("local/b200.quote")
     if not quote_path.exists():
-        pytest.skip("b200_boot.quote fixture not present")
+        pytest.skip("local/b200.quote not present (host-identifying; not committed)")
 
     import base64
 
