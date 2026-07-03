@@ -2069,8 +2069,25 @@ async def claim_tee_launch_config(
     asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
     asyncio.create_task(_maybe_start_log_capture(instance, config_id))
 
-    # Verify TEE attestation evidence
-    await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
+    # Verify TEE attestation evidence, recording failed_at on any failure.
+    try:
+        await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
+    except Exception as exc:
+        chute_id = launch_config.chute_id
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        reason = detail if isinstance(detail, str) else str(detail)
+        await db.rollback()
+        async with get_session() as error_session:
+            await error_session.execute(
+                text(
+                    "UPDATE launch_configs SET failed_at = NOW(), "
+                    "verification_error = :reason WHERE config_id = :config_id"
+                ),
+                {"config_id": config_id, "reason": reason},
+            )
+            await error_session.commit()
+        track_launch_config_failure(chute_id, reason)
+        raise
 
     instance.deployment_id = args.deployment_id
     await db.commit()
