@@ -29,7 +29,7 @@ from api.miner.schemas import MinerServersResponse
 from api.job.schemas import Job
 from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
-from api.database import get_session, get_db_session
+from api.database import get_session, get_db_session, db_scalar
 from api.config import settings
 from api.constants import HOTKEY_HEADER, AUTHORIZATION_HEADER
 from api.instance.util import _decode_chutes_jwt
@@ -655,7 +655,6 @@ _CURSOR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$")
 async def stream_miner_logs(
     request: Request,
     cursor: Optional[str] = None,
-    db: AsyncSession = Depends(get_db_session),
     authorization: str = Header(..., alias=AUTHORIZATION_HEADER),
 ):
     """
@@ -686,12 +685,11 @@ async def stream_miner_logs(
             detail="Invalid launch token: missing sub.",
         )
 
-    # Load the launch config and associated instance/chute.
-    launch_config = (
-        (await db.execute(select(LaunchConfig).where(LaunchConfig.config_id == config_id)))
-        .unique()
-        .scalar_one_or_none()
-    )
+    # Load the launch config and associated instance/chute. Use short-lived sessions
+    # (db_scalar) throughout: this endpoint holds the SSE response open for minutes and
+    # re-queries while polling, so a request-scoped session would sit "idle in transaction"
+    # for the life of the stream. Instance is eagerly joined on LaunchConfig (lazy="joined").
+    launch_config = await db_scalar(select(LaunchConfig).where(LaunchConfig.config_id == config_id))
     if not launch_config:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -699,11 +697,7 @@ async def stream_miner_logs(
         )
 
     # Load the chute to check public status.
-    chute = (
-        (await db.execute(select(Chute).where(Chute.chute_id == launch_config.chute_id)))
-        .unique()
-        .scalar_one_or_none()
-    )
+    chute = await db_scalar(select(Chute).where(Chute.chute_id == launch_config.chute_id))
     if not chute or not chute.public:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -737,18 +731,18 @@ async def stream_miner_logs(
                 return
             yield "data: Waiting for instance to be created...\n\n"
             await asyncio.sleep(2)
-            # Refresh columns + the instance relationship explicitly. Without listing
-            # "instance" here, refresh() leaves the relationship expired.
-            # db.refresh() sees latest committed data under READ COMMITTED (PG default).
-            # If isolation were ever raised to REPEATABLE READ, a fresh session would be needed.
-            await db.refresh(
-                launch_config, attribute_names=["failed_at", "verification_error", "instance"]
-            )
-            if launch_config.failed_at is not None and launch_config.instance is None:
-                reason = launch_config.verification_error or "Instance failed to launch"
+            # Re-query in a fresh short-lived session each poll (instance is eagerly joined),
+            # rather than refreshing a long-lived request session. Sees latest committed data
+            # under READ COMMITTED (PG default).
+            lc = await db_scalar(select(LaunchConfig).where(LaunchConfig.config_id == config_id))
+            if lc is None:
+                yield "data: Launch config disappeared.\n\n"
+                return
+            if lc.failed_at is not None and lc.instance is None:
+                reason = lc.verification_error or "Instance failed to launch"
                 yield f"data: Instance launch failed: {reason}\n\n"
                 return
-            current_instance = launch_config.instance
+            current_instance = lc.instance
 
         # Re-check activation status in case it changed while polling.
         if current_instance.activated_at is not None:

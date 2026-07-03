@@ -85,6 +85,30 @@ async def get_db_ro_session():
         yield session
 
 
+async def db_scalar(stmt, *, readonly=True):
+    """
+    Execute a SELECT in its own short-lived session and return scalar_one_or_none().
+
+    Use this (not a request-scoped ``Depends(get_db_session)`` session) for any DB
+    access inside a ``StreamingResponse`` generator or other long-lived task: the
+    transaction opens and closes per call, so the connection is never left "idle in
+    transaction" for the life of the stream.
+    """
+    async with get_session(readonly=readonly) as session:
+        return (await session.execute(stmt)).unique().scalar_one_or_none()
+
+
+async def db_scalars(stmt, *, readonly=True):
+    """
+    Execute a SELECT in its own short-lived session and return scalars().all().
+
+    See :func:`db_scalar` for why streaming endpoints must use this instead of a
+    request-scoped session.
+    """
+    async with get_session(readonly=readonly) as session:
+        return (await session.execute(stmt)).unique().scalars().all()
+
+
 def generate_uuid():
     """
     Helper for uuid generation.
