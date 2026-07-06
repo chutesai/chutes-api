@@ -97,31 +97,29 @@ async def model_to_dict(obj, bounty_info: Optional[dict] = None):
 async def _stream_items(clazz: Any, selector: Any = None, explicit_null: bool = False):
     """
     Streaming results helper.
+
+    All DB work -- the fetch, per-row relationship loads inside model_to_dict, and
+    serialization -- happens inside a short-lived session; the serialized SSE payloads
+    are buffered and only yielded AFTER the session closes. Holding the session open
+    across the yields left connections "idle in transaction" (waiting on ClientRead)
+    for hours whenever a miner's connection stalled mid-stream.
     """
+    payloads = []
     async with get_session(readonly=True) as db:
         query = selector if selector is not None else select(clazz)
-        if clazz is Chute:
-            result = await db.execute(query)
-            items = result.unique().scalars().all()
-            any_found = False
-            if items:
-                bounty_infos = await get_bounty_infos([item.chute_id for item in items])
-                for item in items:
-                    data = await model_to_dict(item, bounty_info=bounty_infos.get(item.chute_id))
-                    yield f"data: {json.dumps(data).decode()}\n\n"
-                    any_found = True
-            if explicit_null and not any_found:
-                yield "data: NO_ITEMS\n"
-            return
+        items = (await db.execute(query)).unique().scalars().all()
+        bounty_infos = {}
+        if clazz is Chute and items:
+            bounty_infos = await get_bounty_infos([item.chute_id for item in items])
+        for item in items:
+            bounty_info = bounty_infos.get(item.chute_id) if clazz is Chute else None
+            data = await model_to_dict(item, bounty_info=bounty_info)
+            payloads.append(f"data: {json.dumps(data).decode()}\n\n")
 
-        result = await db.stream(query)
-        any_found = False
-        async for row in result.unique():
-            data = await model_to_dict(row[0])
-            yield f"data: {json.dumps(data).decode()}\n\n"
-            any_found = True
-        if explicit_null and not any_found:
-            yield "data: NO_ITEMS\n"
+    for payload in payloads:
+        yield payload
+    if explicit_null and not payloads:
+        yield "data: NO_ITEMS\n"
 
 
 @router.get("/chutes/")
