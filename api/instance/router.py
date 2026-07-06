@@ -2477,7 +2477,10 @@ async def activate_launch_config_instance(
                 bounty_age_seconds=bounty["age_seconds"],
                 bounty_boost=round(bounty_boost, 2),
                 compute_multiplier=instance.compute_multiplier,
-            ).info("claimed bounty on activation")
+            ).info(
+                f"claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
+                f"boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
+            )
 
         # Insert warmup compute history record (created_at → now) at the base
         # multiplier rate (no bounty/urgency boosts).
@@ -2676,7 +2679,9 @@ async def _mark_instance_verified(
     await db.refresh(launch_config)
     # Verification is a raw-SQL UPDATE (for DB-performance reasons) that bypasses the ORM 'set'
     # event, so log this lifecycle transition explicitly here, the single verify chokepoint.
-    instance_logger(instance, event=LifecycleEvent.INSTANCE_VERIFY).success("instance verified")
+    instance_logger(instance, event=LifecycleEvent.INSTANCE_VERIFY).success(
+        f"instance verified: {instance.instance_id} (chute {instance.chute_id})"
+    )
 
 
 async def _build_launch_config_verified_response(
@@ -3154,7 +3159,10 @@ async def delete_instance(
         event=LifecycleEvent.INSTANCE_DELETE,
         trigger="miner",
         origin_ip=origin_ip,
-    ).info("instance deletion initiated by miner")
+    ).info(
+        f"instance deletion initiated by miner: {instance.instance_id} "
+        f"(miner {hotkey}, origin_ip {origin_ip})"
+    )
 
     # Fail the job.
     job = (
@@ -3201,7 +3209,9 @@ async def delete_instance(
                 negate_bounty=True,
                 compute_multiplier_penalty=0.1,
             ).warning(
-                "last active instance terminated: negating bounty and applying 10x compute_multiplier penalty"
+                f"instance {instance.instance_id} of miner {instance.miner_hotkey} terminated "
+                f"without any other active instances, negating bounty and applying 10x "
+                f"compute_multiplier penalty!"
             )
         else:
             # Private chute: zero out compute_multiplier entirely
@@ -3211,7 +3221,8 @@ async def delete_instance(
                 event=LifecycleEvent.INSTANCE_DELETE,
                 compute_multiplier_penalty=0.0,
             ).warning(
-                "last active private instance terminated: zeroing compute_multiplier"
+                f"private instance {instance.instance_id} of miner {instance.miner_hotkey} "
+                f"terminated without any other active instances, zeroing compute_multiplier!"
             )
 
         # Apply penalty to instance_compute_history BEFORE delete (so the delete trigger

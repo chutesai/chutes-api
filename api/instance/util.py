@@ -303,7 +303,7 @@ async def disable_instance(
         instance_id=instance_id,
         chute_id=chute_id,
         miner_hotkey=miner_hotkey,
-    ).warning("instance disabled")
+    ).warning(f"instance disabled: {instance_id} (chute {chute_id}, miner {miner_hotkey})")
 
     # Sliding window: track each disable as a ZSET entry scored by timestamp.
     # Trim entries older than 1 hour, then count remaining.
@@ -1138,7 +1138,7 @@ async def purge(target, reason, valid_termination=False):
         trigger="monitoring",
         deletion_reason=reason,
         valid_termination=valid_termination,
-    ).warning("purging instance")
+    ).warning(f"purging instance {target.instance_id} (chute {target.chute_id}): {reason}")
     async with get_session() as session:
         await session.execute(
             text("DELETE FROM instances WHERE instance_id = :instance_id"),

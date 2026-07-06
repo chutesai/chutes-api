@@ -230,7 +230,7 @@ def _safe_metric(fn, *args):
 def _on_launch_config_created(mapper, connection, target):
     _safe_metric(launch_config_metrics.track_attempt, target.chute_id)
     launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_CREATE).info(
-        "launch config created (deployment attempt)"
+        f"launch config created (deployment attempt): {target.config_id} (chute {target.chute_id})"
     )
 
 
@@ -239,7 +239,8 @@ def _on_launch_config_retrieved(target, value, oldvalue, initiator):
     if value is not None:
         _safe_metric(launch_config_metrics.track_retrieved, target.chute_id)
         launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_RETRIEVE).info(
-            "launch config retrieved by miner"
+            f"launch config retrieved by miner {target.miner_hotkey}: {target.config_id} "
+            f"(chute {target.chute_id})"
         )
 
 
@@ -248,7 +249,7 @@ def _on_launch_config_verified(target, value, oldvalue, initiator):
     if value is not None:
         _safe_metric(launch_config_metrics.track_verified, target.chute_id)
         launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_VERIFY).success(
-            "launch config verified"
+            f"launch config verified: {target.config_id} (chute {target.chute_id})"
         )
 
 
@@ -258,20 +259,28 @@ def _on_launch_config_failed(target, value, oldvalue, initiator):
         _safe_metric(launch_config_metrics.track_failure, target.chute_id, value)
         launch_config_logger(
             target, event=LifecycleEvent.LAUNCH_CONFIG_FAIL, verification_error=value
-        ).warning("launch config verification failed")
+        ).warning(
+            f"launch config verification failed: {target.config_id} (chute {target.chute_id}): {value}"
+        )
 
 
 @event.listens_for(Instance, "after_insert")
 def _on_instance_created(mapper, connection, target):
-    instance_logger(target, event=LifecycleEvent.INSTANCE_CREATE).info("instance created")
+    instance_logger(target, event=LifecycleEvent.INSTANCE_CREATE).info(
+        f"instance created: {target.instance_id} (chute {target.chute_id}, miner {target.miner_hotkey})"
+    )
 
 
 @event.listens_for(Instance.activated_at, "set")
 def _on_instance_activated(target, value, oldvalue, initiator):
     if value is not None:
-        instance_logger(target, event=LifecycleEvent.INSTANCE_ACTIVATE).success("instance activated")
+        instance_logger(target, event=LifecycleEvent.INSTANCE_ACTIVATE).success(
+            f"instance activated: {target.instance_id} (chute {target.chute_id})"
+        )
 
 
 @event.listens_for(Instance, "after_delete")
 def _on_instance_deleted(mapper, connection, target):
-    instance_logger(target, event=LifecycleEvent.INSTANCE_DELETE).warning("instance deleted")
+    instance_logger(target, event=LifecycleEvent.INSTANCE_DELETE).warning(
+        f"instance deleted: {target.instance_id} (chute {target.chute_id}, miner {target.miner_hotkey})"
+    )

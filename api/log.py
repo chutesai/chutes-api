@@ -174,6 +174,23 @@ _RESERVED_LOG_KEYS = frozenset(
 )
 
 
+class LogType(str, Enum):
+    """Coarse `log_type` tag grouping the fine-grained `event` values below by subsystem/record type.
+
+    These are loosely-coupled domains, not ordered stages (a user's chute can run on an image built by
+    another user), so this is a plain classifier, not a pipeline position. Lets support narrow a
+    user's activity to one kind of thing without enumerating every event, e.g.
+    `user_id:abc123 AND log_type:image` for just their build activity vs. the full `user_id:abc123`.
+    """
+
+    IMAGE = "image"
+    CHUTE = "chute"
+    LAUNCH_CONFIG = "launch_config"
+    INSTANCE = "instance"
+    BOUNTY = "bounty"
+    AUTOSCALER = "autoscaler"
+
+
 class LifecycleEvent(str, Enum):
     """Bounded `event` tags for chute lifecycle log lines (searchable/alertable in OpenSearch)."""
 
@@ -196,31 +213,77 @@ class LifecycleEvent(str, Enum):
     # Bounty
     BOUNTY_CREATE = "bounty_create"
     BOUNTY_CLAIM = "bounty_claim"
+    # Image build (forge) -- keyed by image_id; a chute ties to its build via chute.image_id
+    IMAGE_CREATE = "image_create"
+    IMAGE_BUILD_START = "image_build_start"
+    IMAGE_BUILD_COMPLETE = "image_build_complete"
+    IMAGE_BUILD_FAIL = "image_build_fail"
+    IMAGE_BUILD_STATUS = "image_build_status"
     # Autoscaler
     SCALE_UP = "scale_up"
     SCALE_DOWN = "scale_down"
 
 
-def bound_logger(event: LifecycleEvent = None, **fields):
+# Map an event to its coarse log_type by name prefix, so bare bound_logger(event=...) call sites
+# (which don't go through a typed helper) still get a `log_type` for free -- no per-site bookkeeping.
+_EVENT_NAME_PREFIX_LOG_TYPE = (
+    ("CHUTE_", LogType.CHUTE),
+    ("IMAGE_", LogType.IMAGE),
+    ("LAUNCH_CONFIG_", LogType.LAUNCH_CONFIG),
+    ("INSTANCE_", LogType.INSTANCE),
+    ("BOUNTY_", LogType.BOUNTY),
+    ("SCALE_", LogType.AUTOSCALER),
+)
+
+
+def _log_type_for_event(event: LifecycleEvent):
+    for prefix, log_type in _EVENT_NAME_PREFIX_LOG_TYPE:
+        if event.name.startswith(prefix):
+            return log_type
+    return None
+
+
+def bound_logger(event: LifecycleEvent = None, log_type: LogType = None, **fields):
     """
     Return a loguru logger bound with the given lifecycle fields (dropping None + reserved keys).
 
-    Use this for call sites that only have ids in scope; prefer the typed helpers below when an ORM
-    object is available. The returned logger must be used for the subsequent log call.
+    Binds a coarse `log_type` tag alongside the fine-grained `event`: an explicit `log_type` wins,
+    else it is derived from the event's prefix. Use this for call sites that only have ids in scope;
+    prefer the typed helpers below when an ORM object is available. The returned logger must be used
+    for the subsequent log call.
     """
     ctx = {k: v for k, v in fields.items() if v is not None and k not in _RESERVED_LOG_KEYS}
     if event is not None:
         ctx["event"] = event.value if isinstance(event, Enum) else event
+        if log_type is None and isinstance(event, LifecycleEvent):
+            log_type = _log_type_for_event(event)
+    if log_type is not None:
+        ctx["log_type"] = log_type.value if isinstance(log_type, Enum) else log_type
     return logger.bind(**ctx)
 
 
 def chute_logger(chute, *, event: LifecycleEvent = None, **extra):
-    """Logger bound with a chute's canonical fields."""
+    """Logger bound with a chute's canonical fields (incl. image_id, to tie a chute to its build)."""
     return bound_logger(
         event=event,
+        log_type=LogType.CHUTE,
         chute_id=getattr(chute, "chute_id", None),
         user_id=getattr(chute, "user_id", None),
         version=getattr(chute, "version", None),
+        image_id=getattr(chute, "image_id", None),
+        **extra,
+    )
+
+
+def image_logger(image, *, event: LifecycleEvent = None, **extra):
+    """Logger bound with an image's canonical fields (the build/forge lifecycle keys on image_id)."""
+    return bound_logger(
+        event=event,
+        log_type=LogType.IMAGE,
+        image_id=getattr(image, "image_id", None),
+        user_id=getattr(image, "user_id", None),
+        image_name=getattr(image, "name", None),
+        image_tag=getattr(image, "tag", None),
         **extra,
     )
 
@@ -229,6 +292,7 @@ def instance_logger(instance, *, event: LifecycleEvent = None, **extra):
     """Logger bound with an instance's canonical fields."""
     return bound_logger(
         event=event,
+        log_type=LogType.INSTANCE,
         instance_id=getattr(instance, "instance_id", None),
         chute_id=getattr(instance, "chute_id", None),
         config_id=getattr(instance, "config_id", None),
@@ -243,6 +307,7 @@ def launch_config_logger(launch_config, *, event: LifecycleEvent = None, **extra
     """Logger bound with a launch config's canonical fields."""
     return bound_logger(
         event=event,
+        log_type=LogType.LAUNCH_CONFIG,
         config_id=getattr(launch_config, "config_id", None),
         chute_id=getattr(launch_config, "chute_id", None),
         job_id=getattr(launch_config, "job_id", None),
