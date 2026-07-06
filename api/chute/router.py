@@ -73,7 +73,7 @@ from api.image.util import get_image_by_id_or_name
 from api.permissions import Permissioning
 
 # XXX from api.instance.util import discover_chute_targets
-from api.database import get_db_session, get_session
+from api.database import get_db_session, get_session, db_scalar, db_scalars
 from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
@@ -1197,7 +1197,6 @@ async def get_chute_hf_info(
 async def warm_up_chute(
     chute_id_or_name: str,
     quick: bool = False,
-    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
@@ -1206,17 +1205,15 @@ async def warm_up_chute(
     With ?quick=true, performs a single status check, creates a bounty if needed,
     and returns JSON immediately instead of holding an SSE connection open.
     """
-    chute = (
-        (
-            await db.execute(
-                select(Chute)
-                .where(or_(Chute.name.ilike(chute_id_or_name), Chute.chute_id == chute_id_or_name))
-                .order_by((Chute.user_id == current_user.user_id).desc())
-                .limit(1)
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
+    # Load with a short-lived session (db_scalar) rather than a request-scoped session:
+    # the SSE branch below holds the response open for up to 10 minutes, and a request
+    # session would sit "idle in transaction" for that entire time. The stream only reads
+    # scalar columns off the detached `chute`, which is safe with expire_on_commit=False.
+    chute = await db_scalar(
+        select(Chute)
+        .where(or_(Chute.name.ilike(chute_id_or_name), Chute.chute_id == chute_id_or_name))
+        .order_by((Chute.user_id == current_user.user_id).desc())
+        .limit(1)
     )
     if not chute:
         raise HTTPException(
@@ -1276,16 +1273,10 @@ async def warm_up_chute(
         bounty = await get_bounty_info(chute.chute_id)
 
         # Load instances with GPU info for the dashboard.
-        instances_with_nodes = (
-            (
-                await db.execute(
-                    select(Instance)
-                    .where(Instance.chute_id == chute.chute_id)
-                    .options(selectinload(Instance.nodes))
-                )
-            )
-            .scalars()
-            .all()
+        instances_with_nodes = await db_scalars(
+            select(Instance)
+            .where(Instance.chute_id == chute.chute_id)
+            .options(selectinload(Instance.nodes))
         )
         instances_info = []
         for inst in instances_with_nodes:
