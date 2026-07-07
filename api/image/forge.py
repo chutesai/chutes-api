@@ -932,18 +932,20 @@ async def forge(image_id: str):
     with tempfile.TemporaryDirectory() as build_dir:
         context_path = os.path.join(build_dir, "chute.zip")
         dockerfile_path = os.path.join(build_dir, "Dockerfile")
-        async with settings.s3_client() as s3:
-            await s3.download_file(
-                settings.storage_bucket, f"forge/{image.user_id}/{image_id}.zip", context_path
-            )
-        async with settings.s3_client() as s3:
-            await s3.download_file(
-                settings.storage_bucket,
-                f"forge/{image.user_id}/{image_id}.Dockerfile",
-                dockerfile_path,
-            )
+        starting_dir = os.getcwd()
         try:
-            starting_dir = os.getcwd()
+            # Fetch the build context inside the try so a missing/forbidden object marks the
+            # image as errored instead of crashing the worker and orphaning it in "building".
+            async with settings.s3_client() as s3:
+                await s3.download_file(
+                    settings.storage_bucket, f"forge/{image.user_id}/{image_id}.zip", context_path
+                )
+            async with settings.s3_client() as s3:
+                await s3.download_file(
+                    settings.storage_bucket,
+                    f"forge/{image.user_id}/{image_id}.Dockerfile",
+                    dockerfile_path,
+                )
             os.chdir(build_dir)
             safe_extract(context_path)
             short_tag = await build_and_push_image(image, build_dir)
@@ -1495,7 +1497,12 @@ async def main():
         if not image_id:
             await asyncio.sleep(10)
             continue
-        await forge(image_id)
+        try:
+            await forge(image_id)
+        except Exception as exc:
+            # forge() handles its own build errors; this guard ensures an unexpected failure
+            # can never crash the worker and leave the image orphaned in "building".
+            logger.error(f"Unhandled error forging {image_id=}: {exc}\n{traceback.format_exc()}")
 
 
 if __name__ == "__main__":
