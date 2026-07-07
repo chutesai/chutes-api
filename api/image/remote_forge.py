@@ -1431,9 +1431,7 @@ async def main():
         except Exception as exc:
             # forge() handles its own build errors; this guard ensures an unexpected failure
             # can never crash the worker and leave the image orphaned in "building".
-            logger.error(
-                f"Unhandled error forging {image_id=}: {exc}\n{traceback.format_exc()}"
-            )
+            logger.error(f"Unhandled error forging {image_id=}: {exc}\n{traceback.format_exc()}")
 
 
 if __name__ == "__main__":
