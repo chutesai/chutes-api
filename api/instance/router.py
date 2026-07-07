@@ -108,6 +108,7 @@ from api.encrypted_logs.capture import start_encrypted_log_capture
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
+from taskiq import TaskiqResultTimeoutError
 from watchtower import is_kubernetes_env, verify_expected_command, verify_fs_hash
 
 router = APIRouter()
@@ -1129,6 +1130,25 @@ async def _validate_launch_config_inspecto(
                 )
 
 
+# Cap the wait on the fs-hash task; an unbounded wait_result() pins the request DB session
+# "idle in transaction" if the worker stalls.
+FS_HASH_RESULT_TIMEOUT = 600.0
+
+
+async def _await_fs_hash(task, config_id: str, miner_hotkey: str):
+    """Await a generate_fs_hash result, raising a retryable 503 instead of hanging on timeout."""
+    try:
+        return await task.wait_result(timeout=FS_HASH_RESULT_TIMEOUT)
+    except TaskiqResultTimeoutError:
+        logger.error(
+            f"FSHASH: fs-hash task timed out after {FS_HASH_RESULT_TIMEOUT}s {config_id=} {miner_hotkey=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Filesystem verification timed out (worker backlog); please retry.",
+        )
+
+
 async def _validate_launch_config_filesystem(
     db: AsyncSession, launch_config: LaunchConfig, chute: Chute, args: LaunchConfigArgs
 ):
@@ -1144,7 +1164,7 @@ async def _validate_launch_config_filesystem(
                 sparse=False,
                 exclude_path=f"/app/{chute.filename}",
             )
-            result = await task.wait_result()
+            result = await _await_fs_hash(task, launch_config.config_id, launch_config.miner_hotkey)
             expected_hash = result.return_value
             if expected_hash != args.fsv:
                 logger.error(
@@ -2583,7 +2603,7 @@ async def _validate_legacy_filesystem(
                 sparse=False,
                 exclude_path=f"/app/{instance.chute.filename}",
             )
-            result = await task.wait_result()
+            result = await _await_fs_hash(task, config_id, instance.miner_hotkey)
             expected_hash = result.return_value
             if expected_hash != response_body["fsv"]:
                 reason = (
