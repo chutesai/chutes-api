@@ -332,15 +332,19 @@ gravalWorker:
     timeoutSeconds: 5
     successThreshold: 1
     failureThreshold: 3
+  # Scratch volume for the fs-hash / bytecode blob cache (mounted at FS_CACHE_DIR).
+  # sizeLimit must sit above FS_CACHE_MAX_BYTES (2Gi) so the in-process LRU prune
+  # governs, and below the ephemeral-storage limit so the cache can't evict the pod.
+  fsCacheSizeLimit: "3Gi"
   resources:
     requests:
       cpu: "1"
       memory: "2Gi"
-      ephemeral-storage: "1Gi"
+      ephemeral-storage: "4Gi"
     limits:
       cpu: "1"
       memory: "2Gi"
-      ephemeral-storage: "1Gi"
+      ephemeral-storage: "4Gi"
   nodeSelector: {}
   hpa:
     enabled: false

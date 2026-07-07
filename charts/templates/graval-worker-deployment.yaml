@@ -46,6 +46,9 @@ spec:
         {{- end }}
       volumes:
         {{- include "chutes.redisCacertVolume" . | nindent 8 }}
+        - name: fs-cache
+          emptyDir:
+            sizeLimit: {{ .Values.gravalWorker.fsCacheSizeLimit | default "3Gi" | quote }}
       containers:
         - name: graval-worker
           image: {{ include "chutes.image" (list . .Values.gravalWorker.image) | quote }}
@@ -160,6 +163,8 @@ spec:
                   key: bucket
           volumeMounts:
             {{- include "chutes.redisCacertMount" . | nindent 12 }}
+            - name: fs-cache
+              mountPath: /tmp/cfsv_cache
           ports:
             - name: health
               containerPort: 8080
