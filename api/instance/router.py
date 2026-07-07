@@ -1140,7 +1140,9 @@ async def _await_fs_hash(task, config_id: str, miner_hotkey: str):
     try:
         return await task.wait_result(timeout=FS_HASH_RESULT_TIMEOUT)
     except TaskiqResultTimeoutError:
-        logger.error(f"FSHASH: fs-hash task timed out after {FS_HASH_RESULT_TIMEOUT}s {config_id=} {miner_hotkey=}")
+        logger.error(
+            f"FSHASH: fs-hash task timed out after {FS_HASH_RESULT_TIMEOUT}s {config_id=} {miner_hotkey=}"
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Filesystem verification timed out (worker backlog); please retry.",
@@ -1162,9 +1164,7 @@ async def _validate_launch_config_filesystem(
                 sparse=False,
                 exclude_path=f"/app/{chute.filename}",
             )
-            result = await _await_fs_hash(
-                task, launch_config.config_id, launch_config.miner_hotkey
-            )
+            result = await _await_fs_hash(task, launch_config.config_id, launch_config.miner_hotkey)
             expected_hash = result.return_value
             if expected_hash != args.fsv:
                 logger.error(
