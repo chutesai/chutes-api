@@ -16,7 +16,7 @@ import shutil
 import chutes
 import orjson as json
 from loguru import logger
-from api.log import install_asyncio_exception_handler
+from api.log import install_asyncio_exception_handler, image_logger
 from api.config import settings
 from api.database import get_session
 from api.exceptions import (
@@ -952,7 +952,9 @@ async def forge(image_id: str):
             inspecto_hash = image.inspecto
             package_hashes = image.package_hashes
         except Exception as exc:
-            logger.error(f"Error building {image_id=}: {exc}\n{traceback.format_exc()}")
+            image_logger(image).error(
+                f"error building image {image_id}: {exc}\n{traceback.format_exc()}"
+            )
             error_message = str(exc)
         finally:
             os.chdir(starting_dir)

@@ -104,6 +104,7 @@ from api.util import (
     load_shared_object,
     has_legacy_private_billing,
 )
+from api.log import instance_logger, LifecycleEvent
 from api.encrypted_logs.capture import start_encrypted_log_capture
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
@@ -2470,9 +2471,15 @@ async def activate_launch_config_instance(
             instance.bounty = True
             bounty_boost = calculate_bounty_boost(bounty["age_seconds"])
             instance.compute_multiplier *= bounty_boost
-            logger.info(
-                f"Claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
-                f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
+            instance_logger(
+                instance,
+                event=LifecycleEvent.BOUNTY_CLAIM,
+                bounty_age_seconds=bounty["age_seconds"],
+                bounty_boost=round(bounty_boost, 2),
+                compute_multiplier=instance.compute_multiplier,
+            ).info(
+                f"claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
+                f"boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
             )
 
         # Insert warmup compute history record (created_at → now) at the base
@@ -2670,6 +2677,11 @@ async def _mark_instance_verified(
 
     await db.commit()
     await db.refresh(launch_config)
+    # Verification is a raw-SQL UPDATE (for DB-performance reasons) that bypasses the ORM 'set'
+    # event, so log this lifecycle transition explicitly here, the single verify chokepoint.
+    instance_logger(instance, event=LifecycleEvent.INSTANCE_VERIFY).success(
+        f"instance verified: {instance.instance_id} (chute {instance.chute_id})"
+    )
 
 
 async def _build_launch_config_verified_response(
@@ -3142,7 +3154,15 @@ async def delete_instance(
             detail=f"Instance with {chute_id=} {instance_id} associated with {hotkey=} not found",
         )
     origin_ip = request.state.client_ip
-    logger.info(f"INSTANCE DELETION INITIALIZED: {instance_id=} {hotkey=} {origin_ip=}")
+    instance_logger(
+        instance,
+        event=LifecycleEvent.INSTANCE_DELETE,
+        trigger="miner",
+        origin_ip=origin_ip,
+    ).info(
+        f"instance deletion initiated by miner: {instance.instance_id} "
+        f"(miner {hotkey}, origin_ip {origin_ip})"
+    )
 
     # Fail the job.
     job = (
@@ -3183,16 +3203,26 @@ async def delete_instance(
             # Public chute: negate bounty and apply 10x penalty
             negate_bounty = True
             compute_multiplier_penalty = 0.1
-            logger.warning(
-                f"Instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, "
-                f"negating bounty and applying 10x compute_multiplier penalty!"
+            instance_logger(
+                instance,
+                event=LifecycleEvent.INSTANCE_DELETE,
+                negate_bounty=True,
+                compute_multiplier_penalty=0.1,
+            ).warning(
+                f"instance {instance.instance_id} of miner {instance.miner_hotkey} terminated "
+                f"without any other active instances, negating bounty and applying 10x "
+                f"compute_multiplier penalty!"
             )
         else:
             # Private chute: zero out compute_multiplier entirely
             compute_multiplier_penalty = 0.0
-            logger.warning(
-                f"Private instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, "
-                f"zeroing compute_multiplier!"
+            instance_logger(
+                instance,
+                event=LifecycleEvent.INSTANCE_DELETE,
+                compute_multiplier_penalty=0.0,
+            ).warning(
+                f"private instance {instance.instance_id} of miner {instance.miner_hotkey} "
+                f"terminated without any other active instances, zeroing compute_multiplier!"
             )
 
         # Apply penalty to instance_compute_history BEFORE delete (so the delete trigger

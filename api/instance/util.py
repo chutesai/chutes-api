@@ -30,6 +30,7 @@ from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
 from api.util import notify_deleted, notify_job_deleted, semcomp
+from api.log import instance_logger, bound_logger, LifecycleEvent
 from api.bounty.util import (
     create_bounty_if_not_exists,
     get_bounty_amount,
@@ -294,6 +295,15 @@ async def disable_instance(
     )
     if not acquired:
         return False
+
+    # Disable is a redis-state change (no ORM event), so log this lifecycle transition here, at the
+    # chokepoint where the disable is actually acquired.
+    bound_logger(
+        event=LifecycleEvent.INSTANCE_DISABLE,
+        instance_id=instance_id,
+        chute_id=chute_id,
+        miner_hotkey=miner_hotkey,
+    ).warning(f"instance disabled: {instance_id} (chute {chute_id}, miner {miner_hotkey})")
 
     # Sliding window: track each disable as a ZSET entry scored by timestamp.
     # Trim entries older than 1 hour, then count remaining.
@@ -1122,6 +1132,13 @@ async def get_server_for_gpus(db, gpu_uuids: list[str]) -> Server | None:
 
 async def purge(target, reason, valid_termination=False):
     """Delete an instance from the database and clean up associated state."""
+    instance_logger(
+        target,
+        event=LifecycleEvent.INSTANCE_DELETE,
+        trigger="monitoring",
+        deletion_reason=reason,
+        valid_termination=valid_termination,
+    ).warning(f"purging instance {target.instance_id} (chute {target.chute_id}): {reason}")
     async with get_session() as session:
         await session.execute(
             text("DELETE FROM instances WHERE instance_id = :instance_id"),

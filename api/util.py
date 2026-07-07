@@ -700,11 +700,8 @@ def use_opencl_graval(chutes_version: str):
 
 
 async def notify_created(instance, gpu_count: int = None, gpu_type: str = None):
-    message = f"Instance created: {instance.miner_hotkey=} {instance.instance_id=}"
-    if gpu_count:
-        message += f" {gpu_count=} {gpu_type=}"
-    message += ", broadcasting"
-    logger.success(message)
+    # Lifecycle "instance created" log is emitted by the Instance after_insert ORM event
+    # (api/instance/schemas.py); this helper only broadcasts the event.
     try:
         log_suffix = ""
         if gpu_count:
@@ -732,9 +729,8 @@ async def notify_created(instance, gpu_count: int = None, gpu_type: str = None):
 async def notify_deleted(
     instance, message: str = None, gpu_count: int = None, gpu_type: str = None
 ):
-    logger.warning(
-        f"Instance deleted: {instance.miner_hotkey=} {instance.instance_id=}, broadcasting"
-    )
+    # Lifecycle "instance deleted" log is emitted by the Instance after_delete ORM event (ORM
+    # deletes) or explicitly in purge() (raw-SQL deletes); this helper only broadcasts the event.
     if not message:
         message = f"Miner {instance.miner_hotkey} has deleted instance an instance of chute {instance.chute_id}."
     try:
@@ -758,9 +754,8 @@ async def notify_deleted(
 
 
 async def notify_verified(instance, gpu_count: int = None, gpu_type: str = None):
-    logger.success(
-        f"Instance verified: {instance.miner_hotkey=} {instance.instance_id=}, broadcasting"
-    )
+    # Lifecycle "instance verified" log is emitted explicitly in _mark_instance_verified (the
+    # raw-SQL verify chokepoint); this helper only broadcasts the event.
     try:
         event_data = {
             "reason": "instance_verified",
@@ -812,7 +807,8 @@ async def notify_job_deleted(job):
 async def notify_activated(instance, gpu_count: int = None, gpu_type: str = None):
     try:
         message = f"Miner {instance.miner_hotkey} has activated instance {instance.instance_id} chute {instance.chute_id}"
-        logger.success(message)
+        # Lifecycle "instance activated" log is emitted by the Instance.activated_at ORM event
+        # (api/instance/schemas.py); this helper only broadcasts the event.
         event_data = {
             "reason": "instance_activated",
             "message": message,
@@ -836,7 +832,8 @@ async def notify_activated(instance, gpu_count: int = None, gpu_type: str = None
 async def notify_disabled(instance, gpu_count: int = None, gpu_type: str = None):
     try:
         message = f"Miner {instance.miner_hotkey} has disabled instance {instance.instance_id} chute {instance.chute_id}"
-        logger.warning(message)
+        # Lifecycle "instance disabled" log is emitted explicitly in disable_instance (the redis
+        # disable chokepoint); this helper only broadcasts the event.
         event_data = {
             "reason": "instance_disabled",
             "message": message,
