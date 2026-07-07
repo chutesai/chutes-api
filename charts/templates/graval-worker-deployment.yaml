@@ -46,9 +46,11 @@ spec:
         {{- end }}
       volumes:
         {{- include "chutes.redisCacertVolume" . | nindent 8 }}
+        # Dedicated scratch volume for the fs-hash blob cache. Bounded by the
+        # in-process LRU cap (FS_CACHE_MAX_SIZE) and ultimately the pod's
+        # ephemeral-storage limit — no separate sizeLimit to keep in sync.
         - name: fs-cache
-          emptyDir:
-            sizeLimit: {{ .Values.gravalWorker.fsCacheSizeLimit | default "3Gi" | quote }}
+          emptyDir: {}
       containers:
         - name: graval-worker
           image: {{ include "chutes.image" (list . .Values.gravalWorker.image) | quote }}
@@ -67,6 +69,10 @@ spec:
             - {{ .Values.gravalWorker.maxAsyncTasks | default 1 | quote }}
           env:
             {{- include "chutes.loggingEnv" . | nindent 12 }}
+            # fs-hash blob cache cap (e.g. "3Gi"). MUST stay below the ephemeral-storage
+            # limit below; the worker refuses to start if unset (see api.config).
+            - name: FS_CACHE_MAX_SIZE
+              value: {{ .Values.gravalWorker.fsCacheMaxSize | quote }}
             - name: CFSV_OP
               valueFrom:
                 secretKeyRef:

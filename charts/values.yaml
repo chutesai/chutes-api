@@ -332,19 +332,23 @@ gravalWorker:
     timeoutSeconds: 5
     successThreshold: 1
     failureThreshold: 3
-  # Scratch volume for the fs-hash / bytecode blob cache (mounted at FS_CACHE_DIR).
-  # sizeLimit must sit above FS_CACHE_MAX_BYTES (2Gi) so the in-process LRU prune
-  # governs, and below the ephemeral-storage limit so the cache can't evict the pod.
-  fsCacheSizeLimit: "3Gi"
+  # fs-hash blob cache cap (blobs are ~70-270MB each; 3Gi holds many). The
+  # in-process LRU prune keeps the cache under this; the ephemeral-storage limit
+  # below is sized well above it so the cache has room without evicting the pod.
+  fsCacheMaxSize: "3Gi"
+  # NOTE: ephemeral-storage MUST be set explicitly. On GKE Autopilot an unset value
+  # is defaulted to 1Gi, which the fs-hash blob cache overruns and gets the pod
+  # evicted. If a deploy-time overlay (e.g. chutes-ops values) overrides this
+  # resources block, set ephemeral-storage there too — it is not inherited.
   resources:
     requests:
       cpu: "1"
       memory: "2Gi"
-      ephemeral-storage: "4Gi"
+      ephemeral-storage: "6Gi"
     limits:
       cpu: "1"
       memory: "2Gi"
-      ephemeral-storage: "4Gi"
+      ephemeral-storage: "6Gi"
   nodeSelector: {}
   hpa:
     enabled: false

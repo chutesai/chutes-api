@@ -117,6 +117,12 @@ async def _redis_ping_loop():
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _start_health_check(state):
+    # Resolve the cache cap at startup so a worker with FS_CACHE_MAX_SIZE unset
+    # crashes on boot (KeyError) instead of failing every fs-hash task later.
+    # Only relevant where the filesystem cache is used (CFSV enabled).
+    if os.getenv("CFSV_OP"):
+        cap_bytes = _fs_cache_max_bytes()
+        logger.info(f"FS blob cache cap set to {cap_bytes} bytes")
     server = HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info(f"Graval worker health check listening on :{HEALTH_PORT}")
@@ -676,11 +682,29 @@ async def handle_rolling_update(chute_id: str, version: str, reason: str = "code
 # pod (Exit Code 137, reason=Evicted); the eviction also strands any in-flight
 # task, which surfaces as fs-hash result timeouts on the API side.
 FS_CACHE_DIR = os.getenv("FS_CACHE_DIR", "/tmp/cfsv_cache")
-FS_CACHE_MAX_BYTES = int(os.getenv("FS_CACHE_MAX_BYTES", str(2 * 1024**3)))
+
+_FS_CACHE_UNITS = (("Ki", 1024), ("Mi", 1024**2), ("Gi", 1024**3), ("Ti", 1024**4))
+
+
+def _fs_cache_max_bytes() -> int:
+    """Cache size cap in bytes, from FS_CACHE_MAX_SIZE (e.g. "3Gi").
+
+    Reads os.environ directly so a worker configured with the cache path but no
+    cap fails loudly rather than silently defaulting and evicting the pod. Kept as
+    a point-of-use read (not a module constant) because the API process also
+    imports this module — it enqueues fs-hash tasks but never runs the cache and
+    doesn't set FS_CACHE_MAX_SIZE, so evaluating it at import would crash the API.
+    """
+    raw = os.environ["FS_CACHE_MAX_SIZE"].strip()
+    for suffix, multiplier in _FS_CACHE_UNITS:
+        if raw.endswith(suffix):
+            return int(float(raw[: -len(suffix)]) * multiplier)
+    return int(raw)
 
 
 def _prune_fs_cache(keep: str = None):
-    """Evict least-recently-used cache files until under FS_CACHE_MAX_BYTES."""
+    """Evict least-recently-used cache files until under the configured cap."""
+    max_bytes = _fs_cache_max_bytes()
     try:
         entries = []
         with os.scandir(FS_CACHE_DIR) as it:
@@ -692,10 +716,10 @@ def _prune_fs_cache(keep: str = None):
     except FileNotFoundError:
         return
     total = sum(size for _, size, _ in entries)
-    if total <= FS_CACHE_MAX_BYTES:
+    if total <= max_bytes:
         return
     for path, size, _ in sorted(entries, key=lambda item: item[2]):
-        if total <= FS_CACHE_MAX_BYTES:
+        if total <= max_bytes:
             break
         if path == keep:
             continue
@@ -725,6 +749,9 @@ async def _cached_s3_blob(s3_key: str, filename: str, label: str) -> str:
         return cache_path
 
     logger.info(f"Downloading {label} for {filename}")
+    # Prune before downloading too, so the incoming blob has headroom under the
+    # ephemeral-storage limit rather than briefly spiking past it mid-download.
+    _prune_fs_cache()
     temp_fd, temp_path = tempfile.mkstemp(dir=FS_CACHE_DIR, prefix=f".{filename}.")
     os.close(temp_fd)
     try:
