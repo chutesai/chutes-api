@@ -603,6 +603,14 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
         logger.info("Stage 3: Building filesystem verification image")
         await _stream_status(image.image_id, "generating filesystem verification data...")
 
+        # Per-build nonce so the cfsv index/collect RUNs are NEVER served from depot's
+        # shared layer cache. Their output is a function of (the full filesystem x the
+        # CFSV_OP secret), neither of which buildkit's RUN cache key captures (secret
+        # mounts are excluded by design), so a colliding cache key would otherwise upload
+        # a stale/shared datamap + bake a stale index that don't match this image's real
+        # filesystem (see memory: fsv-datamap-stale-key).
+        fsv_cache_bust = uuid.uuid4().hex
+
         fsv_dockerfile_content = f"""FROM {chutes_ref}
 USER chutes
 ENV LD_PRELOAD=""
@@ -613,11 +621,11 @@ USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
         # Generate bytecode manifest (V2) for chutes >= 0.5.5.
@@ -1105,6 +1113,11 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             # Stage 3: Filesystem verification + extract.
             logger.info("Stage 3: Building filesystem verification image")
 
+            # Per-build nonce so the cfsv index/collect RUNs are never served from depot's
+            # shared layer cache (their output depends on the full filesystem + CFSV_OP
+            # secret, neither captured by buildkit's cache key). See fsv-datamap-stale-key.
+            fsv_cache_bust = uuid.uuid4().hex
+
             fsv_dockerfile_content = f"""FROM {updated_ref}
 USER chutes
 ENV LD_PRELOAD=""
@@ -1115,11 +1128,11 @@ USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
             has_bcm = False
