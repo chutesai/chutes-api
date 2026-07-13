@@ -904,16 +904,37 @@ RUN --mount=type=bind,from=target,source=/,target=/scan-target \
         raise BuildTimeout(message)
 
 
+async def _image_log_context(image_id: str) -> dict:
+    """Canonical loguru context for an image build -- the same fields image_logger
+    binds (image_id/user_id/image_name/image_tag + log_type), so every forge/patch
+    log line is filterable by any of them in OpenSearch. image_id/log_type are
+    always present (even for a missing row, so an "image does not exist" line is
+    still filterable); user_id/name/tag are added when the image exists."""
+    ctx = {"image_id": image_id, "log_type": LogType.IMAGE.value}
+    async with get_session(readonly=True) as session:
+        row = (
+            await session.execute(
+                select(Image.user_id, Image.name, Image.tag).where(Image.image_id == image_id)
+            )
+        ).first()
+    if row:
+        ctx["user_id"] = row.user_id
+        ctx["image_name"] = row.name
+        ctx["image_tag"] = row.tag
+    return ctx
+
+
 async def forge(image_id: str):
     """
     Build an image and push it to Depot's registry.
 
-    Bind image_id/log_type onto loguru's context for the whole build so every log
-    line emitted during forging -- including the nested depot build-output streams
-    (_drain_logs) and Stage messages -- carries a structured image_id and becomes
-    filterable in OpenSearch (previously only the single build-error line was bound).
+    Bind the image's canonical fields onto loguru's context for the whole build so
+    every log line emitted during forging -- including the nested depot build-output
+    streams (_drain_logs) and Stage messages -- carries a structured image_id/user_id
+    and becomes filterable in OpenSearch (previously only the single build-error line,
+    via image_logger, was bound).
     """
-    with logger.contextualize(image_id=image_id, log_type=LogType.IMAGE.value):
+    with logger.contextualize(**await _image_log_context(image_id)):
         await _forge(image_id)
 
 
@@ -1006,9 +1027,10 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     Uses Depot remote builders instead of local buildah.
 
     Wrapped in logger.contextualize so every log line during the patch build carries
-    a structured image_id (filterable in OpenSearch), same as forge() above.
+    the image's canonical fields (image_id/user_id/...), filterable in OpenSearch,
+    same as forge() above.
     """
-    with logger.contextualize(image_id=image_id, log_type=LogType.IMAGE.value):
+    with logger.contextualize(**await _image_log_context(image_id)):
         await _update_chutes_lib(image_id, chutes_version, force=force)
 
 
