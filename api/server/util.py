@@ -715,14 +715,16 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
 
             verify_gpus_cmd = ["chutes-nvattest", "--nonce", expected_nonce, "--evidence", fp.name]
 
-            process = await asyncio.create_subprocess_exec(*verify_gpus_cmd)
-
-            await asyncio.gather(process.wait())
-
-            if process.returncode != 0:
-                raise InvalidGpuEvidenceError()
-
-            logger.info("GPU evidence verified successfully.")
+            # Capture the verifier's output (stderr merged into stdout) so the actual
+            # failure reason is logged rather than discarded. communicate() drains the
+            # pipe and waits for exit.
+            process = await asyncio.create_subprocess_exec(
+                *verify_gpus_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await process.communicate()
+            output = stdout.decode(errors="replace").strip() if stdout else ""
 
     except FileNotFoundError as e:
         logger.error(f"Failed to verify GPU evidence.  chutes-nvattest command not found?:\n{e}")
@@ -730,3 +732,15 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
     except Exception as e:
         logger.error(f"Unexepected exception encoutnered verifying GPU evidence:\n{e}")
         raise GpuEvidenceError("Encountered an unexpected exception verifying GPU evidence.")
+
+    # Raise outside the try so a failed verification surfaces as InvalidGpuEvidenceError
+    # (with the verifier output) instead of being swallowed by the except above.
+    if process.returncode != 0:
+        logger.error(
+            f"GPU evidence verification failed (chutes-nvattest exit={process.returncode}):\n{output}"
+        )
+        raise InvalidGpuEvidenceError()
+
+    logger.info(
+        "GPU evidence verified successfully." + (f"\n{output}" if output else "")
+    )
