@@ -128,12 +128,11 @@ async def verify_boot_attestation(
             boot_token=boot_token,
             luks_quote_nonce=luks_quote_nonce,
         )
-    except NonceError as e:
-        logger.warning(f"Boot attestation nonce error: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except AttestationError as e:
-        logger.warning(f"Boot attestation failed: {str(e)}")
-        raise e
+        # Includes NonceError (400) and all quote/GPU errors. Attach the only tracing field
+        # known pre-registration (source IP); the app-level handler emits the structured,
+        # server-bound log line and the safe response.
+        raise e.trace(ip=server_ip)
     except Exception as e:
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
@@ -353,6 +352,10 @@ async def create_server(
             f"Server registration failed: server_id={args.id} host={args.host} miner_hotkey={hotkey} error={e.detail}"
         )
         raise e
+    except AttestationError:
+        # Attestation failures are rendered by the app-level handler (correct status +
+        # safe category). Let them propagate; do NOT fall through to the generic 500 below.
+        raise
     except HTTPException:
         # Re-raise HTTPExceptions (like blacklist, node conflicts, invalid host) as-is
         raise
@@ -652,7 +655,13 @@ async def get_runtime_nonce(
 
         actual_ip = request.state.client_ip
         if server.ip != actual_ip:
-            raise Exception()
+            logger.warning(
+                f"Runtime nonce IP mismatch: server_id={server_id} registered_ip={server.ip} request_ip={actual_ip}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request source IP does not match the registered server IP.",
+            )
 
         nonce_info = await create_nonce(server.ip, purpose=NoncePurpose.RUNTIME)
 
@@ -700,14 +709,13 @@ async def verify_runtime_attestation(
 
     except ServerNotFoundError as e:
         raise e
+    except AttestationError as e:
+        # Includes NonceError (400) and all quote/GPU errors. Attach server tracing fields
+        # (server is resolved above) so the app-level handler's structured log is keyed by
+        # server_id / ip / miner_hotkey.
+        raise e.trace(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
     except HTTPException:
         raise
-    except NonceError as e:
-        logger.warning(f"Runtime attestation nonce error: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except AttestationError as e:
-        logger.warning(f"Runtime attestation failed: {str(e)}")
-        raise e
     except Exception as e:
         logger.error(f"Unexpected error in runtime attestation: {str(e)}")
         raise HTTPException(

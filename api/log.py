@@ -189,6 +189,7 @@ class LogType(str, Enum):
     INSTANCE = "instance"
     BOUNTY = "bounty"
     AUTOSCALER = "autoscaler"
+    SERVER = "server"
 
 
 class LifecycleEvent(str, Enum):
@@ -222,6 +223,13 @@ class LifecycleEvent(str, Enum):
     # Autoscaler
     SCALE_UP = "scale_up"
     SCALE_DOWN = "scale_down"
+    # Server / TEE attestation -- keyed by server_id (or ip pre-registration)
+    SERVER_REGISTER = "server_register"
+    SERVER_VERIFY = "server_verify"
+    SERVER_DELETE = "server_delete"
+    BOOT_ATTESTATION = "boot_attestation"
+    RUNTIME_ATTESTATION = "runtime_attestation"
+    ATTESTATION_FAIL = "attestation_fail"
 
 
 # Map an event to its coarse log_type by name prefix, so bare bound_logger(event=...) call sites
@@ -233,6 +241,10 @@ _EVENT_NAME_PREFIX_LOG_TYPE = (
     ("INSTANCE_", LogType.INSTANCE),
     ("BOUNTY_", LogType.BOUNTY),
     ("SCALE_", LogType.AUTOSCALER),
+    ("SERVER_", LogType.SERVER),
+    ("BOOT_", LogType.SERVER),
+    ("RUNTIME_", LogType.SERVER),
+    ("ATTESTATION_", LogType.SERVER),
 )
 
 
@@ -299,6 +311,25 @@ def instance_logger(instance, *, event: LifecycleEvent = None, **extra):
         miner_hotkey=getattr(instance, "miner_hotkey", None),
         miner_uid=getattr(instance, "miner_uid", None),
         version=getattr(instance, "version", None),
+        **extra,
+    )
+
+
+def server_logger(server, *, event: LifecycleEvent = None, **extra):
+    """Logger bound with a TEE server's canonical fields for attestation tracing.
+
+    Accepts a Server ORM object (or any object exposing these attributes). Use for
+    boot/runtime/registration attestation log lines so they can be traced in OpenSearch
+    by server_id / ip / miner_hotkey.
+    """
+    return bound_logger(
+        event=event,
+        log_type=LogType.SERVER,
+        server_id=getattr(server, "server_id", None),
+        server_name=getattr(server, "name", None),
+        ip=getattr(server, "ip", None),
+        miner_hotkey=getattr(server, "miner_hotkey", None),
+        version=getattr(server, "version", None),
         **extra,
     )
 

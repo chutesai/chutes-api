@@ -10,6 +10,7 @@ import secrets
 from typing import Dict, Any, Optional
 from fastapi import HTTPException, Header, Request, status
 from loguru import logger
+from api.log import server_logger, bound_logger, LogType, LifecycleEvent
 from sqlalchemy import delete, or_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -41,8 +42,6 @@ from api.server.schemas import (
 from api.server.exceptions import (
     AttestationError,
     GetEvidenceError,
-    GpuEvidenceError,
-    InvalidGpuEvidenceError,
     InvalidQuoteError,
     MeasurementMismatchError,
     NonceError,
@@ -495,14 +494,22 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
 
     except AttestationError as e:
         # Clean up orphan server: _track_server committed before verify_server failed.
+        # Re-raise the ORIGINAL attestation error (do not re-wrap) so its category, status,
+        # and safe client message survive to the boundary handler instead of being flattened
+        # into a misleading generic 400.
         await db.rollback()
         await db.execute(delete(Server).where(Server.server_id == args.id))
         await db.commit()
-        error_detail = e.detail if hasattr(e, "detail") else str(e)
-        logger.error(
-            f"Server registration failed - attestation error: name={args.name or args.id} host={args.host} miner_hotkey={miner_hotkey} error={error_detail}"
-        )
-        raise ServerRegistrationError(f"Server registration failed - {error_detail}")
+        bound_logger(
+            event=LifecycleEvent.SERVER_REGISTER,
+            log_type=LogType.SERVER,
+            server_id=args.id,
+            server_name=args.name,
+            ip=args.host,
+            miner_hotkey=miner_hotkey,
+            code=e.code,
+        ).error(f"Server registration failed - attestation error: {e.message}")
+        raise
     except IntegrityError as e:
         await db.rollback()
         # Clean up orphan server when IntegrityError came from _track_nodes.
@@ -580,36 +587,26 @@ async def verify_server(
 
         return measurement_config.version
 
-    except GetEvidenceError as e:
-        failure_reason = "Failed to get attestation evidence."
-        logger.error(
-            f"Server verification failed - GetEvidenceError: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
-        )
-        raise e
-    except (InvalidQuoteError, MeasurementMismatchError) as e:
-        logger.error(
-            f"Server verification failed - quote error: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
-        )
-        failure_reason = "Server verification failed: invalid quote"
-        raise e
-    except InvalidGpuEvidenceError as e:
-        logger.error(
-            f"Server verification failed - invalid GPU evidence: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
-        )
-        failure_reason = "Server verification failed: invalid GPU evidence"
-        raise e
-    except GpuEvidenceError as e:
-        logger.error(
-            f"Server verification failed - GPU evidence error: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={e.detail}"
-        )
-        failure_reason = "Server verification failed: Failed to verify GPU evidence"
-        raise e
+    except AttestationError as e:
+        # Every attestation domain error (evidence/quote/GPU) lands here. Emit one
+        # structured, server-bound log line; the `code` field distinguishes the category
+        # (get_evidence_error / invalid_quote / measurement_mismatch / invalid_gpu_evidence /
+        # gpu_evidence_error). Attach tracing fields so the boundary handler's HTTP-level
+        # record is correlatable by server_id / ip / miner_hotkey.
+        server_logger(
+            server,
+            event=LifecycleEvent.SERVER_VERIFY,
+            code=e.code,
+            log_detail=e.log_detail,
+        ).error(f"Server verification failed: {e.message}")
+        failure_reason = e.message
+        raise e.trace(server_id=server.server_id, ip=server.ip, miner_hotkey=miner_hotkey)
     except Exception as e:
-        logger.error(
-            f"Unexpected error during server verification: server_id={server.server_id} ip={server.ip} miner_hotkey={miner_hotkey} error={str(e)}"
+        server_logger(server, event=LifecycleEvent.SERVER_VERIFY).error(
+            f"Unexpected error during server verification: {e}"
         )
         failure_reason = "Unexpected error during server verification."
-        raise e
+        raise
     finally:
         if failure_reason:
             measurement_version = measurement_config.version if measurement_config else None
@@ -787,7 +784,16 @@ async def process_runtime_attestation(
     server = await check_server_ownership(db, server_id, miner_hotkey)
 
     if server.ip != actual_ip:
-        raise Exception()
+        raise AttestationError(
+            "Request source IP does not match the registered server IP.",
+            code="ip_mismatch",
+            log_detail=f"registered_ip={server.ip} request_ip={actual_ip}",
+            log_fields={
+                "server_id": server_id,
+                "ip": server.ip,
+                "miner_hotkey": miner_hotkey,
+            },
+        )
 
     # Parse and verify quote
     try:
