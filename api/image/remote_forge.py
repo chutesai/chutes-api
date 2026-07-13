@@ -16,7 +16,7 @@ import shutil
 import orjson as json
 from loguru import logger
 from api.config import settings
-from api.log import image_logger
+from api.log import image_logger, LogType
 from api.database import get_session
 from api.exceptions import (
     SignFailure,
@@ -603,6 +603,14 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
         logger.info("Stage 3: Building filesystem verification image")
         await _stream_status(image.image_id, "generating filesystem verification data...")
 
+        # Per-build nonce so the cfsv index/collect RUNs are NEVER served from depot's
+        # shared layer cache. Their output is a function of (the full filesystem x the
+        # CFSV_OP secret), neither of which buildkit's RUN cache key captures (secret
+        # mounts are excluded by design), so a colliding cache key would otherwise upload
+        # a stale/shared datamap + bake a stale index that don't match this image's real
+        # filesystem (see memory: fsv-datamap-stale-key).
+        fsv_cache_bust = uuid.uuid4().hex
+
         fsv_dockerfile_content = f"""FROM {chutes_ref}
 USER chutes
 ENV LD_PRELOAD=""
@@ -613,11 +621,11 @@ USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
         # Generate bytecode manifest (V2) for chutes >= 0.5.5.
@@ -896,10 +904,41 @@ RUN --mount=type=bind,from=target,source=/,target=/scan-target \
         raise BuildTimeout(message)
 
 
+async def _image_log_context(image_id: str) -> dict:
+    """Canonical loguru context for an image build -- the same fields image_logger
+    binds (image_id/user_id/image_name/image_tag + log_type), so every forge/patch
+    log line is filterable by any of them in OpenSearch. image_id/log_type are
+    always present (even for a missing row, so an "image does not exist" line is
+    still filterable); user_id/name/tag are added when the image exists."""
+    ctx = {"image_id": image_id, "log_type": LogType.IMAGE.value}
+    async with get_session(readonly=True) as session:
+        row = (
+            await session.execute(
+                select(Image.user_id, Image.name, Image.tag).where(Image.image_id == image_id)
+            )
+        ).first()
+    if row:
+        ctx["user_id"] = row.user_id
+        ctx["image_name"] = row.name
+        ctx["image_tag"] = row.tag
+    return ctx
+
+
 async def forge(image_id: str):
     """
     Build an image and push it to Depot's registry.
+
+    Bind the image's canonical fields onto loguru's context for the whole build so
+    every log line emitted during forging -- including the nested depot build-output
+    streams (_drain_logs) and Stage messages -- carries a structured image_id/user_id
+    and becomes filterable in OpenSearch (previously only the single build-error line,
+    via image_logger, was bound).
     """
+    with logger.contextualize(**await _image_log_context(image_id)):
+        await _forge(image_id)
+
+
+async def _forge(image_id: str):
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -986,7 +1025,16 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     """
     Update the chutes library in an existing image without rebuilding from scratch.
     Uses Depot remote builders instead of local buildah.
+
+    Wrapped in logger.contextualize so every log line during the patch build carries
+    the image's canonical fields (image_id/user_id/...), filterable in OpenSearch,
+    same as forge() above.
     """
+    with logger.contextualize(**await _image_log_context(image_id)):
+        await _update_chutes_lib(image_id, chutes_version, force=force)
+
+
+async def _update_chutes_lib(image_id: str, chutes_version: str, force: bool = False):
     patch_version = hashlib.sha256(f"{image_id}:{chutes_version}".encode()).hexdigest()[:12]
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
@@ -1105,6 +1153,11 @@ ENV LD_PRELOAD=/usr/local/lib/chutes-netnanny.so:/usr/local/lib/chutes-loginterc
             # Stage 3: Filesystem verification + extract.
             logger.info("Stage 3: Building filesystem verification image")
 
+            # Per-build nonce so the cfsv index/collect RUNs are never served from depot's
+            # shared layer cache (their output depends on the full filesystem + CFSV_OP
+            # secret, neither captured by buildkit's cache key). See fsv-datamap-stale-key.
+            fsv_cache_bust = uuid.uuid4().hex
+
             fsv_dockerfile_content = f"""FROM {updated_ref}
 USER chutes
 ENV LD_PRELOAD=""
@@ -1115,11 +1168,11 @@ USER root
 RUN rm -f /etc/ld.so.preload /etc/bytecode.manifest /tmp/chutesfs.index /etc/chutesfs.index /tmp/chutesfs.data
 USER chutes
 COPY cfsv /cfsv
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv index / /tmp/chutesfs.index
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv index / /tmp/chutesfs.index
 USER root
 RUN cp -f /tmp/chutesfs.index /etc/chutesfs.index && chmod a+r /etc/chutesfs.index
 USER chutes
-RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
+RUN --network=none --mount=type=secret,id=cfsv_op,mode=0444 CFSV_OP="$(cat /run/secrets/cfsv_op)" FSV_CACHE_BUST={fsv_cache_bust} /cfsv collect / /etc/chutesfs.index /tmp/chutesfs.data
 """
 
             has_bcm = False

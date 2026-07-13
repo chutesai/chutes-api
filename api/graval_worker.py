@@ -711,6 +711,10 @@ def _prune_fs_cache(keep: str = None):
             for entry in it:
                 if not entry.is_file():
                     continue
+                # ETag sidecars are tiny and tied to their blob's lifecycle; keep
+                # them out of the size accounting and never evict them on their own.
+                if entry.name.endswith(".etag"):
+                    continue
                 stat = entry.stat()
                 entries.append((entry.path, stat.st_size, stat.st_mtime))
     except FileNotFoundError:
@@ -726,13 +730,44 @@ def _prune_fs_cache(keep: str = None):
         try:
             os.unlink(path)
             total -= size
+            # Drop the ETag sidecar with its blob so it can't linger orphaned.
+            try:
+                os.unlink(path + ".etag")
+            except FileNotFoundError:
+                pass
             logger.info(f"Pruned cached blob {path} ({size} bytes) to respect FS cache limit")
         except FileNotFoundError:
             pass
 
 
+async def _s3_etag(s3_key: str) -> str | None:
+    """Return the S3 object's current ETag, or None if it can't be fetched.
+
+    A None return (transient HEAD failure, missing object) is treated by the
+    caller as "can't revalidate" rather than an error, so a blip never fails an
+    otherwise-serviceable cache hit.
+    """
+    try:
+        async with settings.s3_client() as s3:
+            head = await s3.head_object(Bucket=settings.storage_bucket, Key=s3_key)
+        return head.get("ETag")
+    except Exception as e:
+        logger.warning(f"Could not HEAD {s3_key} for cache revalidation: {e}")
+        return None
+
+
 async def _cached_s3_blob(s3_key: str, filename: str, label: str) -> str:
-    """Return a local path to s3_key, downloading into the bounded cache if absent.
+    """Return a local path to s3_key, downloading into the bounded cache if absent
+    or if the cached copy is stale.
+
+    The cache filename is NOT content-addressed (e.g. "<image_id>.initial.data")
+    and the underlying S3 object is MUTABLE -- a re-forge overwrites
+    <image_id>/initial.data in place under the constant "initial" patch_version.
+    So a name-matched hit is revalidated against the object's current S3 ETag and
+    a mismatch forces a re-download. Without this, a graval pod keeps validating
+    against a pre-re-forge datamap (served from local disk, never rechecked) until
+    the entry is LRU-evicted or the pod restarts -- which is exactly how a
+    correctly re-forged image can still fail filesystem verification.
 
     Downloads to a temp file and atomically renames so a partial/failed download
     never leaves a truncated cache entry, then prunes LRU entries after each new
@@ -740,13 +775,31 @@ async def _cached_s3_blob(s3_key: str, filename: str, label: str) -> str:
     """
     os.makedirs(FS_CACHE_DIR, exist_ok=True)
     cache_path = os.path.join(FS_CACHE_DIR, filename)
+    etag_path = cache_path + ".etag"
+    current_etag = await _s3_etag(s3_key)
+
     if os.path.exists(cache_path):
-        logger.info(f"Using cached {label} at {cache_path}")
+        cached_etag = None
         try:
-            os.utime(cache_path, None)  # bump mtime so LRU treats a cache hit as recent
+            with open(etag_path) as f:
+                cached_etag = f.read().strip()
         except OSError:
             pass
-        return cache_path
+        # Serve the cache when the ETag still matches, or when S3 is momentarily
+        # unreachable (current_etag is None) -- a possibly-stale blob beats failing
+        # the launch on a transient HEAD error. A changed ETag (the blob was
+        # re-uploaded) or a missing sidecar falls through to a fresh download.
+        if current_etag is None or (cached_etag and cached_etag == current_etag):
+            logger.info(f"Using cached {label} at {cache_path}")
+            try:
+                os.utime(cache_path, None)  # bump mtime so LRU treats a cache hit as recent
+            except OSError:
+                pass
+            return cache_path
+        logger.info(
+            f"Cached {label} at {cache_path} is stale "
+            f"(etag {cached_etag} != {current_etag}); re-downloading"
+        )
 
     logger.info(f"Downloading {label} for {filename}")
     # Prune before downloading too, so the incoming blob has headroom under the
@@ -763,6 +816,15 @@ async def _cached_s3_blob(s3_key: str, filename: str, label: str) -> str:
             os.unlink(temp_path)
         logger.error(f"Failed to download {label} from S3: {e}")
         raise Exception(f"Failed to download {label} from S3: {e}")
+    # Persist the ETag so the next hit can revalidate. If the pre-download HEAD
+    # failed, re-HEAD now (S3 may have recovered) so we still capture one.
+    etag_to_store = current_etag if current_etag is not None else await _s3_etag(s3_key)
+    if etag_to_store:
+        try:
+            with open(etag_path, "w") as f:
+                f.write(etag_to_store)
+        except OSError as e:
+            logger.warning(f"Could not persist ETag sidecar {etag_path}: {e}")
     logger.info(f"Cached {label} to {cache_path}")
     _prune_fs_cache(keep=cache_path)
     return cache_path
