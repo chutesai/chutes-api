@@ -16,7 +16,7 @@ import shutil
 import orjson as json
 from loguru import logger
 from api.config import settings
-from api.log import image_logger
+from api.log import image_logger, LogType
 from api.database import get_session
 from api.exceptions import (
     SignFailure,
@@ -907,7 +907,17 @@ RUN --mount=type=bind,from=target,source=/,target=/scan-target \
 async def forge(image_id: str):
     """
     Build an image and push it to Depot's registry.
+
+    Bind image_id/log_type onto loguru's context for the whole build so every log
+    line emitted during forging -- including the nested depot build-output streams
+    (_drain_logs) and Stage messages -- carries a structured image_id and becomes
+    filterable in OpenSearch (previously only the single build-error line was bound).
     """
+    with logger.contextualize(image_id=image_id, log_type=LogType.IMAGE.value):
+        await _forge(image_id)
+
+
+async def _forge(image_id: str):
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
         image = result.scalar_one_or_none()
@@ -994,7 +1004,15 @@ async def update_chutes_lib(image_id: str, chutes_version: str, force: bool = Fa
     """
     Update the chutes library in an existing image without rebuilding from scratch.
     Uses Depot remote builders instead of local buildah.
+
+    Wrapped in logger.contextualize so every log line during the patch build carries
+    a structured image_id (filterable in OpenSearch), same as forge() above.
     """
+    with logger.contextualize(image_id=image_id, log_type=LogType.IMAGE.value):
+        await _update_chutes_lib(image_id, chutes_version, force=force)
+
+
+async def _update_chutes_lib(image_id: str, chutes_version: str, force: bool = False):
     patch_version = hashlib.sha256(f"{image_id}:{chutes_version}".encode()).hexdigest()[:12]
     async with get_session() as session:
         result = await session.execute(select(Image).where(Image.image_id == image_id).limit(1))
