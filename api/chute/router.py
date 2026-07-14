@@ -114,9 +114,7 @@ async def can_view_chute_source(
     current_user: Optional[User],
 ) -> bool:
     """Determine whether a caller may see a chute's source code."""
-    if is_chute_source_public(chute.name) and (
-        chute.public or "affine" in chute.name.lower()
-    ):
+    if is_chute_source_public(chute.name) and (chute.public or "affine" in chute.name.lower()):
         return True
     if not current_user:
         return False
