@@ -35,7 +35,6 @@ from api.constants import HOTKEY_HEADER, AUTHORIZATION_HEADER
 from api.instance.util import _decode_chutes_jwt
 import api.miner_client as miner_client
 from api.metagraph import get_miner_by_hotkey, MetagraphNode
-from api.util import semcomp
 from metasync.shared import get_scoring_data
 
 router = APIRouter()
@@ -65,8 +64,8 @@ async def model_to_dict(obj, bounty_info: Optional[dict] = None):
                 "supported_gpus": ns.supported_gpus,
             }
         )
-        if semcomp(obj.chutes_version or "0.0.0", "0.3.61") >= 0:
-            data["code"] = f"print('legacy placeholder for {obj.version=}')"
+        # Miner inventory must never expose source; runtimes obtain it through launch config.
+        data["code"] = f"print('legacy placeholder for {obj.version=}')"
         data["preemptible"] = obj.preemptible
 
         # Add effective compute multiplier and factors.

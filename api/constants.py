@@ -154,6 +154,12 @@ INTEGRATED_SUBNETS = {
         "model_substring": "babelbit",
         "max_public_chutes": 3,
     },
+    "chronoseek": {
+        "netuid": 20,
+        "model_substring": "chronoseek",
+        "max_public_chutes": 3,
+        "source_public": False,
+    },
     "glyph": {
         "netuid": 117,
         "model_substring": "glyph",
@@ -175,6 +181,19 @@ INTEGRATED_SUBNETS = {
         "max_public_chutes": 3,
     },
 }
+
+
+def is_chute_source_public(name: str) -> bool:
+    """Return whether a chute name maps to publicly visible source code."""
+    normalized_name = (name or "").lower()
+    for config in INTEGRATED_SUBNETS.values():
+        if (
+            config["model_substring"] in normalized_name
+            and config.get("source_public", True) is False
+        ):
+            return False
+    return True
+
 
 # Chute utilization query.
 CHUTE_UTILIZATION_QUERY = """

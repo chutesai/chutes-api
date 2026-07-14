@@ -82,6 +82,7 @@ from api.constants import (
     DIFFUSION_PRICE_MULT_PER_STEP,
     INTEGRATED_SUBNETS,
     CHUTE_UTILIZATION_QUERY,
+    is_chute_source_public,
 )
 from api.util import (
     semcomp,
@@ -103,6 +104,25 @@ router = APIRouter()
 
 class MakePublicArgs(PydanticBaseModel):
     chutes: List[str]  # list of chute UUIDs
+
+
+SOURCE_NOT_PUBLIC_PLACEHOLDER = "### The source code for this chute is not publicly accessible."
+
+
+async def can_view_chute_source(
+    chute: Chute,
+    current_user: Optional[User],
+) -> bool:
+    """Determine whether a caller may see a chute's source code."""
+    if is_chute_source_public(chute.name) and (chute.public or "affine" in chute.name.lower()):
+        return True
+    if not current_user:
+        return False
+    if current_user.user_id == chute.user_id:
+        return True
+    if await is_shared(chute.chute_id, current_user.user_id):
+        return True
+    return subnet_role_accessible(chute, current_user, admin=True)
 
 
 async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse):
@@ -1130,21 +1150,9 @@ async def get_chute_code(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
-    authorized = False
-    if (
-        chute.public
-        or (
-            current_user
-            and (
-                current_user.user_id == chute.user_id
-                or await is_shared(chute_id, current_user.user_id)
-            )
-        )
-        or "affine" in chute.name.lower()
-        or (current_user and subnet_role_accessible(chute, current_user, admin=True))
-    ):
-        authorized = True
-    if not authorized:
+    if not await can_view_chute_source(chute, current_user):
+        if chute.public or "affine" in chute.name.lower():
+            return Response(content=SOURCE_NOT_PUBLIC_PLACEHOLDER, media_type="text/plain")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
