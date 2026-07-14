@@ -772,7 +772,6 @@ dependencies = [
     { name = "cryptography" },
     { name = "dcap-qvl" },
     { name = "dnslib" },
-    { name = "ecdsa" },
     { name = "fastapi" },
     { name = "fickling" },
     { name = "httptools" },
@@ -832,9 +831,8 @@ requires-dist = [
     { name = "bittensor-wallet", specifier = ">=4.0.1" },
     { name = "chutes", git = "https://github.com/chutesai/chutes.git?rev=08d79872854a664de16b32b14cd0bf947e427517" },
     { name = "cryptography", specifier = ">=46.0.5" },
-    { name = "dcap-qvl", specifier = "==0.3.12" },
+    { name = "dcap-qvl", specifier = "==0.5.3" },
     { name = "dnslib", specifier = ">=0.9.26,<0.10.0" },
-    { name = "ecdsa", specifier = ">=0.19.1,<0.20.0" },
     { name = "fastapi", specifier = ">=0.124.0,<0.125.0" },
     { name = "fickling", specifier = "==0.1.11" },
     { name = "greenlet", marker = "extra == 'dev'", specifier = ">=3.1.1,<4.0.0" },
@@ -1052,17 +1050,17 @@ wheels = [
 
 [[package]]
 name = "dcap-qvl"
-version = "0.3.12"
+version = "0.5.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/71/73/57cf4385c3821a61dd87ae86d24c9a46ae4ab5de2d15df0041e14b802e18/dcap_qvl-0.3.12.tar.gz", hash = "sha256:b3be8f39c8b3252b10a5dae48164998a64591e1ff66cb138e8b687b6f1be1928", size = 204070, upload-time = "2026-02-09T13:36:10.313Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/a4/7cb9365d55d66eaa70a64962cf02a0630dd4420343c951993df1ab0e7331/dcap_qvl-0.5.3.tar.gz", hash = "sha256:1db47d48bab7b64138b00c4f07c8847a8c7b32e25e00924009befee32ed52fed", size = 263935, upload-time = "2026-06-15T13:16:55.823Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7b/c9/58efd68fc715223133c7c6f79256a7ea497fb158d5b6d731b6c886143da9/dcap_qvl-0.3.12-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:99cd8fd1df379afee05b0105abfcaf32e04564a973bd60731fbe86e770c21de2", size = 2989025, upload-time = "2026-02-09T13:35:56.397Z" },
-    { url = "https://files.pythonhosted.org/packages/75/f9/7f51ae6e83c6f0e5066341e0957c863b12e1dff615e345343250f81c989b/dcap_qvl-0.3.12-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:88ee73f2cf4b68db76b68be16b816fd35c007777cc9840659ad24ea4aaaa202a", size = 4939260, upload-time = "2026-02-09T13:35:58.818Z" },
-    { url = "https://files.pythonhosted.org/packages/89/37/9e308fc0bd1d40a5a297f5ce35391b3edafd6e4a8c4bc898192ef1d805f0/dcap_qvl-0.3.12-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b36837363dd37d91a700af1335ec351427e637433da48f7c3c4bad17e96bf6f2", size = 2616363, upload-time = "2026-02-09T13:36:00.425Z" },
-    { url = "https://files.pythonhosted.org/packages/27/6e/ff60c78c5b01d5b980bd0513845b12251fe22997c4cdaf71799cae2b444e/dcap_qvl-0.3.12-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:d2d5b133ace017d31d3d5dbeadf9f7d41de9e3ee58752beb8618f3984c4f4da9", size = 2767585, upload-time = "2026-02-09T13:36:02.687Z" },
-    { url = "https://files.pythonhosted.org/packages/f5/bc/074e87ac2ed3dcd774f62d9b015507b5243b0caf49c420d2e10177a12eec/dcap_qvl-0.3.12-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:876f05333edea7cad54a3caeeb43dca7c0a6cd9d01b788256b9ac83deda3b7d4", size = 2613744, upload-time = "2026-02-09T13:36:04.383Z" },
-    { url = "https://files.pythonhosted.org/packages/1d/e4/b5f09149f9b021a29c6bdc5b2ac8d69f92a609e1a680fc9091a5c0618348/dcap_qvl-0.3.12-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:bdc9c82eae9f7cbb908e0abd44dc0b86725fa47c3d5d71a235142c4e22f02e6a", size = 2765372, upload-time = "2026-02-09T13:36:06.724Z" },
-    { url = "https://files.pythonhosted.org/packages/46/a8/3007ee07084ca6a84eebcc0403e604a74f7a89b2eaa31c573df378f24de4/dcap_qvl-0.3.12-cp38-abi3-win_amd64.whl", hash = "sha256:32489ba84623735070efb254f0ab8aea77c06d9b3f64657cd5ef2016426f7433", size = 2610790, upload-time = "2026-02-09T13:36:09.013Z" },
+    { url = "https://files.pythonhosted.org/packages/9e/4a/b85b409d17c001b72f5912ff0f78b072165658b1040f1a6d9a4cb3ef58d6/dcap_qvl-0.5.3-cp38-abi3-macosx_10_12_x86_64.whl", hash = "sha256:5a93a23854a4682f3728e34d1740120fde90b82423e22d285e5120319e5c720b", size = 2385438, upload-time = "2026-06-15T13:16:43.76Z" },
+    { url = "https://files.pythonhosted.org/packages/95/dd/480a61f3dda334f87d5d9d37ceb5e955c02ca1f531e9179b60edc1a028b1/dcap_qvl-0.5.3-cp38-abi3-macosx_11_0_arm64.whl", hash = "sha256:30acb506214e51904ac2a89dc3e77ff428e83055d1b7d6c7fe60cbd44ee47ccb", size = 2259094, upload-time = "2026-06-15T13:16:45.876Z" },
+    { url = "https://files.pythonhosted.org/packages/23/49/ed663c75204fcc46c2bfc63e4d9c17e4ba8c060a6d143a0a852e44f32db9/dcap_qvl-0.5.3-cp38-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:17a7226494c40d212d0962e720c1928277d644ec55896d91682ceb6728fb96e1", size = 2538588, upload-time = "2026-06-15T13:16:47.664Z" },
+    { url = "https://files.pythonhosted.org/packages/85/c6/da9d4804426a95e0e1e4abd74c005f903be56ab22c29f58abae6a8d9d7d3/dcap_qvl-0.5.3-cp38-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8ac5c7b1102051f666a0d1bbd66ec0dd917ba942ae2ec402685fd3c6514a0aee", size = 2694390, upload-time = "2026-06-15T13:16:49.327Z" },
+    { url = "https://files.pythonhosted.org/packages/35/5f/dc6b6c7ca84bd7b4fa479d643b842b87a0863166bc55e94a9db74f11bf80/dcap_qvl-0.5.3-cp38-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:b7ac2b6f47e9000ca64354b412622f9cea06cd0c9eb7be9f16fa10a49fbb232a", size = 2535127, upload-time = "2026-06-15T13:16:51.086Z" },
+    { url = "https://files.pythonhosted.org/packages/4b/9c/9eadd5b97996df0e9f1efa16bcdefcb77fe801024fb6afb3d666cb9c978c/dcap_qvl-0.5.3-cp38-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:bef8dac093a39ff2dd976e5758af54083971d1128e3d0735fb528a244fa8db97", size = 2692260, upload-time = "2026-06-15T13:16:52.818Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/b7/8f0ea7b9d380c7679d477d900481998749424e3b0bd5ebf662eaa10fc10b/dcap_qvl-0.5.3-cp38-abi3-win_amd64.whl", hash = "sha256:1498532d9225e0b363938201ea79a45e9901c8e3c38c5d3681e8e97b1182c3bb", size = 2128755, upload-time = "2026-06-15T13:16:54.408Z" },
 ]
 
 [[package]]
@@ -1102,18 +1100,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/71/269f74ef9bc8ca453af2e1768d4f4c8e7ef5f894d058d27fd1b69c754d7f/dnslib-0.9.26.tar.gz", hash = "sha256:be56857534390b2fbd02935270019bacc5e6b411d156cb3921ac55a7fb51f1a8", size = 82901, upload-time = "2025-03-03T09:17:32.606Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/93/167364f10194e374119b211e475ed8763d7591ae4f7001b304282dde5825/dnslib-0.9.26-py3-none-any.whl", hash = "sha256:e68719e633d761747c7e91bd241019ef5a2b61a63f56025939e144c841a70e0d", size = 64161, upload-time = "2025-03-03T09:17:31.47Z" },
-]
-
-[[package]]
-name = "ecdsa"
-version = "0.19.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "six" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/25/ca/8de7744cb3bc966c85430ca2d0fcaeea872507c6a4cf6e007f7fe269ed9d/ecdsa-0.19.2.tar.gz", hash = "sha256:62635b0ac1ca2e027f82122b5b81cb706edc38cd91c63dda28e4f3455a2bf930", size = 202432, upload-time = "2026-03-26T09:58:17.675Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/79/119091c98e2bf49e24ed9f3ae69f816d715d2904aefa6a2baa039a2ba0b0/ecdsa-0.19.2-py2.py3-none-any.whl", hash = "sha256:840f5dc5e375c68f36c1a7a5b9caad28f95daa65185c9253c0c08dd952bb7399", size = 150818, upload-time = "2026-03-26T09:58:15.808Z" },
 ]
 
 [[package]]

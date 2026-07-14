@@ -993,7 +993,8 @@ async def _validate_launch_config_env(
                 miner_hotkey=launch_config.miner_hotkey,
             )
             if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
-                assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
+                if code != chute.code:
+                    raise AssertionError("Incorrect code supplied")
         except AssertionError as exc:
             logger.error(
                 f"Attempt to claim {launch_config.config_id=} failed, invalid command: {exc}"
