@@ -23,7 +23,6 @@ from api.server.service import (
     update_server_name,
     get_server_attestation_status,
     delete_server,
-    process_luks_passphrase_request,
 )
 from api.server.schemas import (
     Server,
@@ -440,8 +439,8 @@ async def test_process_boot_attestation_success(
 
         with (
             patch(
-                "api.server.service.generate_and_store_boot_token",
-                return_value="test-boot-token",
+                "api.server.service.generate_luks_quote_nonce",
+                return_value="test-luks-nonce",
             ),
             patch(
                 "api.server.service._handle_boot_version_update",
@@ -456,9 +455,8 @@ async def test_process_boot_attestation_success(
                 TEST_CERT_HASH,
             )
 
-        # process_boot_attestation returns (boot_token, luks_quote_nonce, measurement_version).
-        # version "1" < 1.3.0 -> legacy boot token, no luks_quote_nonce.
-        assert result == ("test-boot-token", None, "1")
+        # process_boot_attestation returns (luks_quote_nonce, measurement_version).
+        assert result == ("test-luks-nonce", "1")
 
         # Verify database operations
         mock_db_session.add.assert_called_once()
@@ -821,40 +819,6 @@ async def test_update_server_name_conflict(mock_db_session, sample_server):
     mock_db_session.rollback.assert_called_once()
 
 
-# LUKS passphrase tests
-
-
-@pytest.mark.asyncio
-async def test_sync_luks_passphrase(mock_db_session, mock_redis_client):
-    """Test POST LUKS sync: validates token, calls sync_server_luks_passphrases, consumes token."""
-    boot_token = "test-boot-token"
-    hotkey = "5FTestHotkey123"
-    vm_name = "test-vm"
-    volume_names = ["storage", "cache"]
-    rekey = ["cache"]
-
-    with (
-        patch(
-            "api.server.service._validate_boot_token_for_luks",
-            new_callable=AsyncMock,
-        ),
-        patch(
-            "api.server.service.sync_server_luks_passphrases",
-            AsyncMock(return_value={"storage": "pass1", "cache": "pass2_new"}),
-        ) as mock_sync,
-        patch("api.server.service.settings") as mock_settings,
-    ):
-        mock_settings.redis_client.delete = AsyncMock(return_value=1)
-        result = await process_luks_passphrase_request(
-            mock_db_session, boot_token, hotkey, vm_name, volume_names, rekey_volume_names=rekey
-        )
-        assert result == {"storage": "pass1", "cache": "pass2_new"}
-        mock_sync.assert_called_once_with(
-            mock_db_session, hotkey, vm_name, volume_names, rekey_volume_names=rekey
-        )
-        mock_settings.redis_client.delete.assert_called_once()
-
-
 # Edge Cases and Error Handling Tests
 
 
@@ -976,8 +940,8 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
 
             with (
                 patch(
-                    "api.server.service.generate_and_store_boot_token",
-                    return_value="test-boot-token",
+                    "api.server.service.generate_luks_quote_nonce",
+                    return_value="test-luks-nonce",
                 ),
                 patch(
                     "api.server.service._handle_boot_version_update",
@@ -992,7 +956,7 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
                     TEST_CERT_HASH,
                 )
 
-            assert result == ("test-boot-token", None, "1")
+            assert result == ("test-luks-nonce", "1")
 
 
 @pytest.mark.asyncio

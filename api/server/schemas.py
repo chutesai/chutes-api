@@ -69,7 +69,6 @@ class BootAttestationResponse(BaseModel):
     """Response model for successful boot attestation."""
 
     key: str
-    boot_token: Optional[str] = None
     luks_quote_nonce: Optional[str] = None
 
 
@@ -118,20 +117,8 @@ class LuksConfirmResult:
     """Per-volume outcome: {"result": "promoted"|"discarded"|"no_pending"}."""
 
 
-class LuksPassphraseRequest(BaseModel):
-    """Request model for LUKS POST: VM sends volume list, API returns keys (existing/new/rekey), prunes others."""
-
-    volumes: List[str] = Field(
-        ..., description="Volume names the VM is managing (defines full set)"
-    )
-    rekey: Optional[List[str]] = Field(
-        None,
-        description="Volume names that must receive new passphrases (no reuse); must be subset of volumes",
-    )
-
-
 class LuksAttestRequest(BaseModel):
-    """Request model for POST /luks/attest (new VMs, version >= 1.3.0)."""
+    """Request model for POST /luks/attest."""
 
     quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
     volumes: List[str] = Field(..., description="Volume names to rotate passphrases for")

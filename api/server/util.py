@@ -540,41 +540,6 @@ async def _create_vm_cache_config(
     return vm_config
 
 
-async def sync_server_luks_passphrases(
-    db: AsyncSession,
-    miner_hotkey: str,
-    vm_name: str,
-    volume_names: List[str],
-    rekey_volume_names: Optional[List[str]] = None,
-) -> Dict[str, str]:
-    """
-    Sync LUKS state: ensure passphrases for every volume in volume_names, prune others.
-    Volumes in rekey_volume_names get new passphrases (no reuse).
-    """
-    rekey_set = set(rekey_volume_names or [])
-    vm_config = await _get_vm_cache_config(db, miner_hotkey, vm_name)
-    if vm_config is None:
-        vm_config = await _create_vm_cache_config(db, miner_hotkey, vm_name)
-    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
-
-    result: Dict[str, str] = {}
-    for vol in volume_names:
-        if vol in rekey_set or vol not in stored:
-            passphrase = generate_cache_passphrase()
-            stored[vol] = encrypt_passphrase(passphrase)
-            result[vol] = passphrase
-        else:
-            result[vol] = decrypt_passphrase(stored[vol])
-
-    # Prune: keep only volume_names
-    vm_config.volume_passphrases = {k: v for k, v in stored.items() if k in volume_names}
-    vm_config.last_boot_at = func.now()
-    await db.commit()
-    await db.refresh(vm_config)
-    logger.info(f"LUKS sync for VM {vm_name}: volumes={volume_names}, rekey={list(rekey_set)}")
-    return result
-
-
 async def delete_luks_passphrases_for_server(
     db: AsyncSession, miner_hotkey: str, server_name: str
 ) -> None:

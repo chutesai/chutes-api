@@ -15,7 +15,7 @@ from api.config import settings
 from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
-from api.constants import HOTKEY_HEADER, NoncePurpose, SUPPORTED_LUKS_VOLUMES
+from api.constants import HOTKEY_HEADER, NoncePurpose
 
 from api.server.schemas import (
     BootAttestationArgs,
@@ -25,7 +25,6 @@ from api.server.schemas import (
     NonceResponse,
     BootAttestationResponse,
     RuntimeAttestationResponse,
-    LuksPassphraseRequest,
     LuksAttestRequest,
     LuksAttestResponse,
     LuksVolumeInfo,
@@ -50,7 +49,6 @@ from api.server.service import (
     get_server_attestation_status,
     delete_server,
     validate_request_nonce,
-    process_luks_passphrase_request,
     require_luks_quote_nonce,
     require_confirm_nonce,
     process_luks_attest_request,
@@ -119,13 +117,12 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = request.state.client_ip
-        boot_token, luks_quote_nonce, measurement_version = await process_boot_attestation(
+        luks_quote_nonce, measurement_version = await process_boot_attestation(
             db, server_ip, args, nonce, expected_cert_hash
         )
 
         return BootAttestationResponse(
             key=get_luks_passphrase(measurement_version),
-            boot_token=boot_token,
             luks_quote_nonce=luks_quote_nonce,
         )
     except NonceError as e:
@@ -138,83 +135,6 @@ async def verify_boot_attestation(
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Boot attestation failed"
-        )
-
-
-def _validate_luks_request(
-    boot_token: str | None,
-    hotkey: str | None,
-    body: LuksPassphraseRequest,
-) -> None:
-    """Validate LUKS POST request: boot token, hotkey, volumes, rekey. Raises HTTPException on invalid."""
-    if not boot_token:
-        detail = "Boot token is required (X-Boot-Token header)"
-        logger.warning(f"LUKS request validation failed: {detail}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-    if not hotkey:
-        detail = "Hotkey is required"
-        logger.warning(f"LUKS request validation failed: {detail}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-    if not body.volumes:
-        detail = "volumes is required and must be non-empty"
-        logger.warning(f"LUKS request validation failed: {detail}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-    invalid_volumes = [v for v in body.volumes if v not in SUPPORTED_LUKS_VOLUMES]
-    if invalid_volumes:
-        detail = (
-            f"Invalid volume name(s): {invalid_volumes}. Supported: {list(SUPPORTED_LUKS_VOLUMES)}"
-        )
-        logger.warning(f"LUKS request validation failed: {detail}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-    if body.rekey is not None:
-        not_in_volumes = [v for v in body.rekey if v not in body.volumes]
-        if not_in_volumes:
-            detail = f"rekey must be a subset of volumes; not in volumes: {not_in_volumes}"
-            logger.warning(f"LUKS request validation failed: {detail}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-        invalid_rekey = [v for v in body.rekey if v not in SUPPORTED_LUKS_VOLUMES]
-        if invalid_rekey:
-            detail = f"Invalid rekey volume name(s): {invalid_rekey}. Supported: {list(SUPPORTED_LUKS_VOLUMES)}"
-            logger.warning(f"LUKS request validation failed: {detail}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
-
-
-@router.post("/{vm_name}/luks", response_model=Dict[str, str])
-async def sync_luks_passphrases(
-    vm_name: str,
-    body: LuksPassphraseRequest,
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    boot_token: str | None = Header(None, alias="X-Boot-Token"),
-):
-    """
-    Sync LUKS passphrases for legacy VMs (version < 1.3.0).
-
-    VM sends its volume list; API returns keys for existing volumes, creates keys
-    for new volumes, rekeys volumes in the rekey list, and prunes stored keys for
-    volumes not in the list. Boot token is validated and consumed on success.
-    """
-    try:
-        _validate_luks_request(boot_token, hotkey, body)
-        result = await process_luks_passphrase_request(
-            db,
-            boot_token,
-            hotkey,
-            vm_name,
-            body.volumes,
-            rekey_volume_names=body.rekey,
-        )
-        return result
-    except NonceError as e:
-        logger.warning(f"Boot token validation error: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in LUKS POST: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to sync/create LUKS passphrases",
         )
 
 
