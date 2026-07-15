@@ -1582,6 +1582,10 @@ async def _validate_launch_config_instance(
             detail="Duplicate GPUs in request!",
         )
     node_ids = [node["uuid"] for node in args.gpus]
+    # Capture chute_id before the try/except: db.rollback() in the failure path expires all
+    # ORM attributes, so accessing launch_config.chute_id afterwards would trigger a lazy
+    # reload (sync IO in async context -> MissingGreenlet), masking the original exception.
+    chute_id = launch_config.chute_id
     try:
         nodes = await _validate_nodes(
             db,
@@ -1605,7 +1609,7 @@ async def _validate_launch_config_instance(
         # This failure path updates verification_error via raw SQL, bypassing the ORM 'set'
         # listener, so count it explicitly here.
         track_launch_config_failure(
-            launch_config.chute_id, "invalid GPU/nodes configuration provided"
+            chute_id, "invalid GPU/nodes configuration provided"
         )
         raise
 
