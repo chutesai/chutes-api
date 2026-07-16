@@ -61,6 +61,7 @@ from api.bounty.util import (
     delete_bounty,
     create_bounty_if_not_exists,
     set_chute_disabled,
+    bounty_lifetime_for,
 )
 from api.instance.schemas import Instance
 from api.instance.util import get_chute_target_manager, cleanup_instance_conn_tracking
@@ -72,14 +73,16 @@ from api.image.util import get_image_by_id_or_name
 from api.permissions import Permissioning
 
 # XXX from api.instance.util import discover_chute_targets
-from api.database import get_db_session, get_session
+from api.database import get_db_session, get_session, db_scalar, db_scalars
 from api.pagination import PaginatedResponse
 from api.fmv.fetcher import get_fetcher
 from api.config import settings
+from api.metrics.warmup import track_warmup_request, WarmupTrigger
 from api.constants import (
     DIFFUSION_PRICE_MULT_PER_STEP,
     INTEGRATED_SUBNETS,
     CHUTE_UTILIZATION_QUERY,
+    is_chute_source_public,
 )
 from api.util import (
     semcomp,
@@ -101,6 +104,25 @@ router = APIRouter()
 
 class MakePublicArgs(PydanticBaseModel):
     chutes: List[str]  # list of chute UUIDs
+
+
+SOURCE_NOT_PUBLIC_PLACEHOLDER = "### The source code for this chute is not publicly accessible."
+
+
+async def can_view_chute_source(
+    chute: Chute,
+    current_user: Optional[User],
+) -> bool:
+    """Determine whether a caller may see a chute's source code."""
+    if is_chute_source_public(chute.name) and (chute.public or "affine" in chute.name.lower()):
+        return True
+    if not current_user:
+        return False
+    if current_user.user_id == chute.user_id:
+        return True
+    if await is_shared(chute.chute_id, current_user.user_id):
+        return True
+    return subnet_role_accessible(chute, current_user, admin=True)
 
 
 async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse):
@@ -777,7 +799,7 @@ async def list_boosted_chutes():
     """
     Get a list of chutes that have a boost.
     """
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             text(
                 """
@@ -811,7 +833,7 @@ async def list_available_affine_chutes():
     """
     Get a list of affine chutes where the creator/user has a non-zero balance.
     """
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         query = text("""
             SELECT
                 c.chute_id,
@@ -957,7 +979,7 @@ async def list_chutes(
 
 @router.get("/rolling_updates")
 async def list_rolling_updates():
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(text("SELECT * FROM rolling_updates"))
         columns = result.keys()
         rows = result.fetchall()
@@ -1128,21 +1150,9 @@ async def get_chute_code(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
-    authorized = False
-    if (
-        chute.public
-        or (
-            current_user
-            and (
-                current_user.user_id == chute.user_id
-                or await is_shared(chute_id, current_user.user_id)
-            )
-        )
-        or "affine" in chute.name.lower()
-        or (current_user and subnet_role_accessible(chute, current_user, admin=True))
-    ):
-        authorized = True
-    if not authorized:
+    if not await can_view_chute_source(chute, current_user):
+        if chute.public or "affine" in chute.name.lower():
+            return Response(content=SOURCE_NOT_PUBLIC_PLACEHOLDER, media_type="text/plain")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
@@ -1195,7 +1205,6 @@ async def get_chute_hf_info(
 async def warm_up_chute(
     chute_id_or_name: str,
     quick: bool = False,
-    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="chutes")),
 ):
     """
@@ -1204,17 +1213,15 @@ async def warm_up_chute(
     With ?quick=true, performs a single status check, creates a bounty if needed,
     and returns JSON immediately instead of holding an SSE connection open.
     """
-    chute = (
-        (
-            await db.execute(
-                select(Chute)
-                .where(or_(Chute.name.ilike(chute_id_or_name), Chute.chute_id == chute_id_or_name))
-                .order_by((Chute.user_id == current_user.user_id).desc())
-                .limit(1)
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
+    # Load with a short-lived session (db_scalar) rather than a request-scoped session:
+    # the SSE branch below holds the response open for up to 10 minutes, and a request
+    # session would sit "idle in transaction" for that entire time. The stream only reads
+    # scalar columns off the detached `chute`, which is safe with expire_on_commit=False.
+    chute = await db_scalar(
+        select(Chute)
+        .where(or_(Chute.name.ilike(chute_id_or_name), Chute.chute_id == chute_id_or_name))
+        .order_by((Chute.user_id == current_user.user_id).desc())
+        .limit(1)
     )
     if not chute:
         raise HTTPException(
@@ -1251,6 +1258,22 @@ async def warm_up_chute(
         )
 
     if quick:
+        # Stamp the first warmup request time for this chute (set-if-absent); activation reads it
+        # back to observe request->hot. The TTL matches this chute's bounty lifetime so the demand
+        # window and the bounty never drift. Count exactly one demand signal per episode -- only when
+        # we actually win the set -- so repeated polls/warmups don't inflate the counter or move the
+        # start time. This mirrors the bounty path, which counts once per created bounty. The key is
+        # cleared when the chute goes hot (getdel at activation), so a later warmup of a cooled-down
+        # chute starts a fresh episode.
+        first_request = await settings.redis_client.set(
+            f"warmup_requested_at:{chute.chute_id}",
+            str(time.time()),
+            nx=True,
+            ex=await bounty_lifetime_for(chute),
+        )
+        if first_request:
+            track_warmup_request(chute.chute_id, WarmupTrigger.EXPLICIT)
+
         # Single status check + bounty creation, return immediately.
         tm = await get_chute_target_manager(chute=chute, max_wait=0, dynonce=True)
         is_hot = tm is not None
@@ -1258,16 +1281,10 @@ async def warm_up_chute(
         bounty = await get_bounty_info(chute.chute_id)
 
         # Load instances with GPU info for the dashboard.
-        instances_with_nodes = (
-            (
-                await db.execute(
-                    select(Instance)
-                    .where(Instance.chute_id == chute.chute_id)
-                    .options(selectinload(Instance.nodes))
-                )
-            )
-            .scalars()
-            .all()
+        instances_with_nodes = await db_scalars(
+            select(Instance)
+            .where(Instance.chute_id == chute.chute_id)
+            .options(selectinload(Instance.nodes))
         )
         instances_info = []
         for inst in instances_with_nodes:

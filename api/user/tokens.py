@@ -18,7 +18,7 @@ async def get_user_fingerprint_hash(user_id: str) -> str:
     """
     Load a user's fingerprint hash.
     """
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         user = (
             await session.execute(select(User).where(User.user_id == user_id))
         ).scalar_one_or_none()
@@ -76,7 +76,7 @@ async def get_user_from_token(token: str, request: Request) -> User:
             payload = jwt.decode(
                 token, hashlib.sha256(sign_str.encode()).hexdigest(), algorithms=["HS256"]
             )
-            async with get_session() as session:
+            async with get_session(readonly=True) as session:
                 return (
                     await session.execute(select(User).where(User.user_id == user_id))
                 ).scalar_one_or_none()

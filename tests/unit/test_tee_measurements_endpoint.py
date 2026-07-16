@@ -16,8 +16,10 @@ def _make_measurement(**overrides):
         version="1",
         name="8xh200",
         mrtd="A" * 96,
-        boot_rtmrs={"RTMR0": "B" * 96, "RTMR1": "C" * 96, "RTMR2": "D" * 96, "RTMR3": "E" * 96},
-        runtime_rtmrs={"RTMR0": "B" * 96, "RTMR1": "C" * 96, "RTMR2": "F" * 96, "RTMR3": "A" * 96},
+        rtmr0="B" * 96,
+        rtmr1="C" * 96,
+        rtmr2="D" * 96,
+        runtime_rtmr3="E" * 96,
         expected_gpus=["h200"],
         gpu_count=8,
     )
@@ -68,6 +70,20 @@ async def test_measurement_fields_are_correct(mock_settings):
     assert r.expected_gpus == ["h200"]
     assert r.gpu_count == 8
     assert isinstance(r.gpu_count, int)
+
+
+@pytest.mark.asyncio
+@patch("api.server.router.settings")
+async def test_rc_measurements_are_excluded(mock_settings):
+    published = _make_measurement(name="8xh200", version="1.3.0", rc=False)
+    candidate = _make_measurement(name="8xh200", version="1.3.1", rc=True)
+    mock_settings.tee_measurements = [published, candidate]
+    mock_settings.redis_client.get = AsyncMock(return_value=None)
+    mock_settings.redis_client.set = AsyncMock()
+
+    result = await get_tee_measurements()
+
+    assert [r.version for r in result] == ["1.3.0"]
 
 
 @pytest.mark.asyncio

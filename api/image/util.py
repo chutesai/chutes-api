@@ -36,7 +36,7 @@ async def get_image_by_id_or_name(image_id_or_name, db, current_user):
 
 
 async def get_inspecto_hash(image_id: str):
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         return (
             (await session.execute(select(Image.inspecto).where(Image.image_id == image_id)))
             .unique()

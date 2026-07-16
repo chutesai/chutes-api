@@ -4,7 +4,7 @@ Uses plain HGETALL/HSET instead of lua scripts to avoid evalsha timeouts.
 """
 
 import time
-from api.instance.util import cm_redis_shard
+from api.config import settings
 
 
 class AdaptiveEMA:
@@ -26,7 +26,7 @@ class AdaptiveEMA:
         """
         Update the adaptive EMA metrics using plain HGETALL + HSET.
         """
-        client = cm_redis_shard(key)
+        client = settings.cm_redis_client
         redis_key = f"{self.key_prefix}:{key}"
         current_time = time.time()
 
@@ -80,7 +80,7 @@ class AdaptiveEMA:
         """
         Get current state information.
         """
-        client = cm_redis_shard(key)
+        client = settings.cm_redis_client
         data = await client.hgetall(f"{self.key_prefix}:{key}")
         if not data:
             return None

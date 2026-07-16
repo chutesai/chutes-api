@@ -25,7 +25,6 @@ from api.server.service import (
     update_server_name,
     get_server_attestation_status,
     delete_server,
-    process_luks_passphrase_request,
 )
 from api.server.util import (
     get_default_root_passphrase,
@@ -67,18 +66,10 @@ def _tee_measurements_for_service_tests():
             version="1",
             mrtd="a" * 96,
             name="test",
-            boot_rtmrs={
-                "RTMR0": "b" * 96,
-                "RTMR1": "c" * 96,
-                "RTMR2": "d" * 96,
-                "RTMR3": "e" * 96,
-            },
-            runtime_rtmrs={
-                "RTMR0": "d" * 96,
-                "RTMR1": "e" * 96,
-                "RTMR2": "f" * 96,
-                "RTMR3": "0" * 96,
-            },
+            rtmr0="b" * 96,
+            rtmr1="c" * 96,
+            rtmr2="d" * 96,
+            runtime_rtmr3="e" * 96,
             expected_gpus=["h200"],
             gpu_count=None,  # allow any count in unit tests
         ),
@@ -104,6 +95,7 @@ def mock_settings(mock_redis_client):
     settings.luks_passphrase = "test_luks_passphrase"
     # Provide a real Fernet cipher so encrypt_passphrase/decrypt_passphrase work in tests.
     settings.fernet_key = Fernet(Fernet.generate_key())
+    settings.tee_minimum_boot_version = "0.0.0"
 
     with (
         patch("api.server.service.settings", settings),
@@ -169,7 +161,7 @@ def sample_boot_quote():
         rtmr0="b" * 96,
         rtmr1="c" * 96,
         rtmr2="d" * 96,
-        rtmr3="e" * 96,
+        rtmr3="0" * 96,
         report_data=None,
         user_data="746573745f6e6f6e63655f31323300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # TEST_NONCE
         platform_id="0" * 32,
@@ -187,10 +179,10 @@ def sample_runtime_quote():
         att_key_type=2,
         tee_type=0x81,
         mrtd="a" * 96,
-        rtmr0="d" * 96,
-        rtmr1="e" * 96,
-        rtmr2="f" * 96,
-        rtmr3="0" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
         report_data=None,
         user_data="72756e74696d655f6e6f6e63655f34353600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # runtime_nonce_456
         platform_id="0" * 32,
@@ -202,13 +194,13 @@ def sample_runtime_quote():
 
 @pytest.fixture
 def sample_verification_result():
-    """Sample TdxVerificationResult for testing."""
+    """Sample TdxVerificationResult for testing (matches sample_boot_quote)."""
     return TdxVerificationResult(
         mrtd="a" * 96,
         rtmr0="b" * 96,
         rtmr1="c" * 96,
         rtmr2="d" * 96,
-        rtmr3="e" * 96,
+        rtmr3="0" * 96,
         user_data="test_data",
         parsed_at=datetime.now(timezone.utc),
         status="UpToDate",
@@ -496,8 +488,8 @@ async def test_process_boot_attestation_success(
 
         with (
             patch(
-                "api.server.service.generate_and_store_boot_token",
-                return_value="test-boot-token",
+                "api.server.service.generate_luks_quote_nonce",
+                return_value="test-luks-nonce",
             ),
             patch(
                 "api.server.service._handle_boot_version_update",
@@ -523,7 +515,7 @@ async def test_process_boot_attestation_success(
             )
 
         assert isinstance(result, BootAttestationResult)
-        assert result.boot_token == "test-boot-token"
+        assert result.luks_quote_nonce == "test-luks-nonce"
         assert result.root_key == "test_root_key"
         assert result.root_next is None
         assert result.root_confirm_nonce is None
@@ -896,45 +888,6 @@ async def test_update_server_name_conflict(mock_db_session, sample_server):
     mock_db_session.rollback.assert_called_once()
 
 
-# LUKS passphrase tests
-
-
-@pytest.mark.asyncio
-async def test_sync_luks_passphrase(mock_db_session, mock_redis_client):
-    """Test POST LUKS sync: validates token, calls sync_server_luks_passphrases, consumes token."""
-    boot_token = "test-boot-token"
-    hotkey = "5FTestHotkey123"
-    vm_name = "test-vm"
-    volume_names = ["storage", "cache"]
-    rekey = ["cache"]
-
-    with (
-        patch(
-            "api.server.service._validate_boot_token_for_luks",
-            new_callable=AsyncMock,
-        ),
-        patch(
-            "api.server.service.sync_server_luks_passphrases",
-            AsyncMock(return_value={"storage": "pass1", "cache": "pass2_new"}),
-        ) as mock_sync,
-        patch("api.server.service.settings") as mock_settings,
-    ):
-        mock_settings.redis_client.delete = AsyncMock(return_value=1)
-        result = await process_luks_passphrase_request(
-            mock_db_session,
-            boot_token,
-            hotkey,
-            vm_name,
-            volume_names,
-            rekey_volume_names=rekey,
-        )
-        assert result == {"storage": "pass1", "cache": "pass2_new"}
-        mock_sync.assert_called_once_with(
-            mock_db_session, hotkey, vm_name, volume_names, rekey_volume_names=rekey
-        )
-        mock_settings.redis_client.delete.assert_called_once()
-
-
 # Edge Cases and Error Handling Tests
 
 
@@ -1019,7 +972,7 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
         rtmr0="b" * 96,
         rtmr1="c" * 96,
         rtmr2="d" * 96,
-        rtmr3="e" * 96,
+        rtmr3="0" * 96,
         report_data=None,
         user_data="626f6f745f6e6f6e63655f31323300000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # boot_nonce_123
         platform_id="0" * 32,
@@ -1042,7 +995,7 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
                 rtmr0="b" * 96,
                 rtmr1="c" * 96,
                 rtmr2="d" * 96,
-                rtmr3="e" * 96,
+                rtmr3="0" * 96,
                 user_data="test",
                 parsed_at=datetime.now(timezone.utc),
                 status="UpToDate",
@@ -1061,8 +1014,8 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
 
             with (
                 patch(
-                    "api.server.service.generate_and_store_boot_token",
-                    return_value="test-boot-token",
+                    "api.server.service.generate_luks_quote_nonce",
+                    return_value="test-luks-nonce",
                 ),
                 patch(
                     "api.server.service._handle_boot_version_update",
@@ -1088,7 +1041,7 @@ async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_ve
                 )
 
             assert isinstance(result, BootAttestationResult)
-            assert result.boot_token == "test-boot-token"
+            assert result.luks_quote_nonce == "test-luks-nonce"
             assert result.root_key == "test_root_key"
             assert result.vm_auth_ss58 == "5EphemeralSS58TestAddress"
 
@@ -1115,10 +1068,10 @@ async def test_full_runtime_flow_end_to_end(
         att_key_type=2,
         tee_type=0x81,
         mrtd="a" * 96,
-        rtmr0="d" * 96,
-        rtmr1="e" * 96,
-        rtmr2="f" * 96,
-        rtmr3="0" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
         report_data=None,
         user_data="72756e74696d655f6e6f6e63655f34353600000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",  # runtime_nonce_456
         platform_id="0" * 32,
@@ -1134,10 +1087,10 @@ async def test_full_runtime_flow_end_to_end(
             with patch("api.server.util.verify_quote_signature") as mock_verify:
                 mock_verify.return_value = TdxVerificationResult(
                     mrtd="a" * 96,
-                    rtmr0="d" * 96,
-                    rtmr1="e" * 96,
-                    rtmr2="f" * 96,
-                    rtmr3="0" * 96,
+                    rtmr0="b" * 96,
+                    rtmr1="c" * 96,
+                    rtmr2="d" * 96,
+                    rtmr3="e" * 96,
                     user_data="test",
                     parsed_at=datetime.now(timezone.utc),
                     status="UpToDate",
@@ -1279,7 +1232,7 @@ async def test_boot_attestation_returns_vm_auth_ss58(
     mock_verify_measurements,
     mock_validate_nonce,
 ):
-    """Successful boot attestation returns vm_auth_ss58 in the 3-tuple response."""
+    """Successful boot attestation returns vm_auth_ss58 in the BootAttestationResult."""
     mock_keypair = Mock()
     mock_keypair.ss58_address = "5EphemeralSS58AddressHere"
 
@@ -1305,10 +1258,15 @@ async def test_boot_attestation_returns_vm_auth_ss58(
 
         with (
             patch(
-                "api.server.service.generate_and_store_boot_token",
-                return_value="token-abc",
+                "api.server.service.generate_luks_quote_nonce",
+                return_value="test-luks-nonce",
             ),
             patch("api.server.service._handle_boot_version_update", new_callable=AsyncMock),
+            patch(
+                "api.server.service.get_root_passphrase_for_boot",
+                new_callable=AsyncMock,
+                return_value=("test_root_key", None, None),
+            ),
             patch(
                 "api.server.service._generate_and_store_vm_auth_key",
                 new_callable=AsyncMock,
@@ -1323,10 +1281,9 @@ async def test_boot_attestation_returns_vm_auth_ss58(
                 TEST_CERT_HASH,
             )
 
-    boot_token, luks_quote_nonce, vm_auth_ss58 = result
-    assert boot_token == "token-abc"
-    assert luks_quote_nonce is None
-    assert vm_auth_ss58 == "5EphemeralSS58AddressHere"
+    assert isinstance(result, BootAttestationResult)
+    assert result.luks_quote_nonce == "test-luks-nonce"
+    assert result.vm_auth_ss58 == "5EphemeralSS58AddressHere"
 
 
 @pytest.mark.asyncio
@@ -1467,16 +1424,20 @@ async def test_multiple_nonce_operations_concurrent(mock_settings):
 
 @pytest.mark.asyncio
 async def test_verify_quote_boot_vs_runtime_different_settings(mock_settings):
-    """Test that boot and runtime quotes use different verification settings."""
+    """Boot and runtime quotes share RTMR0/1/2; only RTMR3 differs.
+
+    Boot RTMR3 is zeros, runtime RTMR3 is the configured runtime_rtmr3. Both
+    quotes verify against the same single config.
+    """
     boot_quote = BootTdxQuote(
         version=4,
         att_key_type=2,
         tee_type=0x81,
         mrtd="a" * 96,
-        rtmr0="boot_specific_rtmr0",
-        rtmr1="boot_specific_rtmr1",
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
         rtmr2="d" * 96,
-        rtmr3="e" * 96,
+        rtmr3="0" * 96,  # boot RTMR3 is always zeros
         report_data=None,
         user_data="test",
         platform_id="0" * 32,
@@ -1490,10 +1451,10 @@ async def test_verify_quote_boot_vs_runtime_different_settings(mock_settings):
         att_key_type=2,
         tee_type=0x81,
         mrtd="a" * 96,
-        rtmr0="runtime_specific_rtmr0",
-        rtmr1="runtime_specific_rtmr1",
-        rtmr2="h" * 96,
-        rtmr3="i" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,  # only RTMR3 differs from boot
         report_data=None,
         user_data="test",
         platform_id="0" * 32,
@@ -1507,18 +1468,10 @@ async def test_verify_quote_boot_vs_runtime_different_settings(mock_settings):
             version="1",
             mrtd="a" * 96,
             name="test",
-            boot_rtmrs={
-                "RTMR0": "boot_specific_rtmr0",
-                "RTMR1": "boot_specific_rtmr1",
-                "RTMR2": "d" * 96,
-                "RTMR3": "e" * 96,
-            },
-            runtime_rtmrs={
-                "RTMR0": "runtime_specific_rtmr0",
-                "RTMR1": "runtime_specific_rtmr1",
-                "RTMR2": "h" * 96,
-                "RTMR3": "i" * 96,
-            },
+            rtmr0="b" * 96,
+            rtmr1="c" * 96,
+            rtmr2="d" * 96,
+            runtime_rtmr3="e" * 96,
             expected_gpus=[],
             gpu_count=None,
         ),
@@ -1527,10 +1480,10 @@ async def test_verify_quote_boot_vs_runtime_different_settings(mock_settings):
     # DCAP result must match each quote for verify_result(); return matching result per call
     boot_dcap_result = TdxVerificationResult(
         mrtd="a" * 96,
-        rtmr0="boot_specific_rtmr0",
-        rtmr1="boot_specific_rtmr1",
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
         rtmr2="d" * 96,
-        rtmr3="e" * 96,
+        rtmr3="0" * 96,
         user_data="test",
         parsed_at=datetime.now(timezone.utc),
         status="UpToDate",
@@ -1539,10 +1492,10 @@ async def test_verify_quote_boot_vs_runtime_different_settings(mock_settings):
     )
     runtime_dcap_result = TdxVerificationResult(
         mrtd="a" * 96,
-        rtmr0="runtime_specific_rtmr0",
-        rtmr1="runtime_specific_rtmr1",
-        rtmr2="h" * 96,
-        rtmr3="i" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="e" * 96,
         user_data="test",
         parsed_at=datetime.now(timezone.utc),
         status="UpToDate",
@@ -2016,7 +1969,6 @@ async def test_process_boot_attestation_returns_root_rotation_fields(
         mock_db_session.refresh.side_effect = mock_refresh
 
         with (
-            patch("api.server.service.generate_and_store_boot_token", return_value="bt"),
             patch("api.server.service._handle_boot_version_update", new_callable=AsyncMock),
             patch(
                 "api.server.service.get_root_passphrase_for_boot",

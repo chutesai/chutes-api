@@ -5,18 +5,26 @@ metadata:
   name: bt-tx-tracker
   labels:
     {{- include "btTxTracker.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.btTxTracker.replicaCount | default 0 }}
   strategy:
     type: Recreate
   selector:
     matchLabels:
       {{- include "btTxTracker.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "btTxTracker.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.btTxTracker.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -25,20 +33,53 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.btTxTracker.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.btTxTracker.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       containers:
         - name: bt-tx-tracker
-          image: "{{ .Values.btTxTracker.image }}"
+          image: {{ include "chutes.image" (list . .Values.btTxTracker.image) | quote }}
           imagePullPolicy: {{ .Values.btTxTracker.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.payment.history_tracker:app", "--host", "0.0.0.0", "--port", "{{ .Values.btTxTracker.service.targetPort }}"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - uvicorn
+            - api.payment.history_tracker:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.btTxTracker.service.targetPort | quote }}
           env:
-            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
-            {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: "/etc/redis-cacert/cacert.pem"
+            {{- end }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
             - name: SUBTENSOR_ADDRESS
-              value: {{ .Values.btTxTracker.subtensor }}
+              value: {{ .Values.btTxTracker.subtensor | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.btTxTracker.service.targetPort }}
@@ -47,20 +88,20 @@ spec:
             httpGet:
               path: /status
               port: http
-            initialDelaySeconds: {{ .Values.btTxTracker.livenessProbe.initialDelaySeconds | default 30 }}
-            periodSeconds: {{ .Values.btTxTracker.livenessProbe.periodSeconds | default 10 }}
-            timeoutSeconds: {{ .Values.btTxTracker.livenessProbe.timeoutSeconds | default 5 }}
-            successThreshold: {{ .Values.btTxTracker.livenessProbe.successThreshold | default 1 }}
-            failureThreshold: {{ .Values.btTxTracker.livenessProbe.failureThreshold | default 3 }}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 15
           readinessProbe:
             httpGet:
               path: /status
               port: http
-            initialDelaySeconds: {{ .Values.btTxTracker.readinessProbe.initialDelaySeconds | default 10 }}
-            periodSeconds: {{ .Values.btTxTracker.readinessProbe.periodSeconds | default 10 }}
-            timeoutSeconds: {{ .Values.btTxTracker.readinessProbe.timeoutSeconds | default 5 }}
-            successThreshold: {{ .Values.btTxTracker.readinessProbe.successThreshold | default 1 }}
-            failureThreshold: {{ .Values.btTxTracker.readinessProbe.failureThreshold | default 3 }}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            successThreshold: 1
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.btTxTracker.resources | nindent 12 }}
 {{- end }}

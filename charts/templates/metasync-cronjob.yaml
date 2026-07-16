@@ -2,55 +2,52 @@
 apiVersion: batch/v1
 kind: CronJob
 metadata:
-  name: metasync
+  name: metagraph-syncer
   labels:
     {{- include "metasync.labels" . | nindent 4 }}
 spec:
-  schedule: "*/3 * * * *"
+  schedule: {{ .Values.metasync.schedule | default "*/3 * * * *" | quote }}
+  suspend: {{ .Values.metasync.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: 10
+  failedJobsHistoryLimit: 10
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: 7200
-      activeDeadlineSeconds: 120
+      ttlSecondsAfterFinished: 15000
+      activeDeadlineSeconds: 900
       template:
         metadata:
           labels:
             {{- include "metasync.labels" . | nindent 12 }}
         spec:
           restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.metasync.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.metasync.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.metasync.affinity }}
-          affinity:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.metasync.tolerations }}
-          tolerations:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
           containers:
-            - name: metasync
-              image: "{{ .Values.metasync.image }}"
+            - name: metagraph-syncer
+              image: {{ include "chutes.image" (list . .Values.metasync.image) | quote }}
               imagePullPolicy: {{ .Values.metasync.imagePullPolicy }}
-              command: ["python", "metasync/sync_metagraph.py"]
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - metasync/sync_metagraph.py
               env:
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
                 - name: SUBTENSOR_ADDRESS
-                  value: {{ .Values.metasync.subtensor }}
-                - name: POSTGRESQL
-                  valueFrom:
-                    secretKeyRef:
-                      name: postgres-secret
-                      key: url
-                - name: REDIS_URL
-                  valueFrom:
-                    secretKeyRef:
-                      name: redis-secret
-                      key: url
+                  value: {{ .Values.metasync.subtensor | quote }}
               resources:
-                {{- toYaml .Values.metasync.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.metasync.resources | nindent 16 }}
 {{- end }}

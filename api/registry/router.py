@@ -2,7 +2,6 @@
 Registry authentication.
 """
 
-import pybase64 as base64
 from fastapi import Request, Response, APIRouter, Depends
 from api.user.schemas import User
 from api.user.service import get_current_user
@@ -21,8 +20,11 @@ async def registry_auth(
     ),
 ):
     """
-    Authentication registry/docker pull requests.
+    Authenticate registry/docker pull requests.
+
+    In the Depot proxy flow, this endpoint is called by nginx auth_request
+    to verify the miner's hotkey. It only needs to return 200 on success
+    (or 401 on failure via the dependency). The actual registry auth token
+    is obtained by nginx proxying to Depot's token endpoint.
     """
-    auth_string = base64.b64encode(f":{settings.registry_password}".encode())
-    response.headers["Authorization"] = f"Basic {auth_string}"
     return {"authenticated": True}

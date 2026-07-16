@@ -5,11 +5,13 @@ metadata:
   labels:
     {{- include "eventSocket.labels" . | nindent 4 }}
 spec:
-  type: NodePort
+  type: {{ .Values.eventSocket.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
-    - nodePort: {{ .Values.eventSocket.service.nodePort }}
-      port: {{ .Values.eventSocket.service.port }}
+    - port: {{ .Values.eventSocket.service.port }}
       targetPort: {{ .Values.eventSocket.service.targetPort }}
-      name: event-socket
+      protocol: TCP
+      name: http
   selector:
-    {{- include "eventSocket.labels" . | nindent 4 }}
+    app.kubernetes.io/name: event-socket

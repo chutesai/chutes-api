@@ -3,9 +3,10 @@ kind: CronJob
 metadata:
   name: chute-autoscaler-dryrun
   labels:
-    {{- include "chuteAutoscaler.labels" . | nindent 4 }}
+    {{- include "chuteAutoscalerDryrun.labels" . | nindent 4 }}
 spec:
-  schedule: "* * * * *"
+  schedule: {{ .Values.chuteAutoscaler.dryrunSchedule | default "*/2 * * * *" | quote }}
+  suspend: {{ .Values.chuteAutoscaler.dryrunSuspend | default false }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 10
   failedJobsHistoryLimit: 10
@@ -13,12 +14,20 @@ spec:
     spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 15000
+      activeDeadlineSeconds: 300
       template:
         metadata:
           labels:
-            {{- include "chuteAutoscaler.labels" . | nindent 12 }}
+            {{- include "chuteAutoscalerDryrun.labels" . | nindent 12 }}
         spec:
           restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.chuteAutoscaler.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.chuteAutoscaler.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
@@ -27,19 +36,25 @@ spec:
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.chuteAutoscaler.tolerations }}
-          tolerations:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+          volumes:
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
           containers:
             - name: chute-autoscaler-dryrun
-              image: "{{ .Values.chuteAutoscaler.image }}"
+              image: {{ include "chutes.image" (list . .Values.chuteAutoscaler.image) | quote }}
               imagePullPolicy: {{ .Values.chuteAutoscaler.imagePullPolicy }}
-              command: ["poetry", "run", "python", "chute_autoscaler.py", "--dry-run"]
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - chute_autoscaler.py
+                - --soft
               env:
-                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
-                {{- include "chutes.commonEnv" . | nindent 16 }}
-                - name: MEMCACHED
-                  value: memcached
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
+                - name: PROMETHEUS_URL
+                  value: {{ .Values.chuteAutoscaler.prometheusUrl | default "http://prometheus.chutes.svc.cluster.local:9090" | quote }}
+              volumeMounts:
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.chuteAutoscaler.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.chuteAutoscaler.resources | nindent 16 }}

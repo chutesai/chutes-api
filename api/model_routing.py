@@ -9,7 +9,7 @@ from api.config import settings
 from api.chute.schemas import Chute
 from api.chute.util import get_one
 from api.database import get_session
-from api.instance.util import load_chute_target_ids, cm_redis_shard
+from api.instance.util import load_chute_target_ids
 from api.metrics.perf import otps_tracker, ptps_tracker, ttft_tracker
 from api.model_alias.schemas import ModelAlias
 
@@ -55,7 +55,7 @@ async def get_user_alias(user_id: str, alias: str) -> list[str] | None:
             return None
         return json.loads(cached)
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             select(ModelAlias.chute_ids).where(
                 ModelAlias.user_id == user_id,
@@ -90,7 +90,7 @@ async def check_chute_availability(chute_id: str) -> bool:
     keys = [
         f"cc:{chute_id}:{iid.decode() if isinstance(iid, bytes) else iid}" for iid in instance_ids
     ]
-    values = await cm_redis_shard(chute_id).mget(keys)
+    values = await settings.cm_redis_client.mget(keys)
     for v in values:
         if int(v or 0) < concurrency:
             return True

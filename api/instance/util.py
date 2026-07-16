@@ -29,9 +29,14 @@ from api.instance.schemas import Instance, LaunchConfig
 from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
-from api.util import has_legacy_private_billing, notify_deleted, notify_job_deleted, semcomp
-from api.user.service import chutes_user_id
-from api.bounty.util import create_bounty_if_not_exists, get_bounty_amount, send_bounty_notification
+from api.util import notify_deleted, notify_job_deleted, semcomp
+from api.log import instance_logger, bound_logger, LifecycleEvent
+from api.bounty.util import (
+    create_bounty_if_not_exists,
+    get_bounty_amount,
+    send_bounty_notification,
+    bounty_lifetime_for,
+)
 from sqlalchemy.future import select
 from sqlalchemy import text, func
 from sqlalchemy.exc import MultipleResultsFound
@@ -66,7 +71,7 @@ async def load_chute_target_ids(chute_id: str, nonce: int) -> list[str]:
         .where(Instance.verified.is_(True))
         .where(Instance.chute_id == chute_id)
     )
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(query)
         instance_ids = [row[0] for row in result.all()]
         await settings.redis_client.set(cache_key, "|".join(instance_ids), ex=300)
@@ -108,7 +113,7 @@ async def load_chute_target(instance_id: str) -> Instance:
             joinedload(Instance.config),
         )
     )
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         instance = (await session.execute(query)).unique().scalar_one_or_none()
         if instance:
             # Warm up relationships for serialization
@@ -188,20 +193,12 @@ class _InstanceInfo:
         self.config_id = config_id
 
 
-def cm_redis_shard(chute_id: str):
-    """Get the sharded cm_redis client for a chute's connection counting.
-    Uses first 8 hex chars of the UUID for deterministic sharding
-    (Python's hash() is randomized per-process via PYTHONHASHSEED)."""
-    clients = settings.cm_redis_client
-    return clients[int(chute_id[:8], 16) % len(clients)]
-
-
 async def cleanup_instance_conn_tracking(chute_id: str, instance_id: str):
     """Remove a deleted instance from Redis connection tracking sets/keys."""
     try:
         # Enumeration key on primary redis.
         await settings.redis_client.client.srem(f"cc_inst:{chute_id}", instance_id)
-        await cm_redis_shard(chute_id).delete(f"cc:{chute_id}:{instance_id}")
+        await settings.cm_redis_client.delete(f"cc:{chute_id}:{instance_id}")
     except Exception as e:
         logger.warning(f"Failed to clean up connection tracking for {instance_id}: {e}")
 
@@ -299,6 +296,15 @@ async def disable_instance(
     if not acquired:
         return False
 
+    # Disable is a redis-state change (no ORM event), so log this lifecycle transition here, at the
+    # chokepoint where the disable is actually acquired.
+    bound_logger(
+        event=LifecycleEvent.INSTANCE_DISABLE,
+        instance_id=instance_id,
+        chute_id=chute_id,
+        miner_hotkey=miner_hotkey,
+    ).warning(f"instance disabled: {instance_id} (chute {chute_id}, miner {miner_hotkey})")
+
     # Sliding window: track each disable as a ZSET entry scored by timestamp.
     # Trim entries older than 1 hour, then count remaining.
     now = time.time()
@@ -371,6 +377,11 @@ async def start_instance_invalidation_listener():
     while True:
         pubsub = None
         try:
+            ssl_kwargs = {}
+            if settings.redis_cacert:
+                ssl_kwargs["ssl"] = True
+                ssl_kwargs["ssl_cert_reqs"] = "required"
+                ssl_kwargs["ssl_ca_certs"] = settings.redis_cacert
             client = aioredis.Redis(
                 host=settings.redis_host,
                 port=settings.redis_port,
@@ -380,6 +391,7 @@ async def start_instance_invalidation_listener():
                 socket_timeout=60,
                 socket_keepalive=True,
                 retry_on_timeout=True,
+                **ssl_kwargs,
             )
             pubsub = client.pubsub()
             await pubsub.subscribe("events")
@@ -432,8 +444,8 @@ class LeastConnManager:
     ):
         self.concurrency = concurrency or 1
         self.chute_id = chute_id
-        # Shard connection counting across cm_redis backends.
-        self.redis_client = cm_redis_shard(chute_id)
+        # Shard connection counting across cm_redis backend.
+        self.redis_client = settings.cm_redis_client
         self.instances = {instance.instance_id: instance for instance in instances}
         self.connection_expiry = connection_expiry
         self.mean_count = None
@@ -719,14 +731,9 @@ async def get_chute_target_manager(
     instances = await load_chute_targets(chute_id, nonce=nonce)
     started_at = time.time()
     while not instances:
-        # Private chutes have a very short-lived bounty, so users aren't billed if they stop making requests.
-        bounty_lifetime = 86400
-        if (
-            not chute.public
-            and not has_legacy_private_billing(chute)
-            and chute.user_id != await chutes_user_id()
-        ):
-            bounty_lifetime = 3600 if "/affine" not in chute.name.lower() else 7200
+        # Private chutes have a very short-lived bounty, so users aren't billed if they stop making
+        # requests. The warmup request->hot key uses this same value (see bounty_lifetime_for).
+        bounty_lifetime = await bounty_lifetime_for(chute)
 
         # Increase the bounty.
         if not no_bounty:
@@ -1125,6 +1132,13 @@ async def get_server_for_gpus(db, gpu_uuids: list[str]) -> Server | None:
 
 async def purge(target, reason, valid_termination=False):
     """Delete an instance from the database and clean up associated state."""
+    instance_logger(
+        target,
+        event=LifecycleEvent.INSTANCE_DELETE,
+        trigger="monitoring",
+        deletion_reason=reason,
+        valid_termination=valid_termination,
+    ).warning(f"purging instance {target.instance_id} (chute {target.chute_id}): {reason}")
     async with get_session() as session:
         await session.execute(
             text("DELETE FROM instances WHERE instance_id = :instance_id"),

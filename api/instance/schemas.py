@@ -3,6 +3,7 @@ ORM definitions for instances (deployments of chutes and/or inventory announceme
 """
 
 import secrets
+from loguru import logger
 from pydantic import BaseModel, Field, constr
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.sql import func
@@ -19,9 +20,12 @@ from sqlalchemy import (
     Numeric,
     Double,
     UniqueConstraint,
+    event,
 )
 from typing import Optional
 from api.database import Base, generate_uuid
+from api.metrics import launch_config as launch_config_metrics
+from api.log import instance_logger, launch_config_logger, LifecycleEvent
 
 # Association table.
 instance_nodes = Table(
@@ -190,3 +194,93 @@ class LaunchConfig(Base):
     job = relationship("Job", back_populates="launch_config")
 
     __table_args__ = (UniqueConstraint("job_id", name="uq_job_launch_config"),)
+
+
+# ---------------------------------------------------------------------------
+# Deployment lifecycle observability, driven entirely by ORM events on the models so the Prometheus
+# counters AND the structured logs stay in lock-step with the tables -- no call-site instrumentation
+# to keep in sync. Each lifecycle phase maps to a column transition:
+#   LaunchConfig:  created -> after_insert; retrieved/verified -> *_at set; failed -> verification_error set
+#   Instance:      created -> after_insert; activated -> activated_at set; deleted -> after_delete
+# These 'set'/insert/delete events fire only on Python-level ORM operations, NOT on load/refresh, so
+# reading an existing row never double-fires; each phase is reached at most once per row, so a simple
+# "value is not None" guard suffices. State changes done via raw SQL (for DB-performance reasons)
+# bypass these events -- instance verification (_mark_instance_verified), raw-SQL deletes (purge,
+# chute bulk deletes), and the redis-based instance disable -- and are logged explicitly at those
+# chokepoints instead.
+# ---------------------------------------------------------------------------
+
+
+def _safe_metric(fn, *args):
+    """Run a metric update, never letting a metrics error break a deployment/verification path.
+
+    A failure here is not expected and points at a problem in the metrics layer itself, so log it
+    (WARNING) for visibility -- the stable "failed to record launch_config metric" prefix is a good
+    thing to alert on -- rather than swallowing it silently.
+    """
+    try:
+        fn(*args)
+    except Exception as exc:
+        logger.warning(
+            f"failed to record launch_config metric via {getattr(fn, '__name__', fn)!r}: {exc}"
+        )
+
+
+@event.listens_for(LaunchConfig, "after_insert")
+def _on_launch_config_created(mapper, connection, target):
+    _safe_metric(launch_config_metrics.track_attempt, target.chute_id)
+    launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_CREATE).info(
+        f"launch config created (deployment attempt): {target.config_id} (chute {target.chute_id})"
+    )
+
+
+@event.listens_for(LaunchConfig.retrieved_at, "set")
+def _on_launch_config_retrieved(target, value, oldvalue, initiator):
+    if value is not None:
+        _safe_metric(launch_config_metrics.track_retrieved, target.chute_id)
+        launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_RETRIEVE).info(
+            f"launch config retrieved by miner {target.miner_hotkey}: {target.config_id} "
+            f"(chute {target.chute_id})"
+        )
+
+
+@event.listens_for(LaunchConfig.verified_at, "set")
+def _on_launch_config_verified(target, value, oldvalue, initiator):
+    if value is not None:
+        _safe_metric(launch_config_metrics.track_verified, target.chute_id)
+        launch_config_logger(target, event=LifecycleEvent.LAUNCH_CONFIG_VERIFY).success(
+            f"launch config verified: {target.config_id} (chute {target.chute_id})"
+        )
+
+
+@event.listens_for(LaunchConfig.verification_error, "set")
+def _on_launch_config_failed(target, value, oldvalue, initiator):
+    if value is not None:
+        _safe_metric(launch_config_metrics.track_failure, target.chute_id, value)
+        launch_config_logger(
+            target, event=LifecycleEvent.LAUNCH_CONFIG_FAIL, verification_error=value
+        ).warning(
+            f"launch config verification failed: {target.config_id} (chute {target.chute_id}): {value}"
+        )
+
+
+@event.listens_for(Instance, "after_insert")
+def _on_instance_created(mapper, connection, target):
+    instance_logger(target, event=LifecycleEvent.INSTANCE_CREATE).info(
+        f"instance created: {target.instance_id} (chute {target.chute_id}, miner {target.miner_hotkey})"
+    )
+
+
+@event.listens_for(Instance.activated_at, "set")
+def _on_instance_activated(target, value, oldvalue, initiator):
+    if value is not None:
+        instance_logger(target, event=LifecycleEvent.INSTANCE_ACTIVATE).success(
+            f"instance activated: {target.instance_id} (chute {target.chute_id})"
+        )
+
+
+@event.listens_for(Instance, "after_delete")
+def _on_instance_deleted(mapper, connection, target):
+    instance_logger(target, event=LifecycleEvent.INSTANCE_DELETE).warning(
+        f"instance deleted: {target.instance_id} (chute {target.chute_id}, miner {target.miner_hotkey})"
+    )

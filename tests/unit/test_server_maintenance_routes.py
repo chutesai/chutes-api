@@ -6,7 +6,7 @@ matching the test style used elsewhere in this project.
 """
 
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi import HTTPException
@@ -53,6 +53,14 @@ def _make_window(**overrides):
     return TeeUpgradeWindow(**defaults)
 
 
+def _make_open_window(**overrides):
+    """A window whose bounds straddle the current time, so is_window_open() is True."""
+    now = datetime.now(timezone.utc)
+    overrides.setdefault("upgrade_window_start", now - timedelta(days=1))
+    overrides.setdefault("upgrade_window_end", now + timedelta(days=1))
+    return _make_window(**overrides)
+
+
 def _make_server(**overrides):
     defaults = dict(
         server_id=TEST_SERVER_ID,
@@ -83,30 +91,52 @@ def _mock_scalars_result(rows):
 
 @pytest.mark.asyncio
 @patch("api.server.router._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
-@patch("api.server.router.get_active_upgrade_window", new_callable=AsyncMock)
-async def test_policy_returns_active_window(mock_get_window, _mock_slots):
-    window = _make_window()
-    mock_get_window.return_value = window
+@patch("api.server.router.get_latest_upgrade_window", new_callable=AsyncMock)
+async def test_policy_returns_open_window(mock_latest, _mock_slots):
+    mock_latest.return_value = _make_open_window()
 
     db = AsyncMock()
     db.execute.return_value = _mock_scalars_result([])
 
     result = await get_maintenance_policy(db=db, hotkey=TEST_HOTKEY, _=None)
     assert isinstance(result, MaintenancePolicyResponse)
+    assert result.window_open is True
     assert result.active_window is not None
     assert result.active_window.id == TEST_WINDOW_ID
     assert result.active_window.max_concurrent_per_miner == DEFAULT_CONCURRENCY_LIMIT
 
 
 @pytest.mark.asyncio
-@patch("api.server.router.get_active_upgrade_window", new_callable=AsyncMock, return_value=None)
-async def test_policy_returns_null_when_no_window(mock_get_window):
+@patch("api.server.router.get_latest_upgrade_window", new_callable=AsyncMock, return_value=None)
+async def test_policy_returns_null_when_no_window(_mock_latest):
     db = AsyncMock()
 
     result = await get_maintenance_policy(db=db, hotkey=TEST_HOTKEY, _=None)
     assert result.active_window is None
+    assert result.window_open is False
     assert result.current_slots == 0
-    assert result.pending_servers == []
+    assert result.servers == []
+
+
+@pytest.mark.asyncio
+@patch("api.server.router._count_active_maintenance_slots", new_callable=AsyncMock, return_value=0)
+@patch("api.server.router.get_latest_upgrade_window", new_callable=AsyncMock)
+async def test_policy_falls_back_to_latest_window_when_closed(mock_latest, _mock_slots):
+    """Latest window is closed -> still report it with window_open=False and server status."""
+    # Default _make_window() is dated in the past, so is_window_open() is False.
+    mock_latest.return_value = _make_window()
+
+    out_of_date_server = _make_server(version=TEST_VERSION_OLD)
+    db = AsyncMock()
+    db.execute.return_value = _mock_scalars_result([out_of_date_server])
+
+    result = await get_maintenance_policy(db=db, hotkey=TEST_HOTKEY, _=None)
+    assert result.window_open is False
+    assert result.active_window is not None
+    assert result.active_window.id == TEST_WINDOW_ID
+    assert len(result.servers) == 1
+    assert result.servers[0].server_id == TEST_SERVER_ID
+    assert result.servers[0].needs_upgrade is True
 
 
 @pytest.mark.asyncio
@@ -119,10 +149,9 @@ async def test_policy_rejects_missing_hotkey():
 
 @pytest.mark.asyncio
 @patch("api.server.router._count_active_maintenance_slots", new_callable=AsyncMock, return_value=1)
-@patch("api.server.router.get_active_upgrade_window", new_callable=AsyncMock)
-async def test_policy_includes_pending_servers(mock_get_window, _mock_slots):
-    window = _make_window()
-    mock_get_window.return_value = window
+@patch("api.server.router.get_latest_upgrade_window", new_callable=AsyncMock)
+async def test_policy_includes_pending_servers(mock_latest, _mock_slots):
+    mock_latest.return_value = _make_open_window()
 
     pending_server = _make_server(
         maintenance_pending_window_id=TEST_WINDOW_ID,
@@ -133,10 +162,11 @@ async def test_policy_includes_pending_servers(mock_get_window, _mock_slots):
 
     result = await get_maintenance_policy(db=db, hotkey=TEST_HOTKEY, _=None)
     assert result.current_slots == 1
-    assert len(result.pending_servers) == 1
-    assert result.pending_servers[0].server_id == TEST_SERVER_ID
-    assert result.pending_servers[0].version == TEST_VERSION_OLD
-    assert result.pending_servers[0].target_version == TEST_VERSION_TARGET
+    assert len(result.servers) == 1
+    assert result.servers[0].server_id == TEST_SERVER_ID
+    assert result.servers[0].version == TEST_VERSION_OLD
+    assert result.servers[0].needs_upgrade is True
+    assert result.servers[0].in_maintenance is True
 
 
 # ---------------------------------------------------------------------------

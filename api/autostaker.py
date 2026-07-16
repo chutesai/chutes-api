@@ -55,8 +55,8 @@ async def get_mev_shield_next_key(substrate: AsyncSubstrateInterface) -> Optiona
             storage_function="NextKey",
             params=[],
         )
-        if result and result.value:
-            value = result.value
+        if result and result:
+            value = result.value if hasattr(result, "value") else result
             # Handle tuple format (key_bytes, round_number)
             if isinstance(value, (tuple, list)):
                 value = value[0]
@@ -298,8 +298,10 @@ async def get_alpha_stake(
             [hotkey_address, coldkey_address, netuid],
             block_hash=block_hash,
         )
-        if result and result.value and "stake" in result.value:
-            return int(result.value["stake"])
+        if result:
+            data = result.value if hasattr(result, "value") else result
+            if isinstance(data, dict) and "stake" in data:
+                return int(data["stake"])
     except Exception as e:
         logger.warning(f"Could not get alpha stake via runtime API: {e}")
 
@@ -619,7 +621,7 @@ async def reconcile_and_process_stake(
         existential_deposit = (
             (int(getattr(result, "value", 0)) + TX_FEE_BUFFER_RAO) if result else TX_FEE_BUFFER_RAO
         )
-        available_balance = max(0, chain_balance - existential_deposit)
+        available_balance = max(0, int(chain_balance) - existential_deposit)
 
         # If chain has no balance, we're done (regardless of what DB says)
         if available_balance <= 0:

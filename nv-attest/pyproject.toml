@@ -11,9 +11,9 @@ license="MIT"
 
 [tool.poetry.dependencies]
 python = ">=3.12,<4.0"
-nv-attestation-sdk = "^2.6.2"
-nv-local-gpu-verifier = "^2.6.2"
-nv-ppcie-verifier = "^1.6.3"
+nv-attestation-sdk = "^2.7.0"
+nv-local-gpu-verifier = "^2.7.0"
+nv-ppcie-verifier = "^1.7.0"
 typer = "^0.17.4"
 
 [tool.poetry.group.dev.dependencies]

@@ -15,7 +15,7 @@ import redis.asyncio as redis
 from redis.retry import Retry
 from redis.backoff import ConstantBackoff
 from boto3.session import Config
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 from bittensor_wallet.keypair import Keypair
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,17 +35,56 @@ def load_launch_config_private_key():
     return None
 
 
+# Boot RTMR3 is always all-zeros: it cannot be extended until runtime (after the
+# boot process unlocks the root volume), so it is a constant rather than configured.
+ZERO_RTMR = "0" * 96
+
+
 @dataclass
 class TeeMeasurementConfig:
-    """Configuration for allowed measurements for a TEE VM."""
+    """Configuration for allowed measurements for a single TEE VM version + hardware variant.
+
+    RTMR0/RTMR1/RTMR2 are identical between boot and runtime; boot RTMR3 is always zero.
+    MRTD/RTMR1/RTMR2 and runtime RTMR3 are shared across hardware for a given version
+    (firmware, kernel/initrd, and guest measurements); only RTMR0 varies per hardware
+    (GPU topology). The verbose boot_rtmrs/runtime_rtmrs dicts consumed elsewhere are
+    derived from these scalar fields.
+
+    rc marks a release-candidate / actively-tested version: it is still accepted for
+    attestation, but is excluded from the public GET /tee/measurements endpoint and from
+    the tee_minimum_boot_version fallback so it does not affect released VMs.
+    """
 
     version: str
-    mrtd: str
     name: str
-    boot_rtmrs: Dict[str, str]
-    runtime_rtmrs: Dict[str, str]
+    mrtd: str  # shared across hardware for this version
+    rtmr0: str  # per-hardware (GPU topology)
+    rtmr1: str  # shared across hardware for this version
+    rtmr2: str  # shared across hardware for this version
+    runtime_rtmr3: str  # shared across hardware; runtime-only (boot RTMR3 is zero)
     expected_gpus: List[str]
     gpu_count: Optional[int] = None
+    rc: bool = False  # release candidate / in-test: attestable but unpublished
+
+    @property
+    def boot_rtmrs(self) -> Dict[str, str]:
+        """RTMRs expected in a boot quote (RTMR3 is never extended before runtime)."""
+        return {
+            "RTMR0": self.rtmr0,
+            "RTMR1": self.rtmr1,
+            "RTMR2": self.rtmr2,
+            "RTMR3": ZERO_RTMR,
+        }
+
+    @property
+    def runtime_rtmrs(self) -> Dict[str, str]:
+        """RTMRs expected in a runtime quote."""
+        return {
+            "RTMR0": self.rtmr0,
+            "RTMR1": self.rtmr1,
+            "RTMR2": self.rtmr2,
+            "RTMR3": self.runtime_rtmr3,
+        }
 
 
 class Settings(BaseSettings):
@@ -98,17 +137,12 @@ class Settings(BaseSettings):
     )
     postgres_ro: Optional[str] = os.getenv("POSTGRESQL_RO")
 
-    # Invocations database.
-    invocations_db_url: Optional[str] = os.getenv(
-        "INVOCATIONS_DB_URL",
-        os.getenv("POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"),
-    )
-
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "REPLACEME")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "REPLACEME")
     aws_endpoint_url: Optional[str] = os.getenv("AWS_ENDPOINT_URL", "http://minio:9000")
     aws_region: str = os.getenv("AWS_REGION", "local")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "chutes")
+    s3_proxy_url: Optional[str] = os.getenv("S3_PROXY_URL")
 
     @property
     def s3_session(self) -> aioboto3.Session:
@@ -125,7 +159,10 @@ class Settings(BaseSettings):
         async with session.client(
             "s3",
             endpoint_url=self.aws_endpoint_url,
-            config=Config(signature_version="s3v4"),
+            config=Config(
+                signature_version="s3v4",
+                proxies={"https": self.s3_proxy_url} if self.s3_proxy_url else None,
+            ),
         ) as client:
             yield client
 
@@ -139,11 +176,11 @@ class Settings(BaseSettings):
 
     # Base redis settings.
     redis_host: str = Field(
-        default_factory=lambda: os.getenv("HOST_IP", "172.16.0.100"),
+        default_factory=lambda: os.getenv("REDIS_HOST", "172.16.0.100"),
         validation_alias="PRIMARY_REDIS_HOST",
     )
     redis_port: int = Field(
-        default=1600,
+        default_factory=lambda: int(os.getenv("REDIS_PORT", "6378")),
         validation_alias="PRIMARY_REDIS_PORT",
     )
     redis_password: str = str(os.getenv("REDIS_PASSWORD", "password"))
@@ -154,19 +191,22 @@ class Settings(BaseSettings):
     redis_op_timeout: float = float(
         os.getenv("REDIS_OP_TIMEOUT", os.getenv("REDIS_SOCKET_TIMEOUT", "2.5"))
     )
+    redis_cacert: Optional[str] = os.getenv("REDIS_CACERT")
 
     _redis_client: Optional[redis.Redis] = None
     _lite_redis_client: Optional[redis.Redis] = None
     _billing_redis_client: Optional[redis.Redis] = None
-    _cm_redis_clients: Optional[list[redis.Redis]] = None
-    cm_redis_shard_count: int = int(os.getenv("CM_REDIS_SHARD_COUNT", "6"))
-    cm_redis_start_port: int = int(os.getenv("CM_REDIS_START_PORT", "1700"))
-    cm_redis_socket_timeout: float = float(os.getenv("CM_REDIS_SOCKET_TIMEOUT", "30.0"))
-    cm_redis_op_timeout: float = float(os.getenv("CM_REDIS_OP_TIMEOUT", "2.5"))
+    _cm_redis_client: Optional[redis.Redis] = None
 
     @property
     def redis_url(self) -> str:
-        return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        scheme = "rediss" if self.redis_cacert else "redis"
+        base = (
+            f"{scheme}://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        )
+        if self.redis_cacert:
+            return f"{base}?ssl_cert_reqs=required&ssl_ca_certs={self.redis_cacert}"
+        return base
 
     @property
     def redis_client(self) -> redis.Redis:
@@ -184,6 +224,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
             )
         return self._redis_client
 
@@ -203,6 +244,7 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
             )
         return self._lite_redis_client
 
@@ -222,30 +264,29 @@ class Settings(BaseSettings):
                 health_check_interval=30,
                 retry_on_timeout=True,
                 retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
             )
         return self._billing_redis_client
 
     @property
-    def cm_redis_client(self) -> list[redis.Redis]:
-        if self._cm_redis_clients is None:
-            self._cm_redis_clients = [
-                SafeRedis(
-                    host=self.redis_host,
-                    port=self.cm_redis_start_port + idx,
-                    db=self.redis_db,
-                    password=self.redis_password,
-                    socket_connect_timeout=self.redis_connect_timeout,
-                    socket_timeout=self.cm_redis_socket_timeout,
-                    op_timeout=self.cm_redis_op_timeout,
-                    max_connections=self.redis_max_connections,
-                    socket_keepalive=True,
-                    health_check_interval=30,
-                    retry_on_timeout=True,
-                    retry=Retry(ConstantBackoff(0.5), 2),
-                )
-                for idx in range(self.cm_redis_shard_count)
-            ]
-        return self._cm_redis_clients
+    def cm_redis_client(self) -> redis.Redis:
+        if self._cm_redis_client is None:
+            self._cm_redis_client = SafeRedis(
+                host=self.redis_host,
+                port=self.redis_port,
+                db=self.redis_db + 3,
+                password=self.redis_password,
+                socket_connect_timeout=self.redis_connect_timeout,
+                socket_timeout=self.redis_socket_timeout,
+                op_timeout=self.redis_op_timeout,
+                max_connections=self.redis_max_connections,
+                socket_keepalive=True,
+                health_check_interval=30,
+                retry_on_timeout=True,
+                retry=Retry(ConstantBackoff(0.5), 2),
+                ssl_ca_certs=self.redis_cacert,
+            )
+        return self._cm_redis_client
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
@@ -323,6 +364,13 @@ class Settings(BaseSettings):
     # Auto stake amount when DCAing into alpha after receiving payments.
     autostake_amount: float = float(os.getenv("AUTOSTAKE_AMOUNT", "10.0"))
 
+    # Depot.dev settings (remote image building).
+    depot_token: str = os.getenv("DEPOT_TOKEN", "")
+    depot_project_id: str = os.getenv("DEPOT_PROJECT_ID", "")
+    depot_registry: str = os.getenv("DEPOT_REGISTRY", "")
+    depot_registry_token: str = os.getenv("DEPOT_REGISTRY_TOKEN", "")
+    depot_registry_rw_token: str = os.getenv("DEPOT_REGISTRY_RW_TOKEN", "")
+
     # Cosign Settings
     cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")
     cosign_key: Optional[Path] = Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
@@ -352,63 +400,70 @@ class Settings(BaseSettings):
             logger.error(f"Failed to load TEE measurement config: {e}")
             return []
 
+        def _hex96(value: str, field_name: str, owner: str) -> str:
+            """Upper-case/strip a hex measurement and validate it is 96 chars."""
+            cleaned = str(value).upper().strip()
+            if len(cleaned) != 96:
+                raise ValueError(
+                    f"Invalid {field_name} length for measurement config '{owner}': "
+                    f"{len(cleaned)} chars (expected 96)."
+                )
+            return cleaned
+
         measurements: List[TeeMeasurementConfig] = []
-        for measurement_config in config.get("measurements", []):
-            config_name = measurement_config.get("name", "unnamed")
-            version = measurement_config.get("version")
+        for version_config in config.get("measurements", []):
+            version = version_config.get("version")
             if not version or not str(version).strip():
                 error_msg = (
-                    f"Missing or empty 'version' for measurement config '{config_name}'. "
+                    "Missing or empty 'version' for a measurement config. "
                     "Each measurement configuration must have a version."
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
+            version = str(version).strip()
 
-            rtmr0_upper = measurement_config["boot_rtmrs"]["rtmr0"].upper().strip()
-            if len(rtmr0_upper) != 96:
+            # MRTD/RTMR1/RTMR2 and runtime RTMR3 are shared across all hardware variants for
+            # a version (firmware, kernel/initrd, and guest measurements). Only RTMR0 varies
+            # per hardware (GPU topology). Boot RTMR3 is always zero (set on the config props).
+            mrtd = _hex96(version_config["mrtd"], "MRTD", version)
+            rtmr1 = _hex96(version_config["rtmr1"], "RTMR1", version)
+            rtmr2 = _hex96(version_config["rtmr2"], "RTMR2", version)
+            runtime_rtmr3 = _hex96(version_config["runtime_rtmr3"], "runtime RTMR3", version)
+            rc = bool(version_config.get("rc", False))
+
+            hardware = version_config.get("hardware") or []
+            if not hardware:
                 raise ValueError(
-                    f"Invalid RTMR0 length for measurement config '{config_name}': "
-                    f"{len(rtmr0_upper)} chars (expected 96)."
+                    f"Measurement config version '{version}' must define at least one "
+                    "'hardware' variant."
                 )
 
-            mrtd_upper = measurement_config["mrtd"].upper().strip()
-            if len(mrtd_upper) != 96:
-                raise ValueError(
-                    f"Invalid MRTD length for measurement config '{config_name}': "
-                    f"{len(mrtd_upper)} chars (expected 96)."
-                )
+            for hw in hardware:
+                hw_name = hw.get("name", "unnamed")
+                owner = f"{version}/{hw_name}"
+                rtmr0 = _hex96(hw["rtmr0"], "RTMR0", owner)
 
-            boot_rtmrs = {
-                k.upper(): v.upper().strip() for k, v in measurement_config["boot_rtmrs"].items()
-            }
-            runtime_rtmrs = {
-                k.upper(): v.upper().strip() for k, v in measurement_config["runtime_rtmrs"].items()
-            }
+                gpu_count = hw.get("gpu_count")
+                if gpu_count is None:
+                    raise ValueError(
+                        f"Missing 'gpu_count' for measurement config '{owner}'. "
+                        "All TEE measurement hardware variants must specify gpu_count."
+                    )
 
-            if boot_rtmrs.get("RTMR0") != runtime_rtmrs.get("RTMR0"):
-                logger.warning(
-                    f"RTMR0 mismatch between boot and runtime for measurement config {config_name}. "
-                    "This is unexpected - RTMR0 should be the same (ACPI tables don't change)."
+                measurements.append(
+                    TeeMeasurementConfig(
+                        version=version,
+                        name=hw_name,
+                        mrtd=mrtd,
+                        rtmr0=rtmr0,
+                        rtmr1=rtmr1,
+                        rtmr2=rtmr2,
+                        runtime_rtmr3=runtime_rtmr3,
+                        expected_gpus=[gpu.lower() for gpu in hw["expected_gpus"]],
+                        gpu_count=gpu_count,
+                        rc=rc,
+                    )
                 )
-
-            gpu_count = measurement_config.get("gpu_count")
-            if gpu_count is None:
-                raise ValueError(
-                    f"Missing 'gpu_count' for measurement config '{config_name}'. "
-                    "All TEE measurement configs must specify gpu_count."
-                )
-
-            measurements.append(
-                TeeMeasurementConfig(
-                    version=str(version).strip(),
-                    mrtd=mrtd_upper,
-                    name=measurement_config["name"],
-                    boot_rtmrs=boot_rtmrs,
-                    runtime_rtmrs=runtime_rtmrs,
-                    expected_gpus=[gpu.lower() for gpu in measurement_config["expected_gpus"]],
-                    gpu_count=gpu_count,
-                )
-            )
 
         logger.info(f"Loaded {len(measurements)} TEE measurement configurations")
         return measurements
@@ -419,15 +474,18 @@ class Settings(BaseSettings):
 
         Returns TEE_MINIMUM_BOOT_VERSION when set, allowing new platform measurement
         configs to be added to the YAML incrementally without immediately enforcing a
-        version bump for platforms not yet upgraded.  Falls back to the highest version
-        found across all loaded measurement configs, or "0.0.0" if the config file is
-        not present (e.g. pods that don't mount the TEE measurements ConfigMap).
+        version bump for platforms not yet upgraded.  Falls back to the highest non-rc
+        version found across all loaded measurement configs, or "0.0.0" if the config file
+        is not present (e.g. pods that don't mount the TEE measurements ConfigMap).
+
+        Release-candidate (rc) versions are excluded so an in-test version does not raise
+        the minimum and lock out released VMs.
         """
         if pinned := os.getenv("TEE_MINIMUM_BOOT_VERSION"):
             return pinned
         if not self.tee_measurement_config_path.exists():
             return "0.0.0"
-        versions = [m.version for m in self.tee_measurements if m.version]
+        versions = [m.version for m in self.tee_measurements if m.version and not m.rc]
         if not versions:
             return "0.0.0"
         latest = versions[0]
@@ -440,7 +498,7 @@ class Settings(BaseSettings):
         os.getenv("SIGNING_KEYS_BUNDLE_PATH", "/etc/config/signing_keys_bundle.json")
     )
 
-    _REQUIRED_SIGNING_KEY_NAMES: frozenset = frozenset(
+    _REQUIRED_SIGNING_KEY_NAMES: ClassVar[frozenset] = frozenset(
         ["cosign/chutes.pub", "cosign/dockerhub.pub", "helm-pubkey.gpg"]
     )
 
@@ -474,11 +532,14 @@ class Settings(BaseSettings):
         missing_sigs = self._REQUIRED_SIGNING_KEY_NAMES - bundle["signatures"].keys()
         if missing_sigs:
             raise ValueError(f"signing_keys_bundle: missing required signatures: {missing_sigs}")
-        for name, value in {**bundle["keys"], **bundle["signatures"]}.items():
-            if not isinstance(value, str) or not value.strip():
-                raise ValueError(
-                    f"signing_keys_bundle: value for '{name}' must be a non-empty string"
-                )
+        # Validate keys and signatures separately: they share the same names, so
+        # merging them into one dict would let a valid signature mask an empty key.
+        for section in ("keys", "signatures"):
+            for name, value in bundle[section].items():
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"signing_keys_bundle: value for '{section}/{name}' must be a non-empty string"
+                    )
 
         logger.info(
             f"Signing keys bundle loaded from {self.signing_keys_bundle_path} "
@@ -498,6 +559,35 @@ class Settings(BaseSettings):
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
 
+    @cached_property
+    def luks_passphrases(self) -> Dict[str, str]:
+        """Root-volume LUKS passphrases keyed by measurement version.
+
+        Parsed from the LUKS_PASSPHRASES env var (a JSON object mapping version -> passphrase).
+        Each VM image bakes in a version-specific root-volume passphrase, so /boot/attestation
+        returns the passphrase matching the attested measurement version. There is no fallback:
+        every accepted version must have an entry.
+
+        Raises:
+            ValueError: If LUKS_PASSPHRASES is set but is not a non-empty {str: str} JSON object.
+        """
+        raw = os.getenv("LUKS_PASSPHRASES")
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"LUKS_PASSPHRASES must be valid JSON: {e}")
+        if not isinstance(parsed, dict) or not parsed:
+            raise ValueError(
+                "LUKS_PASSPHRASES must be a non-empty JSON object mapping version -> passphrase."
+            )
+        if not all(isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()):
+            raise ValueError(
+                "LUKS_PASSPHRASES must map string versions to non-empty string passphrases."
+            )
+        return parsed
+
     # TDX verification service URLs (if using Intel's remote verification)
     tdx_verification_url: Optional[str] = os.getenv("TDX_VERIFICATION_URL")
     tdx_cert_chain_url: Optional[str] = os.getenv("TDX_CERT_CHAIN_URL")
@@ -512,6 +602,16 @@ class Settings(BaseSettings):
     agent_registration_threshold: float = float(os.getenv("AGENT_REGISTRATION_THRESHOLD", "50.0"))
     agent_registration_tolerance: float = float(os.getenv("AGENT_REGISTRATION_TOLERANCE", "0.10"))
     agent_registration_ttl_hours: int = int(os.getenv("AGENT_REGISTRATION_TTL_HOURS", "24"))
+
+    # TEE server health prober settings.
+    # Age of last successful probe past which a server is flagged degraded (default 12h) / offline (default 72h).
+    server_health_degraded_threshold_seconds: int = int(
+        os.getenv("SERVER_HEALTH_DEGRADED_THRESHOLD_SECONDS", str(12 * 3600))
+    )
+    server_health_offline_threshold_seconds: int = int(
+        os.getenv("SERVER_HEALTH_OFFLINE_THRESHOLD_SECONDS", str(72 * 3600))
+    )
+    server_health_max_concurrent: int = int(os.getenv("SERVER_HEALTH_MAX_CONCURRENT", "32"))
 
 
 # Subscription tier: quota -> monthly price in USD (canonical values only).

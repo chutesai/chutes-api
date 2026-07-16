@@ -24,7 +24,7 @@ from api.config import (
     SUBSCRIPTION_PAYGO_DISCOUNTS,
     FOUR_HOUR_CHUNKS_PER_MONTH,
 )
-from api.database import get_session, get_inv_session
+from api.database import get_session
 from api.chute.schemas import NodeSelector
 from api.permissions import Permissioning
 from api.util import has_legacy_private_billing
@@ -42,7 +42,7 @@ SELECT * FROM get_diffusion_metrics('2025-01-30', DATE_TRUNC('day', NOW())::date
 ORDER BY date DESC, name;
 """
 
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus:9090")
 FOUR_HOUR_BUCKET_SECONDS = 4 * 3600
 SUBSCRIPTION_CACHE_PREFIX = "sub_cap_v2"
 SUBSCRIPTION_USAGE_FLOOR = datetime(2026, 3, 1, tzinfo=timezone.utc)
@@ -233,7 +233,7 @@ async def gather_metrics(interval: str = "1 hour"):
 
     # Get all chute IDs and their node_selectors from DB
     chute_data = {}
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             text(
                 """
@@ -258,7 +258,7 @@ async def gather_metrics(interval: str = "1 hour"):
 
     # Get active instance counts per chute
     instance_counts = {}
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(
             text(
                 """
@@ -339,7 +339,7 @@ async def generate_invocation_history_metrics():
     """
     Generate all vllm/diffusion metrics through time.
     """
-    async with get_inv_session() as session:
+    async with get_session() as session:
         await session.execute(text("TRUNCATE TABLE vllm_metrics RESTART IDENTITY"))
         await session.execute(text("TRUNCATE TABLE diffusion_metrics RESTART IDENTITY"))
         await session.execute(text(TOKEN_METRICS_QUERY))
@@ -507,7 +507,7 @@ async def check_quota_and_balance(request, current_user, chute):
             )
 
     # Prevent calling private chutes when the owner has no balance.
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    origin_ip = request.state.client_ip
     if (
         not chute.public
         and not has_legacy_private_billing(chute)

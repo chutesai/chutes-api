@@ -4,12 +4,20 @@ metadata:
   name: registry-proxy
   labels:
     {{- include "registryProxy.labels" . | nindent 4 }}
+  {{- with .Values.registryProxy.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  type: NodePort
+  type: {{ .Values.registryProxy.service.type | default "LoadBalancer" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  externalTrafficPolicy: Cluster
+  allocateLoadBalancerNodePorts: true
   ports:
-    - nodePort: {{ .Values.registryProxy.service.nodePort }}
-      port: {{ .Values.registryProxy.service.port }}
-      targetPort: {{ .Values.registryProxy.service.targetPort }}
-      name: registry-proxy
+    - port: {{ .Values.registryProxy.service.port | default 443 }}
+      targetPort: 443
+      protocol: TCP
+      name: https
   selector:
     {{- include "registryProxy.labels" . | nindent 4 }}

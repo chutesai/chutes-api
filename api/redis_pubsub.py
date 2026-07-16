@@ -37,6 +37,11 @@ class RedisListener:
         while self.is_running:
             try:
                 if not self.pubsub:
+                    ssl_kwargs = {}
+                    if settings.redis_cacert:
+                        ssl_kwargs["ssl"] = True
+                        ssl_kwargs["ssl_cert_reqs"] = "required"
+                        ssl_kwargs["ssl_ca_certs"] = settings.redis_cacert
                     client = redis.Redis(
                         host=settings.redis_host,
                         port=settings.redis_port,
@@ -49,6 +54,7 @@ class RedisListener:
                         health_check_interval=30,
                         retry_on_timeout=True,
                         retry=Retry(ConstantBackoff(0.5), 2),
+                        **ssl_kwargs,
                     )
                     self.pubsub = client.pubsub()
                     await self.pubsub.subscribe(self.channel)

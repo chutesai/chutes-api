@@ -63,7 +63,6 @@ from api.server.util import (
     get_nonce_expiry_seconds,
     verify_quote,
     verify_gpu_evidence,
-    sync_server_luks_passphrases,
     rotate_luks_passphrases,
     generate_confirm_nonce,
     generate_luks_quote_nonce,
@@ -81,7 +80,7 @@ from api.node.schemas import Node
 from sqlalchemy.orm import joinedload
 from api.server.schemas import TeeInstanceEvidence
 from api.node.schemas import NodeArgs
-from api.util import extract_ip, semcomp
+from api.util import semcomp
 
 
 async def create_nonce(
@@ -189,7 +188,7 @@ def validate_request_nonce(purpose: NoncePurpose):
     async def _validate_request_nonce(
         request: Request, nonce: str | None = Header(None, alias=NONCE_HEADER)
     ):
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
 
         try:
             await validate_and_consume_nonce(nonce, server_ip, purpose)
@@ -221,7 +220,7 @@ def validate_boot_nonce():
         args: BootAttestationArgs,
         nonce: str | None = Header(None, alias=NONCE_HEADER),
     ) -> str:
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
 
         try:
             stored_hotkey = await validate_and_consume_nonce(nonce, server_ip, NoncePurpose.BOOT)
@@ -361,33 +360,11 @@ def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> Non
     )
 
 
-async def generate_and_store_boot_token(miner_hotkey: str, vm_name: str) -> str:
-    """
-    Generate and store a boot token for a verified VM.
-
-    Args:
-        miner_hotkey: Miner hotkey that owns this VM
-        vm_name: VM name/identifier
-
-    Returns:
-        Boot token string
-    """
-    boot_token = generate_nonce()
-    redis_key = f"boot_token:{boot_token}"
-    # Store boot token with miner_hotkey:vm_name (10 minute TTL)
-    boot_token_value = f"{miner_hotkey}:{vm_name}"
-    await settings.redis_client.setex(redis_key, 10 * 60, boot_token_value)
-    logger.info(f"Generated boot token for VM {vm_name} (miner: {miner_hotkey})")
-
-    return boot_token
-
-
 @dataclass
 class BootAttestationResult:
     """Result of a successful boot attestation."""
 
     root_key: str
-    boot_token: Optional[str] = None
     luks_quote_nonce: Optional[str] = None
     root_next: Optional[str] = None
     root_confirm_nonce: Optional[str] = None
@@ -444,9 +421,9 @@ async def process_boot_attestation(
         expected_cert_hash: Expected certificate hash
 
     Returns:
-        BootAttestationResult with root_key, optional boot_token/luks_quote_nonce
-        (mutually exclusive by measurement version), optional root_next/root_confirm_nonce
-        for VMs >= 1.4.0, and vm_auth_ss58 (always set on successful attestation).
+        BootAttestationResult with root_key, luks_quote_nonce for the subsequent
+        POST /luks/attest flow, optional root_next/root_confirm_nonce for VMs >= 1.4.0,
+        and vm_auth_ss58 (always set on successful attestation).
 
     Raises:
         NonceError: If nonce validation fails
@@ -513,18 +490,12 @@ async def process_boot_attestation(
         vm_keypair = await _generate_and_store_vm_auth_key(db, args.miner_hotkey, args.vm_name)
         vm_auth_ss58 = vm_keypair.ss58_address
 
-        # Version-gate: legacy VMs (< 1.3.0) get a boot token for POST /luks;
-        # new VMs (>= 1.3.0) get a luks_quote_nonce for POST /luks/attest instead.
-        boot_token: Optional[str] = None
-        luks_quote_nonce: Optional[str] = None
-        if semcomp(measurement_config.version, "1.3.0") >= 0:
-            luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
-        else:
-            boot_token = await generate_and_store_boot_token(args.miner_hotkey, args.vm_name)
+        # All accepted VMs use the POST /luks/attest flow; the tee_minimum_boot_version
+        # gate above already rejects any VM older than the current minimum (>= 1.3.1).
+        luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
 
         return BootAttestationResult(
             root_key=root_key,
-            boot_token=boot_token,
             luks_quote_nonce=luks_quote_nonce,
             root_next=root_next,
             root_confirm_nonce=root_confirm_nonce,
@@ -1046,72 +1017,6 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     return True
 
 
-async def _get_boot_token_context(boot_token: str) -> tuple[str, str]:
-    """
-    Validate boot token and return the VM identity (miner_hotkey, vm_name).
-
-    Args:
-        boot_token: Boot token from initial attestation
-
-    Returns:
-        Tuple of (miner_hotkey, vm_name)
-
-    Raises:
-        NonceError: If boot token is invalid or expired
-    """
-    # Validate boot token
-    redis_key = f"boot_token:{boot_token}"
-    redis_value = await settings.redis_client.get(redis_key)
-
-    if not redis_value:
-        raise NonceError("Boot token not found or expired")
-
-    # Parse miner_hotkey:vm_name from the stored value
-    try:
-        boot_token_value = redis_value.decode()
-        miner_hotkey, vm_name = boot_token_value.split(":", 1)
-    except (ValueError, AttributeError) as e:
-        logger.error(f"Failed to parse boot token value: {e}")
-        raise NonceError("Invalid boot token format")
-
-    logger.info(f"Retrieved boot token for VM {vm_name} (miner: {miner_hotkey})")
-
-    return miner_hotkey, vm_name
-
-
-async def _validate_boot_token_for_luks(boot_token: str, hotkey: str, vm_name: str) -> None:
-    """Validate boot token and verify hotkey/vm_name match. Raises NonceError on failure."""
-    token_hotkey, token_vm_name = await _get_boot_token_context(boot_token)
-    if token_hotkey != hotkey:
-        logger.warning(f"Hotkey mismatch: expected {token_hotkey}, got {hotkey}")
-        raise NonceError("Hotkey does not match boot token")
-    if token_vm_name != vm_name:
-        logger.warning(f"VM name mismatch: expected {token_vm_name}, got {vm_name}")
-        raise NonceError("VM name does not match boot token")
-
-
-async def _consume_boot_token(boot_token: str) -> None:
-    redis_key = f"boot_token:{boot_token}"
-    await settings.redis_client.delete(redis_key)
-
-
-async def process_luks_passphrase_request(
-    db: AsyncSession,
-    boot_token: str,
-    hotkey: str,
-    vm_name: str,
-    volume_names: list,
-    rekey_volume_names: Optional[list] = None,
-) -> Dict[str, str]:
-    """Validate boot token and run LUKS sync (ensure keys for volumes, prune others, rekey optional). Consumes token."""
-    await _validate_boot_token_for_luks(boot_token, hotkey, vm_name)
-    result = await sync_server_luks_passphrases(
-        db, hotkey, vm_name, volume_names, rekey_volume_names=rekey_volume_names
-    )
-    await _consume_boot_token(boot_token)
-    return result
-
-
 async def process_luks_attest_request(
     db: AsyncSession,
     hotkey: str,
@@ -1384,6 +1289,31 @@ async def get_active_upgrade_window(
             f"using most recently created: {rows[0].id}"
         )
     return rows[0]
+
+
+async def get_latest_upgrade_window(
+    db: AsyncSession,
+) -> Optional[TeeUpgradeWindow]:
+    """Return the most recently created tee_upgrade_windows row, regardless of its time bounds.
+
+    The latest window is the relevant upgrade target whether or not it is currently open;
+    use is_window_open() to tell the two apart. This lets the maintenance policy report a
+    miner's version status (which servers remain out of date) even after a window has closed.
+
+    Ordered by upgrade_window_start: windows never overlap, so the most recently started
+    window is always the newest target. This keys off the field the non-overlap invariant
+    actually constrains (rather than the administrative created_at) and can use the existing
+    idx_tee_upgrade_window_bounds index.
+    """
+    query = select(TeeUpgradeWindow).order_by(TeeUpgradeWindow.upgrade_window_start.desc()).limit(1)
+    result = await db.execute(query)
+    return result.scalars().first()
+
+
+def is_window_open(window: TeeUpgradeWindow) -> bool:
+    """Whether the given upgrade window is currently open (start <= now <= end)."""
+    now = datetime.now(timezone.utc)
+    return window.upgrade_window_start <= now <= window.upgrade_window_end
 
 
 async def _get_instances_on_server(db: AsyncSession, server_id: str) -> list[Instance]:

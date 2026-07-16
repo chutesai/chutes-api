@@ -1,3 +1,5 @@
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
+from api.log import install_asyncio_exception_handler
 import traceback
 import uuid
 import backoff
@@ -280,6 +282,9 @@ class BTTransferMonitor:
 
                             amount = event["attributes"]["amount"]
                             extrinsic_idx = raw_event.get("extrinsic_idx")
+                            if not extrinsic_idx:
+                                logger.warning(f"No extrinsic_idx specified: {event['attributes']}")
+                                continue
 
                             # Record the transfer
                             await self._record_transfer(
@@ -322,6 +327,7 @@ async def lifespan(app: FastAPI):
     """
     Manage application lifecycle.
     """
+    install_asyncio_exception_handler()
     logger.info("Starting BT Transfer Monitor application...")
     await monitor.initialize()
     monitor_task = asyncio.create_task(monitor.monitor_transfers())

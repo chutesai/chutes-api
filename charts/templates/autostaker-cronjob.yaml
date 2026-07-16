@@ -1,0 +1,72 @@
+{{- if .Values.autostaker.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  # Live autostaker (hand-applied) carries no labels on the CronJob metadata; matched for no-op.
+  name: autostaker
+spec:
+  schedule: {{ .Values.autostaker.schedule | default "* * * * *" | quote }}
+  suspend: {{ .Values.autostaker.suspend | default false }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 15
+  failedJobsHistoryLimit: 15
+  jobTemplate:
+    spec:
+      backoffLimit: 7
+      ttlSecondsAfterFinished: 21600
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          # Live pod template has only db-access/redis-access (no app.kubernetes.io/name); matched.
+          labels:
+            {{- include "chutes.dbAccess" . | nindent 12 }}
+            {{- include "chutes.redisAccess" . | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.autostaker.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.autostaker.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.autostaker.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumes:
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
+          containers:
+            - name: autostaker
+              image: {{ include "chutes.image" (list . .Values.autostaker.image) | quote }}
+              imagePullPolicy: {{ .Values.autostaker.imagePullPolicy }}
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - api/autostaker.py
+              env:
+                {{- include "chutes.cronjobEnv" (dict "Values" .Values "ss58Literal" .Values.autostaker.validatorSs58) | nindent 16 }}
+                - name: SUBTENSOR_ADDRESS
+                  value: {{ .Values.autostaker.subtensor | quote }}
+                - name: WALLET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: wallet-secret
+                      key: wallet-key
+                - name: PG_ENCRYPTION_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: wallet-secret
+                      key: pg-key
+              volumeMounts:
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
+              resources:
+                {{- include "chutes.cronjobResources" .Values.autostaker.resources | nindent 16 }}
+{{- end }}

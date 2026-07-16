@@ -21,7 +21,7 @@ from typing import Optional, Tuple
 from datetime import datetime, timedelta
 from fastapi.responses import PlainTextResponse
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Header, Request
-from sqlalchemy import select, text, func, update, and_, desc, true
+from sqlalchemy import select, text, func, update, and_
 from sqlalchemy.orm import joinedload, lazyload
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
@@ -29,6 +29,8 @@ from sqlalchemy.dialects.postgresql import insert
 from api.gpu import SUPPORTED_GPUS, COMPUTE_MULTIPLIER
 from api.database import get_db_session, generate_uuid, get_session
 from api.config import settings
+from api.metrics.warmup import track_warmup_seconds, track_warmup_seconds_since, WarmupTrigger
+from api.metrics.launch_config import track_failure as track_launch_config_failure
 from api.constants import (
     TEE_BONUS,
     HOTKEY_HEADER,
@@ -75,7 +77,7 @@ from api.server.service import (
     get_instance_evidence,
     verify_gpu_evidence,
 )
-from api.server.schemas import TeeInstanceEvidence, BootAttestation, Server
+from api.server.schemas import TeeInstanceEvidence
 from api.rate_limit import rate_limit
 from api.server.exceptions import (
     InstanceNotFoundError,
@@ -101,12 +103,13 @@ from api.util import (
     notify_disabled,
     load_shared_object,
     has_legacy_private_billing,
-    extract_ip,
 )
+from api.log import instance_logger, LifecycleEvent
 from api.encrypted_logs.capture import start_encrypted_log_capture
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
+from taskiq import TaskiqResultTimeoutError
 from watchtower import is_kubernetes_env, verify_expected_command, verify_fs_hash
 
 router = APIRouter()
@@ -990,7 +993,8 @@ async def _validate_launch_config_env(
                 miner_hotkey=launch_config.miner_hotkey,
             )
             if semcomp(chute.chutes_version or "0.0.0", "0.3.61") < 0:
-                assert code == chute.code, f"Incorrect code:\n{code=}\n{chute.code=}"
+                if code != chute.code:
+                    raise AssertionError("Incorrect code supplied")
         except AssertionError as exc:
             logger.error(
                 f"Attempt to claim {launch_config.config_id=} failed, invalid command: {exc}"
@@ -1128,6 +1132,25 @@ async def _validate_launch_config_inspecto(
                 )
 
 
+# Cap the wait on the fs-hash task; an unbounded wait_result() pins the request DB session
+# "idle in transaction" if the worker stalls.
+FS_HASH_RESULT_TIMEOUT = 600.0
+
+
+async def _await_fs_hash(task, config_id: str, miner_hotkey: str):
+    """Await a generate_fs_hash result, raising a retryable 503 instead of hanging on timeout."""
+    try:
+        return await task.wait_result(timeout=FS_HASH_RESULT_TIMEOUT)
+    except TaskiqResultTimeoutError:
+        logger.error(
+            f"FSHASH: fs-hash task timed out after {FS_HASH_RESULT_TIMEOUT}s {config_id=} {miner_hotkey=}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Filesystem verification timed out (worker backlog); please retry.",
+        )
+
+
 async def _validate_launch_config_filesystem(
     db: AsyncSession, launch_config: LaunchConfig, chute: Chute, args: LaunchConfigArgs
 ):
@@ -1143,7 +1166,7 @@ async def _validate_launch_config_filesystem(
                 sparse=False,
                 exclude_path=f"/app/{chute.filename}",
             )
-            result = await task.wait_result()
+            result = await _await_fs_hash(task, launch_config.config_id, launch_config.miner_hotkey)
             expected_hash = result.return_value
             if expected_hash != args.fsv:
                 logger.error(
@@ -1197,8 +1220,7 @@ async def _validate_launch_config_instance(
             raise
 
     # IP matches?
-    x_forwarded_for = request.headers.get("X-Forwarded-For")
-    actual_ip = x_forwarded_for.split(",")[0] if x_forwarded_for else request.client.host
+    actual_ip = request.state.client_ip
     if actual_ip != args.host:
         logger.warning(
             f"Instance with {launch_config.config_id=} {launch_config.miner_hotkey=} EGRESS INGRESS mismatch!: {actual_ip=} {args.host=}"
@@ -1560,6 +1582,10 @@ async def _validate_launch_config_instance(
             detail="Duplicate GPUs in request!",
         )
     node_ids = [node["uuid"] for node in args.gpus]
+    # Capture chute_id before the try/except: db.rollback() in the failure path expires all
+    # ORM attributes, so accessing launch_config.chute_id afterwards would trigger a lazy
+    # reload (sync IO in async context -> MissingGreenlet), masking the original exception.
+    chute_id = launch_config.chute_id
     try:
         nodes = await _validate_nodes(
             db,
@@ -1580,6 +1606,11 @@ async def _validate_launch_config_instance(
                 {"config_id": config_id},
             )
             await error_session.commit()
+        # This failure path updates verification_error via raw SQL, bypassing the ORM 'set'
+        # listener, so count it explicitly here.
+        track_launch_config_failure(
+            chute_id, "invalid GPU/nodes configuration provided"
+        )
         raise
 
     # Use the actual GPU's rate/multiplier instead of the
@@ -1761,68 +1792,7 @@ async def _validate_tee_launch_config_instance(
         db, request, args, launch_config, chute, log_prefix
     )
 
-    # Reject new chutes (>= 0.6.0) on old VMs (latest boot attestation measurement_version < 0.2.0).
-    # Newer 0.2.0+ VMs can run both old and new chutes.
-    # TODO: Remove this once TEE servers are upgraded to 0.2.0 or later
-    if semcomp(instance.chutes_version or "0.0.0", "0.6.0") >= 0:
-        stmt = (
-            select(BootAttestation)
-            .where(BootAttestation.server_ip == instance.host)
-            .order_by(desc(BootAttestation.created_at))
-            .limit(1)
-        )
-        boot_result = await db.execute(stmt)
-        latest_boot = boot_result.scalar_one_or_none()
-        if (
-            latest_boot is None
-            or latest_boot.measurement_version is None
-            or semcomp(latest_boot.measurement_version, "0.2.0") < 0
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=(
-                    "Chutes version >= 0.6.0 requires VM measurement version >= 0.2.0. "
-                    "Upgrade the VM image to run this chute."
-                ),
-            )
-
     return launch_config, nodes, instance, validator_pubkey
-
-
-async def _verify_tee_version_support(db: AsyncSession, chute: Chute, hotkey: str | None) -> None:
-    """
-    Reject launch config for TEE chutes (>= 0.6.0) when miner has legacy TEE servers (< 0.2.1).
-    Raises HTTPException with server names if any TEE servers need upgrading.
-    """
-    if not chute.tee or not hotkey or semcomp(chute.chutes_version or "0.0.0", "0.6.0") < 0:
-        return
-
-    latest_boot = (
-        select(BootAttestation.measurement_version)
-        .where(BootAttestation.server_ip == Server.ip)
-        .order_by(desc(BootAttestation.created_at))
-        .limit(1)
-        .lateral()
-    )
-    stmt = (
-        select(Server.name, latest_boot.c.measurement_version)
-        .select_from(Server)
-        .outerjoin(latest_boot, true())
-        .where(Server.miner_hotkey == hotkey, Server.is_tee.is_(True))
-    )
-    result = await db.execute(stmt)
-    legacy_server_names = [
-        row[0] for row in result.all() if row[1] is None or semcomp(row[1], "0.2.1") < 0
-    ]
-    if legacy_server_names:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Launch config rejected: you have legacy TEE infrastructure which does not "
-                "support chutes lib version >= 0.6.0. Upgrade these servers first: "
-                f"{', '.join(legacy_server_names)}"
-            ),
-        )
 
 
 @router.get("/launch_config")
@@ -1856,8 +1826,6 @@ async def get_launch_config(
             await _check_scalable_private(db, chute, miner)
         else:
             await _check_scalable(db, chute, hotkey)
-
-    await _verify_tee_version_support(db, chute, hotkey)
 
     # Associated with a job?
     disk_gb = None
@@ -2064,8 +2032,25 @@ async def claim_tee_launch_config(
     asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
     asyncio.create_task(_maybe_start_log_capture(instance, config_id))
 
-    # Verify TEE attestation evidence
-    await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
+    # Verify TEE attestation evidence, recording failed_at on any failure.
+    try:
+        await verify_tee_chute(db, instance, launch_config, args.deployment_id, expected_nonce)
+    except Exception as exc:
+        chute_id = launch_config.chute_id
+        detail = exc.detail if isinstance(exc, HTTPException) else str(exc)
+        reason = detail if isinstance(detail, str) else str(detail)
+        await db.rollback()
+        async with get_session() as error_session:
+            await error_session.execute(
+                text(
+                    "UPDATE launch_configs SET failed_at = NOW(), "
+                    "verification_error = :reason WHERE config_id = :config_id"
+                ),
+                {"config_id": config_id, "reason": reason},
+            )
+            await error_session.commit()
+        track_launch_config_failure(chute_id, reason)
+        raise
 
     instance.deployment_id = args.deployment_id
     await db.commit()
@@ -2428,9 +2413,15 @@ async def activate_launch_config_instance(
             instance.bounty = True
             bounty_boost = calculate_bounty_boost(bounty["age_seconds"])
             instance.compute_multiplier *= bounty_boost
-            logger.info(
-                f"Claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
-                f"bounty_boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
+            instance_logger(
+                instance,
+                event=LifecycleEvent.BOUNTY_CLAIM,
+                bounty_age_seconds=bounty["age_seconds"],
+                bounty_boost=round(bounty_boost, 2),
+                compute_multiplier=instance.compute_multiplier,
+            ).info(
+                f"claimed bounty for {instance.chute_id}: age={bounty['age_seconds']}s, "
+                f"boost={bounty_boost:.2f}x, total compute_multiplier={instance.compute_multiplier}"
             )
 
         # Insert warmup compute history record (created_at → now) at the base
@@ -2454,6 +2445,20 @@ async def activate_launch_config_instance(
 
         instance.active = True
         instance.activated_at = func.now()
+
+        # Record time-to-hot (warmup demand -> active) per trigger as a Prometheus metric. The
+        # bounty path's age_seconds is the public-chute demand age; the explicit /warmup path stamps
+        # a request timestamp in Redis which we read+delete here. Both helpers no-op when their input
+        # is absent (no bounty / no stamped request), so neither needs a call-site guard.
+        track_warmup_seconds(
+            chute.chute_id, WarmupTrigger.BOUNTY, bounty["age_seconds"] if bounty else None
+        )
+        track_warmup_seconds_since(
+            chute.chute_id,
+            WarmupTrigger.EXPLICIT,
+            await settings.redis_client.getdel(f"warmup_requested_at:{chute.chute_id}"),
+        )
+
         if launch_config.job_id or (
             not chute.public
             and not has_legacy_private_billing(chute)
@@ -2547,7 +2552,7 @@ async def _validate_legacy_filesystem(
                 sparse=False,
                 exclude_path=f"/app/{instance.chute.filename}",
             )
-            result = await task.wait_result()
+            result = await _await_fs_hash(task, config_id, instance.miner_hotkey)
             expected_hash = result.return_value
             if expected_hash != response_body["fsv"]:
                 reason = (
@@ -2614,6 +2619,11 @@ async def _mark_instance_verified(
 
     await db.commit()
     await db.refresh(launch_config)
+    # Verification is a raw-SQL UPDATE (for DB-performance reasons) that bypasses the ORM 'set'
+    # event, so log this lifecycle transition explicitly here, the single verify chokepoint.
+    instance_logger(instance, event=LifecycleEvent.INSTANCE_VERIFY).success(
+        f"instance verified: {instance.instance_id} (chute {instance.chute_id})"
+    )
 
 
 async def _build_launch_config_verified_response(
@@ -2875,7 +2885,7 @@ async def get_instance_nonce(request: Request):
     The nonce is used to bind the attestation evidence to this specific verification request.
     """
     try:
-        server_ip = extract_ip(request)
+        server_ip = request.state.client_ip
         nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.INSTANCE_VERIFICATION)
 
         # Return just the nonce string as JSON (library expects this format)
@@ -2890,7 +2900,7 @@ async def get_instance_nonce(request: Request):
 
 @router.get("/token_check")
 async def get_token(salt: str = None, request: Request = None):
-    origin_ip = request.headers.get("x-forwarded-for", "").split(",")[0]
+    origin_ip = request.state.client_ip
     return {"token": generate_ip_token(origin_ip, extra_salt=salt)}
 
 
@@ -2965,7 +2975,6 @@ async def stream_logs(
     instance_id: str,
     request: Request,
     backfill: Optional[int] = 100,
-    db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     current_user: User = Depends(get_current_user(purpose="logs")),
 ):
@@ -2976,52 +2985,57 @@ async def stream_logs(
     include prompts, responses, etc. Used for troubleshooting and checking
     status of warmup, etc.
     """
-    # These are raw application (k8s pod) logs
-    instance = (
-        (
-            await db.execute(
-                select(Instance)
-                .where(Instance.instance_id == instance_id)
-                .options(joinedload(Instance.chute))
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
-    )
-    if not instance:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Instance not found.",
-        )
-    if not current_user.has_role(Permissioning.chutes_support):
-        if (
-            instance.chute.user_id != current_user.user_id
-            and not await is_shared(instance.chute.chute_id, current_user.user_id)
-        ) or instance.chute.public:
-            if not subnet_role_accessible(instance.chute, current_user, admin=True):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="You may only view logs for your own (private) chutes.",
+    # Load + authorize in a short-lived session, then CLOSE it before streaming.
+    # Holding the request-scoped session open across the stream is what previously
+    # left transactions "idle in transaction" for hours. Streaming itself is unchanged.
+    async with get_session(readonly=True) as session:
+        instance = (
+            (
+                await session.execute(
+                    select(Instance)
+                    .where(Instance.instance_id == instance_id)
+                    .options(joinedload(Instance.chute))
                 )
-    if not 0 <= backfill <= 10000:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="`backfill` must be between 0 and 10000 (lines of logs)",
+            )
+            .unique()
+            .scalar_one_or_none()
         )
+        if not instance:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Instance not found.",
+            )
+        if not current_user.has_role(Permissioning.chutes_support):
+            if (
+                instance.chute.user_id != current_user.user_id
+                and not await is_shared(instance.chute.chute_id, current_user.user_id)
+            ) or instance.chute.public:
+                if not subnet_role_accessible(instance.chute, current_user, admin=True):
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="You may only view logs for your own (private) chutes.",
+                    )
+        if not 0 <= backfill <= 10000:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="`backfill` must be between 0 and 10000 (lines of logs)",
+            )
+        # Snapshot what the stream needs so the session can close before we stream.
+        host = instance.host
+        miner_hotkey = instance.miner_hotkey
+        port_mappings = instance.port_mappings
 
     async def _stream():
-        log_port = next(p for p in instance.port_mappings if p["internal_port"] == 8001)[
-            "external_port"
-        ]
+        log_port = next(p for p in port_mappings if p["internal_port"] == 8001)["external_port"]
         # Build a temporary client for the log port (always plain HTTP, even for v4/TLS instances).
         import httpx as _httpx
 
         client = _httpx.AsyncClient(
-            base_url=f"http://{instance.host}:{log_port}",
+            base_url=f"http://{host}:{log_port}",
             timeout=_httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
         )
 
-        headers, _ = miner_client.sign_request(instance.miner_hotkey, purpose="chutes")
+        headers, _ = miner_client.sign_request(miner_hotkey, purpose="chutes")
         try:
             async with client.stream(
                 "GET",
@@ -3081,8 +3095,16 @@ async def delete_instance(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Instance with {chute_id=} {instance_id} associated with {hotkey=} not found",
         )
-    origin_ip = request.headers.get("x-forwarded-for")
-    logger.info(f"INSTANCE DELETION INITIALIZED: {instance_id=} {hotkey=} {origin_ip=}")
+    origin_ip = request.state.client_ip
+    instance_logger(
+        instance,
+        event=LifecycleEvent.INSTANCE_DELETE,
+        trigger="miner",
+        origin_ip=origin_ip,
+    ).info(
+        f"instance deletion initiated by miner: {instance.instance_id} "
+        f"(miner {hotkey}, origin_ip {origin_ip})"
+    )
 
     # Fail the job.
     job = (
@@ -3123,16 +3145,26 @@ async def delete_instance(
             # Public chute: negate bounty and apply 10x penalty
             negate_bounty = True
             compute_multiplier_penalty = 0.1
-            logger.warning(
-                f"Instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, "
-                f"negating bounty and applying 10x compute_multiplier penalty!"
+            instance_logger(
+                instance,
+                event=LifecycleEvent.INSTANCE_DELETE,
+                negate_bounty=True,
+                compute_multiplier_penalty=0.1,
+            ).warning(
+                f"instance {instance.instance_id} of miner {instance.miner_hotkey} terminated "
+                f"without any other active instances, negating bounty and applying 10x "
+                f"compute_multiplier penalty!"
             )
         else:
             # Private chute: zero out compute_multiplier entirely
             compute_multiplier_penalty = 0.0
-            logger.warning(
-                f"Private instance {instance.instance_id=} of {instance.miner_hotkey=} terminated without any other active instances, "
-                f"zeroing compute_multiplier!"
+            instance_logger(
+                instance,
+                event=LifecycleEvent.INSTANCE_DELETE,
+                compute_multiplier_penalty=0.0,
+            ).warning(
+                f"private instance {instance.instance_id} of miner {instance.miner_hotkey} "
+                f"terminated without any other active instances, zeroing compute_multiplier!"
             )
 
         # Apply penalty to instance_compute_history BEFORE delete (so the delete trigger

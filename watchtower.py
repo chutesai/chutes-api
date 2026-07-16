@@ -1,3 +1,4 @@
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import gc
 import re
 import os
@@ -17,6 +18,7 @@ import traceback
 import tempfile
 from contextlib import asynccontextmanager
 from loguru import logger
+from api.log import install_asyncio_exception_handler
 from api.config import settings
 from api.util import (
     decrypt_instance_response,
@@ -1690,6 +1692,7 @@ async def main():
     """
     Main loop, continuously check all chutes and instances.
     """
+    install_asyncio_exception_handler()
 
     # Secondary process check.
     asyncio.create_task(procs_check())

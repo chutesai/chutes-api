@@ -4,38 +4,125 @@ metadata:
   name: forge
   labels:
     {{- include "forge.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
+  {{- if not .Values.forge.hpa.enabled }}
   replicas: {{ .Values.forge.replicaCount | default 1 }}
+  {{- end }}
+  strategy:
+    type: {{ .Values.forge.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.forge.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.forge.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.forge.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "forge.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "forge.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      dnsPolicy: ClusterFirst
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "2"
+          - name: timeout
+            value: "3"
+          - name: attempts
+            value: "3"
+      {{- with .Values.forge.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.forge.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.forge.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       initContainers:
-      - name: update-hosts
-        image: busybox:1.36
-        command:
-          - sh
-          - -c
-          - |
-            set -e
-            DOMAIN="localregistry.chutes.ai"
-            echo "Adding host entry for $DOMAIN -> $REGISTRY_SERVICE_HOST"
+        - name: update-hosts
+          image: {{ include "chutes.image" (list . (.Values.forge.busyboxImage | default "busybox:1.36")) | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          resources:
+            limits:
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          env:
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  key: ss58
+                  name: validator-credentials
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              DOMAIN="${VALIDATOR_SS58}.localregistry.chutes.ai"
+              echo "Adding host entry for $DOMAIN -> $REGISTRY_SERVICE_HOST"
 
-            cp /etc/hosts /mnt/hosts
-            echo "$REGISTRY_SERVICE_HOST  $DOMAIN" >> /mnt/hosts
-        volumeMounts:
-          - name: etc-hosts
-            mountPath: /mnt
+              cp /etc/hosts /mnt/hosts
+              echo "$REGISTRY_SERVICE_HOST  $DOMAIN" >> /mnt/hosts
+          volumeMounts:
+            - name: etc-hosts
+              mountPath: /mnt
       containers:
         - name: forge
-          image: "{{ .Values.forge.image }}"
+          image: {{ include "chutes.image" (list . .Values.forge.image) | quote }}
           imagePullPolicy: {{ .Values.forge.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
           env:
             {{- include "chutes.commonEnv" . | nindent 12 }}
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: CHUTES_VERSION
+              value: {{ .Values.chutes_version | quote }}
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: LEGACY_DB_URL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            {{- if .Values.chuteDb.enabled }}
+            - name: DB_RW_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
+                  key: rw_url
+            - name: DB_RO_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.chuteDb.secretName | default "chutes-db" }}
+                  key: ro_url
+            {{- end }}
             - name: CFSV_OP
               valueFrom:
                 secretKeyRef:
@@ -51,6 +138,38 @@ spec:
                 secretKeyRef:
                   name: docker-pull
                   key: password
+            {{- if .Values.forge.depot.enabled }}
+            - name: DEPOT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: token
+                  name: depot-credentials
+            - name: DEPOT_PROJECT_ID
+              valueFrom:
+                secretKeyRef:
+                  key: project-id
+                  name: depot-credentials
+            - name: DEPOT_REGISTRY
+              valueFrom:
+                secretKeyRef:
+                  key: registry
+                  name: depot-credentials
+            - name: DEPOT_REGISTRY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: registry-token
+                  name: depot-credentials
+            - name: DEPOT_REGISTRY_RW_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: registry-rw-token
+                  name: depot-credentials
+            - name: PS_OP
+              valueFrom:
+                secretKeyRef:
+                  key: ps-op
+                  name: protecto
+            {{- end }}
             - name: STORAGE_DRIVER
               value: "overlay"
             - name: STORAGE_OPTS
@@ -84,56 +203,30 @@ spec:
                 secretKeyRef:
                   name: cosign-signing-key
                   key: cosign.password
-          securityContext:
-            privileged: true
-            capabilities:
-              add:
-                - SETUID
-                - SETGID
-                - SYS_ADMIN
-                - SYS_PTRACE
-                - MKNOD
-            allowPrivilegeEscalation: true
           volumeMounts:
             - name: cosign-key
               mountPath: /etc/cosign
               readOnly: true
-            - name: fuse
-              mountPath: /dev/fuse
             - name: etc-hosts
               mountPath: /etc/hosts
               subPath: hosts
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
             {{- with .Values.forge.volumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
           resources:
             {{- toYaml .Values.forge.resources | nindent 12 }}
       volumes:
-        - name: fuse
-          hostPath:
-            path: /dev/fuse
-            type: CharDevice
         - name: cosign-key
           secret:
             secretName: cosign-signing-key
             items:
-            - key: cosign.key
-              path: cosign.key
-              mode: 0400  # read-only for owner only
+              - key: cosign.key
+                path: cosign.key
+                mode: 0444
         - name: etc-hosts
           emptyDir: {}
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
         {{- with .Values.forge.volumes }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
-      {{- with .Values.forge.nodeSelector }}
-      nodeSelector:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.forge.affinity }}
-      affinity:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
-      {{- with .Values.forge.tolerations }}
-      tolerations:
-        {{- toYaml . | nindent 8 }}
-      {{- end }}
