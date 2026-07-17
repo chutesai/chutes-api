@@ -779,7 +779,9 @@ async def process_runtime_attestation(
     server = await check_server_ownership(db, server_id, miner_hotkey)
 
     if server.ip != actual_ip:
-        logger.warning(f"Runtime attestation IP mismatch: registered={server.ip} request={actual_ip}")
+        logger.warning(
+            f"Runtime attestation IP mismatch: registered={server.ip} request={actual_ip}"
+        )
         raise AttestationError(
             "Request source IP does not match the registered server IP.",
             code="ip_mismatch",
