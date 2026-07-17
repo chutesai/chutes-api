@@ -80,7 +80,9 @@ def dump_per_gpu_claims(token: str) -> None:
             traceback.print_exc()
             continue
         failures = [
-            k for k in claims if (k.startswith("x-nvidia") or k == "measres") and _is_bad(k, claims[k])
+            k
+            for k in claims
+            if (k.startswith("x-nvidia") or k == "measres") and _is_bad(k, claims[k])
         ]
         driver = claims.get("x-nvidia-gpu-driver-version", "?")
         vbios = claims.get("x-nvidia-gpu-vbios-version", "?")
@@ -149,7 +151,9 @@ def main() -> int:
     print(f"loaded {len(evidence)} GPU evidence entries; nonce={args.nonce}\n")
 
     client = Attestation()
-    client.set_name("chutes-debug")  # get_token() is keyed by client name; set it so we can read claims
+    client.set_name(
+        "chutes-debug"
+    )  # get_token() is keyed by client name; set it so we can read claims
     client.add_verifier(Devices.GPU, Environment.REMOTE, "", "")
     client.set_nonce(args.nonce)
 

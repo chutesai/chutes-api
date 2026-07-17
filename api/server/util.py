@@ -744,6 +744,4 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
             log_detail=f"chutes-nvattest exit={process.returncode}\n{output}"
         )
 
-    logger.info(
-        "GPU evidence verified successfully." + (f"\n{output}" if output else "")
-    )
+    logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))

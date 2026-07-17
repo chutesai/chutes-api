@@ -35,7 +35,6 @@ override with --nv-python). It runs TWO ways:
 import argparse
 import asyncio
 import json
-import os
 import secrets
 import subprocess
 import sys
@@ -133,7 +132,7 @@ def verbose_verify(nonce: str, ev_path: Path, nv_python: str) -> None:
     _hr("4. Verbose direct SDK verification (DEBUG logging + traceback + claims)")
     if not Path(nv_python).exists():
         print(f"  nv-attest interpreter not found at {nv_python}")
-        print(f"  re-run with --nv-python pointing at the nv-attest venv python")
+        print("  re-run with --nv-python pointing at the nv-attest venv python")
         return
     cmd = [nv_python, str(VERBOSE_VERIFIER), "--nonce", nonce, "--evidence", str(ev_path)]
     print(f"  $ {' '.join(cmd)}\n")
@@ -141,11 +140,15 @@ def verbose_verify(nonce: str, ev_path: Path, nv_python: str) -> None:
 
 
 async def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     ap.add_argument("--ip", required=True, help="Server IP (attestation proxy on :30443)")
     ap.add_argument("--server-id", default=None, help="Optional, for your reference only")
     ap.add_argument("--nonce", default=None, help="64-hex nonce; default: random 32 bytes")
-    ap.add_argument("--nv-python", default="/app/nv-attest/bin/python", help="nv-attest venv python")
+    ap.add_argument(
+        "--nv-python", default="/app/nv-attest/bin/python", help="nv-attest venv python"
+    )
     ap.add_argument("--outdir", default=None, help="Where to save evidence (default: scratch temp)")
     args = ap.parse_args()
 

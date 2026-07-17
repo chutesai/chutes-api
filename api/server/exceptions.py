@@ -105,9 +105,7 @@ class InvalidSignatureError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "invalid_quote_signature"
-    default_message = (
-        "Invalid TDX quote signature. The attestation quote could not be verified."
-    )
+    default_message = "Invalid TDX quote signature. The attestation quote could not be verified."
 
 
 class MeasurementMismatchError(AttestationError):
@@ -135,9 +133,7 @@ class InvalidGpuEvidenceError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "invalid_gpu_evidence"
-    default_message = (
-        "Invalid GPU evidence. Please ensure your GPUs support attestation and are properly configured."
-    )
+    default_message = "Invalid GPU evidence. Please ensure your GPUs support attestation and are properly configured."
 
 
 class NonceError(AttestationError):
