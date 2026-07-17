@@ -2,6 +2,7 @@
 ORM definitions for servers and TDX attestations.
 """
 
+from datetime import datetime, timezone
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -17,11 +18,19 @@ from sqlalchemy import (
     Index,
     ForeignKeyConstraint,
     UniqueConstraint,
+    case,
 )
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.dialects.postgresql import JSONB
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
+from api.config import settings
 from api.database import Base, generate_uuid
+from api.constants import (
+    ServerHealthStatus,
+    ATTESTATION_PROXY_PORT,
+    ATTESTATION_PROXY_HEALTH_PATH,
+)
 from api.node.schemas import NodeArgs
 from api.constants import SUPPORTED_LUKS_VOLUMES
 
@@ -73,7 +82,6 @@ class BootAttestationResponse(BaseModel):
     """Response model for successful boot attestation."""
 
     key: str
-    boot_token: Optional[str] = None
     luks_quote_nonce: Optional[str] = None
     root_next: Optional[str] = Field(
         None,
@@ -131,20 +139,8 @@ class LuksConfirmResult:
     """Per-volume outcome: {"result": "promoted"|"discarded"|"no_pending"}."""
 
 
-class LuksPassphraseRequest(BaseModel):
-    """Request model for LUKS POST: VM sends volume list, API returns keys (existing/new/rekey), prunes others."""
-
-    volumes: List[str] = Field(
-        ..., description="Volume names the VM is managing (defines full set)"
-    )
-    rekey: Optional[List[str]] = Field(
-        None,
-        description="Volume names that must receive new passphrases (no reuse); must be subset of volumes",
-    )
-
-
 class LuksAttestRequest(BaseModel):
-    """Request model for POST /luks/attest (new VMs, version >= 1.3.0)."""
+    """Request model for POST /luks/attest."""
 
     quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
     volumes: List[str] = Field(..., description="Volume names to rotate passphrases for")
@@ -298,6 +294,7 @@ class MaintenancePolicyResponse(BaseModel):
     """Response for GET /servers/maintenance/policy."""
 
     active_window: Optional[UpgradeWindowInfo] = None
+    window_open: bool = False
     current_slots: int = 0
     servers: List[ServerUpgradeStatus] = Field(default_factory=list)
 
@@ -390,9 +387,52 @@ class Server(Base):
     # Current attested measurement version, updated on every successful boot attestation.
     version = Column(Text, nullable=True)
 
+    # Timestamp of the last successful TEE /status/health probe; stamped by server_health_prober.py.
+    # NULL = never seen healthy. health_status below is derived from this, live.
+    last_health_at = Column(DateTime(timezone=True), nullable=True)
+
     @property
     def in_maintenance(self) -> bool:
         return self.maintenance_pending_window_id is not None
+
+    @property
+    def health_check_url(self) -> str:
+        """Attestation-proxy health endpoint (HTTPS, self-signed) — the workload-readiness signal."""
+        return f"https://{self.ip}:{ATTESTATION_PROXY_PORT}{ATTESTATION_PROXY_HEALTH_PATH}"
+
+    @hybrid_property
+    def health_status(self) -> ServerHealthStatus:
+        """
+        Liveness derived live from last_health_at and the configured thresholds:
+        healthy -> degraded (no comms past the degraded threshold) -> offline (past the offline threshold).
+        Never seen healthy => unknown. Recomputed on every read, so time-based transitions
+        (degraded -> offline) happen with no write; the prober only stamps last_health_at on success.
+        """
+        if self.last_health_at is None:
+            return ServerHealthStatus.UNKNOWN
+        age = (datetime.now(timezone.utc) - self.last_health_at).total_seconds()
+        if age >= settings.server_health_offline_threshold_seconds:
+            return ServerHealthStatus.OFFLINE
+        if age >= settings.server_health_degraded_threshold_seconds:
+            return ServerHealthStatus.DEGRADED
+        return ServerHealthStatus.HEALTHY
+
+    @health_status.expression
+    def health_status(cls):
+        """SQL form of the above so it's queryable: Server.health_status.in_(('degraded', 'offline'))."""
+        age = func.extract("epoch", func.now() - cls.last_health_at)
+        return case(
+            (cls.last_health_at.is_(None), ServerHealthStatus.UNKNOWN.value),
+            (
+                age >= settings.server_health_offline_threshold_seconds,
+                ServerHealthStatus.OFFLINE.value,
+            ),
+            (
+                age >= settings.server_health_degraded_threshold_seconds,
+                ServerHealthStatus.DEGRADED.value,
+            ),
+            else_=ServerHealthStatus.HEALTHY.value,
+        )
 
     # Relationships
     nodes = relationship("Node", back_populates="server", cascade="all, delete-orphan")
@@ -414,6 +454,7 @@ class Server(Base):
             "miner_hotkey",
             postgresql_where=maintenance_pending_window_id.isnot(None),
         ),
+        Index("idx_servers_last_health", "last_health_at"),
         ForeignKeyConstraint(
             ["netuid", "miner_hotkey"], ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"]
         ),

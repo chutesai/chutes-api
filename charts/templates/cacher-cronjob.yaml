@@ -4,21 +4,36 @@ metadata:
   name: cacher
   labels:
     {{- include "cacher.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
-  schedule: "*/10 * * * *"
+  schedule: {{ .Values.cacher.schedule | default "*/10 * * * *" | quote }}
+  suspend: {{ .Values.cacher.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: {{ .Values.cacher.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.cacher.failedJobsHistoryLimit | default 3 }}
   jobTemplate:
     spec:
       backoffLimit: 2
       ttlSecondsAfterFinished: 15000
+      {{- if .Values.cacher.activeDeadlineSeconds }}
+      activeDeadlineSeconds: {{ .Values.cacher.activeDeadlineSeconds }}
+      {{- end }}
       template:
         metadata:
           labels:
             {{- include "cacher.labels" . | nindent 12 }}
+            {{- include "chutes.dbAccess" . | nindent 12 }}
+            {{- include "chutes.redisAccess" . | nindent 12 }}
         spec:
           restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.cacher.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           {{- with .Values.cacher.nodeSelector }}
           nodeSelector:
             {{- toYaml . | nindent 12 }}
@@ -27,19 +42,27 @@ spec:
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.cacher.tolerations }}
-          tolerations:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+          volumes:
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
           containers:
             - name: cacher
-              image: "{{ .Values.cacher.image }}"
+              image: {{ include "chutes.image" (list . .Values.cacher.image) | quote }}
               imagePullPolicy: {{ .Values.cacher.imagePullPolicy }}
-              command: ["poetry", "run", "python", "cacher.py"]
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - cacher.py
               env:
-                {{- include "chutes.sensitiveEnv" . | nindent 16 }}
-                {{- include "chutes.commonEnv" . | nindent 16 }}
-                - name: MEMCACHED
-                  value: memcached
+                {{- include "chutes.cronjobEnv" . | nindent 16 }}
+                - name: VALIDATOR_SEED
+                  valueFrom:
+                    secretKeyRef:
+                      name: validator-credentials
+                      key: seed
+              volumeMounts:
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
               resources:
-                {{- toYaml .Values.cacher.resources | nindent 16 }}
+                {{- include "chutes.cronjobResources" .Values.cacher.resources | nindent 16 }}

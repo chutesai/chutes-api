@@ -13,6 +13,7 @@ from contextlib import asynccontextmanager
 from functools import wraps
 from collections import defaultdict
 from loguru import logger
+from api.log import configure_structured_logging
 from datetime import timedelta, datetime, timezone
 from typing import Dict, Optional, Set, List, Tuple
 import aiohttp
@@ -210,7 +211,7 @@ async def get_scale_down_permission(
 
 
 # Constants
-PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus-server")
+PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://prometheus.chutes.svc.cluster.local:9090")
 MIN_CHUTES_FOR_SCALING = 10
 PRICE_COMPATIBILITY_THRESHOLD = 0.67
 AUTOSCALER_FULL_INTERVAL_SECONDS = int(os.getenv("AUTOSCALER_FULL_INTERVAL_SECONDS", "1200"))
@@ -229,11 +230,14 @@ LIMIT_OVERRIDES = {
     "398651e1-5f85-5e50-a513-7c5324e8e839": 6,
     "d899b064-d9ae-5612-99e6-413e9136671b": 2,
     "b637b82f-0262-516a-ab2a-23d998889600": 4,
+    "ce6a92e4-5c2f-5681-9742-c80a4447bbdf": 1,
+    "e51e818e-fa63-570d-9f68-49d7d1b4d12f": 2,
 }
 FAILSAFE = {
     "aac09863-35b4-5d9b-9b67-6e6a9d54273a": 5,
     "b048fe26-0352-5c46-acf7-335e527e7f3d": 12,
     "2ff25e81-4586-5ec8-b892-3a6f342693d7": 10,
+    "08901219-159f-55a7-87cf-9d0d02744668": 5,
 }
 
 
@@ -3264,6 +3268,7 @@ async def execute_downsizing(to_downsize: List[Tuple[str, int, Set[str]]], db_no
 
 if __name__ == "__main__":
     gc.set_threshold(5000, 50, 50)
+    configure_structured_logging()
     parser = argparse.ArgumentParser(description="Auto-scale chutes based on utilization")
     parser.add_argument(
         "--dry-run",

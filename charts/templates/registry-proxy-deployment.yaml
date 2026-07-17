@@ -5,7 +5,16 @@ metadata:
   labels:
     {{- include "registryProxy.labels" . | nindent 4 }}
 spec:
+  {{- if not .Values.registryProxy.hpa.enabled }}
   replicas: {{ .Values.registryProxy.replicaCount }}
+  {{- end }}
+  strategy:
+    type: {{ .Values.registryProxy.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.registryProxy.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.registryProxy.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.registryProxy.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "registryProxy.labels" . | nindent 6 }}
@@ -14,6 +23,8 @@ spec:
       labels:
         {{- include "registryProxy.labels" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.registryProxy.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -22,25 +33,72 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.registryProxy.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.registryProxy.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+      initContainers:
+        - name: render-config
+          image: {{ include "chutes.image" (list . (.Values.registryProxy.busyboxImage | default "busybox:1.36")) | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          resources:
+            limits:
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 500m
+              memory: 512Mi
+              ephemeral-storage: 1Gi
+          command:
+            - sh
+            - -c
+            - |
+              sed -e "s|\${DEPOT_REGISTRY}|${DEPOT_REGISTRY}|g" \
+                  -e "s|\${DEPOT_BASIC_AUTH}|${DEPOT_BASIC_AUTH}|g" \
+                  /templates/nginx.conf.template > /rendered/nginx.conf
+          env:
+            - name: DEPOT_REGISTRY
+              valueFrom:
+                secretKeyRef:
+                  key: registry
+                  name: depot-credentials
+            - name: DEPOT_BASIC_AUTH
+              valueFrom:
+                secretKeyRef:
+                  key: registry-basic-auth
+                  name: depot-credentials
+          volumeMounts:
+            - name: registry-proxy-template
+              mountPath: /templates
+            - name: registry-proxy-rendered
+              mountPath: /rendered
       containers:
         - name: proxy
-          image: "{{ .Values.registryProxy.image }}"
+          image: {{ include "chutes.image" (list . .Values.registryProxy.image) | quote }}
           imagePullPolicy: {{ .Values.registryProxy.imagePullPolicy }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
           ports:
-            - name: http
-              containerPort: 5000
+            - name: {{ .Values.registryProxy.containerPortName | default "http" }}
+              containerPort: {{ .Values.registryProxy.containerPort | default 5000 }}
               protocol: TCP
           resources:
             {{- toYaml .Values.registryProxy.resources | nindent 12 }}
           volumeMounts:
-            - name: registry-proxy-config
+            - name: registry-proxy-rendered
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
+            - name: registry-proxy-tls
+              mountPath: /etc/nginx/ssl
+              readOnly: true
       volumes:
-        - name: registry-proxy-config
+        - name: registry-proxy-template
           configMap:
             name: registry-proxy-config
+        - name: registry-proxy-rendered
+          emptyDir: {}
+        - name: registry-proxy-tls
+          secret:
+            secretName: {{ .Values.registryProxy.tlsSecretName | default "registry-proxy-tls" }}

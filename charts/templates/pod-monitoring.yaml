@@ -1,0 +1,26 @@
+{{- if .Values.gmp.enabled }}
+---
+# PodMonitoring for the API deployment.
+# GKE Managed Prometheus (GMP) does not scrape prometheus.io annotations;
+# it requires explicit PodMonitoring CRDs. Port "http" (8000) exposes
+# /_metrics via prometheus-fastapi-instrumentator + multiprocess collector.
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: api
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  endpoints:
+    - port: http
+      path: /_metrics
+      interval: {{ .Values.gmp.interval | default "30s" }}
+  targetLabels:
+    metadata:
+      - container
+      - pod
+      - top_level_controller_name
+      - top_level_controller_type
+{{- end }}

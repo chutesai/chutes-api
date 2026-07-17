@@ -16,7 +16,8 @@ from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
 from fastapi import HTTPException, Request, status
 from loguru import logger
-from dcap_qvl import get_collateral_and_verify
+import time
+from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
 from api.config import settings, TeeMeasurementConfig
 from cryptography import x509
 from cryptography.x509 import Certificate
@@ -35,7 +36,7 @@ from api.server.exceptions import (
     NoServerCertError,
     NonceError,
 )
-from api.server.quote import TdxQuote, TdxVerificationResult
+from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
 
 from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, RootPassphraseDefault
@@ -275,10 +276,18 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
     logger.info("Verifying TDX quote signature using dcap-qvl")
 
     try:
-        # Perform quote verification
-        verified_report = await get_collateral_and_verify(quote.raw_bytes)
-
-        result = TdxVerificationResult.from_report(verified_report)
+        # Fetch collateral once so the module-identity fallback can reuse it.
+        collateral = await get_collateral(PHALA_PCCS_URL, quote.raw_bytes)
+        try:
+            verified_report = verify(quote.raw_bytes, collateral, int(time.time()))
+            result = TdxVerificationResult.from_report(verified_report)
+        except ValueError as e:
+            # dcap-qvl can't match a TCB level for newer TDX module generations
+            # (see resolve_tdx_tcb_status). This is raised only after all crypto
+            # checks pass, so re-resolve the TCB verdict; anything else fails closed.
+            if "No matching TCB level found" not in str(e):
+                raise
+            result = _resolve_tdx_tcb_via_module_identity(quote, collateral, e)
 
         if result.is_valid:
             logger.success("TDX quote signature verification successful")
@@ -290,9 +299,57 @@ async def verify_quote_signature(quote: TdxQuote) -> TdxVerificationResult:
             raise InvalidSignatureError("TDX quote signature verification failed")
 
         return result
+    except AttestationError:
+        # Already a structured, fail-closed attestation error; don't mask it.
+        raise
     except Exception as e:
         logger.error(f"Unexpected error during quote verification: {e}")
         raise InvalidQuoteError("Unable to parse provided quote for verification.")
+
+
+def _resolve_tdx_tcb_via_module_identity(
+    quote: TdxQuote, collateral, original_error: Exception
+) -> TdxVerificationResult:
+    """
+    Re-resolve a TDX quote's TCB verdict via Intel's module-identity algorithm
+    when dcap-qvl could not match a platform TCB level.
+
+    ``verify`` already validated every signature (and the Intel-signed
+    ``collateral.tcb_info``) before raising, so here we only recompute the TCB
+    status; measurements come from dcap-qvl's parse of the verified TD report.
+    Fails closed on anything unexpected.
+    """
+    parsed = Quote.parse(quote.raw_bytes)
+    if not parsed.is_tdx():
+        # SGX quotes never use TDX module identity; the original failure stands.
+        raise original_error
+    report = parsed.report
+    pck = parsed.pck_extension()
+
+    tcb_info = json.loads(collateral.tcb_info)
+    status, advisory_ids = resolve_tdx_tcb_status(
+        tcb_info=tcb_info,
+        tee_tcb_svn=list(report.tee_tcb_svn),
+        sgx_tcb_components=list(pck.cpu_svn),
+        pce_svn=pck.pce_svn,
+        mr_signer_seam=report.mr_signer_seam,
+        seam_attributes=report.seam_attributes,
+    )
+    logger.info(
+        "Resolved TDX TCB via module identity fallback: "
+        f"status={status}, tee_tcb_svn={list(report.tee_tcb_svn)[:2]}..."
+    )
+    return TdxVerificationResult.from_fields(
+        mr_td=report.mr_td,
+        rt_mr0=report.rt_mr0,
+        rt_mr1=report.rt_mr1,
+        rt_mr2=report.rt_mr2,
+        rt_mr3=report.rt_mr3,
+        report_data=report.report_data,
+        td_attributes=report.td_attributes,
+        status=status,
+        advisory_ids=advisory_ids,
+    )
 
 
 def get_latest_measurement_version() -> str:
@@ -430,18 +487,26 @@ def _verify_measurements(
         raise AttestationError("Measurement verification failed due to an unexpected error.")
 
 
-def get_luks_passphrase() -> str:
+def get_luks_passphrase(version: str) -> str:
     """
-    Get the LUKS passphrase for disk decryption.
+    Get the root-volume LUKS passphrase for the given measurement version.
+
+    Each VM image bakes in a version-specific passphrase, so the passphrase returned by
+    /boot/attestation is keyed by the attested measurement version. There is no fallback.
+
+    Args:
+        version: Attested measurement version (e.g. "1.3.0").
 
     Returns:
-        LUKS passphrase string
-    """
+        LUKS passphrase string for that version.
 
-    passphrase = settings.luks_passphrase
+    Raises:
+        InvalidTdxConfiguration: If no passphrase is configured for the version.
+    """
+    passphrase = settings.luks_passphrases.get(version)
     if not passphrase:
-        logger.error("No LUKS passphrase configured")
-        raise InvalidTdxConfiguration("Missing LUKS passphrase configuration")
+        logger.error(f"No LUKS passphrase configured for version {version}")
+        raise InvalidTdxConfiguration(f"No LUKS passphrase configured for version {version}")
 
     return passphrase
 
@@ -531,41 +596,6 @@ async def _create_vm_cache_config(
     return vm_config
 
 
-async def sync_server_luks_passphrases(
-    db: AsyncSession,
-    miner_hotkey: str,
-    vm_name: str,
-    volume_names: List[str],
-    rekey_volume_names: Optional[List[str]] = None,
-) -> Dict[str, str]:
-    """
-    Sync LUKS state: ensure passphrases for every volume in volume_names, prune others.
-    Volumes in rekey_volume_names get new passphrases (no reuse).
-    """
-    rekey_set = set(rekey_volume_names or [])
-    vm_config = await _get_vm_cache_config(db, miner_hotkey, vm_name)
-    if vm_config is None:
-        vm_config = await _create_vm_cache_config(db, miner_hotkey, vm_name)
-    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
-
-    result: Dict[str, str] = {}
-    for vol in volume_names:
-        if vol in rekey_set or vol not in stored:
-            passphrase = generate_cache_passphrase()
-            stored[vol] = encrypt_passphrase(passphrase)
-            result[vol] = passphrase
-        else:
-            result[vol] = decrypt_passphrase(stored[vol])
-
-    # Prune: keep only volume_names
-    vm_config.volume_passphrases = {k: v for k, v in stored.items() if k in volume_names}
-    vm_config.last_boot_at = func.now()
-    await db.commit()
-    await db.refresh(vm_config)
-    logger.info(f"LUKS sync for VM {vm_name}: volumes={volume_names}, rekey={list(rekey_set)}")
-    return result
-
-
 async def delete_luks_passphrases_for_server(
     db: AsyncSession, miner_hotkey: str, server_name: str
 ) -> None:
@@ -634,7 +664,16 @@ async def rotate_luks_passphrases(
         stored.pop(f"pending_{vol}", None)
 
         new_passphrase = generate_cache_passphrase()
-        stored[f"pending_{vol}"] = encrypt_passphrase(new_passphrase)
+        encrypted_new = encrypt_passphrase(new_passphrase)
+        stored[f"pending_{vol}"] = encrypted_new
+
+        if current is None:
+            # WORKAROUND: remove once setup_storage sets STORAGE_KEY_ADDED=1
+            # after luksFormat (so confirm sends rotated=true on first boot).
+            # Until then the VM confirms with rotated=false, which discards
+            # the pending key — this duplicate write ensures the passphrase
+            # used to format the volume survives the discard.
+            stored[vol] = encrypted_new
 
         result[vol] = LuksVolumeRotation(current=current, next=new_passphrase)
 

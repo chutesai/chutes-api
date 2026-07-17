@@ -4,16 +4,33 @@ metadata:
   name: event-socket
   labels:
     {{- include "eventSocket.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
 spec:
+  {{- if not .Values.eventSocket.hpa.enabled }}
   replicas: {{ .Values.eventSocket.replicaCount }}
+  {{- end }}
+  strategy:
+    type: {{ .Values.eventSocket.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.eventSocket.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.eventSocket.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.eventSocket.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
   selector:
     matchLabels:
       {{- include "eventSocket.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
   template:
     metadata:
       labels:
         {{- include "eventSocket.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
     spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
       {{- with .Values.eventSocket.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -22,20 +39,70 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.eventSocket.tolerations }}
       tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.eventSocket.tolerations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+      volumes:
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
       containers:
         - name: event-socket
-          image: "{{ .Values.eventSocket.image }}"
+          image: {{ include "chutes.image" (list . .Values.eventSocket.image) | quote }}
           imagePullPolicy: {{ .Values.eventSocket.imagePullPolicy }}
-          command: ["poetry", "run", "uvicorn", "api.event_socket_server:app", "--host", "0.0.0.0", "--port", "{{ .Values.eventSocket.service.targetPort }}"]
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - uv
+            - run
+            - uvicorn
+            - api.event_socket_server:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - {{ .Values.eventSocket.service.targetPort | quote }}
           env:
-            {{- include "chutes.sensitiveEnv" . | nindent 12 }}
-            {{- include "chutes.commonEnv" . | nindent 12 }}
-            - name: MEMCACHED
-              value: memcached
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: VALIDATOR_SS58
+              valueFrom:
+                secretKeyRef:
+                  name: validator-credentials
+                  key: ss58
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: "/etc/redis-cacert/cacert.pem"
+            {{- end }}
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: url
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
+          volumeMounts:
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
           ports:
             - name: http
               containerPort: {{ .Values.eventSocket.service.targetPort }}

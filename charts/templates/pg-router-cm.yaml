@@ -1,0 +1,81 @@
+{{- if .Values.pgRouter.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-router-config
+  labels:
+    {{- include "pgRouter.labels" . | nindent 4 }}
+data:
+  haproxy.cfg: |
+    global
+        maxconn 10000
+
+    defaults
+        mode tcp
+        timeout connect 5s
+        timeout client  30m
+        timeout server  30m
+        timeout check   15s
+
+    frontend pg_write
+        bind *:5432
+        default_backend pg_primary
+
+    frontend stats
+        mode http
+        bind *:8404
+        stats enable
+        stats uri /stats
+        stats refresh 5s
+
+    backend pg_primary
+        option httpchk GET /
+        http-check expect status 200
+        default-server inter 1s fall 2 rise 1 on-marked-down shutdown-sessions
+        {{- range .Values.pgRouter.backends }}
+        server {{ .name }} {{ .address }} check addr 127.0.0.1 port {{ .healthPort }}{{ if .backup }} backup{{ end }}
+        {{- end }}
+
+  check_alloydb.py: |
+    import asyncio
+    import os
+
+    import asyncpg
+    from aiohttp import web
+
+    async def check_primary(dsn: str) -> bool:
+        try:
+            conn = await asyncio.wait_for(asyncpg.connect(dsn), timeout=3)
+            row = await conn.fetchrow("SELECT pg_is_in_recovery()")
+            await conn.close()
+            return not row[0]
+        except Exception:
+            return False
+
+    def make_app(dsn: str) -> web.Application:
+        async def handle(request):
+            if await check_primary(dsn):
+                return web.Response(status=200)
+            return web.Response(status=503)
+
+        app = web.Application()
+        app.router.add_get("/", handle)
+        return app
+
+    async def main():
+        dallas_dsn = os.environ["DALLAS_DSN"]
+        iowa_dsn = os.environ["IOWA_DSN"]
+
+        dallas_runner = web.AppRunner(make_app(dallas_dsn))
+        iowa_runner = web.AppRunner(make_app(iowa_dsn))
+
+        await dallas_runner.setup()
+        await iowa_runner.setup()
+
+        await web.TCPSite(dallas_runner, "0.0.0.0", 8008).start()
+        await web.TCPSite(iowa_runner, "0.0.0.0", 8009).start()
+
+        await asyncio.Event().wait()
+
+    asyncio.run(main())
+{{- end }}

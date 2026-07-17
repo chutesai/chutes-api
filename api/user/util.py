@@ -39,7 +39,7 @@ async def refund_deposit(user_id: str, destination: str):
     """
     from api.user.schemas import User
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         user = (
             await session.execute(select(User).where(User.user_id == user_id))
         ).scalar_one_or_none()

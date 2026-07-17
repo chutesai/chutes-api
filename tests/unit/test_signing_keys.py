@@ -43,7 +43,6 @@ def _make_settings(bundle_path: Path):
 
     s = Settings.__new__(Settings)
     object.__setattr__(s, "signing_keys_bundle_path", bundle_path)
-    object.__setattr__(s, "_REQUIRED_SIGNING_KEY_NAMES", Settings._REQUIRED_SIGNING_KEY_NAMES)
     return s
 
 

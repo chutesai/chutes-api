@@ -9,6 +9,20 @@ class NoncePurpose(str, Enum):
     INSTANCE_VERIFICATION = "instance_verification"
 
 
+class ServerHealthStatus(str, Enum):
+    """TEE server liveness, derived live from servers.last_health_at by Server.health_status."""
+
+    HEALTHY = "healthy"  # last successful probe within the degraded threshold
+    DEGRADED = "degraded"  # no comms past the degraded threshold (e.g. >12h)
+    OFFLINE = "offline"  # no comms past the offline threshold (e.g. >72h)
+    UNKNOWN = "unknown"  # last_health_at IS NULL — never seen healthy
+
+
+# Attestation-proxy health endpoint (HTTPS, self-signed cert: CN=attestation-service).
+ATTESTATION_PROXY_PORT = 30443
+ATTESTATION_PROXY_HEALTH_PATH = "/health"
+
+
 ZERO_ADDRESS_HOTKEY = "5C4hrfjw9DjXZTzV3MwzrrAr9P1MJhSrvWGWqi1eSuyUpnhM"  # Public key is 0x00000...
 HOTKEY_HEADER = "X-Chutes-Hotkey"
 COLDKEY_HEADER = "X-Chutes-Coldkey"
@@ -91,6 +105,14 @@ SCALE_DOWN_MAX_DROP_RATIO = 0.6
 # Cooldown between bounty creations per chute to prevent race conditions.
 BOUNTY_COOLDOWN_SECONDS = 600
 
+# How long a bounty (and the matching warmup demand window) stays open, per chute type. Public
+# chutes keep a long window; private non-legacy chutes get a short one so users aren't billed for
+# idle time (affine chutes get a slightly longer window). The warmup request->hot correlation key
+# uses the same value so the two never drift -- see bounty_lifetime_for().
+BOUNTY_LIFETIME_PUBLIC = 86400
+BOUNTY_LIFETIME_PRIVATE = 3600
+BOUNTY_LIFETIME_AFFINE = 7200
+
 # Maximum size of VLM asset (video/image).
 VLM_MAX_SIZE = 100 * 1024 * 1024
 
@@ -137,6 +159,17 @@ INTEGRATED_SUBNETS = {
         "model_substring": "babelbit",
         "max_public_chutes": 3,
     },
+    "chronoseek": {
+        "netuid": 20,
+        "model_substring": "chronoseek",
+        "max_public_chutes": 3,
+        "source_public": False,
+    },
+    "glyph": {
+        "netuid": 117,
+        "model_substring": "glyph",
+        "max_public_chutes": 3,
+    },
     "leoma": {
         "netuid": 99,
         "model_substring": "leoma",
@@ -153,6 +186,19 @@ INTEGRATED_SUBNETS = {
         "max_public_chutes": 3,
     },
 }
+
+
+def is_chute_source_public(name: str) -> bool:
+    """Return whether a chute name maps to publicly visible source code."""
+    normalized_name = (name or "").lower()
+    for config in INTEGRATED_SUBNETS.values():
+        if (
+            config["model_substring"] in normalized_name
+            and config.get("source_public", True) is False
+        ):
+            return False
+    return True
+
 
 # Chute utilization query.
 CHUTE_UTILIZATION_QUERY = """

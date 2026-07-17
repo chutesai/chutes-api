@@ -1,55 +1,41 @@
 {{- define "api.labels" -}}
 app.kubernetes.io/name: api
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "socket.labels" -}}
 app.kubernetes.io/name: socket
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "eventSocket.labels" -}}
 app.kubernetes.io/name: event-socket
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "paymentWatcher.labels" -}}
 app.kubernetes.io/name: payment-watcher
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "btTxTracker.labels" -}}
 app.kubernetes.io/name: bt-tx-tracker
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "usageTracker.labels" -}}
 app.kubernetes.io/name: usage-tracker
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "balanceRefresher.labels" -}}
 app.kubernetes.io/name: balance-refresher
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "logProber.labels" -}}
 app.kubernetes.io/name: log-prober
-redis-access: "true"
-db-access: "true"
+{{- end }}
+
+{{- define "serverHealthProber.labels" -}}
+app.kubernetes.io/name: server-health-prober
 {{- end }}
 
 {{- define "graval.labels" -}}
 app.kubernetes.io/name: graval
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "gravaldb.labels" -}}
@@ -58,54 +44,44 @@ app.kubernetes.io/name: gravaldb
 
 {{- define "gravalWorker.labels" -}}
 app.kubernetes.io/name: graval-worker
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "watchtower.labels" -}}
 app.kubernetes.io/name: watchtower
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "cacher.labels" -}}
 app.kubernetes.io/name: cacher
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "chuteAutoscaler.labels" -}}
 app.kubernetes.io/name: chute-autoscaler
-redis-access: "true"
-db-access: "true"
+{{- end }}
+
+{{- define "chuteAutoscalerDryrun.labels" -}}
+app.kubernetes.io/name: chute-autoscaler-dryrun
 {{- end }}
 
 {{- define "autostaker.labels" -}}
 app.kubernetes.io/name: autostaker
-redis-access: "true"
-db-access: "true"
 {{- end }}
 
 {{- define "forge.labels" -}}
 app.kubernetes.io/name: forge
+{{- end }}
+
+{{- define "remoteForge.labels" -}}
+app.kubernetes.io/name: remote-forge
 redis-access: "true"
 db-access: "true"
 {{- end }}
 
 {{- define "metasync.labels" -}}
-app.kubernetes.io/name: metasync
-redis-access: "true"
-db-access: "true"
+app.kubernetes.io/name: metagraph-syncer
 {{- end }}
 
 {{- define "weightsetter.labels" -}}
 app.kubernetes.io/name: weightsetter
-redis-access: "true"
-db-access: "true"
-{{- end }}
-
-{{- define "redis.labels" -}}
-app.kubernetes.io/name: redis
 {{- end }}
 
 {{- define "cmRedis.labels" -}}
@@ -116,9 +92,6 @@ app.kubernetes.io/name: cm-redis
 app.kubernetes.io/name: quota-redis
 {{- end }}
 
-{{- define "memcached.labels" -}}
-app.kubernetes.io/name: memcached
-{{- end }}
 
 {{- define "registry.labels" -}}
 app.kubernetes.io/name: registry
@@ -128,7 +101,58 @@ app.kubernetes.io/name: registry
 app.kubernetes.io/name: registry-proxy
 {{- end }}
 
+{{- define "attestationProxy.labels" -}}
+app.kubernetes.io/name: attestation-proxy
+{{- end }}
+
+{{- define "claudeProxy.labels" -}}
+app.kubernetes.io/name: claude-proxy
+{{- end }}
+
+{{- define "pgRouter.labels" -}}
+app.kubernetes.io/name: pg-router
+{{- end }}
+
+{{- define "responsesProxy.labels" -}}
+app.kubernetes.io/name: responses-proxy
+{{- end }}
+
+{{- define "connProber.labels" -}}
+app.kubernetes.io/name: conn-prober
+{{- end }}
+
+{{- define "auditExporter.labels" -}}
+app.kubernetes.io/name: audit-exporter
+{{- end }}
+
+{{- define "failedChuteCleanup.labels" -}}
+app.kubernetes.io/name: failed-chute-cleanup
+{{- end }}
+
+{{/*
+NetworkPolicy access label helpers.
+Include chutes.dbAccess and/or chutes.redisAccess in the spec.selector.matchLabels
+and spec.template.metadata.labels of any Deployment/CronJob that needs those policies.
+*/}}
+{{- define "chutes.dbAccess" -}}
+db-access: "true"
+{{- end }}
+
+{{- define "chutes.redisAccess" -}}
+redis-access: "true"
+{{- end }}
+
 {{- define "chutes.sensitiveEnv" -}}
+- name: CLLMV_X25519_PRIVATE_KEY
+  valueFrom:
+    secretKeyRef:
+      key: key
+      name: cllmv-pkey
+- name: PS_OP
+  valueFrom:
+    secretKeyRef:
+      key: key
+      name: inspecto
 - name: HCAPTCHA_SITEKEY
   valueFrom:
    secretKeyRef:
@@ -154,41 +178,6 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       key: token
       name: envdump
-- name: KUBECHECK_SALT
-  valueFrom:
-    secretKeyRef:
-      key: salt
-      name: kubecheck
-- name: KUBECHECK_PREFIX
-  valueFrom:
-    secretKeyRef:
-      key: prefix
-      name: kubecheck
-- name: KUBECHECK_SUFFIX
-  valueFrom:
-    secretKeyRef:
-      key: suffix
-      name: kubecheck
-- name: ENVCHECK_KEY_52
-  valueFrom:
-    secretKeyRef:
-      key: key
-      name: envcheck-52
-- name: ENVCHECK_SALT_52
-  valueFrom:
-    secretKeyRef:
-      key: salt
-      name: envcheck-52
-- name: ENVCHECK_KEY
-  valueFrom:
-    secretKeyRef:
-      key: key
-      name: envcheck
-- name: ENVCHECK_SALT
-  valueFrom:
-    secretKeyRef:
-      key: salt
-      name: envcheck
 - name: CODECHECK_KEY
   valueFrom:
     secretKeyRef:
@@ -214,23 +203,29 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       name: wallet-secret
       key: pg-key
+- name: LUKS_PASSPHRASES
+  valueFrom:
+    secretKeyRef:
+      name: luks-passphrases
+      key: passphrases
 {{- end }}
 
 {{- define "chutes.commonEnv" -}}
-- name: CHUTES_VERSION
-  value: {{ .Values.chutes_version }}
 - name: GRAVAL_URL
   value: https://graval.chutes.ai
-- name: VALIDATOR_SS58
-  valueFrom:
-    secretKeyRef:
-      name: validator-credentials
-      key: ss58
 - name: REDIS_PASSWORD
   valueFrom:
     secretKeyRef:
       name: redis-secret
       key: password
+- name: REDIS_HOST
+  value: {{ .Values.redis.host | quote }}
+- name: REDIS_PORT
+  value: {{ .Values.redis.port | quote }}
+{{- if .Values.redis.cacertSecret }}
+- name: REDIS_CACERT
+  value: "/etc/redis-cacert/cacert.pem"
+{{- end }}
 - name: POSTGRES_PASSWORD
   valueFrom:
     secretKeyRef:
@@ -246,40 +241,34 @@ app.kubernetes.io/name: registry-proxy
     secretKeyRef:
       name: postgres-secret
       key: readonly_url
-- name: INVOCATIONS_DB_URL
-  valueFrom:
-    secretKeyRef:
-      name: invocations-db
-      key: url
-- name: REDIS_URL
-  valueFrom:
-    secretKeyRef:
-      name: redis-secret
-      key: url
+{{- if .Values.s3ProxyUrl }}
+- name: S3_PROXY_URL
+  value: {{ .Values.s3ProxyUrl | quote }}
+{{- end }}
 - name: AWS_ACCESS_KEY_ID
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: access-key-id
 - name: AWS_SECRET_ACCESS_KEY
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: secret-access-key
 - name: AWS_ENDPOINT_URL
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: endpoint-url
 - name: AWS_REGION
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: aws-region
 - name: STORAGE_BUCKET
   valueFrom:
     secretKeyRef:
-      name: s3-credentials
+      name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: bucket
 - name: REGISTRY_PASSWORD
   valueFrom:
@@ -289,3 +278,169 @@ app.kubernetes.io/name: registry-proxy
 - name: REGISTRY_INSECURE
   value: "true"
 {{- end -}}
+
+{{/*
+Logging env for long-running services. LOG_FORMAT=json switches loguru to emit one
+JSON object per line on stdout (see api/log.py configure_structured_logging); the node
+Fluent Bit DaemonSet collects and enriches that stdout. Unset = human-readable stderr.
+*/}}
+{{- define "chutes.loggingEnv" -}}
+- name: LOG_FORMAT
+  value: {{ .Values.logFormat | default "json" | quote }}
+{{- if .Values.logLevel }}
+- name: LOG_LEVEL
+  value: {{ .Values.logLevel | quote }}
+{{- end }}
+{{- end -}}
+
+{{/*
+Volume definition for the managed Redis TLS CA certificate.
+Only emits when redis.cacertSecret is set.
+*/}}
+{{- define "chutes.redisCacertVolume" -}}
+{{- if .Values.redis.cacertSecret }}
+- name: redis-cacert
+  secret:
+    secretName: {{ .Values.redis.cacertSecret }}
+    defaultMode: {{ .Values.redis.cacertMode | default 0444 }}
+    items:
+    - key: ca
+      path: cacert.pem
+{{- end }}
+{{- end }}
+
+{{/*
+VolumeMount for the managed Redis TLS CA certificate.
+Only emits when redis.cacertSecret is set.
+*/}}
+{{- define "chutes.redisCacertMount" -}}
+{{- if .Values.redis.cacertSecret }}
+- mountPath: /etc/redis-cacert
+  name: redis-cacert
+  readOnly: true
+{{- end }}
+{{- end }}
+
+{{/*
+Pod-level security context (seccompProfile).
+*/}}
+{{- define "chutes.podSecurityContext" -}}
+seccompProfile:
+  type: RuntimeDefault
+{{- end }}
+
+{{/*
+Container-level security context (drops NET_RAW capability).
+*/}}
+{{- define "chutes.containerSecurityContext" -}}
+capabilities:
+  drop:
+  - NET_RAW
+{{- end }}
+
+{{/*
+Build a fully-qualified image reference.
+Usage: {{ include "chutes.image" (list . .Values.api.image) | quote }}
+Prepends .Values.imageRegistry (with trailing slash stripped) when set.
+Public Docker Hub images (redis, etc.) are passed directly
+via their own values keys without going through this helper.
+*/}}
+{{- define "chutes.image" -}}
+{{- $root := index . 0 -}}
+{{- $img  := index . 1 -}}
+{{- $reg  := $root.Values.imageRegistry | default "" | trimSuffix "/" -}}
+{{- if $reg -}}
+{{- printf "%s/%s" $reg $img -}}
+{{- else -}}
+{{- $img -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Default node tolerations for amd64 architecture.
+*/}}
+{{- define "chutes.defaultTolerations" -}}
+- effect: NoSchedule
+  key: kubernetes.io/arch
+  operator: Equal
+  value: amd64
+{{- end }}
+
+{{/*
+CronJob container resources. CronJobs in prod carry only an ephemeral-storage
+limit (cpu/memory are requests-only); render that shape regardless of any
+cpu/memory limits present in merged values.
+*/}}
+{{- define "chutes.cronjobResources" -}}
+{{- $lim := .limits | default dict -}}
+requests:
+  {{- toYaml .requests | nindent 2 }}
+limits:
+  ephemeral-storage: {{ index $lim "ephemeral-storage" | default "1Gi" | quote }}
+{{- end }}
+
+{{/*
+Minimal env block used by most CronJobs:
+Redis connection + Validator SS58 + Postgres credentials.
+*/}}
+{{- define "chutes.cronjobEnv" -}}
+- name: VALIDATOR_SS58
+{{- if .ss58Literal }}
+  value: {{ .ss58Literal | quote }}
+{{- else }}
+  valueFrom:
+    secretKeyRef:
+      name: validator-credentials
+      key: ss58
+{{- end }}
+- name: REDIS_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: redis-secret
+      key: password
+- name: REDIS_HOST
+  value: {{ .Values.redis.host | quote }}
+- name: REDIS_PORT
+  value: {{ .Values.redis.port | quote }}
+{{- if .Values.redis.cacertSecret }}
+- name: REDIS_CACERT
+  value: "/etc/redis-cacert/cacert.pem"
+{{- end }}
+- name: POSTGRES_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: password
+- name: POSTGRESQL
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: url
+- name: POSTGRESQL_RO
+  valueFrom:
+    secretKeyRef:
+      name: postgres-secret
+      key: readonly_url
+{{- end }}
+
+{{/*
+CronJob Job/pod retention. Resolution order: per-job override -> global .Values.cronjobDefaults -> hard default.
+Call with: (dict "root" . "job" .Values.<jobKey>)
+*/}}
+{{- define "chutes.successfulJobsHistoryLimit" -}}
+{{- $job := .job | default dict -}}
+{{- $def := .root.Values.cronjobDefaults | default dict -}}
+{{- $job.successfulJobsHistoryLimit | default $def.successfulJobsHistoryLimit | default 3 -}}
+{{- end }}
+
+{{- define "chutes.failedJobsHistoryLimit" -}}
+{{- $job := .job | default dict -}}
+{{- $def := .root.Values.cronjobDefaults | default dict -}}
+{{- $job.failedJobsHistoryLimit | default $def.failedJobsHistoryLimit | default 3 -}}
+{{- end }}
+
+{{- define "chutes.ttlSecondsAfterFinished" -}}
+{{- $job := .job | default dict -}}
+{{- $def := .root.Values.cronjobDefaults | default dict -}}
+{{- $job.ttlSecondsAfterFinished | default $def.ttlSecondsAfterFinished | default 3600 -}}
+{{- end }}

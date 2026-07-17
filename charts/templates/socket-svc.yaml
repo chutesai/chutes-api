@@ -5,11 +5,13 @@ metadata:
   labels:
     {{- include "socket.labels" . | nindent 4 }}
 spec:
-  type: NodePort
+  type: {{ .Values.socket.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
   ports:
-    - nodePort: {{ .Values.socket.service.nodePort }}
-      port: {{ .Values.socket.service.port }}
+    - port: {{ .Values.socket.service.port }}
       targetPort: {{ .Values.socket.service.targetPort }}
-      name: validator-socket
+      protocol: TCP
+      name: http
   selector:
-    {{- include "socket.labels" . | nindent 4 }}
+    app.kubernetes.io/name: socket

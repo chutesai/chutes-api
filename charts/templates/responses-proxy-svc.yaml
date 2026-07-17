@@ -1,0 +1,19 @@
+{{- if .Values.responsesProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: responses-proxy
+  labels:
+    {{- include "responsesProxy.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.responsesProxy.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: http
+      port: {{ .Values.responsesProxy.service.port | default 8181 }}
+      targetPort: 8181
+      protocol: TCP
+  selector:
+    {{- include "responsesProxy.labels" . | nindent 4 }}
+{{- end }}

@@ -167,8 +167,35 @@ ADD --chown=chutes balance_refresher.py /app/balance_refresher.py
 ADD --chown=chutes data/cache_hit_cluster_params.json /app/cache_hit_cluster_params.json
 ADD --chown=chutes log_prober.py /app/log_prober.py
 ADD --chown=chutes conn_prober.py /app/conn_prober.py
+ADD --chown=chutes server_health_prober.py /app/server_health_prober.py
 ADD --chown=chutes scripts /app/scripts
 
 ENV PYTHONPATH=/app
 
 ENTRYPOINT ["uv", "run", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--loop", "uvloop", "--http", "httptools"]
+
+
+###
+# REMOTE FORGE (Depot.dev remote builders - no privileged mode needed)
+###
+FROM api AS remote-forge
+
+# Install depot CLI
+RUN curl -L https://depot.dev/install-cli.sh | sh
+ENV DEPOT_INSTALL_DIR="/home/chutes/.depot/bin"
+ENV PATH="$DEPOT_INSTALL_DIR:$PATH"
+
+# Install cosign (for signing - lightweight, doesn't pull images)
+USER root
+ENV COSIGN_VERSION=2.5.3
+RUN curl -LO "https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign_${COSIGN_VERSION}_amd64.deb" && \
+    dpkg -i cosign_${COSIGN_VERSION}_amd64.deb && \
+    rm cosign_${COSIGN_VERSION}_amd64.deb
+
+# Install crane (for querying image digests from registry)
+ENV CRANE_VERSION=0.21.6
+RUN curl -sL "https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" | \
+    tar -xz -C /usr/local/bin crane
+USER chutes
+
+ENTRYPOINT ["uv", "run", "python", "-m", "api.image.remote_forge"]

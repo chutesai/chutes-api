@@ -63,6 +63,28 @@ from api.idp.templater import authorize_page, error_page, login_page
 router = APIRouter()
 
 
+# Responses that depend on the current session shouldn't be reused from a browser or proxy cache.
+NO_STORE_HEADERS = {"Cache-Control": "no-store"}
+
+
+class _NoStoreMixin:
+    """Stamps NO_STORE_HEADERS onto a Response subclass so the browser re-fetches each time
+    (including from the back/forward cache) rather than reusing a cached copy."""
+
+    def init_headers(self, headers=None):
+        super().init_headers(headers)
+        for key, value in NO_STORE_HEADERS.items():
+            self.headers[key] = value
+
+
+class NoStoreHTMLResponse(_NoStoreMixin, HTMLResponse):
+    """HTML pages (login, consent, error) that reflect the current session."""
+
+
+class NoStoreJSONResponse(_NoStoreMixin, JSONResponse):
+    """JSON responses (token issuance/errors) that carry session-dependent data."""
+
+
 @router.get("/scopes")
 async def list_scopes():
     """
@@ -93,7 +115,7 @@ async def cli_login(
     """
     # Verify nonce exists and hasn't been used
     if not await verify_and_consume_login_nonce(nonce):
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_nonce", "Invalid or expired nonce. Please try again."),
             status_code=400,
         )
@@ -103,13 +125,13 @@ async def cli_login(
         signature_bytes = bytes.fromhex(signature)
         keypair = Keypair(hotkey)
         if not keypair.verify(nonce, signature_bytes):
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=error_page("invalid_signature", "Invalid signature."),
                 status_code=400,
             )
     except Exception as e:
         logger.warning(f"CLI login signature verification failed: {e}")
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_signature", "Invalid signature format."),
             status_code=400,
         )
@@ -118,7 +140,7 @@ async def cli_login(
     user = (await db.execute(select(User).where(User.hotkey == hotkey))).scalar_one_or_none()
 
     if not user:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("no_account", "No account found for this hotkey."),
             status_code=404,
         )
@@ -686,9 +708,17 @@ async def authorize_get(
     Displays login page if not authenticated, consent page if authenticated.
     Checks for existing chutes-session-token cookie for SSO.
     """
+    log = logger.bind(
+        endpoint="authorize",
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        response_type=response_type,
+        scope=scope,
+    )
     # Validate response_type
     if response_type != "code":
-        return HTMLResponse(
+        log.warning("authorize rejected: unsupported response_type, only 'code' is supported")
+        return NoStoreHTMLResponse(
             content=error_page(
                 "unsupported_response_type", "Only 'code' response type is supported"
             ),
@@ -698,14 +728,22 @@ async def authorize_get(
     # Validate client
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        log.warning("authorize rejected: no app found for client_id (invalid_client)")
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
 
+    log = log.bind(app_id=app.app_id)
+
     # Validate redirect_uri
     if not app.is_valid_redirect_uri(redirect_uri):
-        return HTMLResponse(
+        # redirect_uri is matched exactly against the registered list -- log both so the mismatch
+        # (trailing slash, scheme, port, path) is visible without a DB round-trip.
+        log.bind(registered_redirect_uris=app.redirect_uris).warning(
+            "authorize rejected: redirect_uri not registered for this app (invalid_redirect_uri)"
+        )
+        return NoStoreHTMLResponse(
             content=error_page(
                 "invalid_redirect_uri", "Redirect URI not registered for this application"
             ),
@@ -714,7 +752,11 @@ async def authorize_get(
 
     # Validate PKCE if provided (only S256 is allowed per RFC 7636 recommendation)
     if code_challenge and code_challenge_method != "S256":
-        return HTMLResponse(
+        log.bind(code_challenge_method=code_challenge_method).warning(
+            "authorize rejected: unsupported PKCE code_challenge_method, only S256 is supported "
+            "(invalid_request)"
+        )
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Only S256 code_challenge_method is supported"),
             status_code=400,
         )
@@ -728,6 +770,9 @@ async def authorize_get(
             user = await get_user_from_token(session_token, request)
             if user:
                 # User is already authenticated - skip to consent page
+                log.bind(user_id=user.user_id).info(
+                    "authorize: valid session cookie, redirecting to consent (SSO)"
+                )
                 session_id = str(uuid.uuid4())
                 session_data = json.dumps(
                     {
@@ -749,9 +794,12 @@ async def authorize_get(
                     url=f"/idp/authorize/consent?session_id={session_id}",
                     status_code=302,
                 )
-        except Exception:
-            # Invalid session token - fall through to login page
-            pass
+        except Exception as exc:
+            # Invalid/expired session token - fall through to login page. diagnose=False on the
+            # sink keeps locals (the token) out of the traceback; the token itself is never bound.
+            log.opt(exception=exc).debug(
+                "authorize: session cookie invalid, falling through to login page"
+            )
 
     # Build the current authorization URL for the create account redirect
     current_url = str(request.url)
@@ -760,7 +808,8 @@ async def authorize_get(
     nonce = await create_login_nonce()
 
     # Show login page
-    return HTMLResponse(
+    log.debug("authorize: presenting login page (no valid session)")
+    return NoStoreHTMLResponse(
         content=login_page(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -797,14 +846,14 @@ async def login_post(
     # Validate client
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
 
     # Validate redirect_uri
     if not app.is_valid_redirect_uri(redirect_uri):
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_redirect_uri", "Redirect URI not registered"),
             status_code=400,
         )
@@ -815,7 +864,7 @@ async def login_post(
         # Fingerprint authentication
         if not fingerprint:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -837,7 +886,7 @@ async def login_post(
 
         if not user:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -856,7 +905,7 @@ async def login_post(
         # Hotkey signature authentication
         if not hotkey or not signature or not nonce:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -874,7 +923,7 @@ async def login_post(
         # Verify nonce exists and hasn't been used
         if not await verify_and_consume_login_nonce(nonce):
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -895,7 +944,7 @@ async def login_post(
             keypair = Keypair(hotkey)
             if not keypair.verify(nonce, signature_bytes):
                 new_nonce = await create_login_nonce()
-                return HTMLResponse(
+                return NoStoreHTMLResponse(
                     content=login_page(
                         client_id=client_id,
                         redirect_uri=redirect_uri,
@@ -912,7 +961,7 @@ async def login_post(
         except Exception as e:
             logger.warning(f"Hotkey signature verification failed: {e}")
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -932,7 +981,7 @@ async def login_post(
 
         if not user:
             new_nonce = await create_login_nonce()
-            return HTMLResponse(
+            return NoStoreHTMLResponse(
                 content=login_page(
                     client_id=client_id,
                     redirect_uri=redirect_uri,
@@ -947,7 +996,7 @@ async def login_post(
                 )
             )
     else:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Invalid authentication method"),
             status_code=400,
         )
@@ -1014,7 +1063,7 @@ async def authorize_consent_page(
     """Show authorization consent page."""
     session_data = await _get_session_data(session_id)
     if not session_data:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Session expired. Please try again."),
             status_code=400,
         )
@@ -1028,21 +1077,21 @@ async def authorize_consent_page(
 
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
 
     user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
     if not user:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "User not found"),
             status_code=400,
         )
 
     scopes_list = scope.split() if scope else ["profile"]
 
-    return HTMLResponse(
+    return NoStoreHTMLResponse(
         content=authorize_page(
             client_id=client_id,
             redirect_uri=redirect_uri,
@@ -1073,7 +1122,7 @@ async def authorize_consent(
     # Get session data (contains all authorization context)
     session_data = await _get_session_data(session_id)
     if not session_data:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "Session expired. Please try again."),
             status_code=400,
         )
@@ -1090,7 +1139,7 @@ async def authorize_consent(
     # Get app
     app = await get_app_by_client_id(client_id)
     if not app:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_client", "Unknown client_id"),
             status_code=400,
         )
@@ -1098,7 +1147,7 @@ async def authorize_consent(
     # Get user
     user = (await db.execute(select(User).where(User.user_id == user_id))).scalar_one_or_none()
     if not user:
-        return HTMLResponse(
+        return NoStoreHTMLResponse(
             content=error_page("invalid_request", "User not found"),
             status_code=400,
         )
@@ -1173,12 +1222,22 @@ async def token_endpoint(
             header_client_id, header_client_secret = decoded.split(":", 1)
             client_id = client_id or header_client_id
             client_secret = client_secret or header_client_secret
-        except Exception:
-            pass
+        except Exception as exc:
+            # Malformed Basic auth header -- client credentials silently won't be picked up here,
+            # which typically surfaces downstream as invalid_client. Log so it's traceable.
+            logger.opt(exception=exc).warning(
+                "token endpoint: failed to decode Basic Authorization header for client credentials"
+            )
 
     if grant_type == "authorization_code":
         if not code or not redirect_uri or not client_id:
-            return JSONResponse(
+            logger.bind(
+                grant_type=grant_type,
+                client_id=client_id,
+                has_code=bool(code),
+                has_redirect_uri=bool(redirect_uri),
+            ).warning("token endpoint: missing required parameters for authorization_code grant")
+            return NoStoreJSONResponse(
                 content={
                     "error": "invalid_request",
                     "error_description": "Missing required parameters",
@@ -1195,22 +1254,26 @@ async def token_endpoint(
         )
 
         if error:
-            return JSONResponse(
-                content={"error": error},
-                status_code=400,
-            )
+            return NoStoreJSONResponse(content={"error": error}, status_code=400)
 
-        return TokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=refresh_tok,
-            scope=" ".join(scopes) if scopes else None,
+        return NoStoreJSONResponse(
+            content=TokenResponse(
+                access_token=access_token,
+                token_type="Bearer",
+                expires_in=expires_in,
+                refresh_token=refresh_tok,
+                scope=" ".join(scopes) if scopes else None,
+            ).model_dump()
         )
 
     elif grant_type == "refresh_token":
         if not refresh_token or not client_id:
-            return JSONResponse(
+            logger.bind(
+                grant_type=grant_type,
+                client_id=client_id,
+                has_refresh_token=bool(refresh_token),
+            ).warning("token endpoint: missing required parameters for refresh_token grant")
+            return NoStoreJSONResponse(
                 content={
                     "error": "invalid_request",
                     "error_description": "Missing required parameters",
@@ -1225,21 +1288,23 @@ async def token_endpoint(
         )
 
         if error:
-            return JSONResponse(
-                content={"error": error},
-                status_code=400,
-            )
+            return NoStoreJSONResponse(content={"error": error}, status_code=400)
 
-        return TokenResponse(
-            access_token=access_token,
-            token_type="Bearer",
-            expires_in=expires_in,
-            refresh_token=new_refresh,
-            scope=" ".join(scopes) if scopes else None,
+        return NoStoreJSONResponse(
+            content=TokenResponse(
+                access_token=access_token,
+                token_type="Bearer",
+                expires_in=expires_in,
+                refresh_token=new_refresh,
+                scope=" ".join(scopes) if scopes else None,
+            ).model_dump()
         )
 
     else:
-        return JSONResponse(
+        logger.bind(grant_type=grant_type, client_id=client_id).warning(
+            "token endpoint: unsupported grant_type"
+        )
+        return NoStoreJSONResponse(
             content={"error": "unsupported_grant_type"},
             status_code=400,
         )

@@ -1,0 +1,39 @@
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: event-socket-netpol
+spec:
+  # WARNING: selects `app: event-socket` (no pod carries that label) -> inert. See claude-proxy-netpol.
+  podSelector:
+    matchLabels:
+      app: event-socket
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - ports:
+    - port: 8000
+      protocol: TCP
+  egress:
+  - ports:
+    - port: 5432
+      protocol: TCP
+    to:
+    - podSelector:
+        matchLabels:
+          app.kubernetes.io/name: pg-router
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+  - ports:
+    - port: 5432
+      protocol: TCP
+    - port: 6378
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: {{ .Values.networkPolicies.internalCidr }}
+{{- end }}

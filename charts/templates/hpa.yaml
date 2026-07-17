@@ -1,0 +1,67 @@
+{{/*
+Horizontal Pod Autoscalers for traffic-serving deployments.
+Each block is independently gated by <service>.hpa.enabled.
+Scale on CPU by default; memory target is optional.
+*/}}
+
+{{- define "chutes.hpa" -}}
+{{- $name    := index . 0 -}}
+{{- $cfg     := index . 1 -}}
+{{- $release := index . 2 -}}
+{{- if $cfg.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $release.Namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ $cfg.hpa.minReplicas | default 2 }}
+  maxReplicas: {{ $cfg.hpa.maxReplicas | default 10 }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $cfg.hpa.targetCPUUtilizationPercentage | default 70 }}
+  {{- if $cfg.hpa.targetMemoryUtilizationPercentage }}
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{ $cfg.hpa.targetMemoryUtilizationPercentage }}
+  {{- end }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ $cfg.hpa.scaleDownStabilizationSeconds | default 300 }}
+      policies:
+        - type: Percent
+          value: 25
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: {{ $cfg.hpa.scaleUpStabilizationSeconds | default 30 }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 4
+          periodSeconds: 30
+      selectPolicy: Max
+---
+{{- end }}
+{{- end }}
+
+{{- if not .Values.api.keda.enabled }}
+{{- include "chutes.hpa" (list "api" .Values.api .) }}
+{{- end }}
+{{- include "chutes.hpa" (list "socket"         .Values.socket         .) }}
+{{- include "chutes.hpa" (list "event-socket"   .Values.eventSocket    .) }}
+{{- include "chutes.hpa" (list "forge"          .Values.forge          .) }}
+{{- include "chutes.hpa" (list "graval-worker"  .Values.gravalWorker   .) }}
+{{- include "chutes.hpa" (list "registry-proxy" .Values.registryProxy  .) }}

@@ -42,7 +42,6 @@ from api.util import (
     semcomp,
 )
 from api.miner_client import sign_request
-from api.rate_limit import rate_limit
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
 from api.constants import DIFFUSION_PRICE_MULT_PER_STEP
 from api.user.service import chutes_user_id, subnet_role_accessible
@@ -74,7 +73,6 @@ MAX_INSTANCES_RETURNED = 5
 async def get_e2e_instances(
     chute_id: str,
     current_user: User = Depends(get_current_user(raise_not_found=True, allow_api_key=True)),
-    _rate_limit: None = Depends(rate_limit("e2e_instances", requests_per_minute=10)),
 ):
     """
     Discover E2E-capable instances for a chute and get nonces for invocation.
@@ -166,6 +164,7 @@ async def e2e_invoke(
     x_e2e_nonce: str = Header(..., alias="X-E2E-Nonce"),
     x_e2e_stream: str = Header("false", alias="X-E2E-Stream"),
     x_e2e_path: str = Header("/", alias="X-E2E-Path"),
+    x_e2ee_usage_passthrough: str = Header("false", alias="X-E2EE-Usage-Passthrough"),
 ):
     """
     Relay an E2E encrypted invocation to a specific instance.
@@ -175,6 +174,7 @@ async def e2e_invoke(
     instance_id = x_instance_id
     nonce_token = x_e2e_nonce
     is_stream = x_e2e_stream.lower() == "true"
+    usage_passthrough = x_e2ee_usage_passthrough.lower() == "true"
 
     # Validate + consume nonce atomically via Lua script.
     hash_key = f"e2e_nonces:{user_id}:{chute_id}"
@@ -363,6 +363,7 @@ async def e2e_invoke(
                     conn_id,
                     request,
                     pooled,
+                    usage_passthrough,
                 ),
                 media_type="text/event-stream",
                 headers=build_response_headers(request),
@@ -442,6 +443,7 @@ async def _stream_e2e_response(
     conn_id,
     request,
     pooled,
+    usage_passthrough=False,
 ):
     """
     Stream E2E response chunks, extracting usage events for billing.
@@ -477,8 +479,8 @@ async def _stream_e2e_response(
                             metrics["ct"] = (usage.get("prompt_tokens_details") or {}).get(
                                 "cached_tokens", 0
                             )
-                        # Usage-only events are for billing only; never relay to client.
-                        if set(obj.keys()) == {"usage"}:
+                        # Usage-only events are for billing; only relay if passthrough enabled.
+                        if set(obj.keys()) == {"usage"} and not usage_passthrough:
                             continue
                 except Exception:
                     pass

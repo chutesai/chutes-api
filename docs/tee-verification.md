@@ -346,7 +346,8 @@ The TD must not be running in debug mode. Debug mode is indicated by bit 0 of `t
 ```python
 td_report = report.get("report", {}).get("TD10", {})
 td_attributes = td_report.get("td_attributes", "")
-attr_value = int(td_attributes, 16)
+# td_attributes is hex-encoded in little-endian (memory) byte order
+attr_value = int.from_bytes(bytes.fromhex(td_attributes), byteorder="little")
 debug_enabled = bool(attr_value & 1)
 assert not debug_enabled, "TD is running in debug mode"
 ```
@@ -511,7 +512,8 @@ def verify_tdx_quote(
     td_report = report.get("report", {}).get("TD10", {})
     td_attributes = td_report.get("td_attributes", "")
     if td_attributes:
-        attr_value = int(td_attributes, 16)
+        # td_attributes is hex-encoded in little-endian (memory) byte order
+        attr_value = int.from_bytes(bytes.fromhex(td_attributes), byteorder="little")
         if attr_value & 1:
             raise ValueError("TD is running in debug mode")
 

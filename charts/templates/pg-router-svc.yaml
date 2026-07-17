@@ -1,0 +1,19 @@
+{{- if .Values.pgRouter.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: pg-router
+  labels:
+    {{- include "pgRouter.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.pgRouter.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: postgres
+      port: {{ .Values.pgRouter.service.port | default 5432 }}
+      targetPort: 5432
+      protocol: TCP
+  selector:
+    {{- include "pgRouter.labels" . | nindent 4 }}
+{{- end }}

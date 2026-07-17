@@ -2,6 +2,7 @@
 GraVal node validation worker.
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import api.database.orms  # noqa
 import os
 import subprocess
@@ -116,6 +117,12 @@ async def _redis_ping_loop():
 
 @broker.on_event(TaskiqEvents.WORKER_STARTUP)
 async def _start_health_check(state):
+    # Resolve the cache cap at startup so a worker with FS_CACHE_MAX_SIZE unset
+    # crashes on boot (KeyError) instead of failing every fs-hash task later.
+    # Only relevant where the filesystem cache is used (CFSV enabled).
+    if os.getenv("CFSV_OP"):
+        cap_bytes = _fs_cache_max_bytes()
+        logger.info(f"FS blob cache cap set to {cap_bytes} bytes")
     server = HTTPServer(("0.0.0.0", HEALTH_PORT), _HealthHandler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     logger.info(f"Graval worker health check listening on :{HEALTH_PORT}")
@@ -487,7 +494,7 @@ async def validate_gpus(uuids: List[str]) -> Tuple[bool, str]:
     Validate GPUs.
     """
     nodes = None
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         if not (
             nodes := (await session.execute(select(Node).where(Node.uuid.in_(uuids))))
             .scalars()
@@ -666,6 +673,163 @@ async def handle_rolling_update(chute_id: str, version: str, reason: str = "code
             await send_bounty_notification(chute_id, bounty_amount)
 
 
+# Bounded on-disk cache for image hash blobs pulled from S3.
+#
+# generate_fs_hash / verify_bytecode_integrity cache the per-image .data and
+# .manifest.json blobs so repeated launch-config validations for the same image
+# don't re-download. Without a size bound these accumulate over the pod's
+# lifetime until pod ephemeral-storage exceeds its limit and kubelet evicts the
+# pod (Exit Code 137, reason=Evicted); the eviction also strands any in-flight
+# task, which surfaces as fs-hash result timeouts on the API side.
+FS_CACHE_DIR = os.getenv("FS_CACHE_DIR", "/tmp/cfsv_cache")
+
+_FS_CACHE_UNITS = (("Ki", 1024), ("Mi", 1024**2), ("Gi", 1024**3), ("Ti", 1024**4))
+
+
+def _fs_cache_max_bytes() -> int:
+    """Cache size cap in bytes, from FS_CACHE_MAX_SIZE (e.g. "3Gi").
+
+    Reads os.environ directly so a worker configured with the cache path but no
+    cap fails loudly rather than silently defaulting and evicting the pod. Kept as
+    a point-of-use read (not a module constant) because the API process also
+    imports this module — it enqueues fs-hash tasks but never runs the cache and
+    doesn't set FS_CACHE_MAX_SIZE, so evaluating it at import would crash the API.
+    """
+    raw = os.environ["FS_CACHE_MAX_SIZE"].strip()
+    for suffix, multiplier in _FS_CACHE_UNITS:
+        if raw.endswith(suffix):
+            return int(float(raw[: -len(suffix)]) * multiplier)
+    return int(raw)
+
+
+def _prune_fs_cache(keep: str = None):
+    """Evict least-recently-used cache files until under the configured cap."""
+    max_bytes = _fs_cache_max_bytes()
+    try:
+        entries = []
+        with os.scandir(FS_CACHE_DIR) as it:
+            for entry in it:
+                if not entry.is_file():
+                    continue
+                # ETag sidecars are tiny and tied to their blob's lifecycle; keep
+                # them out of the size accounting and never evict them on their own.
+                if entry.name.endswith(".etag"):
+                    continue
+                stat = entry.stat()
+                entries.append((entry.path, stat.st_size, stat.st_mtime))
+    except FileNotFoundError:
+        return
+    total = sum(size for _, size, _ in entries)
+    if total <= max_bytes:
+        return
+    for path, size, _ in sorted(entries, key=lambda item: item[2]):
+        if total <= max_bytes:
+            break
+        if path == keep:
+            continue
+        try:
+            os.unlink(path)
+            total -= size
+            # Drop the ETag sidecar with its blob so it can't linger orphaned.
+            try:
+                os.unlink(path + ".etag")
+            except FileNotFoundError:
+                pass
+            logger.info(f"Pruned cached blob {path} ({size} bytes) to respect FS cache limit")
+        except FileNotFoundError:
+            pass
+
+
+async def _s3_etag(s3_key: str) -> str | None:
+    """Return the S3 object's current ETag, or None if it can't be fetched.
+
+    A None return (transient HEAD failure, missing object) is treated by the
+    caller as "can't revalidate" rather than an error, so a blip never fails an
+    otherwise-serviceable cache hit.
+    """
+    try:
+        async with settings.s3_client() as s3:
+            head = await s3.head_object(Bucket=settings.storage_bucket, Key=s3_key)
+        return head.get("ETag")
+    except Exception as e:
+        logger.warning(f"Could not HEAD {s3_key} for cache revalidation: {e}")
+        return None
+
+
+async def _cached_s3_blob(s3_key: str, filename: str, label: str) -> str:
+    """Return a local path to s3_key, downloading into the bounded cache if absent
+    or if the cached copy is stale.
+
+    The cache filename is NOT content-addressed (e.g. "<image_id>.initial.data")
+    and the underlying S3 object is MUTABLE -- a re-forge overwrites
+    <image_id>/initial.data in place under the constant "initial" patch_version.
+    So a name-matched hit is revalidated against the object's current S3 ETag and
+    a mismatch forces a re-download. Without this, a graval pod keeps validating
+    against a pre-re-forge datamap (served from local disk, never rechecked) until
+    the entry is LRU-evicted or the pod restarts -- which is exactly how a
+    correctly re-forged image can still fail filesystem verification.
+
+    Downloads to a temp file and atomically renames so a partial/failed download
+    never leaves a truncated cache entry, then prunes LRU entries after each new
+    download to keep the cache dir under its size cap.
+    """
+    os.makedirs(FS_CACHE_DIR, exist_ok=True)
+    cache_path = os.path.join(FS_CACHE_DIR, filename)
+    etag_path = cache_path + ".etag"
+    current_etag = await _s3_etag(s3_key)
+
+    if os.path.exists(cache_path):
+        cached_etag = None
+        try:
+            with open(etag_path) as f:
+                cached_etag = f.read().strip()
+        except OSError:
+            pass
+        # Serve the cache when the ETag still matches, or when S3 is momentarily
+        # unreachable (current_etag is None) -- a possibly-stale blob beats failing
+        # the launch on a transient HEAD error. A changed ETag (the blob was
+        # re-uploaded) or a missing sidecar falls through to a fresh download.
+        if current_etag is None or (cached_etag and cached_etag == current_etag):
+            logger.info(f"Using cached {label} at {cache_path}")
+            try:
+                os.utime(cache_path, None)  # bump mtime so LRU treats a cache hit as recent
+            except OSError:
+                pass
+            return cache_path
+        logger.info(
+            f"Cached {label} at {cache_path} is stale "
+            f"(etag {cached_etag} != {current_etag}); re-downloading"
+        )
+
+    logger.info(f"Downloading {label} for {filename}")
+    # Prune before downloading too, so the incoming blob has headroom under the
+    # ephemeral-storage limit rather than briefly spiking past it mid-download.
+    _prune_fs_cache()
+    temp_fd, temp_path = tempfile.mkstemp(dir=FS_CACHE_DIR, prefix=f".{filename}.")
+    os.close(temp_fd)
+    try:
+        async with settings.s3_client() as s3:
+            await s3.download_file(settings.storage_bucket, s3_key, temp_path)
+        os.rename(temp_path, cache_path)
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.unlink(temp_path)
+        logger.error(f"Failed to download {label} from S3: {e}")
+        raise Exception(f"Failed to download {label} from S3: {e}")
+    # Persist the ETag so the next hit can revalidate. If the pre-download HEAD
+    # failed, re-HEAD now (S3 may have recovered) so we still capture one.
+    etag_to_store = current_etag if current_etag is not None else await _s3_etag(s3_key)
+    if etag_to_store:
+        try:
+            with open(etag_path, "w") as f:
+                f.write(etag_to_store)
+        except OSError as e:
+            logger.warning(f"Could not persist ETag sidecar {etag_path}: {e}")
+    logger.info(f"Cached {label} to {cache_path}")
+    _prune_fs_cache(keep=cache_path)
+    return cache_path
+
+
 @broker.task
 async def generate_fs_hash(
     image_id: str, patch_version: str, seed: str, sparse: bool, exclude_path: str
@@ -677,7 +841,7 @@ async def generate_fs_hash(
         return "__disabled__"
 
     # Get the chutes version to determine the cfsv binary to use.
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         chutes_version = (
             (await session.execute(select(Image.chutes_version).where(Image.image_id == image_id)))
             .unique()
@@ -697,30 +861,12 @@ async def generate_fs_hash(
     mode = "sparse" if sparse else "full"
     seed_str = str(seed)
 
-    # Make sure our FS datamap is cached.
-    cache_path = f"/tmp/{image_id}.{patch_version}.data"
-    if not os.path.exists(cache_path):
-        logger.info(f"Downloading data file for image_id={image_id}, patch_version={patch_version}")
-        s3_key = f"image_hash_blobs/{image_id}/{patch_version}.data"
-        try:
-            temp_fd, temp_path = tempfile.mkstemp(dir="/tmp", prefix=f"{image_id}.{patch_version}.")
-            os.close(temp_fd)
-            try:
-                async with settings.s3_client() as s3:
-                    await s3.download_file(settings.storage_bucket, s3_key, temp_path)
-                os.rename(temp_path, cache_path)
-                logger.info(
-                    f"Successfully cached data file to {cache_path} for {image_id=} {patch_version=}"
-                )
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                raise
-        except Exception as e:
-            logger.error(f"Failed to download data file from S3: {e}")
-            raise Exception(f"Failed to download image data from S3: {e}")
-    else:
-        logger.info(f"Using cached data file at {cache_path}")
+    # Make sure our FS datamap is cached (bounded cache; see _cached_s3_blob).
+    cache_path = await _cached_s3_blob(
+        f"image_hash_blobs/{image_id}/{patch_version}.data",
+        f"{image_id}.{patch_version}.data",
+        "data file",
+    )
 
     # Now generate the hash.
     cmd = [cfsv_path, "validate", seed_str, mode, cache_path, exclude_path]
@@ -761,32 +907,12 @@ async def verify_bytecode_integrity(
     Download JSON bytecode manifest from S3 and return expected hashes
     for the given modules so the caller can compare against the miner's response.
     """
-    # Download JSON manifest from S3 (cached locally like CFSV data).
-    cache_path = f"/tmp/{image_id}.{patch_version}.manifest.json"
-    if not os.path.exists(cache_path):
-        logger.info(f"Downloading bytecode manifest JSON for {image_id=}, {patch_version=}")
-        s3_key = f"image_hash_blobs/{image_id}/{patch_version}.manifest.json"
-        try:
-            temp_fd, temp_path = tempfile.mkstemp(
-                dir="/tmp", prefix=f"{image_id}.{patch_version}.manifest.json."
-            )
-            os.close(temp_fd)
-            try:
-                async with settings.s3_client() as s3:
-                    await s3.download_file(settings.storage_bucket, s3_key, temp_path)
-                os.rename(temp_path, cache_path)
-                logger.info(
-                    f"Cached bytecode manifest JSON to {cache_path} for {image_id=} {patch_version=}"
-                )
-            except Exception:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
-                raise
-        except Exception as e:
-            logger.error(f"Failed to download bytecode manifest JSON from S3: {e}")
-            raise Exception(f"Failed to download bytecode manifest JSON from S3: {e}")
-    else:
-        logger.info(f"Using cached bytecode manifest JSON at {cache_path}")
+    # Download JSON manifest from S3 (bounded cache; see _cached_s3_blob).
+    cache_path = await _cached_s3_blob(
+        f"image_hash_blobs/{image_id}/{patch_version}.manifest.json",
+        f"{image_id}.{patch_version}.manifest.json",
+        "bytecode manifest JSON",
+    )
 
     # Parse JSON manifest directly — no C library needed.
     with open(cache_path, "r") as f:

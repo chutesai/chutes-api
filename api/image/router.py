@@ -27,7 +27,7 @@ from api.image.schemas import Image
 from api.chute.schemas import Chute
 from api.user.schemas import User
 from api.user.service import get_current_user
-from api.database import get_db_session
+from api.database import get_db_session, db_scalar
 from api.config import settings
 from api.image.response import ImageResponse
 from api.image.util import get_image_by_id_or_name
@@ -42,14 +42,12 @@ router = APIRouter()
 async def stream_build_logs(
     image_id: str,
     offset: Optional[str] = None,
-    db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user(purpose="images", raise_not_found=False)),
 ):
-    image = (
-        (await db.execute(select(Image).where(Image.image_id == image_id)))
-        .unique()
-        .scalar_one_or_none()
-    )
+    # Load + authorize with a short-lived session (db_scalar), then snapshot what the
+    # branches below need. Holding a request-scoped session open across the stream is what
+    # previously left transactions "idle in transaction" for hours (mirrors instance fix #164).
+    image = await db_scalar(select(Image).where(Image.image_id == image_id))
     if not image or (
         not image.public and (not current_user or image.user_id != current_user.user_id)
     ):
@@ -57,11 +55,13 @@ async def stream_build_logs(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Image not found, or does not belong to you",
         )
+    image_status = image.status
+    image_user_id = image.user_id
 
     # Images already built?
-    if image.status.startswith(("built and pushed", "error:")):
+    if image_status.startswith(("built and pushed", "error:")):
         async with settings.s3_client() as s3:
-            log_path = f"forge/{image.user_id}/{image.image_id}.log"
+            log_path = f"forge/{image_user_id}/{image_id}.log"
             try:
                 async with settings.s3_client() as s3:
                     data = io.BytesIO()
@@ -76,7 +76,7 @@ async def stream_build_logs(
                     )
             except Exception:
                 return Response(
-                    content=image.status,
+                    content=image_status,
                     headers={"Content-Type": "text/plain"},
                 )
 

@@ -32,7 +32,7 @@ from api.chute.util import (
 from api.util import recreate_vlm_payload
 from api.user.schemas import User
 from api.user.service import chutes_user_id, get_current_user, subnet_role_accessible
-from api.database import get_session, get_inv_session, get_db_ro_session
+from api.database import get_session, get_db_ro_session
 from api.instance.util import get_chute_target_manager
 from api.invocation.util import (
     get_prompt_prefix_hashes,
@@ -196,7 +196,7 @@ async def get_usage(request: Request):
         "group by chute_id, date "
         "order by date desc, usd_amount desc"
     )
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(query)
         rv = []
         for chute_id, date, usd_amount, invocation_count in result:
@@ -215,7 +215,7 @@ async def get_usage(request: Request):
 async def _cached_get_metrics(table, cache_key):
     if (cached := await settings.redis_client.get(cache_key)) is not None:
         return json.loads(gzip.decompress(base64.b64decode(cached)))
-    async with get_inv_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(text(f"SELECT * FROM {table}"))
         rows = result.mappings().all()
         rv = [dict(row) for row in rows]
@@ -273,7 +273,7 @@ async def get_llm_stats(
         FROM daily_usage
     """)
 
-    async with get_session() as session:
+    async with get_session(readonly=True) as session:
         name_result = await session.execute(name_query, {"system_uid": system_uid})
         name_map = {row.chute_id: row.name for row in name_result}
 
@@ -294,7 +294,7 @@ async def get_llm_stats(
 
     # Merge in tps/ttft from invocations-derived metrics, and backfill
     # token data for dates before usage_data cutoff.
-    async with get_inv_session() as session:
+    async with get_session(readonly=True) as session:
         result = await session.execute(text("SELECT * FROM vllm_metrics"))
         for row in result.mappings():
             key = (row["chute_id"], str(row["date"]))
@@ -928,6 +928,8 @@ async def hostname_invocation(
             payload["model"] = "Qwen/Qwen2.5-Coder-32B-Instruct-TEE"
         elif model == "zai-org/GLM-5-Turbo":
             payload["model"] = "zai-org/GLM-5-TEE"
+        elif model == "Qwen/Qwen3-235B-A22B-Thinking-2507":
+            payload["model"] = "Qwen/Qwen3-235B-A22B-Thinking-2507-TEE"
 
         # No file support currently.
         if isinstance(payload.get("messages"), list):
@@ -980,6 +982,16 @@ async def hostname_invocation(
 
         # Normalize the chat template kwargs thinking keys since there are two...
         if "chat_template_kwargs" in payload:
+            reasoning_effort = payload["chat_template_kwargs"].get("reasoning_effort") or payload[
+                "chat_template_kwargs"
+            ].get("effective_reasoning_effort")
+            if reasoning_effort:
+                payload["chat_template_kwargs"].update(
+                    {
+                        "effective_reasoning_effort": reasoning_effort,
+                        "reasoning_effort": reasoning_effort,
+                    }
+                )
             if (
                 "thinking" in payload["chat_template_kwargs"]
                 and "enable_thinking" not in payload["chat_template_kwargs"]

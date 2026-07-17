@@ -18,6 +18,7 @@ demo*.sh
 *.so
 data/chutes
 .vllmcache
+local
 
 # Distribution / packaging
 .Python
@@ -177,3 +178,5 @@ tests/integration/keys
 .vscode
 *.code-workspace
 **/config/*.yaml
+# Attestation quotes embed host-identifying data (PPID, measurements); never commit
+tests/assets/*.quote

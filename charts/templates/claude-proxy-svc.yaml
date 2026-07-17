@@ -1,0 +1,19 @@
+{{- if .Values.claudeProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: claude-proxy
+  labels:
+    {{- include "claudeProxy.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.claudeProxy.service.type | default "ClusterIP" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  ports:
+    - name: http
+      port: {{ .Values.claudeProxy.service.port | default 8181 }}
+      targetPort: 8181
+      protocol: TCP
+  selector:
+    {{- include "claudeProxy.labels" . | nindent 4 }}
+{{- end }}

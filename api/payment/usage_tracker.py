@@ -23,6 +23,7 @@ This gives us:
 - Simple recovery (completed minutes are self-contained)
 """
 
+import api.logging_bootstrap  # noqa: F401  # configures JSON logging before anything logs
 import gc
 import sys
 import time
@@ -34,6 +35,7 @@ from fastapi import FastAPI, Response, status
 from collections import defaultdict
 from sqlalchemy import text
 from loguru import logger
+from api.log import install_asyncio_exception_handler
 from api.config import settings, SUBSCRIPTION_TIERS
 from api.permissions import Permissioning
 from api.database import get_session
@@ -978,6 +980,7 @@ async def process_usage_queue(batch_size: int = 100):
 
 
 async def main():
+    install_asyncio_exception_handler()
     logger.info("Starting usage tracker...")
 
     # Start health check server

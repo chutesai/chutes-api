@@ -1,0 +1,33 @@
+{{- if .Values.networkPolicies.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  # Live name is "pg-router-np" (not -netpol); kept exact so Argo adopts the existing policy.
+  name: pg-router-np
+spec:
+  # This is the ONE policy whose selector is correct (app.kubernetes.io/name) -- it is enforcing.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: pg-router
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - ports:
+    - port: 5432
+      protocol: TCP
+  egress:
+  - ports:
+    - port: 5432
+      protocol: TCP
+    to:
+    - ipBlock:
+        cidr: {{ .Values.networkPolicies.internalCidr }}
+  - ports:
+    - port: 443
+      protocol: TCP
+    - port: 53
+      protocol: TCP
+    - port: 53
+      protocol: UDP
+{{- end }}

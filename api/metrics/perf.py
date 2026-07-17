@@ -58,7 +58,7 @@ class PerfTracker:
             await settings.redis_client.set(l_key, str(value), ex=self.ttl_seconds)
             return new_avg
         except Exception as e:
-            logger.debug(f"Memcache error: {e}")
+            logger.debug(f"Redis error tracking performance average: {e}")
             return value
 
     async def update_invocation_metrics(

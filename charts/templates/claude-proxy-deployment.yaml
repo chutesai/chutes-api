@@ -1,0 +1,64 @@
+{{- if .Values.claudeProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: claude-proxy
+  labels:
+    {{- include "claudeProxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.claudeProxy.replicaCount | default 2 }}
+  strategy:
+    type: {{ .Values.claudeProxy.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.claudeProxy.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.claudeProxy.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.claudeProxy.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "claudeProxy.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "claudeProxy.labels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: 300
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.claudeProxy.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.claudeProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: claude-proxy
+          image: {{ include "chutes.image" (list . .Values.claudeProxy.image) | quote }}
+          imagePullPolicy: {{ .Values.claudeProxy.imagePullPolicy | default "Always" }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          env:
+            - name: HOST_PORT
+              value: "8181"
+            - name: BACKEND_URL
+              value: {{ .Values.claudeProxy.backendUrl | default "http://api.chutes.svc.cluster.local:8000/v1/chat/completions" | quote }}
+            - name: BACKEND_HOST_HEADER
+              value: {{ .Values.claudeProxy.backendHostHeader | default "llm.chutes.ai" | quote }}
+            - name: RUST_LOG
+              value: "info"
+            - name: CADDY_PORT
+              value: "443"
+            - name: CADDY_DOMAIN
+              value: {{ .Values.claudeProxy.caddyDomain | default "claude.chutes.ai" | quote }}
+            - name: BACKEND_TIMEOUT_SECS
+              value: "600"
+          ports:
+            - name: http
+              containerPort: 8181
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.claudeProxy.resources | nindent 12 }}
+{{- end }}
