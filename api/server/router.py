@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
+from api.request_context import bind_request_context
 
 from api.database import get_db_session
 from api.config import settings
@@ -75,7 +76,7 @@ from api.miner.util import is_miner_blacklisted
 from api.util import is_valid_host, semcomp
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_context)])
 
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
@@ -129,10 +130,9 @@ async def verify_boot_attestation(
             luks_quote_nonce=luks_quote_nonce,
         )
     except AttestationError as e:
-        # Includes NonceError (400) and all quote/GPU errors. Attach the only tracing field
-        # known pre-registration (source IP); the app-level handler emits the structured,
-        # server-bound log line and the safe response.
-        raise e.trace(ip=server_ip)
+        # Includes NonceError (400) and all quote/GPU errors. The failure was already logged
+        # at its detection site (with ambient identity); the boundary only maps to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except Exception as e:
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
@@ -248,8 +248,9 @@ async def attest_luks(
             k3s_encryption_key=result.k3s_encryption_key,
         )
     except AttestationError as e:
-        logger.warning(f"LUKS attest quote verification failed: {str(e)}")
-        raise e
+        # verify_quote logged the failure at its detection site (with ambient identity);
+        # the boundary only maps to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except HTTPException:
         raise
     except Exception as e:
@@ -352,10 +353,11 @@ async def create_server(
             f"Server registration failed: server_id={args.id} host={args.host} miner_hotkey={hotkey} error={e.detail}"
         )
         raise e
-    except AttestationError:
-        # Attestation failures are rendered by the app-level handler (correct status +
-        # safe category). Let them propagate; do NOT fall through to the generic 500 below.
-        raise
+    except AttestationError as e:
+        # register_server already emitted the structured, server-bound failure log; here we
+        # only map the domain error to its HTTP response (correct status + safe message).
+        # Must precede `except HTTPException` so it does NOT fall through to the generic 500.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except HTTPException:
         # Re-raise HTTPExceptions (like blacklist, node conflicts, invalid host) as-is
         raise
@@ -710,10 +712,9 @@ async def verify_runtime_attestation(
     except ServerNotFoundError as e:
         raise e
     except AttestationError as e:
-        # Includes NonceError (400) and all quote/GPU errors. Attach server tracing fields
-        # (server is resolved above) so the app-level handler's structured log is keyed by
-        # server_id / ip / miner_hotkey.
-        raise e.trace(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
+        # Includes NonceError (400) and all quote/GPU errors. Already logged at the detection
+        # site (with ambient server identity); the boundary only maps to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except HTTPException:
         raise
     except Exception as e:

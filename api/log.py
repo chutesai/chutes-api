@@ -31,10 +31,49 @@ import logging
 import threading
 import traceback
 from enum import Enum
+from contextvars import ContextVar
+from typing import Any
 
 from loguru import logger
 
 _HUMAN = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
+
+
+# ---------------------------------------------------------------------------
+# Ambient request identity (contextvars).
+#
+# Identity fields (ip, server_id, instance_id, miner_hotkey, ...) are added incrementally,
+# each as soon as it is resolved -- the request dependency contributes ip/hotkey/path params,
+# then deeper resolvers add server_id/instance_id -- and accumulate into a single per-request
+# context that flows implicitly to every log line, including bare `logger.*` calls at deep
+# raise sites. This is what lets code log a failure where it is detected (with the specific
+# reason) without threading server/instance identity down through call arguments. Isolation
+# is automatic: each request runs in its own asyncio Task with a copied context, so updates
+# never leak between requests.
+#
+# The JSON sink merges these into each record below via setdefault, so an explicit
+# logger.bind(...) / *_logger(...) field always wins over the ambient value.
+# The default is None (not a shared {}): each bind writes a brand-new dict, so there is no
+# process-wide mutable object any request could accidentally mutate in place and leak.
+_log_context: ContextVar[dict | None] = ContextVar("log_context", default=None)
+
+
+def update_log_context(**fields: Any) -> None:
+    """Merge identity fields into the current request's ambient logging context.
+
+    Additive and repeatable: call it at each point an identity becomes known (the request
+    dependency, then deeper resolvers) and the fields accumulate for the rest of the request;
+    passing a key again overwrites it. Drops None values. Every subsequent log line in this
+    request/task carries the accumulated fields, so identity need not be threaded through
+    call args.
+    """
+    vals = {k: v for k, v in fields.items() if v is not None}
+    if not vals:
+        return
+    current = _log_context.get()
+    # Always set a NEW dict -- never mutate the current one in place (it may be the copied
+    # context a parent task shares with sibling tasks).
+    _log_context.set({**current, **vals} if current else dict(vals))
 
 
 class _InterceptHandler(logging.Handler):
@@ -79,6 +118,12 @@ def configure_structured_logging() -> None:
     def _sink(message):
         r = message.record
         extra = dict(r["extra"])
+        # Merge ambient request identity (contextvars). setdefault so an explicit
+        # logger.bind(...) field on the record always wins over the ambient value.
+        ambient = _log_context.get()
+        if ambient:
+            for k, v in ambient.items():
+                extra.setdefault(k, v)
         # Intercepted stdlib records carry the original channel name; native loguru calls
         # fall back to the module name ({name}).
         channel = extra.pop("_channel", None)

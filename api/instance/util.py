@@ -46,7 +46,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from api.server.client import TeeServerClient
 from api.server.schemas import Server
 from api.node.schemas import Node
-from api.server.exceptions import GetEvidenceError
+from api.server.exceptions import AttestationError, GetEvidenceError
 from api.server.util import verify_quote, verify_gpu_evidence
 from api.server.util import get_public_key_hash
 
@@ -1093,6 +1093,12 @@ async def verify_tee_chute(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Attestation service unavailable. The chute attestation proxy could not be reached or returned an error. Please ensure the server is accessible and the attestation service is running.",
         )
+    except AttestationError as exc:
+        # Quote / measurement / GPU-evidence failures. These are domain errors (not
+        # HTTPException); the failure was already logged at its detection site (with ambient
+        # instance identity). Map here so it surfaces with the real 403/400 status and safe
+        # message instead of falling through to the generic 500 below.
+        raise HTTPException(status_code=exc.http_status, detail=exc.message)
     except HTTPException:
         raise
     except Exception as exc:

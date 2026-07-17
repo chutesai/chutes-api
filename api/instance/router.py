@@ -80,6 +80,7 @@ from api.server.service import (
 from api.server.schemas import TeeInstanceEvidence, BootAttestation, Server
 from api.rate_limit import rate_limit
 from api.server.exceptions import (
+    AttestationError,
     InstanceNotFoundError,
     ChuteNotTeeError,
     NonceError,
@@ -104,15 +105,16 @@ from api.util import (
     load_shared_object,
     has_legacy_private_billing,
 )
-from api.log import instance_logger, LifecycleEvent
+from api.log import instance_logger, LifecycleEvent, update_log_context
 from api.encrypted_logs.capture import start_encrypted_log_capture
 from api.bounty.util import check_bounty_exists, delete_bounty
 from starlette.responses import StreamingResponse
 from api.graval_worker import graval_encrypt, verify_proof, generate_fs_hash
 from taskiq import TaskiqResultTimeoutError
 from watchtower import is_kubernetes_env, verify_expected_command, verify_fs_hash
+from api.request_context import bind_request_context
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_context)])
 
 
 async def _maybe_start_log_capture(instance, config_id: str):
@@ -1713,6 +1715,10 @@ async def _validate_launch_config_instance(
             except Exception as exc:
                 logger.warning(f"CLLMV V2 session key decryption error (pre-0.5.5): {exc}")
 
+    # Instance resolve point (shared by TEE and non-TEE launch flows): bind identity so all
+    # downstream logs -- including deep verify_tee_chute / verify_gpu_evidence raise sites --
+    # are correlatable by instance_id / chute_id.
+    update_log_context(instance_id=instance.instance_id, chute_id=launch_config.chute_id)
     return launch_config, nodes, instance, validator_pubkey
 
 
@@ -2164,7 +2170,13 @@ async def validate_tee_launch_config_instance(
     asyncio.create_task(notify_created(instance, gpu_count=gpu_count, gpu_type=gpu_type))
     asyncio.create_task(_maybe_start_log_capture(instance, config_id))
 
-    await verify_gpu_evidence(args.gpu_evidence, expected_nonce)
+    try:
+        await verify_gpu_evidence(args.gpu_evidence, expected_nonce)
+    except AttestationError as exc:
+        # Domain error (not HTTPException); verify_gpu_evidence already logged the failure at
+        # its detection site (with ambient instance identity). Map here so it surfaces with
+        # the real 403/400 status and safe message instead of an unhandled 500.
+        raise HTTPException(status_code=exc.http_status, detail=exc.message)
 
     request_body = await request.json()
 

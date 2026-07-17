@@ -1,24 +1,25 @@
 """
 Server and attestation-specific exceptions.
 
-Paradigm (server router): the *router boundary* is the only layer that speaks HTTP.
-Internal service/util layers raise the domain exceptions below; they never build an
-HTTP response. A single app-level handler (registered in api/main.py for
-``AttestationError``) maps each domain exception to an HTTP response, logs the private
-detail server-side, and returns only safe fields to the client.
+Paradigm: internal service/util layers raise these pure domain exceptions; they carry
+no HTTP or logging knowledge. Each HTTP boundary that surfaces one -- the server router
+endpoints, the ``verify_tee_chute`` helper, and the cert/nonce dependencies -- is
+responsible for logging it with the context that layer has (server_id / ip / hotkey /
+request path) and mapping it to an ``HTTPException(e.http_status, e.message)``. There is
+deliberately no single app-level handler: each boundary logs in its own context, which
+keeps the log lines informative rather than generic.
 
 Each ``AttestationError`` carries:
   - ``message``     -> safe, client-facing text (also exposed as ``detail`` for back-compat)
-  - ``code``        -> stable machine-readable slug (e.g. "invalid_gpu_evidence")
-  - ``http_status`` -> the status the boundary maps it to (also exposed as ``status_code``)
-  - ``context``     -> safe structured fields to return to the client (e.g. failing GPU indices)
+  - ``code``        -> stable machine-readable slug for server-side log filtering
+  - ``http_status`` -> the status a boundary maps it to (also exposed as ``status_code``)
   - ``log_detail``  -> PRIVATE detail for server logs only (hashes, nonces, firmware, raw output)
 
-``context`` and ``log_detail`` are the security boundary: never put reference measurement
-values, nonces, tokens, cert hashes, or raw verifier output in ``message``/``context``.
+``log_detail`` is the security boundary: never put reference measurement values, nonces,
+tokens, cert hashes, or raw verifier output in ``message``.
 """
 
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from fastapi import HTTPException, status
 
@@ -27,9 +28,9 @@ class AttestationError(Exception):
     """
     Base for attestation/verification domain errors raised by server service/util layers.
 
-    Not an HTTPException — the router boundary decides the HTTP response. Exposes
-    ``status_code`` and ``detail`` as aliases so existing callers that read those
-    attributes (and re-raise as HTTPException) keep working unchanged.
+    Not an HTTPException -- the surfacing boundary decides the HTTP response. Exposes
+    ``status_code`` and ``detail`` as aliases so callers/logs that read those attributes
+    keep working unchanged.
     """
 
     http_status: int = status.HTTP_403_FORBIDDEN
@@ -41,29 +42,16 @@ class AttestationError(Exception):
         detail: Optional[str] = None,
         *,
         status_code: Optional[int] = None,
-        context: Optional[Dict[str, Any]] = None,
         log_detail: Optional[str] = None,
-        log_fields: Optional[Dict[str, Any]] = None,
         code: Optional[str] = None,
     ):
         self.message = detail if detail is not None else self.default_message
-        self.context: Dict[str, Any] = dict(context) if context else {}
         self.log_detail = log_detail
-        # Structured tracing fields (server_id, ip, miner_hotkey, ...) bound onto the
-        # server-side log line by the boundary handler. Populated by whichever layer has
-        # the server context; safe to leave empty for deep raise sites that don't.
-        self.log_fields: Dict[str, Any] = dict(log_fields) if log_fields else {}
         if status_code is not None:
             self.http_status = status_code
         if code is not None:
             self.code = code
         super().__init__(self.message)
-
-    def trace(self, **fields: Any) -> "AttestationError":
-        """Attach structured tracing fields (dropping None) and return self, so a catch
-        site with server context can enrich then re-raise: ``raise e.trace(server_id=...)``."""
-        self.log_fields.update({k: v for k, v in fields.items() if v is not None})
-        return self
 
     # Back-compat aliases: callers/logs read e.detail; a couple of catch sites read
     # e.status_code before re-raising as HTTPException.

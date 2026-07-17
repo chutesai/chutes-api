@@ -37,8 +37,6 @@ from api.secret.router import router as secrets_router
 from api.guesser import router as guess_router
 from api.audit.router import router as audit_router
 from api.server.router import router as servers_router
-from api.server.exceptions import AttestationError
-from api.log import bound_logger, LogType, LifecycleEvent
 from api.misc.router import router as misc_router
 from api.idp.router import router as idp_router
 from api.e2e.router import router as e2e_router
@@ -142,36 +140,6 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(default_response_class=ORJSONResponse, lifespan=lifespan)
-
-
-@app.exception_handler(AttestationError)
-async def handle_attestation_error(request: Request, exc: AttestationError) -> ORJSONResponse:
-    """
-    Single HTTP boundary for server attestation domain errors.
-
-    Internal service/util layers raise AttestationError (and subclasses) with a safe
-    client message/context and private log_detail. Here we emit one structured
-    (server_id/ip/miner_hotkey-bound) log line server-side and return only the whitelisted
-    fields to the client. The response is a backward-compatible superset: `detail`
-    (unchanged) plus `code` and optional `context`.
-    """
-    log = bound_logger(
-        event=LifecycleEvent.ATTESTATION_FAIL,
-        log_type=LogType.SERVER,
-        code=exc.code,
-        http_status=exc.http_status,
-        request_path=request.url.path,
-        log_detail=exc.log_detail,
-        **exc.log_fields,  # server_id / ip / miner_hotkey when the raising layer had them
-        **exc.context,  # safe structured fields (e.g. failed_gpus, category)
-    )
-    log.warning(f"Attestation failed: {exc.message}")
-
-    body: dict = {"detail": exc.message, "code": exc.code}
-    if exc.context:
-        body["context"] = exc.context
-    return ORJSONResponse(status_code=exc.http_status, content=body)
-
 
 os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
 Instrumentator(

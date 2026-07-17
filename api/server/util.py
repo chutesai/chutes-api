@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from loguru import logger
 import time
 from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
@@ -61,8 +61,15 @@ def extract_client_cert_hash():
 
             return cert_hash
         except Exception as e:
+            # This runs as a FastAPI dependency (before the route body), so a route-level
+            # try/except cannot map it -- convert to HTTPException here, at the dependency
+            # boundary, exactly like the sibling nonce dependencies. Keep the raw parse
+            # error in the log only; return a safe message to the client.
             logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
-            raise NoClientCertError(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No client certificate found.",
+            )
 
     return _extract_request_client_cert
 
