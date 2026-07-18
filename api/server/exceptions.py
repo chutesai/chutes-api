@@ -2,21 +2,19 @@
 Server and attestation-specific exceptions.
 
 Paradigm: internal service/util layers raise these pure domain exceptions; they carry
-no HTTP or logging knowledge. Each HTTP boundary that surfaces one -- the server router
-endpoints, the ``verify_tee_chute`` helper, and the cert/nonce dependencies -- is
-responsible for logging it with the context that layer has (server_id / ip / hotkey /
-request path) and mapping it to an ``HTTPException(e.http_status, e.message)``. There is
-deliberately no single app-level handler: each boundary logs in its own context, which
-keeps the log lines informative rather than generic.
+no HTTP or logging knowledge. The layer that detects a failure logs the private reason
+(raw verifier output, struct errors, IPs, ...) right at the raise site -- where ambient
+request identity is already bound (see api.log) -- and then raises with only a safe,
+client-facing message. Each HTTP boundary that surfaces one maps it to an
+``HTTPException(e.http_status, e.message)``; it does not re-log.
 
-Each ``AttestationError`` carries:
+Each ``AttestationError`` carries only:
   - ``message``     -> safe, client-facing text (also exposed as ``detail`` for back-compat)
   - ``code``        -> stable machine-readable slug for server-side log filtering
   - ``http_status`` -> the status a boundary maps it to (also exposed as ``status_code``)
-  - ``log_detail``  -> PRIVATE detail for server logs only (hashes, nonces, firmware, raw output)
 
-``log_detail`` is the security boundary: never put reference measurement values, nonces,
-tokens, cert hashes, or raw verifier output in ``message``.
+Security boundary: never put reference measurement values, nonces, tokens, cert hashes,
+or raw verifier output in ``message`` -- log those at the raise site instead.
 """
 
 from typing import Optional
@@ -42,11 +40,9 @@ class AttestationError(Exception):
         detail: Optional[str] = None,
         *,
         status_code: Optional[int] = None,
-        log_detail: Optional[str] = None,
         code: Optional[str] = None,
     ):
         self.message = detail if detail is not None else self.default_message
-        self.log_detail = log_detail
         if status_code is not None:
             self.http_status = status_code
         if code is not None:

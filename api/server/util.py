@@ -735,20 +735,18 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
 
     except FileNotFoundError as e:
         logger.error(f"Failed to verify GPU evidence.  chutes-nvattest command not found?:\n{e}")
-        raise GpuEvidenceError(log_detail=f"chutes-nvattest command not found: {e}")
+        raise GpuEvidenceError()
     except Exception as e:
         logger.error(f"Unexepected exception encoutnered verifying GPU evidence:\n{e}")
-        raise GpuEvidenceError(log_detail=f"Unexpected exception verifying GPU evidence: {e}")
+        raise GpuEvidenceError()
 
     # Raise outside the try so a failed verification surfaces as InvalidGpuEvidenceError
     # (with the verifier output) instead of being swallowed by the except above. The raw
-    # verifier output goes to log_detail (server logs only), never to the client message.
+    # verifier output is logged here (server-side only), never returned in the client message.
     if process.returncode != 0:
         logger.error(
             f"GPU evidence verification failed (chutes-nvattest exit={process.returncode}):\n{output}"
         )
-        raise InvalidGpuEvidenceError(
-            log_detail=f"chutes-nvattest exit={process.returncode}\n{output}"
-        )
+        raise InvalidGpuEvidenceError()
 
     logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))

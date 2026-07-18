@@ -152,7 +152,10 @@ class TdxQuote(ABC):
             return quote
 
         except struct.error as e:
-            raise InvalidQuoteError(f"Failed to parse quote: {str(e)}")
+            # Parse failure of attacker-supplied bytes: log the raw struct error server-side
+            # and return only the generic default message to the client.
+            logger.warning(f"Failed to parse TDX quote: {e}")
+            raise InvalidQuoteError()
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary format for compatibility."""

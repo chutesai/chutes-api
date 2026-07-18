@@ -588,7 +588,7 @@ async def verify_server(
         # Detection-layer log for the whole verify flow. Server identity is already ambient
         # (bound above), so a plain logger call is fully correlatable; `code` distinguishes
         # the category. Re-raise the original domain error; the router boundary maps it to HTTP.
-        logger.error(f"Server verification failed [{e.code}]: {e.log_detail or e.message}")
+        logger.error(f"Server verification failed [{e.code}]: {e.message}")
         failure_reason = e.message
         raise
     except Exception as e:
@@ -785,7 +785,6 @@ async def process_runtime_attestation(
         raise AttestationError(
             "Request source IP does not match the registered server IP.",
             code="ip_mismatch",
-            log_detail=f"registered_ip={server.ip} request_ip={actual_ip}",
         )
 
     # Parse and verify quote
