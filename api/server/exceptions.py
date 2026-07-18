@@ -1,100 +1,155 @@
 """
 Server and attestation-specific exceptions.
+
+Paradigm: internal service/util layers raise these pure domain exceptions; they carry
+no HTTP or logging knowledge. The layer that detects a failure logs the private reason
+(raw verifier output, struct errors, IPs, ...) right at the raise site -- where ambient
+request identity is already bound (see api.log) -- and then raises with only a safe,
+client-facing message. Each HTTP boundary that surfaces one maps it to an
+``HTTPException(e.http_status, e.message)``; it does not re-log.
+
+Each ``AttestationError`` carries only:
+  - ``message``     -> safe, client-facing text (also exposed as ``detail`` for back-compat)
+  - ``code``        -> stable machine-readable slug for server-side log filtering
+  - ``http_status`` -> the status a boundary maps it to (also exposed as ``status_code``)
+
+Security boundary: never put reference measurement values, nonces, tokens, cert hashes,
+or raw verifier output in ``message`` -- log those at the raise site instead.
 """
+
+from typing import Optional
 
 from fastapi import HTTPException, status
 
 
-class AttestationError(HTTPException):
-    """Base exception for attestation failures."""
+class AttestationError(Exception):
+    """
+    Base for attestation/verification domain errors raised by server service/util layers.
 
-    def __init__(self, detail: str, status_code: int = status.HTTP_403_FORBIDDEN):
-        super().__init__(status_code=status_code, detail=detail)
+    Not an HTTPException -- the surfacing boundary decides the HTTP response. Exposes
+    ``status_code`` and ``detail`` as aliases so callers/logs that read those attributes
+    keep working unchanged.
+    """
+
+    http_status: int = status.HTTP_403_FORBIDDEN
+    code: str = "attestation_error"
+    default_message: str = "Attestation failed."
+
+    def __init__(
+        self,
+        detail: Optional[str] = None,
+        *,
+        status_code: Optional[int] = None,
+        code: Optional[str] = None,
+    ):
+        self.message = detail if detail is not None else self.default_message
+        if status_code is not None:
+            self.http_status = status_code
+        if code is not None:
+            self.code = code
+        super().__init__(self.message)
+
+    # Back-compat aliases: callers/logs read e.detail; a couple of catch sites read
+    # e.status_code before re-raising as HTTPException.
+    @property
+    def detail(self) -> str:
+        return self.message
+
+    @property
+    def status_code(self) -> int:
+        return self.http_status
 
 
 class NoClientCertError(AttestationError):
     """Raised when attestation is performed without mTLS."""
 
-    def __init__(self, detail: str = "No client certificate found."):
-        super().__init__(detail=detail)
-
-
-class NoServerCertError(Exception):
-    """Raised when attestation is performed without TLS."""
-
-    def __init__(self, detail: str = "No server certificate found."):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "no_client_cert"
+    default_message = "No client certificate found."
 
 
 class InvalidClientCertError(AttestationError):
-    """Raised when attestation is performed without mTLS."""
+    """Raised when the client certificate does not match the expected hash."""
 
-    def __init__(self, detail: str = "Invalid client certificate provided."):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "invalid_client_cert"
+    default_message = "Invalid client certificate provided."
 
 
 class InvalidQuoteError(AttestationError):
     """Raised when TDX quote is invalid or malformed."""
 
-    def __init__(self, detail: str = "Invalid TDX quote."):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "invalid_quote"
+    default_message = "Invalid TDX quote."
 
 
 class InvalidSignatureError(AttestationError):
     """Raised when TDX quote signature verification fails."""
 
-    def __init__(
-        self,
-        detail: str = "Invalid TDX quote signature. The attestation quote could not be verified.",
-    ):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "invalid_quote_signature"
+    default_message = "Invalid TDX quote signature. The attestation quote could not be verified."
 
 
 class MeasurementMismatchError(AttestationError):
     """Raised when measurements don't match expected values."""
 
-    def __init__(
-        self,
-        detail: str = "Measurement verification failed. Please ensure your server is running the most recent VM.",
-    ):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "measurement_mismatch"
+    default_message = (
+        "Measurement verification failed. Please ensure your server is running the most recent VM."
+    )
 
 
 class GpuEvidenceError(AttestationError):
     """Raised for an unexpected error during GPU evidence verification."""
 
-    def __init__(
-        self,
-        detail: str = "Failed to verify GPU evidence. Please check your GPU attestation configuration.",
-    ):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "gpu_evidence_error"
+    default_message = (
+        "Failed to verify GPU evidence. Please check your GPU attestation configuration."
+    )
 
 
 class InvalidGpuEvidenceError(AttestationError):
-    """Raised for invalid GPU evidence."""
+    """Raised for GPU evidence that fails verification."""
 
-    def __init__(
-        self,
-        detail: str = "Invalid GPU evidence. Please ensure your GPUs support attestation and are properly configured.",
-    ):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "invalid_gpu_evidence"
+    default_message = "Invalid GPU evidence. Please ensure your GPUs support attestation and are properly configured."
 
 
 class NonceError(AttestationError):
     """Raised when nonce validation fails."""
 
-    def __init__(self, detail: str = "Invalid or expired nonce"):
-        super().__init__(detail=detail, status_code=status.HTTP_400_BAD_REQUEST)
+    http_status = status.HTTP_400_BAD_REQUEST
+    code = "nonce_error"
+    default_message = "Invalid or expired nonce"
 
 
 class GetEvidenceError(AttestationError):
     """Raised when unable to retrieve attestation evidence from the server."""
 
-    def __init__(
-        self,
-        detail: str = "Failed to get evidence for attestation. Please ensure the server is accessible and the attestation service is running.",
-    ):
-        super().__init__(detail=detail)
+    http_status = status.HTTP_403_FORBIDDEN
+    code = "get_evidence_error"
+    default_message = (
+        "Failed to get evidence for attestation. Please ensure the server is accessible and the "
+        "attestation service is running."
+    )
+
+
+class NoServerCertError(Exception):
+    """Raised when attestation is performed without TLS (server side)."""
+
+    def __init__(self, detail: str = "No server certificate found."):
+        super().__init__(detail)
+
+
+# --- Non-attestation server errors -------------------------------------------------
+# These remain HTTPException subclasses for now: they are simple, already produce the
+# right status, and (ChuteNotTeeError / InstanceNotFoundError) are consumed by the
+# instance/chute routers. They are out of scope for the attestation-first migration.
 
 
 class ServerNotFoundError(HTTPException):
@@ -107,7 +162,7 @@ class ServerNotFoundError(HTTPException):
 
 
 class ServerRegistrationError(HTTPException):
-    """Raised when server registration fails."""
+    """Raised when server registration fails for non-attestation reasons (DB, unexpected)."""
 
     def __init__(self, detail: str = "Server registration failed"):
         super().__init__(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)

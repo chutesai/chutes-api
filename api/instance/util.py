@@ -30,7 +30,7 @@ from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
 from api.util import notify_deleted, notify_job_deleted, semcomp
-from api.log import instance_logger, bound_logger, LifecycleEvent
+from api.log import instance_logger, bound_logger, LifecycleEvent, update_log_context
 from api.bounty.util import (
     create_bounty_if_not_exists,
     get_bounty_amount,
@@ -46,7 +46,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from api.server.client import TeeServerClient
 from api.server.schemas import Server
 from api.node.schemas import Node
-from api.server.exceptions import GetEvidenceError
+from api.server.exceptions import AttestationError, GetEvidenceError
 from api.server.util import verify_quote, verify_gpu_evidence
 from api.server.util import get_public_key_hash
 
@@ -909,6 +909,11 @@ def create_job_jwt(job_id, filename: str = None) -> str:
 async def load_launch_config_from_jwt(
     db, config_id: str, token: str, allow_retrieved: bool = False
 ) -> LaunchConfig:
+    # config_id is the primary debugging key for the whole launch flow; bind it up front so
+    # every log line here (including the failure warnings below) carries it. These endpoints
+    # authenticate via the JWT, not the X-Chutes-Hotkey header, so the request dependency has
+    # no miner_hotkey to bind -- that (and chute_id) come off the resolved config below.
+    update_log_context(config_id=config_id)
     detail = "Missing or invalid launch config JWT"
     try:
         payload = _decode_chutes_jwt(token, require_exp=True)
@@ -919,6 +924,7 @@ async def load_launch_config_from_jwt(
                 .scalar_one_or_none()
             )
             if config:
+                update_log_context(chute_id=config.chute_id, miner_hotkey=config.miner_hotkey)
                 if not config.retrieved_at:
                     config.retrieved_at = func.now()
                     return config
@@ -1093,6 +1099,12 @@ async def verify_tee_chute(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Attestation service unavailable. The chute attestation proxy could not be reached or returned an error. Please ensure the server is accessible and the attestation service is running.",
         )
+    except AttestationError as exc:
+        # Quote / measurement / GPU-evidence failures. These are domain errors (not
+        # HTTPException); the failure was already logged at its detection site (with ambient
+        # instance identity). Map here so it surfaces with the real 403/400 status and safe
+        # message instead of falling through to the generic 500 below.
+        raise HTTPException(status_code=exc.http_status, detail=exc.message)
     except HTTPException:
         raise
     except Exception as exc:

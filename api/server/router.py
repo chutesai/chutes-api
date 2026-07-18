@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
+from api.request_context import bind_request_context
 
 from api.database import get_db_session
 from api.config import settings
@@ -73,7 +74,7 @@ from api.miner.util import is_miner_blacklisted
 from api.util import is_valid_host, semcomp
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(bind_request_context)])
 
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
@@ -125,12 +126,10 @@ async def verify_boot_attestation(
             key=get_luks_passphrase(measurement_version),
             luks_quote_nonce=luks_quote_nonce,
         )
-    except NonceError as e:
-        logger.warning(f"Boot attestation nonce error: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except AttestationError as e:
-        logger.warning(f"Boot attestation failed: {str(e)}")
-        raise e
+        # Includes NonceError (400) and all quote/GPU errors. The failure was already logged
+        # at its detection site (with ambient identity); the boundary only maps to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except Exception as e:
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
@@ -169,8 +168,9 @@ async def attest_luks(
             k3s_encryption_key=result.k3s_encryption_key,
         )
     except AttestationError as e:
-        logger.warning(f"LUKS attest quote verification failed: {str(e)}")
-        raise e
+        # verify_quote logged the failure at its detection site (with ambient identity);
+        # the boundary only maps to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except HTTPException:
         raise
     except Exception as e:
@@ -273,6 +273,11 @@ async def create_server(
             f"Server registration failed: server_id={args.id} host={args.host} miner_hotkey={hotkey} error={e.detail}"
         )
         raise e
+    except AttestationError as e:
+        # register_server already emitted the structured, server-bound failure log; here we
+        # only map the domain error to its HTTP response (correct status + safe message).
+        # Must precede `except HTTPException` so it does NOT fall through to the generic 500.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except HTTPException:
         # Re-raise HTTPExceptions (like blacklist, node conflicts, invalid host) as-is
         raise
@@ -572,7 +577,13 @@ async def get_runtime_nonce(
 
         actual_ip = request.state.client_ip
         if server.ip != actual_ip:
-            raise Exception()
+            logger.warning(
+                f"Runtime nonce IP mismatch: server_id={server_id} registered_ip={server.ip} request_ip={actual_ip}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request source IP does not match the registered server IP.",
+            )
 
         nonce_info = await create_nonce(server.ip, purpose=NoncePurpose.RUNTIME)
 
@@ -620,14 +631,12 @@ async def verify_runtime_attestation(
 
     except ServerNotFoundError as e:
         raise e
+    except AttestationError as e:
+        # Includes NonceError (400) and all quote/GPU errors. Already logged at the detection
+        # site (with ambient server identity); the boundary only maps to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
     except HTTPException:
         raise
-    except NonceError as e:
-        logger.warning(f"Runtime attestation nonce error: {str(e)}")
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except AttestationError as e:
-        logger.warning(f"Runtime attestation failed: {str(e)}")
-        raise e
     except Exception as e:
         logger.error(f"Unexpected error in runtime attestation: {str(e)}")
         raise HTTPException(

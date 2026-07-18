@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
-from fastapi import Request, status
+from fastapi import HTTPException, Request, status
 from loguru import logger
 import time
 from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
@@ -61,8 +61,15 @@ def extract_client_cert_hash():
 
             return cert_hash
         except Exception as e:
+            # This runs as a FastAPI dependency (before the route body), so a route-level
+            # try/except cannot map it -- convert to HTTPException here, at the dependency
+            # boundary, exactly like the sibling nonce dependencies. Keep the raw parse
+            # error in the log only; return a safe message to the client.
             logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
-            raise NoClientCertError(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="No client certificate found.",
+            )
 
     return _extract_request_client_cert
 
@@ -680,18 +687,31 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
 
             verify_gpus_cmd = ["chutes-nvattest", "--nonce", expected_nonce, "--evidence", fp.name]
 
-            process = await asyncio.create_subprocess_exec(*verify_gpus_cmd)
-
-            await asyncio.gather(process.wait())
-
-            if process.returncode != 0:
-                raise InvalidGpuEvidenceError()
-
-            logger.info("GPU evidence verified successfully.")
+            # Capture the verifier's output (stderr merged into stdout) so the actual
+            # failure reason is logged rather than discarded. communicate() drains the
+            # pipe and waits for exit.
+            process = await asyncio.create_subprocess_exec(
+                *verify_gpus_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await process.communicate()
+            output = stdout.decode(errors="replace").strip() if stdout else ""
 
     except FileNotFoundError as e:
         logger.error(f"Failed to verify GPU evidence.  chutes-nvattest command not found?:\n{e}")
-        raise GpuEvidenceError("Failed to verify GPU evidence.")
+        raise GpuEvidenceError()
     except Exception as e:
         logger.error(f"Unexepected exception encoutnered verifying GPU evidence:\n{e}")
-        raise GpuEvidenceError("Encountered an unexpected exception verifying GPU evidence.")
+        raise GpuEvidenceError()
+
+    # Raise outside the try so a failed verification surfaces as InvalidGpuEvidenceError
+    # (with the verifier output) instead of being swallowed by the except above. The raw
+    # verifier output is logged here (server-side only), never returned in the client message.
+    if process.returncode != 0:
+        logger.error(
+            f"GPU evidence verification failed (chutes-nvattest exit={process.returncode}):\n{output}"
+        )
+        raise InvalidGpuEvidenceError()
+
+    logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))
