@@ -30,7 +30,7 @@ from api.config import settings
 from api.job.schemas import Job
 from api.database import get_session
 from api.util import notify_deleted, notify_job_deleted, semcomp
-from api.log import instance_logger, bound_logger, LifecycleEvent
+from api.log import instance_logger, bound_logger, LifecycleEvent, update_log_context
 from api.bounty.util import (
     create_bounty_if_not_exists,
     get_bounty_amount,
@@ -909,6 +909,11 @@ def create_job_jwt(job_id, filename: str = None) -> str:
 async def load_launch_config_from_jwt(
     db, config_id: str, token: str, allow_retrieved: bool = False
 ) -> LaunchConfig:
+    # config_id is the primary debugging key for the whole launch flow; bind it up front so
+    # every log line here (including the failure warnings below) carries it. These endpoints
+    # authenticate via the JWT, not the X-Chutes-Hotkey header, so the request dependency has
+    # no miner_hotkey to bind -- that (and chute_id) come off the resolved config below.
+    update_log_context(config_id=config_id)
     detail = "Missing or invalid launch config JWT"
     try:
         payload = _decode_chutes_jwt(token, require_exp=True)
@@ -919,6 +924,7 @@ async def load_launch_config_from_jwt(
                 .scalar_one_or_none()
             )
             if config:
+                update_log_context(chute_id=config.chute_id, miner_hotkey=config.miner_hotkey)
                 if not config.retrieved_at:
                     config.retrieved_at = func.now()
                     return config

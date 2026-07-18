@@ -1715,10 +1715,16 @@ async def _validate_launch_config_instance(
             except Exception as exc:
                 logger.warning(f"CLLMV V2 session key decryption error (pre-0.5.5): {exc}")
 
-    # Instance resolve point (shared by TEE and non-TEE launch flows): bind identity so all
-    # downstream logs -- including deep verify_tee_chute / verify_gpu_evidence raise sites --
-    # are correlatable by instance_id / chute_id.
-    update_log_context(instance_id=instance.instance_id, chute_id=launch_config.chute_id)
+    # Instance resolve point (shared by TEE and non-TEE launch flows): bind the full identity
+    # set so any one key -- config_id, instance_id, chute_id, miner_hotkey -- reconstructs the
+    # flow, and so downstream logs (incl. deep verify_tee_chute / verify_gpu_evidence raise
+    # sites) are correlatable regardless of how this resolver was reached.
+    update_log_context(
+        instance_id=instance.instance_id,
+        config_id=launch_config.config_id,
+        chute_id=launch_config.chute_id,
+        miner_hotkey=launch_config.miner_hotkey,
+    )
     return launch_config, nodes, instance, validator_pubkey
 
 
