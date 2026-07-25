@@ -35,7 +35,7 @@ VALIDATOR_HEADER = "X-Chutes-Validator"
 ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 ATTESTATION_SIGNATURE_HEADER = "X-Signature"
 # Injected by the mTLS attestation nginx proxy, carrying MTLS_PROXY_SECRET; proves an
-# attestation request arrived via that proxy (see require_mtls_domain).
+# attestation request arrived via that proxy (see require_mtls_proxy_secret).
 MTLS_PROXY_AUTH_HEADER = "X-Mtls-Proxy-Auth"
 # Injected by the registry-proxy nginx frontend, carrying REGISTRY_PROXY_SECRET; proves a
 # /registry/auth subrequest arrived via the registry proxy (see require_registry_proxy_secret).

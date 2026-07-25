@@ -69,7 +69,7 @@ from api.server.service import (
 )
 from api.server.util import (
     extract_client_cert_hash,
-    require_mtls_domain,
+    require_mtls_proxy_secret,
     extract_client_cert,
 )
 from api.server.exceptions import (
@@ -91,7 +91,7 @@ router = APIRouter(dependencies=[Depends(bind_request_context)])
 async def get_nonce(
     request: Request,
     miner_hotkey: str,
-    _mtls=Depends(require_mtls_domain()),
+    _mtls=Depends(require_mtls_proxy_secret()),
 ):
     """
     Generate a nonce for boot attestation.
@@ -124,7 +124,7 @@ async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
-    _mtls=Depends(require_mtls_domain()),
+    _mtls=Depends(require_mtls_proxy_secret()),
     nonce: str = Depends(validate_boot_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
@@ -178,7 +178,7 @@ async def attest_luks(
     body: LuksAttestRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _mtls=Depends(require_mtls_domain()),
+    _mtls=Depends(require_mtls_proxy_secret()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
     validated_nonce: str = Depends(require_luks_quote_nonce),
 ):
@@ -227,7 +227,7 @@ async def confirm_luks_rotation(
     body: LuksConfirmRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _mtls=Depends(require_mtls_domain()),
+    _mtls=Depends(require_mtls_proxy_secret()),
     _=Depends(require_confirm_nonce),
 ):
     """
@@ -260,7 +260,7 @@ async def provision(
     body: ProvisionRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _mtls=Depends(require_mtls_domain()),
+    _mtls=Depends(require_mtls_proxy_secret()),
     client_cert: Certificate = Depends(extract_client_cert()),
     validated_nonce: str = Depends(require_luks_quote_nonce),
 ):
@@ -308,7 +308,7 @@ async def provision_confirm(
     body: LuksConfirmRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _mtls=Depends(require_mtls_domain()),
+    _mtls=Depends(require_mtls_proxy_secret()),
     _=Depends(require_confirm_nonce),
 ):
     """

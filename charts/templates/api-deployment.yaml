@@ -140,10 +140,6 @@ spec:
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
-            {{- if .Values.mtlsDomain }}
-            - name: MTLS_DOMAIN
-              value: "{{ .Values.mtlsDomain }}"
-            {{- end }}
             - name: MTLS_PROXY_SECRET
               valueFrom:
                 secretKeyRef:

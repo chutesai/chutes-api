@@ -1,6 +1,6 @@
 """
-Unit tests for mTLS domain enforcement:
-  - require_mtls_domain() FastAPI dependency
+Unit tests for mTLS proxy enforcement:
+  - require_mtls_proxy_secret() FastAPI dependency
   - _get_client_certificate() proxy-secret guard
 """
 
@@ -8,7 +8,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from fastapi import HTTPException
 
-from api.server.util import require_mtls_domain, _get_client_certificate
+from api.server.util import require_mtls_proxy_secret, _get_client_certificate
 
 
 # ---------------------------------------------------------------------------
@@ -30,38 +30,40 @@ def _make_request(host: str, proxy_auth: str | None = None, client_cert: str | N
     return request
 
 
-def _make_settings(*, mtls_domain: str = "tdx-attestation.chutes.ai", mtls_proxy_secret=None):
-    s = MagicMock()
-    s.mtls_domain = mtls_domain
-    s.mtls_proxy_secret = mtls_proxy_secret
-    return s
-
-
 # ---------------------------------------------------------------------------
-# require_mtls_domain — host-header check
+# require_mtls_proxy_secret — proxy-secret enforcement (fail-closed)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 @patch("api.server.util.settings")
-async def test_correct_host_no_secret_passes(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = None
+async def test_correct_secret_passes(mock_settings):
+    mock_settings.mtls_proxy_secret = "supersecret"
 
-    checker = require_mtls_domain()
-    request = _make_request("tdx-attestation.chutes.ai")
+    checker = require_mtls_proxy_secret()
+    request = _make_request("any-host", proxy_auth="supersecret")
     # Should not raise
     await checker(request)
 
 
 @pytest.mark.asyncio
 @patch("api.server.util.settings")
-async def test_wrong_host_is_rejected(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = None
+async def test_host_is_ignored(mock_settings):
+    """Host header is no longer inspected; only the proxy secret matters."""
+    mock_settings.mtls_proxy_secret = "supersecret"
 
-    checker = require_mtls_domain()
-    request = _make_request("api.chutes.ai")
+    checker = require_mtls_proxy_secret()
+    await checker(_make_request("api.chutes.ai", proxy_auth="supersecret"))
+    await checker(_make_request("", proxy_auth="supersecret"))
+
+
+@pytest.mark.asyncio
+@patch("api.server.util.settings")
+async def test_wrong_secret_is_rejected(mock_settings):
+    mock_settings.mtls_proxy_secret = "supersecret"
+
+    checker = require_mtls_proxy_secret()
+    request = _make_request("any-host", proxy_auth="wrongsecret")
     with pytest.raises(HTTPException) as exc_info:
         await checker(request)
     assert exc_info.value.status_code == 403
@@ -69,77 +71,12 @@ async def test_wrong_host_is_rejected(mock_settings):
 
 @pytest.mark.asyncio
 @patch("api.server.util.settings")
-async def test_host_check_is_case_insensitive(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = None
-
-    checker = require_mtls_domain()
-    request = _make_request("TDX-ATTESTATION.CHUTES.AI")
-    await checker(request)
-
-
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_host_with_port_is_allowed(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = None
-
-    checker = require_mtls_domain()
-    request = _make_request("tdx-attestation.chutes.ai:443")
-    await checker(request)
-
-
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_missing_host_header_is_rejected(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = None
-
-    checker = require_mtls_domain()
-    request = _make_request("")
-    with pytest.raises(HTTPException) as exc_info:
-        await checker(request)
-    assert exc_info.value.status_code == 403
-
-
-# ---------------------------------------------------------------------------
-# require_mtls_domain — proxy-secret check
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_correct_host_and_secret_passes(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
+async def test_missing_secret_header_is_rejected(mock_settings):
     mock_settings.mtls_proxy_secret = "supersecret"
 
-    checker = require_mtls_domain()
-    request = _make_request("tdx-attestation.chutes.ai", proxy_auth="supersecret")
-    await checker(request)
-
-
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_correct_host_wrong_secret_is_rejected(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = "supersecret"
-
-    checker = require_mtls_domain()
-    request = _make_request("tdx-attestation.chutes.ai", proxy_auth="wrongsecret")
-    with pytest.raises(HTTPException) as exc_info:
-        await checker(request)
-    assert exc_info.value.status_code == 403
-
-
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_correct_host_missing_secret_header_is_rejected(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = "supersecret"
-
-    checker = require_mtls_domain()
+    checker = require_mtls_proxy_secret()
     # No X-Mtls-Proxy-Auth header
-    request = _make_request("tdx-attestation.chutes.ai")
+    request = _make_request("any-host")
     with pytest.raises(HTTPException) as exc_info:
         await checker(request)
     assert exc_info.value.status_code == 403
@@ -147,34 +84,15 @@ async def test_correct_host_missing_secret_header_is_rejected(mock_settings):
 
 @pytest.mark.asyncio
 @patch("api.server.util.settings")
-async def test_wrong_host_with_correct_secret_is_still_rejected(mock_settings):
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = "supersecret"
+async def test_unconfigured_secret_fails_closed(mock_settings):
+    """When MTLS_PROXY_SECRET is not configured, the endpoint refuses to serve (503)."""
+    mock_settings.mtls_proxy_secret = None
 
-    checker = require_mtls_domain()
-    request = _make_request("api.chutes.ai", proxy_auth="supersecret")
+    checker = require_mtls_proxy_secret()
+    request = _make_request("any-host", proxy_auth="anything")
     with pytest.raises(HTTPException) as exc_info:
         await checker(request)
-    assert exc_info.value.status_code == 403
-
-
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_error_detail_does_not_reveal_which_check_failed(mock_settings):
-    """Both host and secret failures must produce the same 403 detail string."""
-    mock_settings.mtls_domain = "tdx-attestation.chutes.ai"
-    mock_settings.mtls_proxy_secret = "supersecret"
-
-    checker = require_mtls_domain()
-    expected_detail = "This endpoint is only accessible via the mTLS attestation domain."
-
-    with pytest.raises(HTTPException) as exc_host:
-        await checker(_make_request("api.chutes.ai", proxy_auth="supersecret"))
-    with pytest.raises(HTTPException) as exc_secret:
-        await checker(_make_request("tdx-attestation.chutes.ai", proxy_auth="bad"))
-
-    assert exc_host.value.detail == expected_detail
-    assert exc_secret.value.detail == expected_detail
+    assert exc_info.value.status_code == 503
 
 
 # ---------------------------------------------------------------------------

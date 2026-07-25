@@ -1,10 +1,5 @@
 teeMinimumBootVersion: ""
 
-# mTLS attestation domain enforcement.
-# mtlsDomain overrides the MTLS_DOMAIN env var (default: tdx-attestation.chutes.ai).
-# Leave empty to use the compiled-in default.
-mtlsDomain: ""
-
 # Registry auth path selector (see api/registry/router.py): VMs attested at >= this
 # version must use mTLS to pull; older VMs use legacy hotkey auth.  Set to "0.0.0" to
 # force every attested VM onto mTLS — the kill switch that retires legacy auth once

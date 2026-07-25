@@ -60,45 +60,39 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     return minutes * 60
 
 
-def require_mtls_domain():
+def require_mtls_proxy_secret():
     """
-    FastAPI dependency that rejects requests not arriving via the expected mTLS domain.
+    FastAPI dependency asserting an attestation request arrived via the mTLS nginx proxy.
 
-    Two guards are applied in order:
+    The mTLS proxy injects ``X-Mtls-Proxy-Auth`` (= ``MTLS_PROXY_SECRET``); every other proxy
+    (including api.chutes.ai) must strip it. A missing or wrong value means the request bypassed
+    the mTLS proxy and may carry an attacker-injected ``X-Client-Cert``. The former Host-header
+    check was dropped: a Host header is trivially spoofable, so the shared secret is the real
+    (and only) proxy-provenance guard -- which also means the attestation domain can change
+    (e.g. cvm.chutes.ai) as pure DNS/infra config with nothing hardcoded here.
 
-    1. Host header must match ``settings.mtls_domain`` (default: tdx-attestation.chutes.ai).
-       This catches requests that slip through the wrong reverse-proxy vhost.
-
-    2. When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must carry
-       that exact value.  The mTLS nginx proxy injects this secret; every other proxy
-       (including api.chutes.ai) must strip it.  A missing or wrong value means the request
-       bypassed the mTLS proxy and may carry an attacker-injected ``X-Client-Cert``.
-
-    Both guards fail with 403 to avoid leaking information about which check failed.
+    This is the SOLE proxy-provenance guard on the attestation endpoints -- several of which
+    (e.g. GET /nonce) have no other auth -- so it FAILS CLOSED: when ``MTLS_PROXY_SECRET`` is
+    not configured it rejects every request rather than silently running unguarded.
     """
 
     async def _check(request: Request):
-        host = request.headers.get("host", "").split(":")[0].lower()
-        expected_host = settings.mtls_domain.lower()
-        if host != expected_host:
-            logger.warning(
-                f"mTLS endpoint rejected: host={host!r} expected={expected_host!r} "
-                f"path={request.url.path}"
+        if not settings.mtls_proxy_secret:
+            logger.error(
+                "mTLS endpoint rejected: MTLS_PROXY_SECRET is not configured; refusing to serve "
+                f"the attestation endpoint unguarded path={request.url.path}"
             )
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This endpoint is only accessible via the mTLS attestation domain.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="mTLS proxy secret is not configured.",
             )
-        if settings.mtls_proxy_secret:
-            proxy_auth = request.headers.get(MTLS_PROXY_AUTH_HEADER, "")
-            if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
-                logger.warning(
-                    f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="This endpoint is only accessible via the mTLS attestation domain.",
-                )
+        proxy_auth = request.headers.get(MTLS_PROXY_AUTH_HEADER, "")
+        if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
+            logger.warning(f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request did not arrive via the mTLS attestation proxy.",
+            )
 
     return _check
 
@@ -259,7 +253,7 @@ def _parse_client_cert_header(request: Request) -> Optional[Certificate]:
     Pure extraction with no trust logic: returns ``None`` when the header is absent or
     empty (a legacy client that presented no mTLS cert), and raises ``HTTPException(400)``
     when a cert is present but cannot be parsed.  Trust that the request actually came
-    through the mTLS proxy is enforced separately (``require_mtls_domain`` /
+    through the mTLS proxy is enforced separately (``require_mtls_proxy_secret`` /
     ``require_proxy_secret``), so this helper never inspects proxy secrets.
     """
     cert_header = request.headers.get("X-Client-Cert")
@@ -308,7 +302,7 @@ def _get_client_certificate(request: Request) -> Certificate:
 
     When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must
     match before we trust anything in ``X-Client-Cert``.  This is a second line of
-    defence against header-injection attacks: even if ``require_mtls_domain`` is
+    defence against header-injection attacks: even if ``require_mtls_proxy_secret`` is
     somehow absent from a future endpoint the cert header cannot be forged without
     also knowing the proxy secret.
     """
