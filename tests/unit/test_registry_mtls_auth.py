@@ -35,7 +35,7 @@ from api.server.service import (
     process_luks_attest_request,
     require_server_mtls,
 )
-from api.server.schemas import ProvisionRequest, LuksAttestRequest, LuksVolumeRotation
+from api.server.schemas import Server, ProvisionRequest, LuksAttestRequest, LuksVolumeRotation
 from api.server.exceptions import AttestationError, ServerNotFoundError, InvalidClientCertError
 
 
@@ -138,8 +138,8 @@ def test_verify_leaf_cert_signed_by_ca_valid():
     leaf_key = _gen_rsa_key()
     leaf_cert = _make_leaf_cert(leaf_key, ca_key, ca_cert)
 
-    # Should not raise (leaf is a parsed Certificate; CA is stored PEM)
-    verify_leaf_cert_signed_by_ca(leaf_cert, _cert_pem(ca_cert))
+    # Should not raise (both leaf and CA are parsed Certificate objects)
+    verify_leaf_cert_signed_by_ca(leaf_cert, ca_cert)
 
 
 def test_verify_leaf_cert_signed_by_ca_wrong_ca():
@@ -155,7 +155,7 @@ def test_verify_leaf_cert_signed_by_ca_wrong_ca():
     leaf_cert = _make_leaf_cert(leaf_key, other_ca_key, other_ca_cert)
 
     with pytest.raises(AttestationError) as exc_info:
-        verify_leaf_cert_signed_by_ca(leaf_cert, _cert_pem(ca_cert))
+        verify_leaf_cert_signed_by_ca(leaf_cert, ca_cert)
     assert exc_info.value.status_code == 403
 
 
@@ -169,20 +169,32 @@ def test_verify_leaf_cert_signed_by_ca_self_signed_leaf_rejected():
     leaf_cert = _make_ca_cert(leaf_key, subject_cn="sek8s-vm-registry-client")
 
     with pytest.raises(AttestationError) as exc_info:
-        verify_leaf_cert_signed_by_ca(leaf_cert, _cert_pem(ca_cert))
+        verify_leaf_cert_signed_by_ca(leaf_cert, ca_cert)
     assert exc_info.value.status_code == 403
 
 
-def test_verify_leaf_cert_signed_by_ca_malformed_ca():
-    """Malformed CA PEM raises InvalidClientCertError (403)."""
-    ca_key = _gen_rsa_key()
-    ca_cert = _make_ca_cert(ca_key)
-    leaf_key = _gen_rsa_key()
-    leaf_cert = _make_leaf_cert(leaf_key, ca_key, ca_cert)
+# ---------------------------------------------------------------------------
+# Server.vm_root_ca_certificate — parsing property
+# ---------------------------------------------------------------------------
 
-    with pytest.raises(AttestationError) as exc_info:
-        verify_leaf_cert_signed_by_ca(leaf_cert, "not-a-ca-cert")
-    assert exc_info.value.status_code == 403
+
+def test_vm_root_ca_certificate_parses_pem():
+    """The property parses the stored PEM into an x509.Certificate."""
+    ca_cert = _make_ca_cert(_gen_rsa_key())
+    server = Server(vm_root_ca_cert=_cert_pem(ca_cert))
+    parsed = server.vm_root_ca_certificate
+    assert parsed.subject == ca_cert.subject
+
+
+def test_vm_root_ca_certificate_none_when_unset():
+    """No CA on file -> None (the pre-provision / legacy signal)."""
+    assert Server(vm_root_ca_cert=None).vm_root_ca_certificate is None
+
+
+def test_vm_root_ca_certificate_malformed_raises():
+    """A malformed stored value is a data-integrity bug and is allowed to raise."""
+    with pytest.raises(ValueError):
+        Server(vm_root_ca_cert="not-a-ca-cert").vm_root_ca_certificate
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +209,7 @@ def test_verify_server_cert_valid():
     leaf_cert = _make_leaf_cert(_gen_rsa_key(), ca_key, ca_cert)
 
     server = MagicMock()
-    server.vm_root_ca_cert = _cert_pem(ca_cert)
+    server.vm_root_ca_certificate = ca_cert
     # Should not raise
     verify_server_cert(leaf_cert, server)
 
@@ -205,7 +217,7 @@ def test_verify_server_cert_valid():
 def test_verify_server_cert_no_client_cert():
     """No client cert presented -> NoClientCertError (403)."""
     server = MagicMock()
-    server.vm_root_ca_cert = "some-ca-pem"
+    server.vm_root_ca_certificate = MagicMock()  # CA on file, but no client cert presented
     with pytest.raises(AttestationError) as exc_info:
         verify_server_cert(None, server)
     assert exc_info.value.status_code == 403
@@ -216,7 +228,7 @@ def test_verify_server_cert_no_registered_ca():
     ca_key = _gen_rsa_key()
     leaf_cert = _make_leaf_cert(_gen_rsa_key(), ca_key, _make_ca_cert(ca_key))
     server = MagicMock()
-    server.vm_root_ca_cert = None
+    server.vm_root_ca_certificate = None
     with pytest.raises(AttestationError) as exc_info:
         verify_server_cert(leaf_cert, server)
     assert exc_info.value.status_code == 403
@@ -229,7 +241,7 @@ def test_verify_server_cert_wrong_ca():
 
     registered_ca = _make_ca_cert(_gen_rsa_key())
     server = MagicMock()
-    server.vm_root_ca_cert = _cert_pem(registered_ca)
+    server.vm_root_ca_certificate = registered_ca
     with pytest.raises(AttestationError) as exc_info:
         verify_server_cert(leaf_cert, server)
     assert exc_info.value.status_code == 403
@@ -243,7 +255,7 @@ async def test_require_server_mtls_returns_authenticated_server():
     leaf_cert = _make_leaf_cert(_gen_rsa_key(), ca_key, ca_cert)
 
     mock_server = MagicMock()
-    mock_server.vm_root_ca_cert = _cert_pem(ca_cert)
+    mock_server.vm_root_ca_certificate = ca_cert
     db = AsyncMock()
 
     with patch("api.server.service.get_server_by_name", return_value=mock_server) as mock_get:
@@ -271,7 +283,7 @@ async def test_require_server_mtls_no_registered_ca():
     ca_key = _gen_rsa_key()
     leaf_cert = _make_leaf_cert(_gen_rsa_key(), ca_key, _make_ca_cert(ca_key))
     mock_server = MagicMock()
-    mock_server.vm_root_ca_cert = None
+    mock_server.vm_root_ca_certificate = None
     db = AsyncMock()
 
     with patch("api.server.service.get_server_by_name", return_value=mock_server):

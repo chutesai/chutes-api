@@ -885,23 +885,18 @@ async def verify_quote(
     return result
 
 
-def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca_cert_pem: str) -> None:
+def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:
     """
-    Verify that the ``leaf`` certificate was issued and signed by the CA in ca_cert_pem.
+    Verify that the ``leaf`` certificate was issued and signed by the ``ca``.
 
-    ``leaf`` is an already-parsed ``Certificate`` (the mTLS client cert extracted by the
-    ``extract_optional_client_cert`` / ``extract_client_cert`` dependency); ``ca_cert_pem`` is the
-    stored per-VM CA PEM (a DB blob), parsed here.
+    Both are already-parsed ``Certificate`` objects: ``leaf`` is the mTLS client cert extracted by
+    the ``extract_optional_client_cert`` / ``extract_client_cert`` dependency; ``ca`` is the VM's
+    registered root CA (``server.vm_root_ca_certificate``).
 
     Raises InvalidClientCertError (403) on any verification failure so callers need not
     catch specific crypto exceptions.  Self-signed leaf certs (issuer == subject)
     are rejected even if the signature could technically verify.
     """
-    try:
-        ca = x509.load_pem_x509_certificate(ca_cert_pem.encode(), default_backend())
-    except Exception as e:
-        raise InvalidClientCertError(detail="Malformed CA cert PEM.") from e
-
     # Reject self-signed leaf certs.
     if leaf.subject == leaf.issuer:
         raise InvalidClientCertError(detail="Self-signed leaf cert not allowed.")
@@ -944,11 +939,12 @@ def verify_server_cert(client_cert: Optional[Certificate], server: Server) -> No
     Raises NoClientCertError (403) if no client cert is presented or the VM has no CA on file;
     verify_leaf_cert_signed_by_ca raises InvalidClientCertError (403) if the leaf fails to verify.
     """
-    if client_cert is None or not server.vm_root_ca_cert:
+    ca = server.vm_root_ca_certificate
+    if client_cert is None or ca is None:
         raise NoClientCertError(
             detail="VM must present an mTLS leaf certificate signed by its registered CA."
         )
-    verify_leaf_cert_signed_by_ca(client_cert, server.vm_root_ca_cert)
+    verify_leaf_cert_signed_by_ca(client_cert, ca)
 
 
 async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:

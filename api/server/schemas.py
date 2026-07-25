@@ -3,6 +3,9 @@ ORM definitions for servers and TDX attestations.
 """
 
 from datetime import datetime, timezone
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509 import Certificate
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -441,6 +444,21 @@ class Server(Base):
     # Timestamp of the last successful TEE /status/health probe; stamped by server_health_prober.py.
     # NULL = never seen healthy. health_status below is derived from this, live.
     last_health_at = Column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def vm_root_ca_certificate(self) -> Optional[Certificate]:
+        """
+        Parsed form of vm_root_ca_cert; None when the VM has not provisioned a CA.
+
+        The raw column stays the PEM string (it is written straight from the mTLS client cert
+        and consumed as-is by ssl_context.load_verify_locations(cadata=...)); this property is
+        for the consumers that need an x509.Certificate (leaf verification). vm_root_ca_cert is
+        always written from a valid cert, so a malformed value here is a data-integrity bug and
+        is allowed to raise rather than be masked as an auth failure.
+        """
+        if not self.vm_root_ca_cert:
+            return None
+        return x509.load_pem_x509_certificate(self.vm_root_ca_cert.encode(), default_backend())
 
     @property
     def in_maintenance(self) -> bool:
