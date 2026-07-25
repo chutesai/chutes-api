@@ -147,6 +147,13 @@ Instrumentator(
     inprogress_labels=False,
 ).instrument(app)
 
+os.makedirs("/tmp/prometheus_multiproc", exist_ok=True)
+Instrumentator(
+    should_instrument_requests_inprogress=True,
+    inprogress_name="http_requests_inprogress",
+    inprogress_labels=False,
+).instrument(app)
+
 default_router = APIRouter()
 default_router.include_router(user_router, prefix="/users", tags=["Users"])
 default_router.include_router(chute_router, prefix="/chutes", tags=["Chutes"])
