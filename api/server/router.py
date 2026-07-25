@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
 from api.request_context import bind_request_context
+from cryptography.x509 import Certificate
 
 from api.database import get_db_session
 from api.config import settings
@@ -20,6 +21,8 @@ from api.metagraph import get_miner_by_hotkey
 from api.constants import HOTKEY_HEADER, NoncePurpose
 
 from api.server.schemas import (
+    ProvisionRequest,
+    ProvisionResponse,
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
@@ -45,6 +48,7 @@ from api.server.service import (
     create_nonce,
     process_boot_attestation,
     register_server,
+    process_provision_request,
     check_server_ownership,
     get_server_by_name_or_id,
     update_server_name,
@@ -66,10 +70,10 @@ from api.server.service import (
 from api.server.util import (
     extract_client_cert_hash,
     require_mtls_domain,
+    extract_client_cert,
 )
 from api.server.exceptions import (
     AttestationError,
-    NonceError,
     ServerNotFoundError,
     ServerRegistrationError,
 )
@@ -184,6 +188,10 @@ async def attest_luks(
     """
     Rotate LUKS passphrases for new-format VMs (version >= 1.3.0).
 
+    DEPRECATED: superseded by POST /provision, which does the same storage rotation and
+    additionally records the VM root CA identity. Kept unchanged for legacy in-field VMs;
+    retire once the fleet upgrades.
+
     The VM embeds the luks_quote_nonce (received in the boot attestation response)
     in a TDX quote after extending RTMR3 in initramfs. require_luks_quote_nonce
     validates and consumes the nonce; the handler then calls verify_quote which
@@ -229,6 +237,10 @@ async def confirm_luks_rotation(
     """
     Confirm or discard pending LUKS passphrase rotation results.
 
+    DEPRECATED for the storage-rotation flow: new VMs use POST /provision/confirm (same
+    shared logic). Kept for legacy in-field VMs; note the boot-phase root-passphrase confirm
+    still uses this route until /luks/* is fully retired.
+
     The VM reports per-volume success/failure. require_confirm_nonce validates
     and consumes the nonce before the handler runs. Volumes with rotated=True
     have pending passphrases promoted to current; rotated=False discards pending.
@@ -244,6 +256,88 @@ async def confirm_luks_rotation(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="LUKS confirm failed",
+        )
+
+
+@router.post("/{vm_name}/provision", response_model=ProvisionResponse)
+async def provision(
+    vm_name: str,
+    body: ProvisionRequest,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_mtls_domain()),
+    client_cert: Certificate = Depends(extract_client_cert()),
+    validated_nonce: str = Depends(require_luks_quote_nonce),
+):
+    """
+    Provision a new VM at runtime: record its root CA identity and issue storage secrets.
+
+    The RTMR3-attested runtime entry point for new VMs (supersedes /luks/attest going
+    forward). The VM presents its per-boot root CA as the mTLS client cert; the quote's
+    REPORTDATA binds SHA256(that cert's pubkey), so the same cert_hash check that guards
+    /luks/attest also proves CA possession — no bespoke quote logic is needed.
+    require_luks_quote_nonce validates and consumes the runtime nonce; the handler verifies
+    the quote (signature + all RTMR measurements incl. RTMR3), records
+    server.vm_root_ca_cert (idempotent), and returns rotated passphrases, the k3s encryption
+    key, and a confirm nonce.
+
+    SECURITY INVARIANT: the CA is recorded ONLY here (runtime, RTMR3 measured) — never at
+    boot attestation, whose quotes validate against RTMR3 = 0.
+    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
+    """
+    try:
+        result = await process_provision_request(
+            db, hotkey, vm_name, body, validated_nonce, client_cert
+        )
+        return ProvisionResponse(
+            volumes={
+                vol: LuksVolumeInfo(current=r.current, next=r.next)
+                for vol, r in result.volumes.items()
+            },
+            confirm_nonce=result.confirm_nonce,
+            k3s_encryption_key=result.k3s_encryption_key,
+        )
+    except AttestationError as e:
+        # Failure already logged at its detection site (with ambient identity); the boundary
+        # only maps the internal exception to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in provision for {vm_name}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provisioning failed",
+        )
+
+
+@router.post("/{vm_name}/provision/confirm", response_model=LuksConfirmResponse)
+async def provision_confirm(
+    vm_name: str,
+    body: LuksConfirmRequest,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_mtls_domain()),
+    _=Depends(require_confirm_nonce),
+):
+    """
+    Confirm or discard pending storage-passphrase rotations from POST /provision.
+
+    Delegates to the same shared logic as the legacy /luks/confirm (process_luks_confirm):
+    require_confirm_nonce validates and consumes the nonce, then volumes with rotated=True
+    have pending passphrases promoted to current and rotated=False discards pending.
+    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
+    """
+    try:
+        result = await process_luks_confirm(db, hotkey, vm_name, body)
+        return LuksConfirmResponse(status="confirmed", volumes=result.volumes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in provision confirm for {vm_name}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provision confirm failed",
         )
 
 

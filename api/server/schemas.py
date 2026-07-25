@@ -202,6 +202,45 @@ class LuksConfirmResponse(BaseModel):
     volumes: Dict[str, Any]
 
 
+class ProvisionRequest(BaseModel):
+    """
+    Request model for POST /servers/{vm_name}/provision.
+
+    The runtime (RTMR3-attested) provisioning entry point for new VMs. The VM presents its
+    root CA as the mTLS client cert; the quote's REPORTDATA binds SHA256(that cert's pubkey),
+    so the CA identity is recorded from this call. Mirrors the luks/attest body today (quote
+    + volumes) and is the extensible home for future provisioning inputs.
+    """
+
+    quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
+    volumes: List[str] = Field(..., description="Volume names to rotate passphrases for")
+
+    @field_validator("volumes")
+    @classmethod
+    def validate_volumes(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("volumes must be non-empty")
+        invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
+        if invalid:
+            raise ValueError(
+                f"Invalid volume name(s): {invalid}. Supported: {list(SUPPORTED_LUKS_VOLUMES)}"
+            )
+        return v
+
+
+class ProvisionResponse(BaseModel):
+    """
+    Response model for POST /servers/{vm_name}/provision.
+
+    Carries the storage-provisioning secrets today (rotated volume passphrases, k3s
+    encryption key, confirm nonce); shaped to extend with future provisioning outputs.
+    """
+
+    volumes: Dict[str, LuksVolumeInfo]
+    confirm_nonce: str = Field(..., description="Single-use nonce for POST /provision/confirm")
+    k3s_encryption_key: str = Field(..., description="k3s encryption key (base64)")
+
+
 class GpuAttestationArgs(BaseModel):
     evidence: str = Field(..., description="Base64 encoded GPU evidence")
 
@@ -386,6 +425,11 @@ class Server(Base):
     )
     # Current attested measurement version, updated on every successful boot attestation.
     version = Column(Text, nullable=True)
+
+    # Per-VM root CA cert recorded via POST /servers/{vm_name}/provision (from the mTLS
+    # client cert of the RTMR3-attested runtime call). NULL means the VM has not yet
+    # provisioned (pre-migration or old image) -> legacy auth path.
+    vm_root_ca_cert = Column(Text, nullable=True)
 
     # Timestamp of the last successful TEE /status/health probe; stamped by server_health_prober.py.
     # NULL = never seen healthy. health_status below is derived from this, live.

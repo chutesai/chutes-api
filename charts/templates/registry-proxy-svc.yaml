@@ -10,9 +10,17 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.registryProxy.service.type | default "LoadBalancer" }}
+  {{- with .Values.registryProxy.service.loadBalancerIP }}
+  # Pin the LB to a reserved static IP so a reconcile can't move it out from under DNS.
+  # The address must first be reserved in GCP (gcloud compute addresses create ... --addresses).
+  loadBalancerIP: {{ . | quote }}
+  {{- end }}
   sessionAffinity: None
   internalTrafficPolicy: Cluster
-  externalTrafficPolicy: Cluster
+  # Local preserves the real client (VM) source IP on the GCP L4 LB so registry auth can
+  # resolve the VM via X-Real-IP. Cluster would SNAT it to a node IP and break the version
+  # gate (every VM would fall back to legacy hotkey auth).
+  externalTrafficPolicy: {{ .Values.registryProxy.service.externalTrafficPolicy | default "Local" }}
   allocateLoadBalancerNodePorts: true
   ports:
     - port: {{ .Values.registryProxy.service.port | default 443 }}

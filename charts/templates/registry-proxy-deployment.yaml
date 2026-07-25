@@ -57,6 +57,7 @@ spec:
             - |
               sed -e "s|\${DEPOT_REGISTRY}|${DEPOT_REGISTRY}|g" \
                   -e "s|\${DEPOT_BASIC_AUTH}|${DEPOT_BASIC_AUTH}|g" \
+                  -e "s|\${REGISTRY_PROXY_SECRET}|${REGISTRY_PROXY_SECRET}|g" \
                   /templates/nginx.conf.template > /rendered/nginx.conf
           env:
             - name: DEPOT_REGISTRY
@@ -69,6 +70,17 @@ spec:
                 secretKeyRef:
                   key: registry-basic-auth
                   name: depot-credentials
+            # Shared secret proving the /auth subrequest came through this proxy. Injected as
+            # X-Registry-Proxy-Auth; empty (and unenforced) unless proxyAuthSecret.name is set.
+            - name: REGISTRY_PROXY_SECRET
+              {{- if .Values.registryProxy.proxyAuthSecret.name }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.registryProxy.proxyAuthSecret.name }}
+                  key: {{ .Values.registryProxy.proxyAuthSecret.key | default "secret" }}
+              {{- else }}
+              value: ""
+              {{- end }}
           volumeMounts:
             - name: registry-proxy-template
               mountPath: /templates

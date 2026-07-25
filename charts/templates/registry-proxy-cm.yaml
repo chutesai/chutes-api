@@ -31,9 +31,21 @@ data:
             sendfile on;
             tcp_nopush on;
             listen 443 ssl;
+            # Registry auth resolves the VM by its source IP ($remote_addr -> X-Real-IP).
+            # registry.chutes.ai points straight at this Service's GCP L4 load balancer, which
+            # preserves the real client IP only when the Service uses externalTrafficPolicy:
+            # Local (set in registry-proxy-svc.yaml). Under the default Cluster policy the
+            # source is SNAT'd to a node IP and every VM falls back to legacy hotkey auth.
             ssl_certificate     /etc/nginx/ssl/tls.crt;
             ssl_certificate_key /etc/nginx/ssl/tls.key;
             ssl_protocols       TLSv1.2 TLSv1.3;
+            ssl_ciphers HIGH:!aNULL:!MD5;
+            ssl_prefer_server_ciphers on;
+            # Request the VM's mTLS client cert but do NOT chain-validate it here: the per-VM
+            # CA is registered dynamically each boot, and the API verifies the presented leaf
+            # against the stored vm_root_ca_cert. Legacy VMs present no cert -> empty
+            # $ssl_client_escaped_cert -> the API falls back to hotkey auth. Non-breaking.
+            ssl_verify_client optional_no_ca;
 
             # Block pulls of intermediate build tags (never externally accessible).
             location ~ "^/v2/.+/manifests/forgebuild-" {
@@ -90,10 +102,17 @@ data:
             location = /auth {
                 internal;
                 proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000/registry/auth;
-                auth_request_set $auth_resp_authorization $upstream_http_authorization;
                 proxy_set_header X-Chutes-Hotkey $http_x_chutes_hotkey;
                 proxy_set_header X-Chutes-Signature $http_x_chutes_signature;
                 proxy_set_header X-Chutes-Nonce $http_x_chutes_nonce;
+                # Forward the cert negotiated in the TLS handshake (NOT a client-supplied
+                # header, which would be spoofable). Empty for legacy VMs that present none.
+                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+                proxy_set_header X-Client-Verify $ssl_client_verify;
+                # Prove this request arrived via the registry proxy so the API can trust
+                # X-Client-Cert / X-Real-IP. Empty unless proxyAuthSecret is configured.
+                proxy_set_header X-Registry-Proxy-Auth "${REGISTRY_PROXY_SECRET}";
+                proxy_set_header X-Real-IP $remote_addr;
                 proxy_pass_request_body off;
                 proxy_set_header Content-Length "";
                 error_page 401 403 500 502 503 504 = @block;
