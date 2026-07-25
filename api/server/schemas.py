@@ -123,8 +123,15 @@ class LuksVolumeRotation:
 
 
 @dataclass
-class LuksAttestResult:
-    """Internal result of process_luks_attest_request (not an API model)."""
+class StorageProvisionResult:
+    """Internal result of storage provisioning (not an API model).
+
+    The secrets a VM receives when it (re)provisions storage on boot: the rotated per-volume
+    LUKS passphrases, the k3s encryption key (base64), and the single-use nonce it uses to
+    confirm the rotation succeeded. Returned by both POST /provision (process_provision_request)
+    and the legacy POST /luks/attest (process_luks_attest_request), which share the underlying
+    _issue_storage_secrets helper.
+    """
 
     volumes: Dict[str, "LuksVolumeRotation"]
     confirm_nonce: str

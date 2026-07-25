@@ -41,10 +41,9 @@ from api.server.schemas import (
     UpgradeWindowInfo,
     ConfirmMaintenanceResult,
     LuksAttestRequest,
-    LuksAttestResult,
     LuksConfirmRequest,
     LuksConfirmResult,
-    LuksVolumeRotation,
+    StorageProvisionResult,
     ProvisionRequest,
     VmAuthKey,
 )
@@ -1055,13 +1054,13 @@ async def _issue_storage_secrets(
     hotkey: str,
     vm_name: str,
     volumes: list[str],
-) -> tuple[Dict[str, "LuksVolumeRotation"], str, str]:
+) -> StorageProvisionResult:
     """
-    Rotate LUKS passphrases, manage the k3s encryption key, and issue a confirm nonce.
+    Rotate LUKS passphrases, manage the k3s encryption key, and issue a confirm nonce -- the
+    storage-provisioning secrets a VM receives on (re)boot, as a StorageProvisionResult.
 
     Shared by the runtime provisioning entry points: the new POST /provision
-    (process_provision_request) and the legacy POST /luks/attest
-    (process_luks_attest_request). Returns (volumes_data, k3s_encryption_key_b64, confirm_nonce).
+    (process_provision_request) and the legacy POST /luks/attest (process_luks_attest_request).
     """
     volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, volumes)
 
@@ -1078,8 +1077,11 @@ async def _issue_storage_secrets(
     else:
         k3s_b64 = decrypt_passphrase(vm_config.k3s_encryption_key)
 
-    confirm_nonce = await generate_confirm_nonce(hotkey, vm_name)
-    return volumes_data, k3s_b64, confirm_nonce
+    return StorageProvisionResult(
+        volumes=volumes_data,
+        confirm_nonce=await generate_confirm_nonce(hotkey, vm_name),
+        k3s_encryption_key=k3s_b64,
+    )
 
 
 async def record_vm_ca_identity(
@@ -1114,7 +1116,7 @@ async def process_provision_request(
     body: ProvisionRequest,
     quote_nonce: str,
     client_cert: crypto_x509.Certificate,
-) -> LuksAttestResult:
+) -> StorageProvisionResult:
     """
     Process POST /provision for new VMs: verify the RTMR3-attested runtime quote, record the
     VM root CA identity, and issue storage-provisioning secrets.
@@ -1130,14 +1132,7 @@ async def process_provision_request(
 
     await record_vm_ca_identity(db, hotkey, vm_name, client_cert)
 
-    volumes_data, k3s_b64, confirm_nonce = await _issue_storage_secrets(
-        db, hotkey, vm_name, body.volumes
-    )
-    return LuksAttestResult(
-        volumes=volumes_data,
-        confirm_nonce=confirm_nonce,
-        k3s_encryption_key=k3s_b64,
-    )
+    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
 
 
 async def process_luks_attest_request(
@@ -1147,7 +1142,7 @@ async def process_luks_attest_request(
     body: LuksAttestRequest,
     quote_nonce: str,
     expected_cert_hash: str,
-) -> LuksAttestResult:
+) -> StorageProvisionResult:
     """
     Process POST /luks/attest for legacy in-field VMs (version >= 1.3.0).
 
@@ -1162,14 +1157,7 @@ async def process_luks_attest_request(
     quote = RuntimeTdxQuote.from_base64(body.quote)
     await verify_quote(quote, quote_nonce, expected_cert_hash)
 
-    volumes_data, k3s_b64, confirm_nonce = await _issue_storage_secrets(
-        db, hotkey, vm_name, body.volumes
-    )
-    return LuksAttestResult(
-        volumes=volumes_data,
-        confirm_nonce=confirm_nonce,
-        k3s_encryption_key=k3s_b64,
-    )
+    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
 
 
 async def process_luks_confirm(
