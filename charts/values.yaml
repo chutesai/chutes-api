@@ -1,9 +1,10 @@
 teeMinimumBootVersion: ""
 
-# mTLS attestation domain enforcement.
-# mtlsDomain overrides the MTLS_DOMAIN env var (default: tdx-attestation.chutes.ai).
-# Leave empty to use the compiled-in default.
-mtlsDomain: ""
+# Registry auth path selector (see api/registry/router.py): VMs attested at >= this
+# version must use mTLS to pull; older VMs use legacy hotkey auth.  Set to "0.0.0" to
+# force every attested VM onto mTLS — the kill switch that retires legacy auth once
+# the fleet is fully migrated (coordinated with removing the guest nginx DaemonSet).
+registryMtlsMinVersion: "1.4.0"
 
 squad_enabled: false
 
@@ -754,7 +755,20 @@ registryProxy:
   image: nginx:1.31
   imagePullPolicy: IfNotPresent
   busyboxImage: busybox:1.36
-  tlsSecretName: "registry-proxy-tls"
+  # Public *.chutes.ai cert (GoDaddy). When registry.chutes.ai points straight at this
+  # Service's L4 LB, nginx faces the client directly, so the cert must be publicly trusted and
+  # cover the host. registry-proxy-tls is a Cloudflare Origin cert (not publicly trusted) and
+  # must NOT be used on the client-facing path.
+  tlsSecretName: "chutes-tls"
+  # Optional shared secret proving a /registry/auth request arrived via this proxy (defense in
+  # depth: without it, anyone able to reach the API's /registry/auth off-proxy could spoof
+  # X-Real-IP to force the legacy branch and bypass mTLS). When name is set, the proxy injects
+  # it as X-Registry-Proxy-Auth and the API enforces it; leave name empty to disable. The
+  # secret is created out of band (like mtls-proxy-auth) and its value must be sed-safe
+  # (hex / base64url -- no '|' or '&').
+  proxyAuthSecret:
+    name: ""
+    key: "secret"
   config:
     workerProcesses: 64
     workerConnections: 4096
@@ -783,6 +797,12 @@ registryProxy:
     type: LoadBalancer
     port: 443
     annotations: {}
+    # Local preserves the real VM source IP on the GCP L4 LB (needed for registry auth's
+    # IP-based VM resolution). Only override to Cluster if IP-based resolution is not used.
+    externalTrafficPolicy: Local
+    # Reserved static IP to pin the LB across reconciles (set in the overlay once the address
+    # is reserved in GCP). Empty = let GKE assign an ephemeral IP.
+    loadBalancerIP: ""
 
 # autostaker runs as a CronJob (one-shot api/autostaker.py per tick), not a long-running
 # worker. validatorSs58 left empty here -> cronjobEnv falls back to the validator-credentials

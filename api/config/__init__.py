@@ -290,7 +290,6 @@ class Settings(BaseSettings):
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
-    registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "7200"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "7200"))
@@ -547,14 +546,23 @@ class Settings(BaseSettings):
         )
         return bundle
 
-    # mTLS attestation domain enforcement.
-    # mtls_domain: the Host header value that mTLS-gated endpoints must arrive on.
-    # mtls_proxy_secret: a shared secret injected by the mTLS nginx proxy as
-    #   X-Mtls-Proxy-Auth; every other proxy must strip this header.  When set,
-    #   the application refuses to trust X-Client-Cert unless the header matches,
-    #   preventing header-injection attacks from non-mTLS proxies.
-    mtls_domain: str = os.getenv("MTLS_DOMAIN", "tdx-attestation.chutes.ai")
+    # mtls_proxy_secret: a shared secret injected by the mTLS nginx proxy as X-Mtls-Proxy-Auth;
+    #   every other proxy must strip this header. require_mtls_proxy_secret requires it on all
+    #   attestation endpoints (fails closed when unset), and it also gates trust of X-Client-Cert.
     mtls_proxy_secret: Optional[str] = os.getenv("MTLS_PROXY_SECRET")
+
+    # Shared secret injected by the registry.chutes.ai nginx frontend as
+    # X-Registry-Proxy-Auth.  When set, the /registry/auth handler refuses
+    # requests that do not carry this header, preventing X-Client-Cert spoofing
+    # from clients that bypass the registry nginx proxy.
+    registry_proxy_secret: Optional[str] = os.getenv("REGISTRY_PROXY_SECRET")
+
+    # Registry auth path selector (see api/registry/router.py): a VM whose attested
+    # measurement version is >= this must authenticate to the registry via mTLS;
+    # older VMs use legacy Bittensor hotkey/signature/nonce auth.  Defaults to the
+    # 1.4.0 SEK8S release that ships mTLS registry support.  Set to "0.0.0" to force
+    # every attested VM onto mTLS — the kill switch that retires legacy auth.
+    registry_mtls_min_version: str = os.getenv("REGISTRY_MTLS_MIN_VERSION", "1.4.0")
 
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")

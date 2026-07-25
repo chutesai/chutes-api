@@ -9,7 +9,7 @@ from datetime import datetime, timezone, timedelta
 import json
 import secrets
 from typing import Dict, Any, Optional
-from fastapi import HTTPException, Header, Request, status
+from fastapi import Depends, HTTPException, Header, Request, status
 from loguru import logger
 from api.log import server_logger, LifecycleEvent, update_log_context
 from sqlalchemy import delete, or_, select, func
@@ -17,8 +17,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from bittensor_wallet.keypair import Keypair
+from cryptography import x509 as crypto_x509
+from cryptography.hazmat.primitives.serialization import Encoding
 
 from api.config import settings
+from api.database import get_db_session
 from api.constants import NONCE_HEADER, NoncePurpose, HOTKEY_HEADER, LUKS_STORAGE_VOLUME
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
@@ -38,9 +41,10 @@ from api.server.schemas import (
     UpgradeWindowInfo,
     ConfirmMaintenanceResult,
     LuksAttestRequest,
-    LuksAttestResult,
     LuksConfirmRequest,
     LuksConfirmResult,
+    StorageProvisionResult,
+    ProvisionRequest,
     VmAuthKey,
 )
 from api.server.exceptions import (
@@ -62,6 +66,8 @@ from api.server.util import (
     get_nonce_expiry_seconds,
     verify_quote,
     verify_gpu_evidence,
+    extract_client_cert,
+    verify_server_cert,
     rotate_luks_passphrases,
     generate_confirm_nonce,
     generate_luks_quote_nonce,
@@ -316,6 +322,34 @@ async def require_confirm_nonce(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Confirm nonce mismatch",
         )
+
+
+async def require_server_mtls(
+    vm_name: str,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    client_cert: crypto_x509.Certificate = Depends(extract_client_cert()),
+) -> Server:
+    """
+    FastAPI dependency: authenticate a post-provision VM by its mTLS client certificate.
+
+    Resolves the server by ``(hotkey, vm_name)`` and verifies the presented client leaf cert
+    was signed by the CA the VM recorded via POST /provision. Returns the authenticated
+    ``Server`` so the handler can use it directly.
+
+    Use on any post-boot mTLS endpoint that expects a request from a registered VM identified
+    by hotkey + vm_name; pair it with ``require_mtls_proxy_secret()`` (which proves the request
+    arrived via the mTLS proxy). It applies only AFTER a VM has provisioned its CA -- the
+    ``POST /provision`` call itself records the CA (presenting the CA as the client cert), so
+    it cannot use this dependency.
+
+    Raises ServerNotFoundError (404) if the ``(hotkey, vm_name)`` server is unknown;
+    NoClientCertError (403) if no leaf cert / no registered CA; InvalidClientCertError (403)
+    if the leaf fails to verify.
+    """
+    server = await get_server_by_name(db, hotkey, vm_name)
+    verify_server_cert(client_cert, server)
+    return server
 
 
 def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> None:
@@ -1015,25 +1049,20 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     return True
 
 
-async def process_luks_attest_request(
+async def _issue_storage_secrets(
     db: AsyncSession,
     hotkey: str,
     vm_name: str,
-    body: LuksAttestRequest,
-    quote_nonce: str,
-    expected_cert_hash: str,
-) -> LuksAttestResult:
+    volumes: list[str],
+) -> StorageProvisionResult:
     """
-    Process POST /luks/attest for new-format VMs (version >= 1.3.0).
+    Rotate LUKS passphrases, manage the k3s encryption key, and issue a confirm nonce -- the
+    storage-provisioning secrets a VM receives on (re)boot, as a StorageProvisionResult.
 
-    The quote nonce has already been validated and consumed by require_luks_quote_nonce.
-    Verifies the TDX quote (signature + all RTMR measurements including RTMR3), rotates
-    passphrases, manages the k3s encryption key, and issues a confirm nonce.
+    Shared by the runtime provisioning entry points: the new POST /provision
+    (process_provision_request) and the legacy POST /luks/attest (process_luks_attest_request).
     """
-    quote = RuntimeTdxQuote.from_base64(body.quote)
-    await verify_quote(quote, quote_nonce, expected_cert_hash)
-
-    volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, body.volumes)
+    volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, volumes)
 
     # Derive k3s key lifecycle from DB state: if storage had no current passphrase
     # (first boot) or no k3s key is stored yet, generate a new one.
@@ -1048,13 +1077,84 @@ async def process_luks_attest_request(
     else:
         k3s_b64 = decrypt_passphrase(vm_config.k3s_encryption_key)
 
-    confirm_nonce = await generate_confirm_nonce(hotkey, vm_name)
-
-    return LuksAttestResult(
+    return StorageProvisionResult(
         volumes=volumes_data,
-        confirm_nonce=confirm_nonce,
+        confirm_nonce=await generate_confirm_nonce(hotkey, vm_name),
         k3s_encryption_key=k3s_b64,
     )
+
+
+async def record_vm_ca_identity(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    client_cert: crypto_x509.Certificate,
+) -> None:
+    """
+    Record the VM's root CA identity from the mTLS client cert of an RTMR3-attested
+    /provision call (idempotent upsert on every boot).
+
+    The VM presents its per-boot root CA as the mTLS client cert; completing the handshake
+    proves possession of the CA private key, and the caller (process_provision_request) has
+    already verified the runtime quote binds SHA256(client_cert pubkey). So the presented
+    cert IS the CA to record. Recorded only from the runtime /provision call (RTMR3-attested),
+    never boot attestation.
+    """
+    server = await get_server_by_name(db, hotkey, vm_name)
+    update_log_context(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
+    server.vm_root_ca_cert = client_cert.public_bytes(Encoding.PEM).decode()
+    await db.commit()
+
+
+async def process_provision_request(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    body: ProvisionRequest,
+    quote_nonce: str,
+    client_cert: crypto_x509.Certificate,
+) -> StorageProvisionResult:
+    """
+    Process POST /provision for new VMs: verify the RTMR3-attested runtime quote, record the
+    VM root CA identity, and issue storage-provisioning secrets.
+
+    The quote nonce has already been validated and consumed by require_luks_quote_nonce. The
+    quote's REPORTDATA binds SHA256(client_cert pubkey) -- the same cert_hash mechanism as
+    /luks/attest, so no bespoke quote logic is needed; the presented client cert IS the VM's
+    root CA. On success server.vm_root_ca_cert is recorded (idempotent) and passphrase
+    rotation proceeds exactly as the legacy luks/attest flow.
+    """
+    quote = RuntimeTdxQuote.from_base64(body.quote)
+    await verify_quote(quote, quote_nonce, get_public_key_hash(client_cert))
+
+    await record_vm_ca_identity(db, hotkey, vm_name, client_cert)
+
+    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
+
+
+async def process_luks_attest_request(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    body: LuksAttestRequest,
+    quote_nonce: str,
+    expected_cert_hash: str,
+) -> StorageProvisionResult:
+    """
+    Process POST /luks/attest for legacy in-field VMs (version >= 1.3.0).
+
+    DEPRECATED: superseded by process_provision_request (POST /provision), which additionally
+    records the VM root CA identity. Retained unchanged for VMs already in the field; retire
+    once the fleet upgrades. Legacy VMs have no root CA, so this path records none.
+
+    The quote nonce has already been validated and consumed by require_luks_quote_nonce.
+    Verifies the TDX quote (signature + all RTMR measurements including RTMR3), rotates
+    passphrases, manages the k3s encryption key, and issues a confirm nonce.
+    """
+    quote = RuntimeTdxQuote.from_base64(body.quote)
+    await verify_quote(quote, quote_nonce, expected_cert_hash)
+
+    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
 
 
 async def process_luks_confirm(
@@ -1496,3 +1596,9 @@ async def confirm_maintenance(
             max_concurrent_per_miner=active_window.max_concurrent_per_miner,
         ),
     )
+
+
+async def lookup_server_by_ip(db: AsyncSession, ip: str) -> Server | None:
+    """Return the Server row whose ip matches, or None if not found."""
+    result = await db.execute(select(Server).where(Server.ip == ip))
+    return result.scalar_one_or_none()

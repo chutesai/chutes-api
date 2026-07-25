@@ -129,12 +129,20 @@ class TeeServerClient:
     async def _attestation_session(self):
         """Creates an aiohttp session configured for the attestation service.
 
-        SSL verification is disabled because certificate authenticity is verified
-        through TDX quotes, which include a hash of the service's public key.
+        For VMs that have registered their attestation CA (vm_root_ca_cert is set),
+        the stored CA cert is used as the trust anchor so the proxy's server cert is
+        verified against it.  For pre-migration VMs (vm_root_ca_cert is None),
+        SSL verification is skipped and certificate authenticity is instead checked
+        out-of-band via the TDX quote's REPORTDATA hash.
         """
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+
+        if self.server.vm_root_ca_cert:
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+            ssl_context.load_verify_locations(cadata=self.server.vm_root_ca_cert)
+        else:
+            ssl_context.verify_mode = ssl.CERT_NONE
 
         connector = aiohttp.TCPConnector(ssl=ssl_context)
 

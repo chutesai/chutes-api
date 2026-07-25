@@ -22,7 +22,9 @@ from api.config import settings, TeeMeasurementConfig
 from cryptography import x509
 from cryptography.x509 import Certificate
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding, ec
 from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
 from api.server.exceptions import (
     AttestationError,
     GpuEvidenceError,
@@ -40,7 +42,11 @@ from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_st
 import hashlib
 
 from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, RootPassphraseDefault
-from api.constants import MIN_ROOT_ROTATION_VERSION
+from api.constants import (
+    MIN_ROOT_ROTATION_VERSION,
+    MTLS_PROXY_AUTH_HEADER,
+    REGISTRY_PROXY_AUTH_HEADER,
+)
 from api.util import semcomp
 
 
@@ -54,45 +60,39 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     return minutes * 60
 
 
-def require_mtls_domain():
+def require_mtls_proxy_secret():
     """
-    FastAPI dependency that rejects requests not arriving via the expected mTLS domain.
+    FastAPI dependency asserting an attestation request arrived via the mTLS nginx proxy.
 
-    Two guards are applied in order:
+    The mTLS proxy injects ``X-Mtls-Proxy-Auth`` (= ``MTLS_PROXY_SECRET``); every other proxy
+    (including api.chutes.ai) must strip it. A missing or wrong value means the request bypassed
+    the mTLS proxy and may carry an attacker-injected ``X-Client-Cert``. The former Host-header
+    check was dropped: a Host header is trivially spoofable, so the shared secret is the real
+    (and only) proxy-provenance guard -- which also means the attestation domain can change
+    (e.g. cvm.chutes.ai) as pure DNS/infra config with nothing hardcoded here.
 
-    1. Host header must match ``settings.mtls_domain`` (default: tdx-attestation.chutes.ai).
-       This catches requests that slip through the wrong reverse-proxy vhost.
-
-    2. When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must carry
-       that exact value.  The mTLS nginx proxy injects this secret; every other proxy
-       (including api.chutes.ai) must strip it.  A missing or wrong value means the request
-       bypassed the mTLS proxy and may carry an attacker-injected ``X-Client-Cert``.
-
-    Both guards fail with 403 to avoid leaking information about which check failed.
+    This is the SOLE proxy-provenance guard on the attestation endpoints -- several of which
+    (e.g. GET /nonce) have no other auth -- so it FAILS CLOSED: when ``MTLS_PROXY_SECRET`` is
+    not configured it rejects every request rather than silently running unguarded.
     """
 
     async def _check(request: Request):
-        host = request.headers.get("host", "").split(":")[0].lower()
-        expected_host = settings.mtls_domain.lower()
-        if host != expected_host:
-            logger.warning(
-                f"mTLS endpoint rejected: host={host!r} expected={expected_host!r} "
-                f"path={request.url.path}"
+        if not settings.mtls_proxy_secret:
+            logger.error(
+                "mTLS endpoint rejected: MTLS_PROXY_SECRET is not configured; refusing to serve "
+                f"the attestation endpoint unguarded path={request.url.path}"
             )
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="This endpoint is only accessible via the mTLS attestation domain.",
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="mTLS proxy secret is not configured.",
             )
-        if settings.mtls_proxy_secret:
-            proxy_auth = request.headers.get("X-Mtls-Proxy-Auth", "")
-            if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
-                logger.warning(
-                    f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}"
-                )
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail="This endpoint is only accessible via the mTLS attestation domain.",
-                )
+        proxy_auth = request.headers.get(MTLS_PROXY_AUTH_HEADER, "")
+        if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
+            logger.warning(f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request did not arrive via the mTLS attestation proxy.",
+            )
 
     return _check
 
@@ -214,33 +214,113 @@ def cert_to_base64_der(cert: Certificate) -> str:
     return cert_base64
 
 
-def _get_client_certificate(request: Request) -> "Certificate":
+def require_proxy_secret(expected_secret: Optional[str], header_name: str):
     """
-    Extract client certificate from the nginx-injected X-Client-Cert header.
+    Build a FastAPI dependency asserting a request arrived via the proxy that injects
+    ``header_name`` with ``expected_secret``.
+
+    When ``expected_secret`` is falsy the guard is a no-op (the check is disabled),
+    matching the "optional hardening" rollout posture: the proxy injects an empty header
+    and the API does not enforce it until a secret is provisioned on both sides.
+    """
+
+    async def _dep(request: Request):
+        if not expected_secret:
+            return
+        provided = request.headers.get(header_name, "")
+        if not secrets.compare_digest(provided.encode(), expected_secret.encode()):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request did not arrive via the expected proxy.",
+            )
+
+    return _dep
+
+
+def require_registry_proxy_secret():
+    """
+    FastAPI dependency guarding /registry/auth: when REGISTRY_PROXY_SECRET is configured,
+    the request must carry the registry proxy's auth header.  Single point that binds the
+    setting to its header — see require_proxy_secret for the no-op-when-unset semantics.
+    """
+    return require_proxy_secret(settings.registry_proxy_secret, REGISTRY_PROXY_AUTH_HEADER)
+
+
+def _parse_client_cert_header(request: Request) -> Optional[Certificate]:
+    """
+    Parse the nginx-injected ``X-Client-Cert`` header into a typed ``Certificate``.
+
+    Pure extraction with no trust logic: returns ``None`` when the header is absent or
+    empty (a legacy client that presented no mTLS cert), and raises ``HTTPException(400)``
+    when a cert is present but cannot be parsed.  Trust that the request actually came
+    through the mTLS proxy is enforced separately (``require_mtls_proxy_secret`` /
+    ``require_proxy_secret``), so this helper never inspects proxy secrets.
+    """
+    cert_header = request.headers.get("X-Client-Cert")
+    if not cert_header:
+        return None
+    try:
+        # nginx URL-escapes the PEM in $ssl_client_escaped_cert.
+        return x509.load_pem_x509_certificate(unquote(cert_header).encode(), default_backend())
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Malformed client certificate.",
+        ) from e
+
+
+def extract_client_cert():
+    """
+    FastAPI dependency returning the mTLS client ``Certificate``, or raising
+    ``NoClientCertError`` when none was presented.  For mTLS-required endpoints.
+    """
+
+    async def _dep(request: Request) -> Certificate:
+        return _get_client_certificate(request)
+
+    return _dep
+
+
+def extract_optional_client_cert():
+    """
+    FastAPI dependency returning the mTLS client ``Certificate`` when one is presented,
+    or ``None`` when it is absent — for dual-auth endpoints (e.g. the registry) that
+    accept either an mTLS cert or a legacy credential.  A present-but-malformed cert
+    still raises ``HTTPException(400)`` via ``_parse_client_cert_header``.
+    """
+
+    async def _dep(request: Request) -> Optional[Certificate]:
+        return _parse_client_cert_header(request)
+
+    return _dep
+
+
+def _get_client_certificate(request: Request) -> Certificate:
+    """
+    Extract the required mTLS client certificate from the nginx-injected X-Client-Cert
+    header, returning a typed ``Certificate`` or raising ``NoClientCertError``.
 
     When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must
     match before we trust anything in ``X-Client-Cert``.  This is a second line of
-    defence against header-injection attacks: even if ``require_mtls_domain`` is
+    defence against header-injection attacks: even if ``require_mtls_proxy_secret`` is
     somehow absent from a future endpoint the cert header cannot be forged without
     also knowing the proxy secret.
     """
     if settings.mtls_proxy_secret:
-        proxy_auth = request.headers.get("X-Mtls-Proxy-Auth", "")
+        proxy_auth = request.headers.get(MTLS_PROXY_AUTH_HEADER, "")
         if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
             raise NoClientCertError(
                 detail="X-Client-Cert header rejected: request did not arrive via the mTLS proxy."
             )
 
-    cert_header = request.headers.get("X-Client-Cert")
-    if not cert_header:
+    try:
+        cert = _parse_client_cert_header(request)
+    except HTTPException as e:
+        # Present-but-malformed cert: preserve the "no valid client cert" contract that
+        # callers (and extract_client_cert_hash) already expect from this helper.
+        raise NoClientCertError(detail="No client certificate provided") from e
+    if cert is None:
         raise NoClientCertError(detail="No client certificate provided")
-
-    # Decode the URL-encoded PEM cert from nginx
-    cert_pem = unquote(cert_header).encode()
-
-    # Parse the certificate
-    cert = x509.load_pem_x509_certificate(cert_pem, default_backend())
-
     return cert
 
 
@@ -803,6 +883,68 @@ async def verify_quote(
     verify_measurements(quote)
 
     return result
+
+
+def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:
+    """
+    Verify that the ``leaf`` certificate was issued and signed by the ``ca``.
+
+    Both are already-parsed ``Certificate`` objects: ``leaf`` is the mTLS client cert extracted by
+    the ``extract_optional_client_cert`` / ``extract_client_cert`` dependency; ``ca`` is the VM's
+    registered root CA (``server.vm_root_ca_certificate``).
+
+    Raises InvalidClientCertError (403) on any verification failure so callers need not
+    catch specific crypto exceptions.  Self-signed leaf certs (issuer == subject)
+    are rejected even if the signature could technically verify.
+    """
+    # Reject self-signed leaf certs.
+    if leaf.subject == leaf.issuer:
+        raise InvalidClientCertError(detail="Self-signed leaf cert not allowed.")
+
+    # Leaf issuer must match CA subject.
+    if leaf.issuer != ca.subject:
+        raise InvalidClientCertError(detail="Leaf cert issuer does not match CA cert subject.")
+
+    # Verify leaf signature against CA public key.
+    ca_pubkey = ca.public_key()
+    try:
+        if isinstance(ca_pubkey, ec.EllipticCurvePublicKey):
+            ca_pubkey.verify(
+                leaf.signature, leaf.tbs_certificate_bytes, ec.ECDSA(leaf.signature_hash_algorithm)
+            )
+        else:
+            ca_pubkey.verify(
+                leaf.signature,
+                leaf.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                leaf.signature_hash_algorithm,
+            )
+    except InvalidSignature:
+        raise InvalidClientCertError(detail="Leaf cert signature verification failed.")
+    except Exception as e:
+        logger.warning(f"verify_leaf_cert_signed_by_ca unexpected error: {e}")
+        raise InvalidClientCertError(detail="Leaf cert signature verification failed.")
+
+
+def verify_server_cert(client_cert: Optional[Certificate], server: Server) -> None:
+    """
+    Verify a VM's presented mTLS client cert against the root CA it registered.
+
+    The shared core of "authenticate a post-provision VM by its client cert": a VM records its
+    root CA via POST /provision, then presents a leaf signed by that CA on subsequent mTLS
+    calls. This verifies the leaf against ``server.vm_root_ca_cert``, regardless of how the
+    server was resolved (by source IP for the registry, by ``(hotkey, vm_name)`` for
+    ``require_server_mtls``).
+
+    Raises NoClientCertError (403) if no client cert is presented or the VM has no CA on file;
+    verify_leaf_cert_signed_by_ca raises InvalidClientCertError (403) if the leaf fails to verify.
+    """
+    ca = server.vm_root_ca_certificate
+    if client_cert is None or ca is None:
+        raise NoClientCertError(
+            detail="VM must present an mTLS leaf certificate signed by its registered CA."
+        )
+    verify_leaf_cert_signed_by_ca(client_cert, ca)
 
 
 async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:

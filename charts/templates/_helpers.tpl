@@ -270,11 +270,6 @@ redis-access: "true"
     secretKeyRef:
       name: {{ .Values.s3SecretName | default "s3-credentials" }}
       key: bucket
-- name: REGISTRY_PASSWORD
-  valueFrom:
-    secretKeyRef:
-      name: registry-secret
-      key: password
 - name: REGISTRY_INSECURE
   value: "true"
 {{- end -}}

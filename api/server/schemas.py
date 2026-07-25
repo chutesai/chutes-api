@@ -3,6 +3,9 @@ ORM definitions for servers and TDX attestations.
 """
 
 from datetime import datetime, timezone
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509 import Certificate
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -123,8 +126,15 @@ class LuksVolumeRotation:
 
 
 @dataclass
-class LuksAttestResult:
-    """Internal result of process_luks_attest_request (not an API model)."""
+class StorageProvisionResult:
+    """Internal result of storage provisioning (not an API model).
+
+    The secrets a VM receives when it (re)provisions storage on boot: the rotated per-volume
+    LUKS passphrases, the k3s encryption key (base64), and the single-use nonce it uses to
+    confirm the rotation succeeded. Returned by both POST /provision (process_provision_request)
+    and the legacy POST /luks/attest (process_luks_attest_request), which share the underlying
+    _issue_storage_secrets helper.
+    """
 
     volumes: Dict[str, "LuksVolumeRotation"]
     confirm_nonce: str
@@ -200,6 +210,45 @@ class LuksConfirmResponse(BaseModel):
 
     status: str
     volumes: Dict[str, Any]
+
+
+class ProvisionRequest(BaseModel):
+    """
+    Request model for POST /servers/{vm_name}/provision.
+
+    The runtime (RTMR3-attested) provisioning entry point for new VMs. The VM presents its
+    root CA as the mTLS client cert; the quote's REPORTDATA binds SHA256(that cert's pubkey),
+    so the CA identity is recorded from this call. Mirrors the luks/attest body today (quote
+    + volumes) and is the extensible home for future provisioning inputs.
+    """
+
+    quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
+    volumes: List[str] = Field(..., description="Volume names to rotate passphrases for")
+
+    @field_validator("volumes")
+    @classmethod
+    def validate_volumes(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("volumes must be non-empty")
+        invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
+        if invalid:
+            raise ValueError(
+                f"Invalid volume name(s): {invalid}. Supported: {list(SUPPORTED_LUKS_VOLUMES)}"
+            )
+        return v
+
+
+class ProvisionResponse(BaseModel):
+    """
+    Response model for POST /servers/{vm_name}/provision.
+
+    Carries the storage-provisioning secrets today (rotated volume passphrases, k3s
+    encryption key, confirm nonce); shaped to extend with future provisioning outputs.
+    """
+
+    volumes: Dict[str, LuksVolumeInfo]
+    confirm_nonce: str = Field(..., description="Single-use nonce for POST /provision/confirm")
+    k3s_encryption_key: str = Field(..., description="k3s encryption key (base64)")
 
 
 class GpuAttestationArgs(BaseModel):
@@ -387,9 +436,29 @@ class Server(Base):
     # Current attested measurement version, updated on every successful boot attestation.
     version = Column(Text, nullable=True)
 
+    # Per-VM root CA cert recorded via POST /servers/{vm_name}/provision (from the mTLS
+    # client cert of the RTMR3-attested runtime call). NULL means the VM has not yet
+    # provisioned (pre-migration or old image) -> legacy auth path.
+    vm_root_ca_cert = Column(Text, nullable=True)
+
     # Timestamp of the last successful TEE /status/health probe; stamped by server_health_prober.py.
     # NULL = never seen healthy. health_status below is derived from this, live.
     last_health_at = Column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def vm_root_ca_certificate(self) -> Optional[Certificate]:
+        """
+        Parsed form of vm_root_ca_cert; None when the VM has not provisioned a CA.
+
+        The raw column stays the PEM string (it is written straight from the mTLS client cert
+        and consumed as-is by ssl_context.load_verify_locations(cadata=...)); this property is
+        for the consumers that need an x509.Certificate (leaf verification). vm_root_ca_cert is
+        always written from a valid cert, so a malformed value here is a data-integrity bug and
+        is allowed to raise rather than be masked as an auth failure.
+        """
+        if not self.vm_root_ca_cert:
+            return None
+        return x509.load_pem_x509_certificate(self.vm_root_ca_cert.encode(), default_backend())
 
     @property
     def in_maintenance(self) -> bool:

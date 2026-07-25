@@ -140,15 +140,20 @@ spec:
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
-            {{- if .Values.mtlsDomain }}
-            - name: MTLS_DOMAIN
-              value: "{{ .Values.mtlsDomain }}"
-            {{- end }}
             - name: MTLS_PROXY_SECRET
               valueFrom:
                 secretKeyRef:
                   name: mtls-proxy-auth
                   key: secret
+            - name: REGISTRY_MTLS_MIN_VERSION
+              value: "{{ .Values.registryMtlsMinVersion }}"
+            {{- if .Values.registryProxy.proxyAuthSecret.name }}
+            - name: REGISTRY_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.registryProxy.proxyAuthSecret.name }}
+                  key: {{ .Values.registryProxy.proxyAuthSecret.key | default "secret" }}
+            {{- end }}
             - name: CM_REDIS_SHARD_COUNT
               value: "{{ .Values.cmRedis.shard_count }}"
             - name: SQUAD_CERT_PATH
