@@ -104,8 +104,6 @@ async def get_nonce(
     preventing cross-miner nonce reuse. VMs that do not supply this param are
     considered legacy and are rejected — use the measurement version enforcement
     to drive upgrades.
-
-    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         server_ip = request.state.client_ip
@@ -137,7 +135,6 @@ async def verify_boot_attestation(
     and returns the LUKS passphrase for disk decryption if valid.
     For VMs running version >= 1.3.0, also returns a luks_quote_nonce for
     the subsequent POST /luks/attest call.
-    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         server_ip = request.state.client_ip
@@ -197,7 +194,6 @@ async def attest_luks(
     validates and consumes the nonce; the handler then calls verify_quote which
     checks the TDX signature and all RTMR measurements including RTMR3. Returns
     rotated passphrases, the k3s encryption key, and a confirm nonce.
-    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         result = await process_luks_attest_request(
@@ -244,7 +240,6 @@ async def confirm_luks_rotation(
     The VM reports per-volume success/failure. require_confirm_nonce validates
     and consumes the nonce before the handler runs. Volumes with rotated=True
     have pending passphrases promoted to current; rotated=False discards pending.
-    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         result = await process_luks_confirm(db, hotkey, vm_name, body)
@@ -280,10 +275,6 @@ async def provision(
     the quote (signature + all RTMR measurements incl. RTMR3), records
     server.vm_root_ca_cert (idempotent), and returns rotated passphrases, the k3s encryption
     key, and a confirm nonce.
-
-    SECURITY INVARIANT: the CA is recorded ONLY here (runtime, RTMR3 measured) — never at
-    boot attestation, whose quotes validate against RTMR3 = 0.
-    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         result = await process_provision_request(
@@ -326,7 +317,6 @@ async def provision_confirm(
     Delegates to the same shared logic as the legacy /luks/confirm (process_luks_confirm):
     require_confirm_nonce validates and consumes the nonce, then volumes with rotated=True
     have pending passphrases promoted to current and rotated=False discards pending.
-    Must arrive via the mTLS attestation domain (tdx-attestation.chutes.ai).
     """
     try:
         result = await process_luks_confirm(db, hotkey, vm_name, body)

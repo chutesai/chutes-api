@@ -1097,11 +1097,8 @@ async def record_vm_ca_identity(
     The VM presents its per-boot root CA as the mTLS client cert; completing the handshake
     proves possession of the CA private key, and the caller (process_provision_request) has
     already verified the runtime quote binds SHA256(client_cert pubkey). So the presented
-    cert IS the CA to record.
-
-    SECURITY INVARIANT: recorded ONLY from /provision (runtime, RTMR3-measured) -- never from
-    boot attestation, whose quotes validate against RTMR3 = 0 and say nothing about the
-    running root filesystem.
+    cert IS the CA to record. Recorded only from the runtime /provision call (RTMR3-attested),
+    never boot attestation.
     """
     server = await get_server_by_name(db, hotkey, vm_name)
     update_log_context(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
