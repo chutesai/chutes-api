@@ -1,0 +1,25 @@
+{{- if .Values.cvmProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: cvm-proxy
+  labels:
+    {{- include "cvmProxy.labels" . | nindent 4 }}
+  {{- with .Values.cvmProxy.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.cvmProxy.service.type | default "LoadBalancer" }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  externalTrafficPolicy: Cluster
+  allocateLoadBalancerNodePorts: true
+  ports:
+    - name: https
+      port: {{ .Values.cvmProxy.service.port | default 8443 }}
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    {{- include "cvmProxy.labels" . | nindent 4 }}
+{{- end }}

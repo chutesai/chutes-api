@@ -546,10 +546,16 @@ class Settings(BaseSettings):
         )
         return bundle
 
-    # mtls_proxy_secret: a shared secret injected by the mTLS nginx proxy as X-Mtls-Proxy-Auth;
-    #   every other proxy must strip this header. require_mtls_proxy_secret requires it on all
-    #   attestation endpoints (fails closed when unset), and it also gates trust of X-Client-Cert.
-    mtls_proxy_secret: Optional[str] = os.getenv("MTLS_PROXY_SECRET")
+    # Attestation-proxy provenance secrets. Two proxies front the attestation endpoints during
+    # the 1.3.x -> 1.4.0 migration; the API tells them apart by which secret matched
+    # (see require_attestation_proxy). Every other proxy (esp. api.chutes.ai) must strip both.
+    #   attestation_proxy_secret: injected by the attestation proxy (tdx-attestation.chutes.ai) as
+    #     X-Attestation-Proxy-Auth; used by legacy 1.3.x VMs (throwaway-cert mTLS).
+    #   cvm_proxy_secret: injected by the cvm proxy (cvm.chutes.ai) as X-Cvm-Proxy-Auth; used by
+    #     1.4.0+ VMs (registered-CA mTLS). A match marks the request mTLS-verified and is
+    #     required by the 1.4.0-only endpoints (provision, provision/confirm).
+    attestation_proxy_secret: Optional[str] = os.getenv("ATTESTATION_PROXY_SECRET")
+    cvm_proxy_secret: Optional[str] = os.getenv("CVM_PROXY_SECRET")
 
     # Shared secret injected by the registry.chutes.ai nginx frontend as
     # X-Registry-Proxy-Auth.  When set, the /registry/auth handler refuses
@@ -563,6 +569,13 @@ class Settings(BaseSettings):
     # 1.4.0 SEK8S release that ships mTLS registry support.  Set to "0.0.0" to force
     # every attested VM onto mTLS — the kill switch that retires legacy auth.
     registry_mtls_min_version: str = os.getenv("REGISTRY_MTLS_MIN_VERSION", "1.4.0")
+
+    # Attestation mTLS gate (see gate_legacy_attestation): a VM whose attested measurement
+    # version is >= this must reach the transitional attestation endpoints (nonce, luks/confirm)
+    # via the cvm proxy rather than the legacy api.chutes.ai path. Older/unknown VMs still use
+    # the legacy path. Set to "0.0.0" to force every attested VM onto the cvm proxy -- the kill
+    # switch that closes the legacy attestation path once the fleet is migrated.
+    tee_mtls_min_version: str = os.getenv("TEE_MTLS_MIN_VERSION", "1.4.0")
 
     luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
     passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")

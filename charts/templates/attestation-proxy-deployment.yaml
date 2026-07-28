@@ -34,12 +34,49 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       volumes:
-        - name: attestation-proxy-config
+        - name: attestation-proxy-template
           configMap:
             name: attestation-proxy-config
+        - name: attestation-proxy-rendered
+          emptyDir: {}
         - name: chutes-tls
           secret:
             secretName: {{ .Values.attestationProxy.tlsSecretName | default "chutes-tls" }}
+      initContainers:
+        # Renders nginx.conf.template -> nginx.conf, substituting ${ATTESTATION_PROXY_SECRET} so the
+        # provenance secret is never stored in the ConfigMap. Mirrors registry-proxy / cvm-proxy.
+        - name: render-config
+          image: {{ include "chutes.image" (list . (.Values.attestationProxy.busyboxImage | default "busybox:1.36")) | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          resources:
+            limits:
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 1Gi
+          command:
+            - sh
+            - -c
+            - |
+              sed -e "s|\${ATTESTATION_PROXY_SECRET}|${ATTESTATION_PROXY_SECRET}|g" \
+                  /templates/nginx.conf.template > /rendered/nginx.conf
+          env:
+            # Same secret the API reads for ATTESTATION_PROXY_SECRET, so injected == expected. Injects
+            # empty (legacy requests then fail the proxied guard) unless proxyAuthSecret.name is set.
+            - name: ATTESTATION_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.attestationProxy.proxyAuthSecret.name | default "attestation-proxy-auth" }}
+                  key: {{ .Values.attestationProxy.proxyAuthSecret.key | default "secret" }}
+                  optional: true
+          volumeMounts:
+            - name: attestation-proxy-template
+              mountPath: /templates
+            - name: attestation-proxy-rendered
+              mountPath: /rendered
       containers:
         - name: proxy
           image: {{ include "chutes.image" (list . .Values.attestationProxy.image) | quote }}
@@ -53,7 +90,7 @@ spec:
           resources:
             {{- toYaml .Values.attestationProxy.resources | nindent 12 }}
           volumeMounts:
-            - name: attestation-proxy-config
+            - name: attestation-proxy-rendered
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
             - name: chutes-tls

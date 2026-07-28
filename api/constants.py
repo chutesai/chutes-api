@@ -34,9 +34,14 @@ MINER_HEADER = "X-Chutes-Miner"
 VALIDATOR_HEADER = "X-Chutes-Validator"
 ENCRYPTED_HEADER = "X-Chutes-Encrypted"
 ATTESTATION_SIGNATURE_HEADER = "X-Signature"
-# Injected by the mTLS attestation nginx proxy, carrying MTLS_PROXY_SECRET; proves an
-# attestation request arrived via that proxy (see require_mtls_proxy_secret).
-MTLS_PROXY_AUTH_HEADER = "X-Mtls-Proxy-Auth"
+# Injected by the attestation nginx proxy (tdx-attestation.chutes.ai), carrying
+# ATTESTATION_PROXY_SECRET; proves an attestation request arrived via that proxy. Used by legacy
+# 1.3.x VMs (see require_attestation_proxy).
+ATTESTATION_PROXY_AUTH_HEADER = "X-Attestation-Proxy-Auth"
+# Injected by the cvm nginx proxy (cvm.chutes.ai), carrying CVM_PROXY_SECRET; proves a request
+# arrived via the full-mTLS CVM proxy used by 1.4.0+ VMs. A match marks the request as
+# mTLS-verified (see require_attestation_proxy).
+CVM_PROXY_AUTH_HEADER = "X-Cvm-Proxy-Auth"
 # Injected by the registry-proxy nginx frontend, carrying REGISTRY_PROXY_SECRET; proves a
 # /registry/auth subrequest arrived via the registry proxy (see require_registry_proxy_secret).
 REGISTRY_PROXY_AUTH_HEADER = "X-Registry-Proxy-Auth"

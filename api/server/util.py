@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
+from api.database import get_db_session
 from loguru import logger
 import time
 from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
@@ -44,7 +45,8 @@ import hashlib
 from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, RootPassphraseDefault
 from api.constants import (
     MIN_ROOT_ROTATION_VERSION,
-    MTLS_PROXY_AUTH_HEADER,
+    ATTESTATION_PROXY_AUTH_HEADER,
+    CVM_PROXY_AUTH_HEADER,
     REGISTRY_PROXY_AUTH_HEADER,
 )
 from api.util import semcomp
@@ -60,38 +62,132 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     return minutes * 60
 
 
-def require_mtls_proxy_secret():
+def _proxy_provenance(request: Request) -> tuple[bool, bool]:
+    """Return ``(via_cvm_proxy, via_attestation_proxy)`` for the request.
+
+    Each flag is a constant-time match of the proxy's injected header against its configured
+    secret; an unset secret never matches. Two proxies front attestation during the 1.3.x ->
+    1.4.0 migration -- the cvm proxy (full-mTLS 1.4.0 VMs) and the attestation proxy (legacy
+    1.3.x VMs) -- and callers key their policy off which one stamped the request.
     """
-    FastAPI dependency asserting an attestation request arrived via the mTLS nginx proxy.
 
-    The mTLS proxy injects ``X-Mtls-Proxy-Auth`` (= ``MTLS_PROXY_SECRET``); every other proxy
-    (including api.chutes.ai) must strip it. A missing or wrong value means the request bypassed
-    the mTLS proxy and may carry an attacker-injected ``X-Client-Cert``. The former Host-header
-    check was dropped: a Host header is trivially spoofable, so the shared secret is the real
-    (and only) proxy-provenance guard -- which also means the attestation domain can change
-    (e.g. cvm.chutes.ai) as pure DNS/infra config with nothing hardcoded here.
+    def _matches(secret: Optional[str], header: str) -> bool:
+        if not secret:
+            return False
+        provided = request.headers.get(header, "")
+        return secrets.compare_digest(provided.encode(), secret.encode())
 
-    This is the SOLE proxy-provenance guard on the attestation endpoints -- several of which
-    (e.g. GET /nonce) have no other auth -- so it FAILS CLOSED: when ``MTLS_PROXY_SECRET`` is
-    not configured it rejects every request rather than silently running unguarded.
+    return (
+        _matches(settings.cvm_proxy_secret, CVM_PROXY_AUTH_HEADER),
+        _matches(settings.attestation_proxy_secret, ATTESTATION_PROXY_AUTH_HEADER),
+    )
+
+
+def require_attestation_proxy():
+    """
+    FastAPI dependency for endpoints BOTH VM generations reach through a proxy
+    (boot/attestation, luks/attest): the legacy 1.3.x attestation proxy or the 1.4.0 cvm proxy.
+
+    Accepts either proxy's secret. Fails closed only when NEITHER is configured (503) -- so a
+    deploy that predates provisioning doesn't 503 the fleet -- and 403s a request carrying no
+    valid secret. The spoofable Host check was dropped: the secrets are the provenance signal,
+    so the proxy DNS names are pure infra config.
     """
 
     async def _check(request: Request):
-        if not settings.mtls_proxy_secret:
+        via_cvm, via_att = _proxy_provenance(request)
+        if not settings.cvm_proxy_secret and not settings.attestation_proxy_secret:
             logger.error(
-                "mTLS endpoint rejected: MTLS_PROXY_SECRET is not configured; refusing to serve "
-                f"the attestation endpoint unguarded path={request.url.path}"
+                "attestation endpoint rejected: no proxy secret is configured; refusing to "
+                f"serve unguarded path={request.url.path}"
             )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="mTLS proxy secret is not configured.",
+                detail="Attestation proxy secret is not configured.",
             )
-        proxy_auth = request.headers.get(MTLS_PROXY_AUTH_HEADER, "")
-        if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
-            logger.warning(f"mTLS endpoint rejected: proxy secret mismatch path={request.url.path}")
+        if not (via_cvm or via_att):
+            logger.warning(
+                f"attestation endpoint rejected: proxy secret mismatch path={request.url.path}"
+            )
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Request did not arrive via the mTLS attestation proxy.",
+                detail="Request did not arrive via a trusted attestation proxy.",
+            )
+
+    return _check
+
+
+def require_cvm_proxy():
+    """
+    FastAPI dependency for full-mTLS 1.4.0 endpoints: the request must arrive via the cvm proxy
+    (cvm.chutes.ai), which injects ``X-Cvm-Proxy-Auth`` = CVM_PROXY_SECRET.
+
+    Used by the 1.4.0-only endpoints (provision, provision/confirm). nonce and luks/confirm use
+    gate_legacy_attestation, which upgrades to this behaviour per-VM via the version gate.
+    Fails closed: 503 if CVM_PROXY_SECRET is unconfigured, 403 if the request is not via the cvm
+    proxy.
+    """
+
+    async def _check(request: Request):
+        via_cvm, _ = _proxy_provenance(request)
+        if not settings.cvm_proxy_secret:
+            logger.error(
+                f"cvm endpoint rejected: CVM_PROXY_SECRET is not configured path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="CVM proxy secret is not configured.",
+            )
+        if not via_cvm:
+            logger.warning(f"cvm endpoint rejected: not via the cvm proxy path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint is only accessible via the CVM mTLS proxy.",
+            )
+
+    return _check
+
+
+def gate_legacy_attestation():
+    """
+    FastAPI dependency for the transitional attestation endpoints (nonce, luks/confirm) that
+    1.3.x VMs reach on api.chutes.ai (VALIDATOR_BASE_URL), where no proxy can inject a secret.
+
+    Not a blind allow -- it forces already-upgraded VMs onto the cvm proxy so they can't be
+    serviced on the insecure legacy path:
+
+      * request carries the cvm secret (came via the cvm proxy) -> allow (1.4.0, provenance
+        proven); no DB lookup.
+      * else resolve the VM by caller IP: if it is a known server attested at
+        >= ``tee_mtls_min_version``, reject (403) -- a VM this new must use cvm.chutes.ai.
+      * else (older / unknown / first boot) -> allow (legacy 1.3.x path).
+
+    Tightens automatically as the fleet upgrades; setting ``tee_mtls_min_version`` to "0.0.0" is
+    the kill switch that closes the legacy path entirely (mirrors the registry auth gate).
+    """
+
+    async def _check(request: Request, db: AsyncSession = Depends(get_db_session)):
+        via_cvm, _ = _proxy_provenance(request)
+        if via_cvm:
+            return
+        client_ip = getattr(request.state, "client_ip", None)
+        if not client_ip:
+            return
+        result = await db.execute(select(Server).where(Server.ip == client_ip))
+        server = result.scalar_one_or_none()
+        if (
+            server is not None
+            and server.version
+            and semcomp(server.version, settings.tee_mtls_min_version) >= 0
+        ):
+            logger.warning(
+                f"legacy attestation rejected: server {server.name} at {client_ip} is on "
+                f"{server.version} (>= {settings.tee_mtls_min_version}); must use the cvm proxy "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This VM must use the CVM mTLS proxy (cvm.chutes.ai).",
             )
 
     return _check
@@ -253,7 +349,7 @@ def _parse_client_cert_header(request: Request) -> Optional[Certificate]:
     Pure extraction with no trust logic: returns ``None`` when the header is absent or
     empty (a legacy client that presented no mTLS cert), and raises ``HTTPException(400)``
     when a cert is present but cannot be parsed.  Trust that the request actually came
-    through the mTLS proxy is enforced separately (``require_mtls_proxy_secret`` /
+    through the mTLS proxy is enforced separately (``require_attestation_proxy`` /
     ``require_proxy_secret``), so this helper never inspects proxy secrets.
     """
     cert_header = request.headers.get("X-Client-Cert")
@@ -300,17 +396,17 @@ def _get_client_certificate(request: Request) -> Certificate:
     Extract the required mTLS client certificate from the nginx-injected X-Client-Cert
     header, returning a typed ``Certificate`` or raising ``NoClientCertError``.
 
-    When ``MTLS_PROXY_SECRET`` is configured the ``X-Mtls-Proxy-Auth`` header must
-    match before we trust anything in ``X-Client-Cert``.  This is a second line of
-    defence against header-injection attacks: even if ``require_mtls_proxy_secret`` is
-    somehow absent from a future endpoint the cert header cannot be forged without
-    also knowing the proxy secret.
+    When a proxy secret is configured the request must carry a matching proxy header (from
+    either the attestation or the cvm proxy) before we trust anything in ``X-Client-Cert``.
+    This is a second line of defence against header-injection attacks: even if
+    ``require_attestation_proxy`` is somehow absent from a future endpoint the cert header
+    cannot be forged without also knowing a proxy secret.
     """
-    if settings.mtls_proxy_secret:
-        proxy_auth = request.headers.get(MTLS_PROXY_AUTH_HEADER, "")
-        if not secrets.compare_digest(proxy_auth.encode(), settings.mtls_proxy_secret.encode()):
+    if settings.attestation_proxy_secret or settings.cvm_proxy_secret:
+        via_cvm, via_att = _proxy_provenance(request)
+        if not (via_cvm or via_att):
             raise NoClientCertError(
-                detail="X-Client-Cert header rejected: request did not arrive via the mTLS proxy."
+                detail="X-Client-Cert header rejected: request did not arrive via a trusted mTLS proxy."
             )
 
     try:

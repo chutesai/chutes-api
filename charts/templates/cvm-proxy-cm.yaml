@@ -1,14 +1,16 @@
-{{- if .Values.attestationProxy.enabled }}
+{{- if .Values.cvmProxy.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: attestation-proxy-config
+  name: cvm-proxy-config
   labels:
-    {{- include "attestationProxy.labels" . | nindent 4 }}
+    {{- include "cvmProxy.labels" . | nindent 4 }}
 data:
-  # Rendered by the deployment's init container (sed-substitutes ${ATTESTATION_PROXY_SECRET}). Fronts
-  # the two endpoints legacy 1.3.x VMs proxy (boot/attestation, luks/attest) and stamps
-  # X-Attestation-Proxy-Auth so the API's require_attestation_proxy accepts them (proxied tier).
+  # Rendered by the deployment's init container (sed-substitutes ${CVM_PROXY_SECRET}) so the
+  # secret is never baked into the ConfigMap. Fronts ALL mTLS CVM attestation endpoints on
+  # cvm.chutes.ai and stamps X-Cvm-Proxy-Auth, which marks the request full-mTLS (1.4.0+) to
+  # the API's require_attestation_proxy. The API guards six endpoints; every one is frontable
+  # here so 1.4.0 VMs use a single domain.
   nginx.conf.template: |
     user www-data;
     worker_processes 64;
@@ -39,11 +41,11 @@ data:
 
             listen 8443 ssl proxy_protocol;
             set_real_ip_from {{ .Values.networkPolicies.internalCidr }};
-            {{- range .Values.attestationProxy.realIpFrom }}
+            {{- range .Values.cvmProxy.realIpFrom }}
             set_real_ip_from {{ . }};
             {{- end }}
             real_ip_header proxy_protocol;
-            server_name {{ .Values.attestationProxy.serverName | default "tdx-attestation.chutes.ai" }};
+            server_name {{ .Values.cvmProxy.serverName | default "cvm.chutes.ai" }};
 
             ssl_certificate     /etc/nginx/ssl/tls.crt;
             ssl_certificate_key /etc/nginx/ssl/tls.key;
@@ -53,48 +55,29 @@ data:
             ssl_prefer_server_ciphers on;
             ssl_verify_client optional_no_ca;
 
-            location /servers/boot/attestation {
+            # All CVM mTLS attestation endpoints (nonce, boot/attestation, luks/attest,
+            # luks/confirm, provision, provision/confirm). Each carries the client cert plus
+            # the proxy-provenance secret; the API rejects any of these lacking the secret.
+            location ~ ^/servers/(nonce|boot/attestation|[^/]+/luks/attest|[^/]+/luks/confirm|[^/]+/provision|[^/]+/provision/confirm)$ {
                 proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
                 proxy_next_upstream_tries 3;
                 proxy_next_upstream_timeout 45s;
                 proxy_connect_timeout 3s;
                 proxy_http_version 1.1;
                 proxy_set_header Connection "";
+                proxy_send_timeout 60s;
+                proxy_read_timeout 600s;
+                proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Resolved-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_protocol_addr;
                 proxy_set_header X-Forwarded-Proto https;
-                proxy_send_timeout 60s;
-                proxy_read_timeout 600s;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Resolved-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
                 proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
                 proxy_set_header X-Client-Verify $ssl_client_verify;
-                # Provenance secret (overwrites any client-supplied value): proves to the API
-                # that this legacy request arrived via the attestation proxy (proxied tier).
-                proxy_set_header X-Attestation-Proxy-Auth "${ATTESTATION_PROXY_SECRET}";
-                proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
-            }
-
-            location ~ ^/servers/[^/]+/luks/attest$ {
-                proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
-                proxy_next_upstream_tries 3;
-                proxy_next_upstream_timeout 45s;
-                proxy_connect_timeout 3s;
-                proxy_http_version 1.1;
-                proxy_set_header Connection "";
-                proxy_send_timeout 60s;
-                proxy_read_timeout 600s;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Resolved-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
-                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
-                proxy_set_header X-Client-Verify $ssl_client_verify;
-                # Provenance secret (overwrites any client-supplied value): proves to the API
-                # that this legacy request arrived via the attestation proxy (proxied tier).
-                proxy_set_header X-Attestation-Proxy-Auth "${ATTESTATION_PROXY_SECRET}";
+                # Provenance secret: overwrites any client-supplied value. Proves to the API
+                # that this request (and its X-Client-Cert) arrived via the CVM mTLS proxy, which
+                # marks it full-mTLS (1.4.0) and satisfies the cvm-only endpoints.
+                proxy_set_header X-Cvm-Proxy-Auth "${CVM_PROXY_SECRET}";
                 proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
             }
 
