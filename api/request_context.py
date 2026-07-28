@@ -42,7 +42,8 @@ async def bind_request_context(request: Request) -> None:
     """
     fields = {
         "ip": getattr(request.state, "client_ip", None),
-        "miner_hotkey": request.headers.get(HOTKEY_HEADER) or request.query_params.get("miner_hotkey"),
+        "miner_hotkey": request.headers.get(HOTKEY_HEADER)
+        or request.query_params.get("miner_hotkey"),
     }
     for key in _IDENTITY_PATH_PARAMS:
         value = request.path_params.get(key)
