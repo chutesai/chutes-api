@@ -9,12 +9,12 @@ spec:
   schedule: {{ .Values.connProber.schedule | default "*/3 * * * *" | quote }}
   suspend: {{ .Values.connProber.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.connProber) }}
-  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.connProber) }}
+  successfulJobsHistoryLimit: {{ .Values.connProber.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.connProber.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.connProber) }}
+      ttlSecondsAfterFinished: {{ .Values.connProber.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       activeDeadlineSeconds: 900
       template:
         metadata:

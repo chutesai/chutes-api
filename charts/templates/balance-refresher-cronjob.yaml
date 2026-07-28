@@ -10,12 +10,12 @@ spec:
   schedule: {{ .Values.balanceRefresher.schedule | default "* * * * *" | quote }}
   suspend: {{ .Values.balanceRefresher.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.balanceRefresher) }}
-  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.balanceRefresher) }}
+  successfulJobsHistoryLimit: {{ .Values.balanceRefresher.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.balanceRefresher.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.balanceRefresher) }}
+      ttlSecondsAfterFinished: {{ .Values.balanceRefresher.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       activeDeadlineSeconds: 300
       template:
         metadata:

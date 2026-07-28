@@ -8,14 +8,14 @@ metadata:
 spec:
   schedule: {{ .Values.failedChuteCleanup.schedule | default "*/15 * * * *" | quote }}
   suspend: {{ .Values.failedChuteCleanup.suspend | default false }}
-  successfulJobsHistoryLimit: {{ include "chutes.successfulJobsHistoryLimit" (dict "root" . "job" .Values.failedChuteCleanup) }}
-  failedJobsHistoryLimit: {{ include "chutes.failedJobsHistoryLimit" (dict "root" . "job" .Values.failedChuteCleanup) }}
+  successfulJobsHistoryLimit: {{ .Values.failedChuteCleanup.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.failedChuteCleanup.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:
       activeDeadlineSeconds: {{ .Values.failedChuteCleanup.activeDeadlineSeconds | default 900 }}
       backoffLimit: {{ .Values.failedChuteCleanup.backoffLimit | default 2 }}
-      ttlSecondsAfterFinished: {{ include "chutes.ttlSecondsAfterFinished" (dict "root" . "job" .Values.failedChuteCleanup) }}
+      ttlSecondsAfterFinished: {{ .Values.failedChuteCleanup.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       template:
         metadata:
           labels:
