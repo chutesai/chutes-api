@@ -79,8 +79,8 @@ Content-Type: application/json
 
 **Auth & guards** (FastAPI dependencies):
 - `X-Chutes-Hotkey` + `vm_name` identify the server record `(miner_hotkey, vm_name)`.
-- `require_mtls_proxy_secret()` — request must carry `X-Mtls-Proxy-Auth` matching `MTLS_PROXY_SECRET`
-  (so `X-Client-Cert` is trustworthy). Fails closed: if `MTLS_PROXY_SECRET` is unset, every request is rejected.
+- `require_attestation_proxy()` — request must carry `X-Attestation-Proxy-Auth` matching `ATTESTATION_PROXY_SECRET`
+  (so `X-Client-Cert` is trustworthy). Fails closed: if `ATTESTATION_PROXY_SECRET` is unset, every request is rejected.
 - `extract_client_cert()` — parses the mTLS client cert (the VM root CA) from `X-Client-Cert`.
 - `require_luks_quote_nonce` — validates + consumes the single-use runtime nonce issued by boot attestation.
 
@@ -208,7 +208,7 @@ Success =
 - The CA cert is taken directly from the mTLS client cert in the TLS handshake (the handshake proves key possession); there is no separate body copy, so no reconciliation is needed.
 - The registry dual-auth logic must be non-breaking for VMs below the min version. VMs with no attested version, an unknown source IP, or `version < registry_mtls_min_version` must follow the legacy auth path without error. A VM `>= registry_mtls_min_version` must **not** silently fall back to legacy (missing cert / missing stored CA → `401`).
 - `verify_leaf_cert_signed_by_ca` must not accept self-signed leaf certs (the leaf's issuer must equal the CA subject, and the signature must verify against the CA pubkey — it is not sufficient for the leaf cert to just be parseable).
-- `X-Client-Cert`/`X-Real-IP` are trusted only from the registry proxy. When `REGISTRY_PROXY_SECRET` is set, `require_registry_proxy_secret` rejects requests lacking the matching `X-Registry-Proxy-Auth`; the mTLS attestation endpoints are likewise gated by `require_mtls_proxy_secret`. The backend must not trust these headers on a connection that bypassed the proxy.
+- `X-Client-Cert`/`X-Real-IP` are trusted only from the registry proxy. When `REGISTRY_PROXY_SECRET` is set, `require_registry_proxy_secret` rejects requests lacking the matching `X-Registry-Proxy-Auth`; the mTLS attestation endpoints are likewise gated by `require_attestation_proxy`. The backend must not trust these headers on a connection that bypassed the proxy.
 - The attestation proxy client must not log the CA cert PEM or any key material.
 - Store the full CA cert (the mTLS client cert from the handshake), not just the extracted public key, to enable use as a CA trust anchor in the attestation proxy client.
 
@@ -220,9 +220,9 @@ Success =
 
 2. **`POST /servers/{vm_name}/provision` + `/provision/confirm` routes** — in the server router:
    - Request models: `ProvisionRequest(quote: str, volumes: list[str])`; confirm reuses `LuksConfirmRequest`.
-   - `provision` deps: `require_mtls_proxy_secret()`, `extract_client_cert()`, `require_luks_quote_nonce`; calls `process_provision_request` → `verify_quote(quote, nonce, SHA256(client_cert pubkey))` → `record_vm_ca_identity` (upsert `vm_root_ca_cert` = client cert PEM) → `_issue_storage_secrets`.
+   - `provision` deps: `require_attestation_proxy()`, `extract_client_cert()`, `require_luks_quote_nonce`; calls `process_provision_request` → `verify_quote(quote, nonce, SHA256(client_cert pubkey))` → `record_vm_ca_identity` (upsert `vm_root_ca_cert` = client cert PEM) → `_issue_storage_secrets`.
    - Response model: `ProvisionResponse {volumes, k3s_encryption_key, confirm_nonce}`.
-   - `provision_confirm` deps: `require_mtls_proxy_secret()`, `require_confirm_nonce`; delegates to the shared `process_luks_confirm`.
+   - `provision_confirm` deps: `require_attestation_proxy()`, `require_confirm_nonce`; delegates to the shared `process_luks_confirm`.
 
 3. **`verify_leaf_cert_signed_by_ca(leaf: Certificate, ca_cert_pem: str) -> None`** utility — takes the already-parsed leaf `Certificate` and the stored CA PEM; uses `cryptography`; raises `HTTPException(403)` on failure. Suitable for unit testing in isolation.
 
@@ -243,7 +243,7 @@ Success =
    - `test_registry_kill_switch_forces_mtls` — min version `0.0.0` forces mTLS for every attested VM
    - `test_registry_legacy_no_ca_registered` — VM below min version, valid legacy auth → allowed
    - `test_verify_leaf_cert_signed_by_ca_*` — verification function unit tests (valid / wrong CA / self-signed / malformed CA)
-   - `require_mtls_proxy_secret` / `require_registry_proxy_secret` — proxy-guard unit tests in `test_mtls_enforcement.py`
+   - `require_attestation_proxy` / `require_registry_proxy_secret` — proxy-guard unit tests in `test_mtls_enforcement.py`
 
 ---
 

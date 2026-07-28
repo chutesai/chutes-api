@@ -140,13 +140,27 @@ spec:
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
-            - name: MTLS_PROXY_SECRET
+            # Provenance secrets are optional at the ENV level (optional: true) so the shared
+            # validator image still starts where they aren't provisioned. Enforcement lives in the
+            # per-request guards (require_attestation_proxy / require_cvm_proxy), which FAIL CLOSED
+            # (503) when the secret is unset -- so a missing secret rejects attestation rather than
+            # silently bypassing the check, without taking the whole API (or sibling apps) down.
+            - name: ATTESTATION_PROXY_SECRET
               valueFrom:
                 secretKeyRef:
-                  name: mtls-proxy-auth
-                  key: secret
+                  name: {{ .Values.attestationProxy.proxyAuthSecret.name | default "attestation-proxy-auth" }}
+                  key: {{ .Values.attestationProxy.proxyAuthSecret.key | default "secret" }}
+                  optional: true
+            - name: CVM_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cvmProxy.proxyAuthSecret.name | default "cvm-proxy-auth" }}
+                  key: {{ .Values.cvmProxy.proxyAuthSecret.key | default "secret" }}
+                  optional: true
             - name: REGISTRY_MTLS_MIN_VERSION
               value: "{{ .Values.registryMtlsMinVersion }}"
+            - name: TEE_MTLS_MIN_VERSION
+              value: "{{ .Values.teeMtlsMinVersion }}"
             {{- if .Values.registryProxy.proxyAuthSecret.name }}
             - name: REGISTRY_PROXY_SECRET
               valueFrom:

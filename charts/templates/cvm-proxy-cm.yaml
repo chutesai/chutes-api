@@ -1,0 +1,89 @@
+{{- if .Values.cvmProxy.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cvm-proxy-config
+  labels:
+    {{- include "cvmProxy.labels" . | nindent 4 }}
+data:
+  # Rendered by the deployment's init container (sed-substitutes ${CVM_PROXY_SECRET}) so the
+  # secret is never baked into the ConfigMap. Fronts ALL mTLS CVM attestation endpoints on
+  # cvm.chutes.ai and stamps X-Cvm-Proxy-Auth, which marks the request full-mTLS (1.4.0+) to
+  # the API's require_attestation_proxy. The API guards six endpoints; every one is frontable
+  # here so 1.4.0 VMs use a single domain.
+  nginx.conf.template: |
+    user www-data;
+    worker_processes 64;
+    pid /run/nginx.pid;
+    include /etc/nginx/modules-enabled/*.conf;
+    events {
+        worker_connections 4096;
+    }
+    http {
+        server_tokens off;
+        ignore_invalid_headers off;
+        client_max_body_size 0;
+
+        log_format  main  '$remote_addr - [$time_local] "$request" '
+            '$status $body_bytes_sent referer="$http_referer" $request_time '
+            '"$http_user_agent" "$http_x_forwarded_for" '
+            'upstream_addr="$upstream_addr" '
+            'upstream_response_time="$upstream_response_time" '
+            'gzip_ratio=$gzip_ratio '
+            'size=$http_content_length '
+            'origin=$http_origin '
+            'host=$http_host '
+            'cache_status=$upstream_cache_status';
+
+        server {
+            access_log /var/log/nginx/access.log main;
+            error_log /var/log/nginx/error.log;
+
+            # Direct topology: cvm.chutes.ai DNS -> the in-cluster LB external IP, with no
+            # intermediary sending PROXY protocol. So listen plainly and take the client IP
+            # straight from the connection ($remote_addr). The Service uses
+            # externalTrafficPolicy: Local to preserve the real client source IP (otherwise
+            # kube-proxy SNATs it to a node IP). No set_real_ip_from / proxy_protocol needed.
+            listen 8443 ssl;
+            server_name {{ .Values.cvmProxy.serverName | default "cvm.chutes.ai" }};
+
+            ssl_certificate     /etc/nginx/ssl/tls.crt;
+            ssl_certificate_key /etc/nginx/ssl/tls.key;
+            ssl_protocols       TLSv1.2 TLSv1.3;
+
+            ssl_ciphers HIGH:!aNULL:!MD5;
+            ssl_prefer_server_ciphers on;
+            ssl_verify_client optional_no_ca;
+
+            # All CVM mTLS attestation endpoints (nonce, boot/attestation, luks/attest,
+            # luks/confirm, provision, provision/confirm). Each carries the client cert plus
+            # the proxy-provenance secret; the API rejects any of these lacking the secret.
+            location ~ ^/servers/(nonce|boot/attestation|[^/]+/luks/attest|[^/]+/luks/confirm|[^/]+/provision|[^/]+/provision/confirm)$ {
+                proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+                proxy_next_upstream_tries 3;
+                proxy_next_upstream_timeout 45s;
+                proxy_connect_timeout 3s;
+                proxy_http_version 1.1;
+                proxy_set_header Connection "";
+                proxy_send_timeout 60s;
+                proxy_read_timeout 600s;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Resolved-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $remote_addr;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+                proxy_set_header X-Client-Verify $ssl_client_verify;
+                # Provenance secret: overwrites any client-supplied value. Proves to the API
+                # that this request (and its X-Client-Cert) arrived via the CVM mTLS proxy, which
+                # marks it full-mTLS (1.4.0) and satisfies the cvm-only endpoints.
+                proxy_set_header X-Cvm-Proxy-Auth "${CVM_PROXY_SECRET}";
+                proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
+            }
+
+            location / {
+                return 404;
+            }
+        }
+    }
+{{- end }}

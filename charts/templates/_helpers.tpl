@@ -105,6 +105,10 @@ app.kubernetes.io/name: registry-proxy
 app.kubernetes.io/name: attestation-proxy
 {{- end }}
 
+{{- define "cvmProxy.labels" -}}
+app.kubernetes.io/name: cvm-proxy
+{{- end }}
+
 {{- define "claudeProxy.labels" -}}
 app.kubernetes.io/name: claude-proxy
 {{- end }}

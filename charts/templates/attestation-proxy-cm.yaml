@@ -6,7 +6,10 @@ metadata:
   labels:
     {{- include "attestationProxy.labels" . | nindent 4 }}
 data:
-  nginx.conf: |
+  # Rendered by the deployment's init container (sed-substitutes ${ATTESTATION_PROXY_SECRET}). Fronts
+  # the two endpoints legacy 1.3.x VMs proxy (boot/attestation, luks/attest) and stamps
+  # X-Attestation-Proxy-Auth so the API's require_attestation_proxy accepts them (proxied tier).
+  nginx.conf.template: |
     user www-data;
     worker_processes 64;
     pid /run/nginx.pid;
@@ -68,6 +71,9 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_protocol_addr;
                 proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
                 proxy_set_header X-Client-Verify $ssl_client_verify;
+                # Provenance secret (overwrites any client-supplied value): proves to the API
+                # that this legacy request arrived via the attestation proxy (proxied tier).
+                proxy_set_header X-Attestation-Proxy-Auth "${ATTESTATION_PROXY_SECRET}";
                 proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
             }
 
@@ -86,6 +92,9 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_protocol_addr;
                 proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
                 proxy_set_header X-Client-Verify $ssl_client_verify;
+                # Provenance secret (overwrites any client-supplied value): proves to the API
+                # that this legacy request arrived via the attestation proxy (proxied tier).
+                proxy_set_header X-Attestation-Proxy-Auth "${ATTESTATION_PROXY_SECRET}";
                 proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
             }
 

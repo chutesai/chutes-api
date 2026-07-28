@@ -338,8 +338,8 @@ async def require_server_mtls(
     ``Server`` so the handler can use it directly.
 
     Use on any post-boot mTLS endpoint that expects a request from a registered VM identified
-    by hotkey + vm_name; pair it with ``require_mtls_proxy_secret()`` (which proves the request
-    arrived via the mTLS proxy). It applies only AFTER a VM has provisioned its CA -- the
+    by hotkey + vm_name; pair it with ``require_attestation_proxy()`` (which proves the request
+    arrived via a trusted mTLS proxy). It applies only AFTER a VM has provisioned its CA -- the
     ``POST /provision`` call itself records the CA (presenting the CA as the client cert), so
     it cannot use this dependency.
 
