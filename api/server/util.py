@@ -170,9 +170,8 @@ def gate_legacy_attestation():
         via_cvm, _ = _proxy_provenance(request)
         if via_cvm:
             return
-        client_ip = getattr(request.state, "client_ip", None)
-        if not client_ip:
-            return
+        # Always set by the HTTP middleware (X-Resolved-IP or the socket peer); read directly.
+        client_ip = request.state.client_ip
         result = await db.execute(select(Server).where(Server.ip == client_ip))
         server = result.scalar_one_or_none()
         if (

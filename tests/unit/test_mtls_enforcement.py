@@ -191,17 +191,6 @@ async def test_gate_allows_unknown_ip(mock_settings):
     await gate_legacy_attestation()(_legacy_request(), _mock_db(None))
 
 
-@pytest.mark.asyncio
-@patch("api.server.util.settings")
-async def test_gate_allows_when_no_client_ip(mock_settings):
-    # No resolvable IP -> can't identify the VM -> legacy allow (no DB lookup).
-    _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
-    mock_settings.tee_mtls_min_version = "1.4.0"
-    db = _mock_db(_server("1.4.0"))
-    await gate_legacy_attestation()(_legacy_request(client_ip=None), db)
-    db.execute.assert_not_called()
-
-
 # ---------------------------------------------------------------------------
 # _get_client_certificate — two-secret proxy guard
 # ---------------------------------------------------------------------------
