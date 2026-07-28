@@ -8,13 +8,13 @@ metadata:
 spec:
   schedule: {{ .Values.auditExporter.schedule | default "1 * * * *" | quote }}
   suspend: {{ .Values.auditExporter.suspend | default false }}
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  successfulJobsHistoryLimit: {{ .Values.auditExporter.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.auditExporter.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   concurrencyPolicy: Forbid
   jobTemplate:
     spec:
       activeDeadlineSeconds: 3600
-      ttlSecondsAfterFinished: 21600
+      ttlSecondsAfterFinished: {{ .Values.auditExporter.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       backoffLimit: 5
       template:
         metadata:

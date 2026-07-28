@@ -8,12 +8,12 @@ spec:
   schedule: {{ .Values.logProber.schedule | default "*/3 * * * *" | quote }}
   suspend: {{ .Values.logProber.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 10
-  failedJobsHistoryLimit: 10
+  successfulJobsHistoryLimit: {{ .Values.logProber.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.logProber.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: 15000
+      ttlSecondsAfterFinished: {{ .Values.logProber.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       activeDeadlineSeconds: 900
       template:
         metadata:

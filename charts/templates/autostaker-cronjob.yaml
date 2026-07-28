@@ -8,12 +8,12 @@ spec:
   schedule: {{ .Values.autostaker.schedule | default "* * * * *" | quote }}
   suspend: {{ .Values.autostaker.suspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 15
-  failedJobsHistoryLimit: 15
+  successfulJobsHistoryLimit: {{ .Values.autostaker.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.autostaker.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 7
-      ttlSecondsAfterFinished: 21600
+      ttlSecondsAfterFinished: {{ .Values.autostaker.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       activeDeadlineSeconds: 1800
       template:
         metadata:

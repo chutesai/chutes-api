@@ -578,6 +578,8 @@ auditExporter:
   imagePullPolicy: Always
   schedule: "1 * * * *"
   suspend: false
+  # Keep audit Jobs/pods longer than the global default for after-the-fact inspection.
+  ttlSecondsAfterFinished: 21600
   subtensor: "wss://entrypoint-finney.opentensor.ai"
   resources:
     requests:
@@ -818,6 +820,10 @@ autostaker:
   imagePullPolicy: Always
   schedule: "* * * * *"
   suspend: false
+  # Retain more staking Job history than the global default.
+  successfulJobsHistoryLimit: 15
+  failedJobsHistoryLimit: 15
+  ttlSecondsAfterFinished: 21600
   subtensor: "wss://entrypoint-finney.opentensor.ai"
   validatorSs58: ""
   resources:
