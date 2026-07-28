@@ -862,6 +862,9 @@ attestationProxy:
       ephemeral-storage: "1Gi"
   service:
     type: LoadBalancer
+    # Reserved static LB IP (empty = GCP auto-assigns). Pin in the overlay so the IP survives a
+    # Service recreate and tdx-attestation.chutes.ai keeps resolving.
+    loadBalancerIP: ""
     port: 8443
     annotations: {}
   tolerations: []
@@ -901,6 +904,9 @@ cvmProxy:
       ephemeral-storage: "1Gi"
   service:
     type: LoadBalancer
+    # Reserved static LB IP that cvm.chutes.ai resolves to (empty = GCP auto-assigns). Pin in
+    # the overlay.
+    loadBalancerIP: ""
     # Public HTTPS on 443 (cvm.chutes.ai connects directly, no :port suffix); LB forwards to
     # the pod's unprivileged targetPort 8443 (nginx runs non-root).
     port: 443

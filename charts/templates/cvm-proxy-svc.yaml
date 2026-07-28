@@ -11,6 +11,11 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.cvmProxy.service.type | default "LoadBalancer" }}
+  {{- with .Values.cvmProxy.service.loadBalancerIP }}
+  # Pin to the reserved static IP that cvm.chutes.ai resolves to. Must already be a reserved
+  # regional static address in GCP before this is applied.
+  loadBalancerIP: {{ . }}
+  {{- end }}
   sessionAffinity: None
   internalTrafficPolicy: Cluster
   # Preserve the real client source IP (cvm.chutes.ai routes straight to this LB with no
