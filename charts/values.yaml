@@ -886,12 +886,10 @@ cvmProxy:
   proxyAuthSecret:
     name: "cvm-proxy-auth"
     key: "secret"
-  # Placeholder source ranges (RFC5737 docs net). Set the real trusted real-IP sources (the
-  # environment-specific LB/NAT addresses) in the overlay.
-  realIpFrom:
-    - "192.0.2.1"
-    - "192.0.2.2"
-    - "192.0.2.3"
+  # No realIpFrom: cvm.chutes.ai routes straight to this LB (no PROXY-protocol intermediary),
+  # so the client IP is $remote_addr directly (preserved via the Service's
+  # externalTrafficPolicy: Local). Contrast attestationProxy, which sits behind the VM-side
+  # nginx L4 stream and therefore needs set_real_ip_from + proxy_protocol.
   resources:
     requests:
       cpu: 250m
@@ -903,7 +901,9 @@ cvmProxy:
       ephemeral-storage: "1Gi"
   service:
     type: LoadBalancer
-    port: 8443
+    # Public HTTPS on 443 (cvm.chutes.ai connects directly, no :port suffix); LB forwards to
+    # the pod's unprivileged targetPort 8443 (nginx runs non-root).
+    port: 443
     annotations: {}
   tolerations: []
   affinity: {}
@@ -1024,5 +1024,4 @@ teeMeasurements:
     #         rtmr0: "PLACEHOLDER_H200_RTMR0_96_HEX_CHARS"
     #         expected_gpus:
     #           - "h200"
-    #         gpu_count: 8
-  measurements: []
+  measurements: []    #         gpu_count: 8

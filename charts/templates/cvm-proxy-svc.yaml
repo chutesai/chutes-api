@@ -13,7 +13,9 @@ spec:
   type: {{ .Values.cvmProxy.service.type | default "LoadBalancer" }}
   sessionAffinity: None
   internalTrafficPolicy: Cluster
-  externalTrafficPolicy: Cluster
+  # Preserve the real client source IP (cvm.chutes.ai routes straight to this LB with no
+  # PROXY-protocol intermediary, so $remote_addr must be the VM, not a SNATed node IP).
+  externalTrafficPolicy: Local
   allocateLoadBalancerNodePorts: true
   ports:
     - name: https

@@ -24,7 +24,7 @@ data:
         ignore_invalid_headers off;
         client_max_body_size 0;
 
-        log_format  main  '$remote_addr [$realip_remote_addr pp=$proxy_protocol_addr] - [$time_local] "$request" '
+        log_format  main  '$remote_addr - [$time_local] "$request" '
             '$status $body_bytes_sent referer="$http_referer" $request_time '
             '"$http_user_agent" "$http_x_forwarded_for" '
             'upstream_addr="$upstream_addr" '
@@ -39,12 +39,12 @@ data:
             access_log /var/log/nginx/access.log main;
             error_log /var/log/nginx/error.log;
 
-            listen 8443 ssl proxy_protocol;
-            set_real_ip_from {{ .Values.networkPolicies.internalCidr }};
-            {{- range .Values.cvmProxy.realIpFrom }}
-            set_real_ip_from {{ . }};
-            {{- end }}
-            real_ip_header proxy_protocol;
+            # Direct topology: cvm.chutes.ai DNS -> the in-cluster LB external IP, with no
+            # intermediary sending PROXY protocol. So listen plainly and take the client IP
+            # straight from the connection ($remote_addr). The Service uses
+            # externalTrafficPolicy: Local to preserve the real client source IP (otherwise
+            # kube-proxy SNATs it to a node IP). No set_real_ip_from / proxy_protocol needed.
+            listen 8443 ssl;
             server_name {{ .Values.cvmProxy.serverName | default "cvm.chutes.ai" }};
 
             ssl_certificate     /etc/nginx/ssl/tls.crt;
@@ -70,7 +70,7 @@ data:
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Resolved-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
+                proxy_set_header X-Forwarded-For $remote_addr;
                 proxy_set_header X-Forwarded-Proto https;
                 proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
                 proxy_set_header X-Client-Verify $ssl_client_verify;
