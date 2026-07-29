@@ -265,7 +265,9 @@ async def ingest(
         if ns is None:
             continue
         stream = line.stream if line.stream in ("stdout", "stderr") else "stdout"
-        prepared.append((ns, line.ts, stream, _truncate(line.log, settings.chute_logs_max_line_bytes)))
+        prepared.append(
+            (ns, line.ts, stream, _truncate(line.log, settings.chute_logs_max_line_bytes))
+        )
     if not prepared:
         return 0
 

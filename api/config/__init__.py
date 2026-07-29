@@ -573,9 +573,7 @@ class Settings(BaseSettings):
     chute_logs_max_line_bytes: int = int(os.getenv("CHUTE_LOGS_MAX_LINE_BYTES", "32768"))
     # Hard ceiling on how long the validator keeps telling a guest to continue for one config, even
     # if it never activates and never terminates (guest also self-limits). Seconds.
-    chute_logs_max_capture_seconds: int = int(
-        os.getenv("CHUTE_LOGS_MAX_CAPTURE_SECONDS", "5400")
-    )
+    chute_logs_max_capture_seconds: int = int(os.getenv("CHUTE_LOGS_MAX_CAPTURE_SECONDS", "5400"))
     # Logs stream in as batches, often several back-to-back per poll. Cache the (expensive) mTLS
     # authentication per (config_id, cert) so we verify the leaf + do the lookups once, not per batch.
     # The auth result is immutable for the life of a boot, so the TTL is generous.

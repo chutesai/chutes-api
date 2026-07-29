@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 class LogLine(BaseModel):
     """One CRI log line as shipped by the guest."""
 
-    ts: str = Field(..., description="RFC3339 nanosecond timestamp, e.g. 2026-07-27T00:00:00.123456789Z")
+    ts: str = Field(
+        ..., description="RFC3339 nanosecond timestamp, e.g. 2026-07-27T00:00:00.123456789Z"
+    )
     stream: str = Field("stdout", description="stdout | stderr")
     log: str = Field("", description="The log line content")
 

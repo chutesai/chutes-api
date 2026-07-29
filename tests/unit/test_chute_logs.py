@@ -88,9 +88,9 @@ def test_rfc3339nano_two_lines_distinct():
 
 def test_rfc3339nano_microseconds_and_offset():
     assert loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.123456+00:00") is not None
-    assert loki.rfc3339nano_to_unix_ns("2026-07-27T01:00:00.5+01:00") == loki.rfc3339nano_to_unix_ns(
-        "2026-07-27T00:00:00.5Z"
-    )
+    assert loki.rfc3339nano_to_unix_ns(
+        "2026-07-27T01:00:00.5+01:00"
+    ) == loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.5Z")
 
 
 def test_rfc3339nano_invalid_returns_none():
@@ -215,7 +215,10 @@ async def test_ingest_dedupes_on_watermark(monkeypatch):
     )
     args = LogShipmentArgs(
         deployment_id="d1",
-        logs=[LogLine(ts=ts1, stream="stdout", log="old"), LogLine(ts=ts2, stream="stdout", log="new")],
+        logs=[
+            LogLine(ts=ts1, stream="stdout", log="old"),
+            LogLine(ts=ts2, stream="stdout", log="new"),
+        ],
     )
     stored = await service.ingest(args, ctx, "running", "1.2.3.4")
     assert stored == 1
