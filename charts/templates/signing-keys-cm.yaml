@@ -38,10 +38,13 @@
 # HOW TO ROTATE KEYS
 # ==================
 # 1. Produce a new bundle JSON on the offline machine (see spec).
-# 2. Update the signing_keys_bundle.json value below.
+# 2. Update `signingKeysBundle` in the env overlay (chutes-ops values) with the new base64s.
 # 3. Roll the API pods — settings.signing_keys_bundle is a cached_property
 #    loaded at first access, so a pod restart picks up the new file.
 #
+# The bundle content is supplied by `.Values.signingKeysBundle` (real base64 values live in the
+# env overlay, NOT this file) and rendered to JSON below. The API validates at load that every
+# key + signature is present and a non-empty string.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -50,16 +53,4 @@ metadata:
     {{- include "api.labels" . | nindent 4 }}
 data:
   signing_keys_bundle.json: |
-    {
-      "version": 1,
-      "keys": {
-        "cosign/chutes.pub": "PLACEHOLDER_BASE64_COSIGN_CHUTES_PUB",
-        "cosign/dockerhub.pub": "PLACEHOLDER_BASE64_COSIGN_DOCKERHUB_PUB",
-        "helm-pubkey.gpg": "PLACEHOLDER_BASE64_HELM_PUBKEY_GPG"
-      },
-      "signatures": {
-        "cosign/chutes.pub": "PLACEHOLDER_BASE64_COSIGN_CHUTES_PUB_SIG",
-        "cosign/dockerhub.pub": "PLACEHOLDER_BASE64_COSIGN_DOCKERHUB_PUB_SIG",
-        "helm-pubkey.gpg": "PLACEHOLDER_BASE64_HELM_PUBKEY_GPG_SIG"
-      }
-    }
+    {{- .Values.signingKeysBundle | toPrettyJson | nindent 4 }}
