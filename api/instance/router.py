@@ -78,6 +78,14 @@ from api.server.service import (
     verify_gpu_evidence,
 )
 from api.server.schemas import TeeInstanceEvidence
+from api.server.util import require_cvm_proxy
+from api.chute_logs.service import (
+    LogCaptureContext,
+    resolve_log_context,
+    get_capture_state,
+    ingest,
+)
+from api.chute_logs.schemas import LogShipmentArgs
 from api.rate_limit import rate_limit
 from api.server.exceptions import (
     AttestationError,
@@ -2689,6 +2697,38 @@ async def _build_launch_config_verified_response(
     )
 
     return return_value
+
+
+@router.post("/launch_config/{config_id}/logs")
+async def ingest_launch_config_logs(
+    args: LogShipmentArgs,
+    request: Request,
+    ctx: LogCaptureContext = Depends(resolve_log_context()),
+    _cvm=Depends(require_cvm_proxy()),
+):
+    """
+    Ingest chute pod logs streamed by the in-guest log shipper.
+
+    mTLS-only, via the cvm proxy: the guest presents its per-boot registry mTLS leaf and the
+    ``resolve_log_context`` dependency binds the shipment to the launch-config owner (cross-miner
+    injection is rejected there; the auth result is cached per (config_id, cert) so a burst of
+    batches doesn't re-verify). Identity is derived server-side — the body carries only
+    ``deployment_id`` + the log lines.
+
+    Cutoff contract (docs/specs/chute-log-shipper.md): **204** = stop capturing this pod,
+    **200** = keep sending, **403/404** = terminal reject (unauthorized / unknown config), which
+    the guest also treats as stop. The lines are ingested BEFORE the cutoff is evaluated so a
+    final crash batch is always stored.
+    """
+    # server_ip from the proxy (X-Real-IP/X-Forwarded-For = the VM's source IP); never self-asserted.
+    server_ip = request.headers.get("X-Real-IP") or request.headers.get("X-Forwarded-For")
+    if server_ip and "," in server_ip:
+        server_ip = server_ip.split(",")[0].strip()
+    state = await get_capture_state(ctx)
+    await ingest(args, ctx, state.outcome, server_ip)
+    if state.stop:
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
+    return {"status": "continue"}
 
 
 @router.put("/launch_config/{config_id}")

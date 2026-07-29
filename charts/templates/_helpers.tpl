@@ -92,6 +92,10 @@ app.kubernetes.io/name: cm-redis
 app.kubernetes.io/name: quota-redis
 {{- end }}
 
+{{- define "loki.labels" -}}
+app.kubernetes.io/name: loki
+{{- end }}
+
 
 {{- define "registry.labels" -}}
 app.kubernetes.io/name: registry

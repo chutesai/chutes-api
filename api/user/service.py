@@ -5,7 +5,7 @@ User logic/code.
 from typing import Optional
 from sqlalchemy import exists
 from sqlalchemy.future import select
-from fastapi import APIRouter, Header, Request, HTTPException, Security, status
+from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
 from bittensor_wallet.keypair import Keypair
 from api.config import settings
 from api.metagraph import MetagraphNode
@@ -17,7 +17,7 @@ from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
 from api.constants import NONCE_HEADER, INTEGRATED_SUBNETS
 from api.util import nonce_is_valid, get_signing_message
-from api.permissions import Permissioning
+from api.permissions import Permissioning, Role
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
@@ -180,6 +180,37 @@ def get_current_user(
             return user
 
     return _authenticate
+
+
+def require_role(role: Role, purpose: str = None):
+    """FastAPI dependency: authenticate the caller AND require that they hold ``role``.
+
+    Declarative role enforcement — attach it to the endpoint signature (or a router's
+    ``dependencies=``) so the required role is visible in the route and checked *before*
+    the handler runs. Prefer this over an in-body ``current_user.has_role(...)`` check,
+    which a new endpoint can silently omit and which is far harder to audit than a role
+    gate that lives in the signature. Returns the authenticated ``User``.
+
+    ``purpose`` is a pass-through to the **hotkey-signature** auth path only — it binds the
+    signed message (``get_signing_message``). API-key / JWT / OAuth auth ignores it, so
+    leave it ``None`` for endpoints reached with a bearer token.
+    """
+    authenticate = get_current_user(purpose=purpose)
+
+    async def _dep(current_user: Optional[User] = Depends(authenticate)) -> User:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required.",
+            )
+        if not current_user.has_role(role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to perform this action.",
+            )
+        return current_user
+
+    return _dep
 
 
 async def chutes_user_id():

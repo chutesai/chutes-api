@@ -1,0 +1,96 @@
+{{- if .Values.loki.enabled }}
+{{- if .Values.loki.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: loki-data
+  labels:
+    {{- include "loki.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.loki.persistence.size }}
+  {{- if .Values.loki.persistence.storageClassName }}
+  storageClassName: {{ .Values.loki.persistence.storageClassName }}
+  {{- end }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loki
+  labels:
+    {{- include "loki.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  # Recreate so a rollout never has two pods contending for the single RWO data volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "loki.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "loki.labels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/loki-cm.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.loki.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.loki.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.loki.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        # Loki runs as uid 10001 in the upstream image; own the data dir so it can write.
+        fsGroup: 10001
+      containers:
+        - name: loki
+          image: "{{ .Values.loki.image }}"
+          imagePullPolicy: {{ .Values.loki.imagePullPolicy }}
+          args:
+            - -config.file=/etc/loki/config.yaml
+          ports:
+            - name: http
+              containerPort: {{ .Values.loki.service.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.loki.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/loki
+            - name: data
+              mountPath: /loki
+      volumes:
+        - name: config
+          configMap:
+            name: loki-config
+        - name: data
+          {{- if .Values.loki.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: loki-data
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+{{- end }}

@@ -56,9 +56,10 @@ data:
             ssl_verify_client optional_no_ca;
 
             # All CVM mTLS attestation endpoints (nonce, boot/attestation, luks/attest,
-            # luks/confirm, provision, provision/confirm). Each carries the client cert plus
-            # the proxy-provenance secret; the API rejects any of these lacking the secret.
-            location ~ ^/servers/(nonce|boot/attestation|[^/]+/luks/attest|[^/]+/luks/confirm|[^/]+/provision|[^/]+/provision/confirm)$ {
+            # luks/confirm, provision, provision/confirm) plus the chute-log-shipper ingest
+            # (instances/launch_config/{config_id}/logs). Each carries the client cert plus the
+            # proxy-provenance secret; the API rejects any of these lacking the secret.
+            location ~ ^/(servers/(nonce|boot/attestation|[^/]+/luks/attest|[^/]+/luks/confirm|[^/]+/provision|[^/]+/provision/confirm)|instances/launch_config/[^/]+/logs)$ {
                 proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
                 proxy_next_upstream_tries 3;
                 proxy_next_upstream_timeout 45s;
