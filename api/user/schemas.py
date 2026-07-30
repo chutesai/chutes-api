@@ -109,6 +109,11 @@ class User(Base):
     # Per-user rate limit overrides (JSONB: {"*": N, "<chute_id>": M}).
     rate_limit_overrides = Column(JSONB, nullable=True)
 
+    # Restorable soft-delete: when set, the account is inert (auth is rejected and the
+    # user's chutes stop scaling) but all owned resources are preserved for restore.
+    # Hard deletes remain a manual/DBA operation.
+    deleted_at = Column(DateTime(timezone=True), nullable=True)
+
     chutes = relationship("Chute", back_populates="user")
     images = relationship("Image", back_populates="user")
     api_keys = relationship("APIKey", back_populates="user", cascade="all, delete-orphan")

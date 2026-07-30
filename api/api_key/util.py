@@ -4,9 +4,11 @@ Helpers and application logic related to API keys and OAuth access tokens.
 
 import re
 import pickle
+from loguru import logger
 from async_lru import alru_cache
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import Request, HTTPException, status
 from api.config import settings
 from api.api_key.schemas import APIKey
@@ -53,6 +55,40 @@ async def _load_key(token_id: str):
             serialized = pickle.dumps(api_key)
             await settings.redis_client.set(cache_key, serialized, ex=60)
         return api_key
+
+
+async def invalidate_api_key_cache(api_key_id: str) -> None:
+    """
+    Drop a single API key from both caches populated by :func:`_load_key`.
+
+    Clears the shared Redis ``akey:`` entry (authoritative across workers) and this process's
+    in-process alru entry. Other workers' alru copies expire on their own 60s TTL.
+    """
+    try:
+        await settings.redis_client.delete(f"akey:{api_key_id}")
+    except Exception as exc:
+        logger.warning(f"Failed to clear akey cache for {api_key_id}: {exc}")
+    _load_key.cache_invalidate(api_key_id)
+
+
+async def invalidate_user_api_key_caches(session: AsyncSession, user_id: str) -> None:
+    """
+    Invalidate cached auth for all of a user's API keys.
+
+    Used after account state changes (e.g. a support soft-delete/restore) so the API-key auth
+    path reflects the change promptly instead of serving a stale cached user for up to 60s.
+    """
+    try:
+        api_key_ids = (
+            (await session.execute(select(APIKey.api_key_id).where(APIKey.user_id == user_id)))
+            .scalars()
+            .all()
+        )
+    except Exception as exc:
+        logger.warning(f"Failed to list api keys for {user_id}: {exc}")
+        return
+    for api_key_id in api_key_ids:
+        await invalidate_api_key_cache(api_key_id)
 
 
 async def get_user_from_oauth_token(token: str, request: Request):

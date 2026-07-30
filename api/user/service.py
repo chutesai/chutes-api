@@ -3,7 +3,7 @@ User logic/code.
 """
 
 from typing import Optional
-from sqlalchemy import exists
+from sqlalchemy import exists, or_
 from sqlalchemy.future import select
 from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
 from bittensor_wallet.keypair import Keypair
@@ -78,6 +78,10 @@ def get_current_user(
                     if api_key:
                         request.state.api_key = api_key
                         user = api_key.user
+            # A soft-deleted account is treated as if it doesn't exist (falls through to the
+            # not-found handling below), so we never leak that the account exists but is gone.
+            if user and user.deleted_at is not None:
+                user = None
             if user:
                 return user
             if raise_not_found:
@@ -172,6 +176,9 @@ def get_current_user(
             result = await session.execute(select(User).where(User.hotkey == hotkey))
 
             user = result.scalar_one_or_none()
+            # Treat a soft-deleted account as non-existent (same as the API-key path above).
+            if user and user.deleted_at is not None:
+                user = None
             if not user and raise_not_found and not registered_to:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
@@ -180,6 +187,23 @@ def get_current_user(
             return user
 
     return _authenticate
+
+
+async def resolve_user(session: AsyncSession, identifier: str) -> Optional[User]:
+    """Resolve a user by ``user_id`` or ``username``; return ``None`` if there's no match.
+
+    A pure lookup with no HTTP concerns -- the caller decides what a missing user means.
+    Does not filter soft-deleted users, so support tooling can resolve deleted accounts.
+    """
+    return (
+        (
+            await session.execute(
+                select(User).where(or_(User.username == identifier, User.user_id == identifier))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
 
 
 def require_role(role: Role, purpose: str = None):

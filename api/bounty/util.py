@@ -3,8 +3,10 @@ import json
 from loguru import logger
 from datetime import datetime, timezone
 from typing import Optional
+from sqlalchemy import select, exists
 from api.chute.schemas import Chute
 from api.config import settings
+from api.database import db_scalar
 from metasync.constants import (
     BOUNTY_BOOST_MIN,
     BOUNTY_BOOST_MAX,
@@ -88,6 +90,29 @@ async def set_chute_disabled(chute_id: str, disabled: bool):
         logger.warning(f"Failed to set chute disabled state: {exc}")
 
 
+async def is_owner_deleted(chute_id: str) -> bool:
+    """
+    Authoritative check of whether a chute's owner has been soft-deleted.
+
+    A soft-deleted owner's chutes must stay inert (no scale-up) until the account is
+    restored. This reads ``users.deleted_at`` directly rather than a cached flag so it can
+    never drift from the source of truth: a soft-delete clears/sets nothing extra to keep in
+    sync, and a manual DB edit or Redis flush can't leave a deleted owner scaling again.
+    """
+    from api.user.schemas import User  # lazy import to avoid an import cycle
+
+    return bool(
+        await db_scalar(
+            select(
+                exists()
+                .where(Chute.chute_id == chute_id)
+                .where(Chute.user_id == User.user_id)
+                .where(User.deleted_at.isnot(None))
+            )
+        )
+    )
+
+
 async def bounty_lifetime_for(chute: Chute) -> int:
     """
     Seconds a bounty -- and the matching explicit-warmup demand window -- stays open for this chute.
@@ -118,6 +143,11 @@ async def create_bounty_if_not_exists(chute_id: str, lifetime: int = 86400) -> b
     # Check if chute is disabled before creating bounty
     if await is_chute_disabled(chute_id):
         logger.info(f"Bounty creation blocked for disabled chute {chute_id}")
+        return False
+
+    # Deleted (soft-deleted) owners' chutes must stay inert (no scale-up) until restore.
+    if await is_owner_deleted(chute_id):
+        logger.info(f"Bounty creation blocked for chute {chute_id}; owner account deleted")
         return False
 
     # Rate limit bounty creation to prevent race conditions where a bounty is
