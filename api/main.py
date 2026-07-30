@@ -42,6 +42,7 @@ from api.idp.router import router as idp_router
 from api.e2e.router import router as e2e_router
 from api.encrypted_logs.router import router as encrypted_logs_router
 from api.model_alias.router import router as model_alias_router
+from api.partners.router import router as partners_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
 from api.config import settings
@@ -173,6 +174,7 @@ default_router.include_router(
     encrypted_logs_router, prefix="/encrypted_logs", tags=["Encrypted Logs"]
 )
 default_router.include_router(model_alias_router, prefix="/model_aliases", tags=["Model Aliases"])
+default_router.include_router(partners_router, prefix="/partners", tags=["Partners"])
 
 
 # Do not use app for this, else middleware picks it up

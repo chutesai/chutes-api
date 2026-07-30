@@ -2172,12 +2172,24 @@ async def get_and_store_llm_details(chute_id: str):
                 model_info["price"] = price
                 model_info["confidential_compute"] = chute.tee
 
-                # OpenRouter format.
+                # OpenRouter format, plus the Hugging Face aliases. HF's
+                # /v1/models contract asks for `pricing.input` / `pricing.output`
+                # (USD per million tokens) and powers their provider comparison
+                # table and the `:cheapest` routing policy. Same numbers, extra
+                # keys only — nothing that reads `prompt`/`completion` changes.
                 model_info["pricing"] = {
                     "prompt": per_million_in,
                     "completion": per_million_out,
                     "input_cache_read": input_cache_read,
+                    "input": per_million_in,
+                    "output": per_million_out,
                 }
+
+                # HF also requires `context_length` on every listed model. Most
+                # instances report it already; fall back to max_model_len for the
+                # few that don't rather than leaving the field absent.
+                if not model_info.get("context_length") and model_info.get("max_model_len"):
+                    model_info["context_length"] = model_info["max_model_len"]
                 if chute.llm_detail and isinstance(chute.llm_detail.overrides, dict):
                     model_info.update(
                         {
