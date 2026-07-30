@@ -150,14 +150,8 @@ async def test_authenticate_cross_miner_403():
 
 
 # ---------------------------------------------------------------------------
-# Cutoff (_compute_stop is a pure function of state + debug flag)
+# Cutoff — binary terminal check + debug override
 # ---------------------------------------------------------------------------
-def _now_iso(minutes_ago=1):
-    return (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=minutes_ago)
-    ).isoformat()
-
-
 def _lc(failed=False, activated=False):
     instance = SimpleNamespace(activated_at=datetime.datetime.utcnow()) if activated else None
     return SimpleNamespace(
@@ -167,32 +161,31 @@ def _lc(failed=False, activated=False):
     )
 
 
-def test_stop_running_continues():
-    assert service._compute_stop(_lc(), _now_iso(), debug=False) is False
+def test_not_terminal_while_running():
+    assert service._is_terminal(_lc()) is False
 
 
-def test_stop_activated_stops():
-    assert service._compute_stop(_lc(activated=True), _now_iso(), debug=False) is True
+def test_terminal_when_activated():
+    assert service._is_terminal(_lc(activated=True)) is True
 
 
-def test_stop_failed_stops():
-    assert service._compute_stop(_lc(failed=True), _now_iso(), debug=False) is True
+def test_terminal_when_failed():
+    assert service._is_terminal(_lc(failed=True)) is True
 
 
-def test_debug_override_continues_past_activation():
-    assert service._compute_stop(_lc(activated=True), _now_iso(), debug=True) is False
+def test_terminal_when_deleted():
+    assert service._is_terminal(None) is True
 
 
-def test_max_capture_backstop_wins_over_debug(monkeypatch):
-    monkeypatch.setattr(settings, "chute_logs_max_capture_seconds", 60)
-    # created 10 minutes ago, backstop is 60s -> stop even with debug on.
-    assert service._compute_stop(_lc(), _now_iso(minutes_ago=10), debug=True) is True
+@pytest.mark.asyncio
+async def test_debug_override_prevents_stop(monkeypatch):
+    async def _debug_on(_chute_id):
+        return True
 
-
-def test_outcome_derivation():
-    assert service._outcome(_lc()) == "running"
-    assert service._outcome(_lc(failed=True)) == "failed"
-    assert service._outcome(_lc(activated=True)) == "activated"
+    # Debug on short-circuits before any DB lookup → never stop, even once terminal.
+    monkeypatch.setattr(service, "is_debug_enabled", _debug_on)
+    ctx = service.LogCaptureContext(config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk")
+    assert await service.should_stop_capture(ctx) is False
 
 
 # ---------------------------------------------------------------------------
@@ -211,7 +204,7 @@ async def test_ingest_dedupes_on_watermark(monkeypatch):
     monkeypatch.setattr(settings, "_redis_client", redis)
 
     ctx = service.LogCaptureContext(
-        config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk", created_at_iso=""
+        config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk"
     )
     args = LogShipmentArgs(
         deployment_id="d1",
@@ -220,7 +213,7 @@ async def test_ingest_dedupes_on_watermark(monkeypatch):
             LogLine(ts=ts2, stream="stdout", log="new"),
         ],
     )
-    stored = await service.ingest(args, ctx, "running", "1.2.3.4")
+    stored = await service.ingest(args, ctx, "1.2.3.4")
     assert stored == 1
     pushed.assert_awaited_once()
     # The enriched line carries server-derived identity, never self-asserted by the guest.
@@ -244,10 +237,10 @@ async def test_ingest_noop_without_loki(monkeypatch):
         settings, "_redis_client", AsyncMock(get=AsyncMock(return_value=None), set=AsyncMock())
     )
     ctx = service.LogCaptureContext(
-        config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk", created_at_iso=""
+        config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk"
     )
     args = LogShipmentArgs(logs=[LogLine(ts="2026-07-27T00:00:00.5Z", log="x")])
-    stored = await service.ingest(args, ctx, "running", None)
+    stored = await service.ingest(args, ctx, None)
     # Accepted (counted) but not pushed anywhere.
     assert stored == 1
     pushed.assert_not_awaited()

@@ -571,17 +571,12 @@ class Settings(BaseSettings):
         os.getenv("CHUTE_LOGS_MAX_LINES_PER_SHIPMENT", "5000")
     )
     chute_logs_max_line_bytes: int = int(os.getenv("CHUTE_LOGS_MAX_LINE_BYTES", "32768"))
-    # Hard ceiling on how long the validator keeps telling a guest to continue for one config, even
-    # if it never activates and never terminates (guest also self-limits). Seconds.
-    chute_logs_max_capture_seconds: int = int(os.getenv("CHUTE_LOGS_MAX_CAPTURE_SECONDS", "5400"))
     # Logs stream in as batches, often several back-to-back per poll. Cache the (expensive) mTLS
     # authentication per (config_id, cert) so we verify the leaf + do the lookups once, not per batch.
     # The auth result is immutable for the life of a boot, so the TTL is generous.
+    # TTL for the Redis-shared auth cache (config+cert → resolved identity). The identity is stable
+    # for the config's lifetime, so this only bounds staleness on CA/ownership changes.
     chute_logs_auth_cache_seconds: int = int(os.getenv("CHUTE_LOGS_AUTH_CACHE_SECONDS", "300"))
-    # Short cache for the mutable cutoff/outcome state (activation, failed, debug flag) so a burst of
-    # batches in one poll collapses to a single lookup. Bounded staleness is fine — once we return
-    # stop (204) the guest ceases shipping anyway.
-    chute_logs_state_cache_seconds: int = int(os.getenv("CHUTE_LOGS_STATE_CACHE_SECONDS", "5"))
 
     # Shared secret injected by the registry.chutes.ai nginx frontend as
     # X-Registry-Proxy-Auth.  When set, the /registry/auth handler refuses

@@ -6,7 +6,7 @@ This traffic must NEVER go through the API's own stdout — that would leak chut
 logs into the ops monitoring store via Fluent Bit (see the spec). Loki is not
 client-reachable; only this client and the internal Grafana talk to it.
 
-Label discipline: labels are low-cardinality only (``app``, ``outcome``,
+Label discipline: labels are low-cardinality only (``app``,
 ``stream``). High-cardinality identifiers (config_id, chute_id, user_id, …) ride
 inside the JSON log line and are filtered via LogQL ``| json | field="…"``.
 

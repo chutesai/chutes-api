@@ -62,7 +62,8 @@ speculated about is now real. The concrete changes:
    is **not** used.
 7. **Terminal rejects stop the guest.** The shipped guest retries *all* non-2xx; a **coordinated
    guest change** makes `403`/`404` terminal (stop + log the specific reason). Until that lands the
-   guest will retry these until its local `max_capture_seconds` (~1h) — bounded, not fatal, but noisy.
+   guest will retry these transiently — bounded by backoff, not fatal, but noisy. (There is no
+   wall-clock capture cap on either side; capture ends on lifecycle state — see §3.)
 8. **Store is a dedicated in-namespace Loki, not the ops OpenSearch cluster.** Support surfacing is
    out of scope for this repo (see "Storage"). The draft's OpenSearch index-template/ILM +
    support-read endpoint + audit are removed; a Loki-idiomatic label/field split replaces them.
@@ -86,7 +87,7 @@ speculated about is now real. The concrete changes:
   ⇒ no duplication, no mixing. (This is why the draft's "structured stdout + Fluent Bit" ingestion
   option is rejected.)
 - **Loki label discipline (not OpenSearch keyword mapping).** Loki punishes high-cardinality labels.
-  So **labels are low-cardinality only** (`app="chute-log-shipper"`, `outcome`, `stream`); the
+  So **labels are low-cardinality only** (`app="chute-log-shipper"`, `stream`); the
   high-cardinality identifiers (`config_id`, `chute_id`, `server_ip`, `miner_hotkey`, `deployment_id`)
   ride as **structured JSON fields in the log line**, filtered via LogQL (`| json | config_id="…"`).
   Grafana filtering by any of those fields works unchanged; it is line-filtering, not a keyword index.
@@ -209,9 +210,14 @@ The API decides; the response code carries the decision (§1).
 - **Per-chute debug override:** resolve `chute_id` from `LaunchConfig(config_id)` first, then if
   Redis key `pod_logs_debug:{chute_id}` is set, keep sending (`200`) regardless of activation. Add an
   admin/support endpoint to set/clear it; document that enabling it captures post-activation output.
-- **Backstops:** unknown/nonexistent `config_id` → **404** (guest stops); ownership mismatch → **403**
-  (guest stops). The guest also enforces a local `max_capture_seconds`, so a never-activating,
-  never-terminating pod cannot stream forever even absent an API stop.
+- **Terminal rejections:** unknown/nonexistent `config_id` → **404** (guest stops); ownership mismatch
+  → **403** (guest stops).
+- **No wall-clock cap (by design).** Capture stops only on lifecycle state — activation, `failed_at`,
+  or the config being deleted (miner preempt / validator teardown all set one of these). A config that
+  never reaches a terminal state is an *anomaly whose logs we want for debugging*, not something to
+  time out; and ingest is already bounded per-batch and by Loki retention, so nothing runs away. The
+  proper guards for a genuinely immortal pod live upstream (k8s Job `active_deadline_seconds`) and in a
+  future shipper-sent *terminated* signal (deferred follow-up) — not a timer in the log path.
 
 ### 4. Storage — dedicated Loki, direct push
 - **Store:** a **dedicated single-instance Loki** in the `chutes` namespace, deployed by this repo's
@@ -221,8 +227,9 @@ The API decides; the response code carries the decision (§1).
   `[<ts_ns>, <line>]`) using the already-present async HTTP client. **Never** teed to stdout (see
   Design Decisions).
 - **Label vs field split (Loki-idiomatic):**
-  - **Labels (low-cardinality):** `app="chute-log-shipper"`, `outcome` (`running|failed|activated`),
-    `stream` (`stdout|stderr`).
+  - **Labels (low-cardinality):** `app="chute-log-shipper"`, `stream` (`stdout|stderr`). No
+    lifecycle/phase label — capture is binary (see §3), and a per-line phase marker carried no
+    useful signal (most lines are pre-terminal regardless of how the launch ends).
   - **JSON line fields (high-cardinality, LogQL-filterable):** `config_id`, `chute_id`, `server_ip`,
     `miner_hotkey`, `deployment_id`, **`user_id`** (chute owner — the forced-matcher target for owner
     reads, §6), plus `ts`, `stream`, and `log`.
@@ -231,8 +238,6 @@ The API decides; the response code carries the decision (§1).
     stamped:** `Chute.public` is a mutable Boolean (`api/chute/schemas.py:226`) that can flip inside the
     retention window, so public/private is always re-resolved from the DB at read time (§6), never from
     the store.
-  - `outcome` is **derived server-side at ingest** from state, not from the body: `failed_at` set →
-    `failed`; instance `activated_at` set → `activated`; else `running`.
 - **Retention:** 24h via Loki config (no per-index ILM template needed).
 
 ### 5. Read paths
@@ -247,8 +252,8 @@ All authorization/isolation rules for these live in §6; this section is *what* 
 > routes + auth.
 
 - **Support / internal:** **out of scope for this repo.** The ops Grafana (OAuth + Tailscale) queries
-  the dedicated Loki directly, filterable by `chute_id` / `config_id` / `server_ip` / `miner_hotkey` /
-  `outcome` via LogQL. No support-read API endpoint, no `chutes_support` support gate, and no
+  the dedicated Loki directly, filterable by `chute_id` / `config_id` / `server_ip` / `miner_hotkey`
+  via LogQL. No support-read API endpoint, no `chutes_support` support gate, and no
   support-read audit are built here. (Trusted internal surface; unfiltered by design.)
 - **CLI / miner (pre-registration fallback) — DEFERRED (follow-up):** extend `GET /miner/instance_logs`
   (`stream_miner_logs`, `api/miner/router.py`) to serve from Loki keyed by `config_id` when there is no
@@ -356,7 +361,7 @@ Success (Phase 1) =
   time; or omitting the owner
   `user_id` forced matcher on the owner/end-user path.
 - Loki docs missing any queryable field (`config_id`, `chute_id`, `server_ip`, `miner_hotkey`,
-  `deployment_id`, `user_id`, `outcome`, `stream`).
+  `deployment_id`, `user_id`, `stream`).
 - No retention (unbounded Loki growth) — must be 24h.
 - Never returns `204` (unbounded ingestion) — missing activation check / override handling.
 

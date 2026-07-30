@@ -10,12 +10,12 @@ Responsibilities:
   * get/set/clear the per-chute debug override.
 """
 
-from dataclasses import dataclass
+import hashlib
+import json
+from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from async_lru import alru_cache
-from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509 import Certificate
 from fastapi import Depends, HTTPException, status
@@ -49,15 +49,6 @@ class LogCaptureContext:
     chute_id: str
     user_id: str
     miner_hotkey: str
-    created_at_iso: str  # launch-config creation time, for the capture-expiry backstop
-
-
-@dataclass(frozen=True)
-class LogCaptureState:
-    """Mutable, short-TTL-cached cutoff state for a config."""
-
-    outcome: str  # running | failed | activated
-    stop: bool
 
 
 # ---------------------------------------------------------------------------
@@ -75,18 +66,41 @@ def resolve_log_context():
         config_id: str,
         client_cert: Certificate = Depends(extract_client_cert()),
     ) -> LogCaptureContext:
-        cert_pem = client_cert.public_bytes(Encoding.PEM).decode()
-        return await _authenticate_cached(config_id, cert_pem)
+        return await _authenticate_cached(config_id, client_cert)
 
     return _dep
 
 
-@alru_cache(maxsize=4096, ttl=settings.chute_logs_auth_cache_seconds)
-async def _authenticate_cached(config_id: str, cert_pem: str) -> LogCaptureContext:
-    """Cached auth core. alru_cache does not cache exceptions, so 403/404 always re-resolve."""
-    leaf = x509.load_pem_x509_certificate(cert_pem.encode())
+_AUTH_KEY = "chute_logs:auth:{config_id}:{cert_hash}"
+
+
+async def _authenticate_cached(config_id: str, client_cert: Certificate) -> LogCaptureContext:
+    """Resolve identity for (config_id, cert), cached in Redis.
+
+    The expensive part — leaf verification + the launch-config/chute/server lookups — then runs
+    once per (config, cert) for the whole fleet instead of per batch per pod. An in-process cache
+    barely hits across 50-100 load-balanced pods, so the cache is shared in Redis. Only successful
+    resolutions are stored; 403/404 raise and are never cached, so a rejected cert always re-resolves.
+    """
+    cert_hash = hashlib.sha256(client_cert.public_bytes(Encoding.DER)).hexdigest()
+    key = _AUTH_KEY.format(config_id=config_id, cert_hash=cert_hash)
+    try:
+        cached = await settings.redis_client.get(key)
+        if cached is not None:
+            return LogCaptureContext(**json.loads(cached))
+    except Exception as exc:  # pragma: no cover - a redis hiccup must not block auth
+        logger.warning(f"chute-logs: auth cache read failed for {config_id}: {exc}")
+
     async with get_session(readonly=True) as db:
-        return await _authenticate(db, config_id, leaf)
+        ctx = await _authenticate(db, config_id, client_cert)
+
+    try:
+        await settings.redis_client.set(
+            key, json.dumps(asdict(ctx)), ex=settings.chute_logs_auth_cache_seconds
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning(f"chute-logs: auth cache write failed for {config_id}: {exc}")
+    return ctx
 
 
 async def _authenticate(
@@ -143,9 +157,6 @@ async def _authenticate(
                 chute_id=chute.chute_id,
                 user_id=chute.user_id,
                 miner_hotkey=launch_config.miner_hotkey,
-                created_at_iso=launch_config.created_at.isoformat()
-                if launch_config.created_at
-                else "",
             )
         except AttestationError:
             continue
@@ -161,73 +172,33 @@ async def _authenticate(
 
 
 # ---------------------------------------------------------------------------
-# Cutoff / outcome — short-TTL cached mutable state
+# Cutoff — binary: keep capturing until the launch is terminal (unless debugging)
 # ---------------------------------------------------------------------------
-def _capture_expired(created_at_iso: str) -> bool:
-    if not created_at_iso:
-        return False
-    created = datetime.fromisoformat(created_at_iso)
-    if created.tzinfo is None:
-        created = created.replace(tzinfo=timezone.utc)
-    age = (datetime.now(timezone.utc) - created).total_seconds()
-    return age >= settings.chute_logs_max_capture_seconds
-
-
-def _outcome(launch_config: LaunchConfig) -> str:
-    """Derive the ingest-time outcome from launch-config / instance state."""
-    instance = launch_config.instance
-    if instance is not None and instance.activated_at is not None:
-        return "activated"
-    if launch_config.failed_at is not None:
-        return "failed"
-    return "running"
-
-
-def _compute_stop(launch_config: LaunchConfig, created_at_iso: str, debug: bool) -> bool:
-    """Cutoff decision: True → tell the guest to stop (HTTP 204).
-
-    Default: stop once the instance is activated. The per-chute debug override keeps capture
-    going past activation, but the max-capture backstop always wins so a never-activating,
-    never-terminating pod cannot stream forever.
-    """
-    if _capture_expired(created_at_iso):
-        return True
-    if debug:
-        return False
-    instance = launch_config.instance
-    if instance is not None and instance.activated_at is not None:
-        return True
-    if launch_config.failed_at is not None:
-        # Pod is terminal; guest will stop on its own — signal stop after this batch.
-        return True
-    return False
-
-
-async def _compute_state(
-    db: AsyncSession, config_id: str, chute_id: str, created_at_iso: str
-) -> LogCaptureState:
-    launch_config = await db.scalar(select(LaunchConfig).where(LaunchConfig.config_id == config_id))
+def _is_terminal(launch_config: Optional[LaunchConfig]) -> bool:
+    """Has the launch reached a terminal state — activated, failed, or deleted?"""
     if launch_config is None:
-        # Disappeared mid-stream — treat as terminal.
-        return LogCaptureState(outcome="failed", stop=True)
-    debug = await is_debug_enabled(chute_id)
-    return LogCaptureState(
-        outcome=_outcome(launch_config),
-        stop=_compute_stop(launch_config, created_at_iso, debug),
-    )
+        return True  # deleted mid-stream
+    instance = launch_config.instance
+    activated = instance is not None and instance.activated_at is not None
+    return activated or launch_config.failed_at is not None
 
 
-@alru_cache(maxsize=8192, ttl=settings.chute_logs_state_cache_seconds)
-async def _capture_state_cached(
-    config_id: str, chute_id: str, created_at_iso: str
-) -> LogCaptureState:
+async def should_stop_capture(ctx: LogCaptureContext) -> bool:
+    """Whether to tell the guest to stop shipping (HTTP 204).
+
+    Binary and lifecycle-driven: stop once the launch config is terminal, unless the per-chute
+    debug override is on. Computed fresh per batch (cheap: one Redis debug read + one indexed
+    launch-config lookup); no cache, no wall-clock cap. A config that never terminalizes keeps
+    capturing on purpose — that anomaly's logs are what we want (ingest is bounded per-batch and
+    by Loki retention, so nothing runs away).
+    """
+    if await is_debug_enabled(ctx.chute_id):
+        return False
     async with get_session(readonly=True) as db:
-        return await _compute_state(db, config_id, chute_id, created_at_iso)
-
-
-async def get_capture_state(ctx: LogCaptureContext) -> LogCaptureState:
-    """Current outcome + cutoff for a chute's log capture, cached briefly to collapse per-poll bursts."""
-    return await _capture_state_cached(ctx.config_id, ctx.chute_id, ctx.created_at_iso)
+        launch_config = await db.scalar(
+            select(LaunchConfig).where(LaunchConfig.config_id == ctx.config_id)
+        )
+        return _is_terminal(launch_config)
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +214,6 @@ def _truncate(text: str, max_bytes: int) -> str:
 async def ingest(
     args: LogShipmentArgs,
     ctx: LogCaptureContext,
-    outcome: str,
     server_ip: Optional[str],
 ) -> int:
     """Dedupe, enrich, and push a shipment's lines to Loki. Returns the count stored.
@@ -287,7 +257,7 @@ async def ingest(
     max_ns = max(item[0] for item in fresh)
 
     if settings.loki_url:
-        await _push_lines(fresh, ctx, outcome, server_ip, args.deployment_id)
+        await _push_lines(fresh, ctx, server_ip, args.deployment_id)
     else:
         logger.debug(f"chute-logs: LOKI_URL unset, dropping {len(fresh)} lines for {config_id}")
 
@@ -302,13 +272,10 @@ async def ingest(
 async def _push_lines(
     fresh: List[tuple],
     ctx: LogCaptureContext,
-    outcome: str,
     server_ip: str,
     deployment_id: Optional[str],
 ) -> None:
     """Group by stream label and push to Loki. High-cardinality ids ride in the JSON line."""
-    import json
-
     base = {
         "config_id": ctx.config_id,
         "chute_id": ctx.chute_id,
@@ -316,7 +283,6 @@ async def _push_lines(
         "miner_hotkey": ctx.miner_hotkey,
         "server_ip": server_ip,
         "deployment_id": deployment_id or "",
-        "outcome": outcome,
     }
     by_stream: Dict[str, List[List[str]]] = {}
     for ns, ts, stream, log in fresh:
@@ -326,7 +292,7 @@ async def _push_lines(
 
     streams = [
         {
-            "stream": {"app": loki.APP_LABEL, "outcome": outcome, "stream": stream},
+            "stream": {"app": loki.APP_LABEL, "stream": stream},
             "values": values,
         }
         for stream, values in by_stream.items()

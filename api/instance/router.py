@@ -82,7 +82,7 @@ from api.server.util import require_cvm_proxy
 from api.chute_logs.service import (
     LogCaptureContext,
     resolve_log_context,
-    get_capture_state,
+    should_stop_capture,
     ingest,
 )
 from api.chute_logs.schemas import LogShipmentArgs
@@ -2700,7 +2700,7 @@ async def _build_launch_config_verified_response(
 
 
 @router.post("/launch_config/{config_id}/logs")
-async def ingest_launch_config_logs(
+async def ingest_chute_logs(
     args: LogShipmentArgs,
     request: Request,
     ctx: LogCaptureContext = Depends(resolve_log_context()),
@@ -2720,13 +2720,11 @@ async def ingest_launch_config_logs(
     the guest also treats as stop. The lines are ingested BEFORE the cutoff is evaluated so a
     final crash batch is always stored.
     """
-    # server_ip from the proxy (X-Real-IP/X-Forwarded-For = the VM's source IP); never self-asserted.
-    server_ip = request.headers.get("X-Real-IP") or request.headers.get("X-Forwarded-For")
-    if server_ip and "," in server_ip:
-        server_ip = server_ip.split(",")[0].strip()
-    state = await get_capture_state(ctx)
-    await ingest(args, ctx, state.outcome, server_ip)
-    if state.stop:
+    # Source IP resolved by the universal middleware (from X-Resolved-IP, which the cvm proxy stamps
+    # to the VM's $remote_addr); never self-asserted by the guest. Same canonical path as everywhere else.
+    server_ip = request.state.client_ip
+    await ingest(args, ctx, server_ip)
+    if await should_stop_capture(ctx):
         return Response(status_code=status.HTTP_204_NO_CONTENT)
     return {"status": "continue"}
 
