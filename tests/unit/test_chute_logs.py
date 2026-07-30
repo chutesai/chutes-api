@@ -14,9 +14,9 @@ from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from fastapi import HTTPException
 
 from api.chute_logs import loki, service
+from api.chute_logs.exceptions import LogCaptureNotAuthorized, UnknownLaunchConfig
 from api.chute_logs.service import rfc3339nano_to_unix_ns
 from api.chute_logs.schemas import LogLine, LogShipmentArgs
 from api.config import settings
@@ -129,9 +129,9 @@ async def test_authenticate_success_returns_context():
 @pytest.mark.asyncio
 async def test_authenticate_unknown_config_404():
     db = _mock_db(None, None, [])
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(UnknownLaunchConfig) as exc:
         await service._authenticate(db, "missing", _leaf(_key(), _key(), _ca(_key())))
-    assert exc.value.status_code == 404
+    assert exc.value.http_status == 404
 
 
 @pytest.mark.asyncio
@@ -145,9 +145,9 @@ async def test_authenticate_cross_miner_403():
     chute = SimpleNamespace(chute_id="ch1", user_id="u1", public=True)
     db = _mock_db(_lc_row(), chute, [_server_with_ca(good_ca)])
 
-    with pytest.raises(HTTPException) as exc:
+    with pytest.raises(LogCaptureNotAuthorized) as exc:
         await service._authenticate(db, "c1", attacker_leaf)
-    assert exc.value.status_code == 403
+    assert exc.value.http_status == 403
 
 
 # ---------------------------------------------------------------------------

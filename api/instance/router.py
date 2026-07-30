@@ -81,10 +81,10 @@ from api.server.schemas import TeeInstanceEvidence
 from api.server.util import require_cvm_proxy
 from api.chute_logs.service import (
     LogCaptureContext,
-    resolve_log_context,
     should_stop_capture,
     ingest,
 )
+from api.chute_logs.dependencies import resolve_log_context
 from api.chute_logs.schemas import LogShipmentArgs
 from api.rate_limit import rate_limit
 from api.server.exceptions import (

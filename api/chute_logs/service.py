@@ -19,12 +19,12 @@ from typing import Dict, List, Optional
 
 from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509 import Certificate
-from fastapi import Depends, HTTPException, status
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.chute_logs import loki
+from api.chute_logs.exceptions import LogCaptureNotAuthorized, UnknownLaunchConfig
 from api.chute_logs.schemas import LogShipmentArgs, StoredLogLine
 from api.chute.schemas import Chute
 from api.config import settings
@@ -32,7 +32,7 @@ from api.database import get_session
 from api.instance.schemas import LaunchConfig
 from api.server.exceptions import AttestationError
 from api.server.schemas import Server
-from api.server.util import extract_client_cert, verify_leaf_cert_signed_by_ca
+from api.server.util import verify_leaf_cert_signed_by_ca
 
 # Redis keys.
 _DEBUG_KEY = "pod_logs_debug:{chute_id}"
@@ -53,30 +53,14 @@ class LogCaptureContext:
 
 
 # ---------------------------------------------------------------------------
-# Authentication — FastAPI dependency, cached per (config_id, cert)
+# Shipment authentication — cached per (config_id, cert)
 # ---------------------------------------------------------------------------
-def resolve_log_context():
-    """FastAPI dependency: authenticate an incoming log shipment and resolve its LogCaptureContext.
-
-    Composes ``extract_client_cert`` and resolves identity via CA match (below). The result
-    is memoized per (config_id, cert) so a burst of batches doesn't re-verify the leaf or
-    re-hit the DB on every POST.
-    """
-
-    async def _dep(
-        config_id: str,
-        client_cert: Certificate = Depends(extract_client_cert()),
-    ) -> LogCaptureContext:
-        return await _authenticate_cached(config_id, client_cert)
-
-    return _dep
-
-
 _AUTH_KEY = "chute_logs:auth:{config_id}:{cert_hash}"
 
 
-async def _authenticate_cached(config_id: str, client_cert: Certificate) -> LogCaptureContext:
-    """Resolve identity for (config_id, cert), cached in Redis.
+async def authenticate_shipment(config_id: str, client_cert: Certificate) -> LogCaptureContext:
+    """Resolve identity for (config_id, cert), cached in Redis. Raises pure domain errors
+    (``UnknownLaunchConfig`` / ``LogCaptureNotAuthorized``) — the dependency maps them to HTTP.
 
     The expensive part — leaf verification + the launch-config/chute/server lookups — then runs
     once per (config, cert) for the whole fleet instead of per batch per pod. An in-process cache
@@ -120,19 +104,19 @@ async def _authenticate(
     bound to a server, so the pod may run on any of the miner's VMs — the miner's CA set is
     the right granularity.
 
-    Raises:
-        HTTPException 404 — ``config_id`` unknown (the guest treats this as terminal).
-        HTTPException 403 — no leaf, no matching CA, or the leaf fails to verify
+    Raises (pure domain errors — the transport boundary maps them, see exceptions.py):
+        UnknownLaunchConfig (→ 404) — ``config_id`` unknown (the guest treats this as terminal).
+        LogCaptureNotAuthorized (→ 403) — no matching CA, or the leaf fails to verify
             (also terminal for the guest).
     """
     launch_config = await db.scalar(select(LaunchConfig).where(LaunchConfig.config_id == config_id))
     if launch_config is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown launch config.")
+        raise UnknownLaunchConfig()
 
     chute = await db.scalar(select(Chute).where(Chute.chute_id == launch_config.chute_id))
     if chute is None:
         # Config with no chute is a broken/racing state; nothing to authorize against.
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chute not found.")
+        raise UnknownLaunchConfig("Chute not found.")
 
     servers = (
         (
@@ -166,10 +150,7 @@ async def _authenticate(
         f"chute-logs: mTLS leaf did not verify against any CA for miner "
         f"{launch_config.miner_hotkey} (config {config_id})"
     )
-    raise HTTPException(
-        status_code=status.HTTP_403_FORBIDDEN,
-        detail="Log shipment mTLS leaf does not match a registered VM CA for this launch config.",
-    )
+    raise LogCaptureNotAuthorized()
 
 
 # ---------------------------------------------------------------------------
