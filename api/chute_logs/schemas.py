@@ -32,7 +32,8 @@ class LogShipmentArgs(BaseModel):
     """
 
     deployment_id: str = Field(
-        "", description="From the chutes/deployment-id pod label; empty if absent. Never used for auth."
+        "",
+        description="From the chutes/deployment-id pod label; empty if absent. Never used for auth.",
     )
     logs: List[LogLine] = Field(default_factory=list)
 

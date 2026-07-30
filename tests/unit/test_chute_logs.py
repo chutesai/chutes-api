@@ -89,9 +89,9 @@ def test_rfc3339nano_two_lines_distinct():
 
 def test_rfc3339nano_microseconds_and_offset():
     assert rfc3339nano_to_unix_ns("2026-07-27T00:00:00.123456+00:00") is not None
-    assert rfc3339nano_to_unix_ns(
-        "2026-07-27T01:00:00.5+01:00"
-    ) == rfc3339nano_to_unix_ns("2026-07-27T00:00:00.5Z")
+    assert rfc3339nano_to_unix_ns("2026-07-27T01:00:00.5+01:00") == rfc3339nano_to_unix_ns(
+        "2026-07-27T00:00:00.5Z"
+    )
 
 
 def test_rfc3339nano_invalid_returns_none():
@@ -204,9 +204,7 @@ async def test_ingest_dedupes_on_watermark(monkeypatch):
     redis = AsyncMock(get=AsyncMock(return_value=wm), set=AsyncMock())
     monkeypatch.setattr(settings, "_redis_client", redis)
 
-    ctx = service.LogCaptureContext(
-        config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk"
-    )
+    ctx = service.LogCaptureContext(config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk")
     args = LogShipmentArgs(
         deployment_id="d1",
         logs=[
@@ -237,9 +235,7 @@ async def test_ingest_noop_without_loki(monkeypatch):
     monkeypatch.setattr(
         settings, "_redis_client", AsyncMock(get=AsyncMock(return_value=None), set=AsyncMock())
     )
-    ctx = service.LogCaptureContext(
-        config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk"
-    )
+    ctx = service.LogCaptureContext(config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk")
     args = LogShipmentArgs(logs=[LogLine(ts="2026-07-27T00:00:00.5Z", log="x")])
     stored = await service.ingest(args, ctx, "")
     # Accepted (counted) but not pushed anywhere.
