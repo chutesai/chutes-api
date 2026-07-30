@@ -557,6 +557,27 @@ class Settings(BaseSettings):
     attestation_proxy_secret: Optional[str] = os.getenv("ATTESTATION_PROXY_SECRET")
     cvm_proxy_secret: Optional[str] = os.getenv("CVM_PROXY_SECRET")
 
+    # Chute log shipper (see api/chute_logs): the in-guest agent streams pre-registration chute pod
+    # logs to POST /instances/launch_config/{config_id}/logs; the validator pushes them to a
+    # dedicated in-namespace Loki (NOT the ops monitoring cluster) for a bounded window, read back
+    # by owners / the miner CLI and surfaced to support via the ops Grafana. When loki_url is unset
+    # the ingest endpoint accepts + drops (still returning the cutoff signal) so the guest is a no-op
+    # until Loki is provisioned.
+    loki_url: Optional[str] = os.getenv("LOKI_URL")
+    loki_tenant_id: Optional[str] = os.getenv("LOKI_TENANT_ID")
+    loki_timeout_seconds: float = float(os.getenv("LOKI_TIMEOUT_SECONDS", "10.0"))
+    # Bounds on a single shipment so a misbehaving/hostile guest cannot flood the store.
+    chute_logs_max_lines_per_shipment: int = int(
+        os.getenv("CHUTE_LOGS_MAX_LINES_PER_SHIPMENT", "5000")
+    )
+    chute_logs_max_line_bytes: int = int(os.getenv("CHUTE_LOGS_MAX_LINE_BYTES", "32768"))
+    # Logs stream in as batches, often several back-to-back per poll. Cache the (expensive) mTLS
+    # authentication per (config_id, cert) so we verify the leaf + do the lookups once, not per batch.
+    # The auth result is immutable for the life of a boot, so the TTL is generous.
+    # TTL for the Redis-shared auth cache (config+cert → resolved identity). The identity is stable
+    # for the config's lifetime, so this only bounds staleness on CA/ownership changes.
+    chute_logs_auth_cache_seconds: int = int(os.getenv("CHUTE_LOGS_AUTH_CACHE_SECONDS", "300"))
+
     # Shared secret injected by the registry.chutes.ai nginx frontend as
     # X-Registry-Proxy-Auth.  When set, the /registry/auth handler refuses
     # requests that do not carry this header, preventing X-Client-Cert spoofing

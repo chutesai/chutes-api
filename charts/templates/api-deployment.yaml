@@ -28,6 +28,9 @@ spec:
         {{- include "api.labels" . | nindent 8 }}
         {{- include "chutes.dbAccess" . | nindent 8 }}
         {{- include "chutes.redisAccess" . | nindent 8 }}
+        {{- if .Values.loki.enabled }}
+        loki-access: "true"
+        {{- end }}
       {{- if not .Values.gmp.enabled }}
       annotations:
         prometheus.io/scrape: "true"
@@ -157,6 +160,12 @@ spec:
                   name: {{ .Values.cvmProxy.proxyAuthSecret.name | default "cvm-proxy-auth" }}
                   key: {{ .Values.cvmProxy.proxyAuthSecret.key | default "secret" }}
                   optional: true
+            {{- if .Values.loki.enabled }}
+            # Dedicated chute-log-shipper Loki (in-namespace, not the ops cluster). When unset the
+            # ingest endpoint accepts + drops shipments, so the feature is a safe no-op.
+            - name: LOKI_URL
+              value: "http://loki.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.loki.service.port }}"
+            {{- end }}
             - name: REGISTRY_MTLS_MIN_VERSION
               value: "{{ .Values.registryMtlsMinVersion }}"
             - name: TEE_MTLS_MIN_VERSION

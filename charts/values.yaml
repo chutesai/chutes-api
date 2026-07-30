@@ -752,6 +752,45 @@ quotaRedis:
   config:
     customArgs: []
 
+# Dedicated single-instance Loki for the chute log shipper (pre-registration pod logs). This is
+# NOT the ops monitoring cluster: it is platform-owned, in-namespace, bounded to 24h retention, and
+# read by the API (owner/miner CLI) + the ops Grafana (as a datasource, over the internal network).
+# The API pushes lines directly to it (never via stdout). Not client-reachable (NetworkPolicy).
+loki:
+  enabled: true
+  image: grafana/loki:3.1.1
+  imagePullPolicy: IfNotPresent
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 1
+      memory: 2Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+  service:
+    type: ClusterIP
+    port: 3100
+  # Bounded local storage; 24h retention keeps the footprint small.
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: ""
+  retentionHours: 24
+  # NetworkPolicy: Loki is default-deny and is NOT client-reachable. In-namespace clients (the API)
+  # opt in via the `loki-access: "true"` pod label — that stays locked to the workloads this chart
+  # deploys. Any OTHER peer that may reach Loki (e.g. the ops Grafana namespace) is cluster-specific
+  # policy: set it here as a list of raw NetworkPolicy ingress `from` peers. The chart names no
+  # external infra and defaults to none; the ops repo, which manages these values and has the
+  # cluster-wide context, sets who/what may read Loki. Example (in the ops repo overlay):
+  #   extraIngressFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  extraIngressFrom: []
+
 registry:
   enabled: true
   image: registry:3.0.0-rc.3
