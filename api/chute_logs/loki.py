@@ -20,6 +20,7 @@ shutdown, via :meth:`LokiClient.aclose`.
 
 import json
 import re
+import threading
 from typing import Dict, List, Optional, Tuple
 
 import httpx
@@ -81,12 +82,15 @@ class LokiClient:
     """
 
     _instance: Optional["LokiClient"] = None
+    _lock = threading.Lock()
 
     def __new__(cls) -> "LokiClient":
         if cls._instance is None:
-            self = super().__new__(cls)
-            self._connect()
-            cls._instance = self
+            with cls._lock:
+                if cls._instance is None:
+                    self = super().__new__(cls)
+                    self._connect()
+                    cls._instance = self
         return cls._instance
 
     def _connect(self) -> None:
