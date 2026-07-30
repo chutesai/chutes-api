@@ -19,7 +19,6 @@ shutdown, via :meth:`LokiClient.aclose`.
 """
 
 import json
-import re
 import threading
 from typing import Dict, List, Optional, Tuple
 
@@ -36,35 +35,6 @@ _QUERY_RANGE_PATH = "/loki/api/v1/query_range"
 
 # Bound the single pool so a stuck/slow Loki can never exhaust the API's FDs.
 _DEFAULT_LIMITS = httpx.Limits(max_connections=20, max_keepalive_connections=10)
-
-_TS_RE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:?\d{2})$"
-)
-
-
-def rfc3339nano_to_unix_ns(ts: str) -> Optional[int]:
-    """Convert an RFC3339 (nanosecond) timestamp to integer unix nanoseconds.
-
-    ``datetime.fromisoformat`` only handles microseconds, so parse the fractional
-    part separately to preserve full nanosecond precision. Returns None for an
-    unparseable timestamp (the caller skips that line).
-    """
-    from datetime import datetime
-
-    match = _TS_RE.match(ts.strip())
-    if not match:
-        return None
-    base, frac, offset = match.groups()
-    offset = "+00:00" if offset in ("Z", "z") else offset
-    if len(offset) == 5:  # +HHMM -> +HH:MM
-        offset = f"{offset[:3]}:{offset[3:]}"
-    try:
-        dt = datetime.fromisoformat(f"{base}{offset}")
-    except ValueError:
-        return None
-    seconds = int(dt.timestamp())
-    nanos = int((frac or "").ljust(9, "0")[:9])
-    return seconds * 1_000_000_000 + nanos
 
 
 class LokiClient:

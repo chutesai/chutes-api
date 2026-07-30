@@ -17,6 +17,7 @@ from cryptography.x509.oid import NameOID
 from fastapi import HTTPException
 
 from api.chute_logs import loki, service
+from api.chute_logs.service import rfc3339nano_to_unix_ns
 from api.chute_logs.schemas import LogLine, LogShipmentArgs
 from api.config import settings
 
@@ -76,26 +77,26 @@ def _mock_db(launch_config, chute, servers):
 # Timestamp parsing
 # ---------------------------------------------------------------------------
 def test_rfc3339nano_preserves_nanoseconds():
-    ns = loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.123456789Z")
+    ns = rfc3339nano_to_unix_ns("2026-07-27T00:00:00.123456789Z")
     assert ns % 1_000_000_000 == 123456789
 
 
 def test_rfc3339nano_two_lines_distinct():
-    a = loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.000000001Z")
-    b = loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.000000002Z")
+    a = rfc3339nano_to_unix_ns("2026-07-27T00:00:00.000000001Z")
+    b = rfc3339nano_to_unix_ns("2026-07-27T00:00:00.000000002Z")
     assert b - a == 1
 
 
 def test_rfc3339nano_microseconds_and_offset():
-    assert loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.123456+00:00") is not None
-    assert loki.rfc3339nano_to_unix_ns(
+    assert rfc3339nano_to_unix_ns("2026-07-27T00:00:00.123456+00:00") is not None
+    assert rfc3339nano_to_unix_ns(
         "2026-07-27T01:00:00.5+01:00"
-    ) == loki.rfc3339nano_to_unix_ns("2026-07-27T00:00:00.5Z")
+    ) == rfc3339nano_to_unix_ns("2026-07-27T00:00:00.5Z")
 
 
 def test_rfc3339nano_invalid_returns_none():
-    assert loki.rfc3339nano_to_unix_ns("not-a-timestamp") is None
-    assert loki.rfc3339nano_to_unix_ns("") is None
+    assert rfc3339nano_to_unix_ns("not-a-timestamp") is None
+    assert rfc3339nano_to_unix_ns("") is None
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +200,7 @@ async def test_ingest_dedupes_on_watermark(monkeypatch):
     # Watermark already at line-1's ts; only the later line is fresh.
     ts1 = "2026-07-27T00:00:00.000000001Z"
     ts2 = "2026-07-27T00:00:00.000000002Z"
-    wm = str(loki.rfc3339nano_to_unix_ns(ts1))
+    wm = str(rfc3339nano_to_unix_ns(ts1))
     redis = AsyncMock(get=AsyncMock(return_value=wm), set=AsyncMock())
     monkeypatch.setattr(settings, "_redis_client", redis)
 

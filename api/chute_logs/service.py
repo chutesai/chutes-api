@@ -12,6 +12,7 @@ Responsibilities:
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -204,6 +205,35 @@ async def should_stop_capture(ctx: LogCaptureContext) -> bool:
 # ---------------------------------------------------------------------------
 # Ingest
 # ---------------------------------------------------------------------------
+_TS_RE = re.compile(
+    r"^(\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2})(?:\.(\d{1,9}))?([Zz]|[+-]\d{2}:?\d{2})$"
+)
+
+
+def rfc3339nano_to_unix_ns(ts: str) -> Optional[int]:
+    """Convert an RFC3339 (nanosecond) timestamp to integer unix nanoseconds.
+
+    Not a Loki concern — this is the canonical ns the ingest path derives once and uses for
+    *both* dedup (the Redis watermark comparison) and the Loki push value. ``datetime.fromisoformat``
+    only handles microseconds, so the fractional part is parsed separately to keep full nanosecond
+    precision. Returns None for an unparseable timestamp (the caller skips that line).
+    """
+    match = _TS_RE.match(ts.strip())
+    if not match:
+        return None
+    base, frac, offset = match.groups()
+    offset = "+00:00" if offset in ("Z", "z") else offset
+    if len(offset) == 5:  # +HHMM -> +HH:MM
+        offset = f"{offset[:3]}:{offset[3:]}"
+    try:
+        dt = datetime.fromisoformat(f"{base}{offset}")
+    except ValueError:
+        return None
+    seconds = int(dt.timestamp())
+    nanos = int((frac or "").ljust(9, "0")[:9])
+    return seconds * 1_000_000_000 + nanos
+
+
 def _truncate(text: str, max_bytes: int) -> str:
     encoded = text.encode("utf-8", errors="replace")
     if len(encoded) <= max_bytes:
@@ -230,7 +260,7 @@ async def ingest(
     # Resolve + normalize timestamps, honoring the per-shipment line cap.
     prepared: List[tuple] = []  # (ns, ts, stream, log)
     for line in args.logs[: settings.chute_logs_max_lines_per_shipment]:
-        ns = loki.rfc3339nano_to_unix_ns(line.ts)
+        ns = rfc3339nano_to_unix_ns(line.ts)
         if ns is None:
             continue
         stream = line.stream if line.stream in ("stdout", "stderr") else "stdout"
