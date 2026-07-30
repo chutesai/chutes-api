@@ -214,7 +214,7 @@ def _truncate(text: str, max_bytes: int) -> str:
 async def ingest(
     args: LogShipmentArgs,
     ctx: LogCaptureContext,
-    server_ip: Optional[str],
+    server_ip: str,
 ) -> int:
     """Dedupe, enrich, and push a shipment's lines to Loki. Returns the count stored.
 
@@ -226,7 +226,6 @@ async def ingest(
         return 0
 
     config_id = ctx.config_id
-    server_ip = server_ip or ""
 
     # Resolve + normalize timestamps, honoring the per-shipment line cap.
     prepared: List[tuple] = []  # (ns, ts, stream, log)
@@ -273,7 +272,7 @@ async def _push_lines(
     fresh: List[tuple],
     ctx: LogCaptureContext,
     server_ip: str,
-    deployment_id: Optional[str],
+    deployment_id: str,
 ) -> None:
     """Group by stream label and push to Loki. High-cardinality ids ride in the JSON line."""
     base = {
@@ -282,7 +281,7 @@ async def _push_lines(
         "user_id": ctx.user_id,
         "miner_hotkey": ctx.miner_hotkey,
         "server_ip": server_ip,
-        "deployment_id": deployment_id or "",
+        "deployment_id": deployment_id,
     }
     by_stream: Dict[str, List[List[str]]] = {}
     for ns, ts, stream, log in fresh:

@@ -240,7 +240,7 @@ async def test_ingest_noop_without_loki(monkeypatch):
         config_id="c1", chute_id="ch1", user_id="u1", miner_hotkey="hk"
     )
     args = LogShipmentArgs(logs=[LogLine(ts="2026-07-27T00:00:00.5Z", log="x")])
-    stored = await service.ingest(args, ctx, None)
+    stored = await service.ingest(args, ctx, "")
     # Accepted (counted) but not pushed anywhere.
     assert stored == 1
     pushed.assert_not_awaited()

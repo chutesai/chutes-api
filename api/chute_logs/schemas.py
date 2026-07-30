@@ -7,7 +7,7 @@ server_ip) is derived server-side from the request path + verified mTLS leaf +
 proxy — never self-asserted by the guest.
 """
 
-from typing import List, Optional
+from typing import List
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +31,9 @@ class LogShipmentArgs(BaseModel):
     from the ``chutes/deployment-id`` pod label. It is never used for auth.
     """
 
-    deployment_id: Optional[str] = None
+    deployment_id: str = Field(
+        "", description="From the chutes/deployment-id pod label; empty if absent. Never used for auth."
+    )
     logs: List[LogLine] = Field(default_factory=list)
 
 
