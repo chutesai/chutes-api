@@ -38,6 +38,7 @@ from api.user.service import (
     require_role,
     resolve_user,
     get_user_resources,
+    check_user_deletable,
     delete_user_and_resources,
 )
 from api.instance.util import cleanup_instance_conn_tracking
@@ -1445,55 +1446,15 @@ async def admin_delete_user(
         support_id=current_user.user_id,
     )
 
-    # Privilege guard (hard, not force-overridable): never delete an account that holds any
-    # role/permission bits -- an admin/support/subnet account must have its roles removed first,
-    # so this endpoint can't be used to nuke a privileged user.
-    if user.permissions_bitmask:
-        logger.warning(
-            f"user deletion blocked: user has special roles "
-            f"(permissions_bitmask={user.permissions_bitmask})"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": (
-                    "User has special roles/permissions and cannot be deleted. "
-                    "Remove their roles first."
-                ),
-                "user_id": user.user_id,
-                "permissions_bitmask": user.permissions_bitmask,
-            },
-        )
-
-    # Money guard: refuse to delete an account with outstanding balance/invoicing unless forced.
-    balance = user.balance or 0.0
-    effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
-    invoicing_enabled = user.has_role(Permissioning.invoice_billing)
-    if (balance != 0 or effective_balance != 0 or invoicing_enabled) and not body.force:
-        logger.warning(
-            "user deletion blocked: outstanding balance or active invoicing "
-            f"(balance={balance}, effective_balance={effective_balance}, "
-            f"invoicing={invoicing_enabled})"
-        )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": (
-                    "User has an outstanding balance or active invoicing. "
-                    "Pass force=true to confirm deletion."
-                ),
-                "user_id": user.user_id,
-                "balance": balance,
-                "effective_balance": effective_balance,
-                "invoicing_enabled": invoicing_enabled,
-            },
-        )
-
-    # Gate the destructive path behind an explicit allow condition (the account owns nothing
-    # blocking, or support opted in with delete_resources). The hard delete lives ONLY inside
-    # this branch, so no future edit can fall through to it -- anything else refuses by default.
+    # Single source of truth for "can we delete this user?" -- the privilege, balance/invoicing,
+    # and owned-resource rules (with their force / delete_resources overrides) all live in
+    # check_user_deletable. The destructive path lives ONLY inside `if decision.allowed`, so
+    # nothing can fall through to it; every other outcome refuses by default (fail closed).
     resources = await get_user_resources(db, user.user_id)
-    if resources.is_empty or body.delete_resources:
+    decision = check_user_deletable(
+        user, resources, force=body.force, delete_resources=body.delete_resources
+    )
+    if decision.allowed:
         # Hard-delete the user + blocking resources (DB work only; commit + side effects below).
         result = await delete_user_and_resources(db, user, resources)
         await db.commit()
@@ -1507,7 +1468,7 @@ async def admin_delete_user(
         for api_key_id in result.api_key_ids:
             await invalidate_api_key_cache(api_key_id)
 
-        # Final audit line; user_id/username/actor/event come from the ambient context bound
+        # Final audit line; user_id/username/support/event come from the ambient context bound
         # above, and the per-resource ids were logged individually in the service teardown.
         logger.warning(
             f"support hard-deleted user account (force={body.force}, reason={body.reason!r}): "
@@ -1523,25 +1484,11 @@ async def admin_delete_user(
             "instances_terminated": len(result.terminated_instances),
         }
 
-    # Blocked: the account owns resources and support did not opt in to deleting them.
-    logger.warning(
-        f"user deletion blocked: user owns {len(resources.chutes)} chutes, "
-        f"{len(resources.images)} images, {len(resources.secrets)} secrets"
-    )
+    # Blocked -- the reason and the relevant fields come straight from the single check above.
+    logger.warning(f"user deletion blocked: {decision.message}")
     raise HTTPException(
         status_code=status.HTTP_409_CONFLICT,
-        detail={
-            "message": (
-                "User owns resources that block deletion. Re-issue with "
-                "delete_resources=true to delete them as part of the account deletion."
-            ),
-            "user_id": user.user_id,
-            "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
-            "images": [
-                {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
-            ],
-            "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
-        },
+        detail={"message": decision.message, "user_id": user.user_id, **decision.context},
     )
 
 

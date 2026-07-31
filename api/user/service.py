@@ -82,6 +82,19 @@ class UserDeletionResult:
     secrets_deleted: int = 0
 
 
+@dataclass
+class DeletionCheck:
+    """
+    Outcome of :func:`check_user_deletable` -- the single source of truth for whether an
+    account may be hard-deleted. ``message``/``context`` describe the block for the caller
+    to surface (e.g. as an HTTP 409 body); no transport concerns leak into the service.
+    """
+
+    allowed: bool
+    message: Optional[str] = None
+    context: dict = field(default_factory=dict)
+
+
 def get_current_user(
     purpose: str = None,
     registered_to: int = None,
@@ -280,6 +293,60 @@ async def get_user_resources(session: AsyncSession, user_id: str) -> UserResourc
         images=[ImageRef(image_id=i.image_id, name=i.name, tag=i.tag) for i in images],
         secrets=[SecretRef(secret_id=s.secret_id, key=s.key) for s in secrets],
     )
+
+
+def check_user_deletable(
+    user: User, resources: UserResources, *, force: bool, delete_resources: bool
+) -> DeletionCheck:
+    """Single source of truth for whether a user may be hard-deleted.
+
+    Rules, in order (first failure wins):
+      * privileged accounts (any ``permissions_bitmask`` bit) are never deletable here --
+        a HARD stop that ``force`` cannot override; strip the roles first;
+      * an outstanding/negative balance or active invoicing blocks unless ``force``;
+      * owned chutes/images/secrets block unless ``delete_resources``.
+
+    Returns a :class:`DeletionCheck`; the caller decides how to surface a block.
+    """
+    if user.permissions_bitmask:
+        return DeletionCheck(
+            allowed=False,
+            message="User has special roles/permissions and cannot be deleted. "
+            "Remove their roles first.",
+            context={"permissions_bitmask": user.permissions_bitmask},
+        )
+
+    balance = user.balance or 0.0
+    effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
+    invoicing_enabled = user.has_role(Permissioning.invoice_billing)
+    if (balance != 0 or effective_balance != 0 or invoicing_enabled) and not force:
+        return DeletionCheck(
+            allowed=False,
+            message="User has an outstanding balance or active invoicing. "
+            "Pass force=true to confirm deletion.",
+            context={
+                "balance": balance,
+                "effective_balance": effective_balance,
+                "invoicing_enabled": invoicing_enabled,
+            },
+        )
+
+    if not resources.is_empty and not delete_resources:
+        return DeletionCheck(
+            allowed=False,
+            message="User owns resources that block deletion. Re-issue with "
+            "delete_resources=true to delete them as part of the account deletion.",
+            context={
+                "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
+                "images": [
+                    {"image_id": i.image_id, "name": i.name, "tag": i.tag}
+                    for i in resources.images
+                ],
+                "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
+            },
+        )
+
+    return DeletionCheck(allowed=True)
 
 
 async def delete_user_and_resources(

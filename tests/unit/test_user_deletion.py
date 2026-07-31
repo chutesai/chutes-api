@@ -72,6 +72,63 @@ async def test_get_user_resources_empty_is_empty():
 
 
 # ---------------------------------------------------------------------------
+# check_user_deletable: single source of truth for the delete guards
+# ---------------------------------------------------------------------------
+def _user(*, permissions_bitmask=0, balance=0.0, effective_balance=0.0, invoicing=False):
+    return SimpleNamespace(
+        user_id="u1",
+        permissions_bitmask=permissions_bitmask,
+        balance=balance,
+        current_balance=SimpleNamespace(effective_balance=effective_balance),
+        has_role=lambda role: invoicing,  # only invoice_billing is consulted
+    )
+
+
+def test_check_user_deletable_allows_clean_user():
+    check = user_service.check_user_deletable(
+        _user(), user_service.UserResources(), force=False, delete_resources=False
+    )
+    assert check.allowed
+
+
+def test_check_user_deletable_privileged_is_hard_block():
+    # Not even force overrides a privileged account.
+    check = user_service.check_user_deletable(
+        _user(permissions_bitmask=1 << 14),
+        user_service.UserResources(),
+        force=True,
+        delete_resources=True,
+    )
+    assert not check.allowed
+    assert check.context["permissions_bitmask"] == (1 << 14)
+
+
+def test_check_user_deletable_balance_blocks_unless_forced():
+    blocked = user_service.check_user_deletable(
+        _user(balance=-5.0), user_service.UserResources(), force=False, delete_resources=False
+    )
+    assert not blocked.allowed and blocked.context["balance"] == -5.0
+    forced = user_service.check_user_deletable(
+        _user(balance=-5.0), user_service.UserResources(), force=True, delete_resources=False
+    )
+    assert forced.allowed
+
+
+def test_check_user_deletable_resources_block_unless_opted_in():
+    resources = user_service.UserResources(
+        chutes=[user_service.ChuteRef(chute_id="c1", name="chute", version="v1")]
+    )
+    blocked = user_service.check_user_deletable(
+        _user(), resources, force=False, delete_resources=False
+    )
+    assert not blocked.allowed and blocked.context["chutes"][0]["chute_id"] == "c1"
+    opted_in = user_service.check_user_deletable(
+        _user(), resources, force=False, delete_resources=True
+    )
+    assert opted_in.allowed
+
+
+# ---------------------------------------------------------------------------
 # Teardown: delete_user_and_resources
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
