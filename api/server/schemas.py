@@ -573,21 +573,6 @@ class VmCacheConfig(Base):
     )
 
 
-class RootPassphraseDefault(Base):
-    """Build-time default root LUKS passphrases keyed by image version.
-
-    Populated out-of-band when a new VM image is published. Used by the boot
-    attestation endpoint to return the correct default passphrase when a VM
-    reports fresh_image=True.
-    """
-
-    __tablename__ = "root_passphrase_defaults"
-
-    image_version = Column(String, primary_key=True)
-    encrypted_passphrase = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-
 class VmAuthKey(Base):
     """Per-VM ephemeral SR25519 auth key, rotated on every successful boot attestation.
 

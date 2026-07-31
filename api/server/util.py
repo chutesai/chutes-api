@@ -42,7 +42,7 @@ from api.server.exceptions import (
 from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
 
-from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, RootPassphraseDefault
+from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
 from api.constants import (
     MIN_ROOT_ROTATION_VERSION,
     ATTESTATION_PROXY_AUTH_HEADER,
@@ -666,30 +666,6 @@ def _verify_measurements(
         raise AttestationError("Measurement verification failed due to an unexpected error.")
 
 
-def get_luks_passphrase(version: str) -> str:
-    """
-    Get the root-volume LUKS passphrase for the given measurement version.
-
-    Each VM image bakes in a version-specific passphrase, so the passphrase returned by
-    /boot/attestation is keyed by the attested measurement version. There is no fallback.
-
-    Args:
-        version: Attested measurement version (e.g. "1.3.0").
-
-    Returns:
-        LUKS passphrase string for that version.
-
-    Raises:
-        InvalidTdxConfiguration: If no passphrase is configured for the version.
-    """
-    passphrase = settings.luks_passphrases.get(version)
-    if not passphrase:
-        logger.error(f"No LUKS passphrase configured for version {version}")
-        raise InvalidTdxConfiguration(f"No LUKS passphrase configured for version {version}")
-
-    return passphrase
-
-
 def generate_cache_passphrase() -> str:
     """
     Generate a new cryptographically secure passphrase for cache volume encryption.
@@ -864,19 +840,23 @@ async def rotate_luks_passphrases(
     return result, vm_config
 
 
-async def get_default_root_passphrase(db: AsyncSession, image_version: Optional[str]) -> str:
-    """Return the build-time default root passphrase for the given image version.
+def get_default_root_passphrase(image_version: Optional[str]) -> str:
+    """Return the build-time default root LUKS passphrase for the given image version.
 
-    Looks up root_passphrase_defaults by image_version; falls back to
-    settings.luks_passphrase if no record exists or image_version is None.
+    Each VM image bakes in a version-specific root-volume passphrase, so the passphrase
+    returned by /boot/attestation is keyed by the attested measurement version. Sourced from
+    the version-keyed LUKS_PASSPHRASES secret (settings.luks_passphrases), never the database:
+    build-time defaults are identical for every VM on a given image version, so they stay in
+    the mounted secret (blast radius unchanged) and are kept out of the DB. Only per-VM
+    *rotated* passphrases are persisted (encrypted) in vm_cache_configs.volume_passphrases.
+
+    Raises:
+        InvalidTdxConfiguration: If image_version is None or no passphrase is configured for it.
     """
-    if image_version:
-        row = await db.get(RootPassphraseDefault, image_version)
-        if row is not None:
-            return decrypt_passphrase(row.encrypted_passphrase)
-    passphrase = settings.luks_passphrase
+    passphrase = settings.luks_passphrases.get(image_version) if image_version else None
     if not passphrase:
-        raise InvalidTdxConfiguration("Missing LUKS passphrase configuration")
+        logger.error(f"No LUKS passphrase configured for version {image_version}")
+        raise InvalidTdxConfiguration(f"No LUKS passphrase configured for version {image_version}")
     return passphrase
 
 
@@ -906,13 +886,13 @@ async def get_root_passphrase_for_boot(
     if first_boot:
         stored.pop("root", None)
         stored.pop("pending_root", None)
-        key = await get_default_root_passphrase(db, measurement_version)
+        key = get_default_root_passphrase(measurement_version)
     else:
         current_enc = stored.get("root")
         if current_enc:
             key = decrypt_passphrase(current_enc)
         else:
-            key = await get_default_root_passphrase(db, measurement_version)
+            key = get_default_root_passphrase(measurement_version)
 
     root_next: Optional[str] = None
     root_confirm_nonce: Optional[str] = None

@@ -19,7 +19,7 @@ from api.server.util import (
     verify_result,
     get_matching_measurement_config,
     extract_nonce,
-    get_luks_passphrase,
+    get_default_root_passphrase,
 )
 from api.server.quote import (
     TdxQuote,
@@ -824,21 +824,21 @@ def test_tdx_quote_matches_measurement_rtmr_mismatch():
 
 # LUKS passphrase tests
 @patch("api.server.util.settings")
-def test_get_luks_passphrase_configured(mock_settings):
-    """Test getting LUKS passphrase for a configured version."""
+def test_get_default_root_passphrase_configured(mock_settings):
+    """Test getting the default root passphrase for a configured version."""
     mock_settings.luks_passphrases = {"1": "configured_passphrase"}
 
-    passphrase = get_luks_passphrase("1")
+    passphrase = get_default_root_passphrase("1")
     assert passphrase == "configured_passphrase"
 
 
 @patch("api.server.util.settings")
-def test_get_luks_passphrase_not_configured(mock_settings):
-    """Test getting LUKS passphrase for a version with no entry raises."""
+def test_get_default_root_passphrase_not_configured(mock_settings):
+    """Test getting the default root passphrase for a version with no entry raises."""
     mock_settings.luks_passphrases = {}
 
     with pytest.raises(InvalidTdxConfiguration, match="LUKS passphrase"):
-        get_luks_passphrase("1")
+        get_default_root_passphrase("1")
 
 
 # Test different quote types with different RTMRs

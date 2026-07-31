@@ -37,7 +37,6 @@ from api.server.schemas import (
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
-    RootPassphraseDefault,
     VmCacheConfig,
     VmAuthKey,
 )
@@ -49,6 +48,7 @@ from api.server.exceptions import (
     ServerNotFoundError,
     ServerRegistrationError,
     InvalidSignatureError,
+    InvalidTdxConfiguration,
 )
 from api.config import TeeMeasurementConfig
 from api.constants import NoncePurpose
@@ -1723,37 +1723,28 @@ def _make_vm_config(passphrases: dict) -> VmCacheConfig:
     return cfg
 
 
-@pytest.mark.asyncio
-async def test_get_default_root_passphrase_from_db(mock_db_session):
-    """Returns decrypted passphrase when a root_passphrase_defaults row exists."""
-    from api.server.util import encrypt_passphrase
+def test_get_default_root_passphrase_from_settings(mock_settings):
+    """Returns the version-specific passphrase from the LUKS_PASSPHRASES secret."""
+    mock_settings.luks_passphrases = {"1.4.0": "version-specific-pass"}
 
-    encrypted = encrypt_passphrase("version-specific-pass")
-    row = RootPassphraseDefault(image_version="1.4.0", encrypted_passphrase=encrypted)
-    mock_db_session.get = AsyncMock(return_value=row)
-
-    result = await get_default_root_passphrase(mock_db_session, "1.4.0")
+    result = get_default_root_passphrase("1.4.0")
     assert result == "version-specific-pass"
 
 
-@pytest.mark.asyncio
-async def test_get_default_root_passphrase_fallback_to_settings(mock_db_session, mock_settings):
-    """Falls back to settings.luks_passphrase when no DB row exists."""
-    mock_db_session.get = AsyncMock(return_value=None)
-    mock_settings.luks_passphrase = "global-default-pass"
+def test_get_default_root_passphrase_unknown_version_raises(mock_settings):
+    """Raises when no passphrase is configured for the version (no DB, no silent fallback)."""
+    mock_settings.luks_passphrases = {"1.3.0": "other-pass"}
 
-    result = await get_default_root_passphrase(mock_db_session, "1.4.0")
-    assert result == "global-default-pass"
+    with pytest.raises(InvalidTdxConfiguration):
+        get_default_root_passphrase("1.4.0")
 
 
-@pytest.mark.asyncio
-async def test_get_default_root_passphrase_no_version_fallback(mock_db_session, mock_settings):
-    """Falls back to settings.luks_passphrase when image_version is None."""
-    mock_settings.luks_passphrase = "global-default-pass"
+def test_get_default_root_passphrase_no_version_raises(mock_settings):
+    """Raises when image_version is None."""
+    mock_settings.luks_passphrases = {"1.4.0": "version-specific-pass"}
 
-    result = await get_default_root_passphrase(mock_db_session, None)
-    assert result == "global-default-pass"
-    mock_db_session.get.assert_not_called()
+    with pytest.raises(InvalidTdxConfiguration):
+        get_default_root_passphrase(None)
 
 
 @pytest.mark.asyncio
@@ -1761,9 +1752,8 @@ async def test_get_root_passphrase_for_boot_first_boot_no_prior_state(
     mock_db_session, mock_settings
 ):
     """first_boot=True with no existing root key: returns default passphrase + rotation fields."""
-    mock_settings.luks_passphrase = "build-time-default"
+    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
     vm_config = _make_vm_config({})  # no root key stored yet
-    mock_db_session.get = AsyncMock(return_value=None)  # no DB default either
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -1798,8 +1788,7 @@ async def test_get_root_passphrase_for_boot_first_boot_with_prior_root(
 
     old_encrypted = encrypt_passphrase("old-rotated-pass")
     vm_config = _make_vm_config({"root": old_encrypted})
-    mock_settings.luks_passphrase = "build-time-default"
-    mock_db_session.get = AsyncMock(return_value=None)
+    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -1829,7 +1818,7 @@ async def test_get_root_passphrase_for_boot_normal_boot_stored_root(mock_db_sess
 
     stored_pass = "current-rotated-pass"
     vm_config = _make_vm_config({"root": encrypt_passphrase(stored_pass)})
-    mock_settings.luks_passphrase = "build-time-default"
+    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -1858,8 +1847,7 @@ async def test_get_root_passphrase_for_boot_normal_boot_no_stored_root(
 ):
     """first_boot=False with no stored root key: falls back to version default + rotation."""
     vm_config = _make_vm_config({})
-    mock_settings.luks_passphrase = "build-time-default"
-    mock_db_session.get = AsyncMock(return_value=None)
+    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -1885,8 +1873,7 @@ async def test_get_root_passphrase_for_boot_normal_boot_no_stored_root(
 async def test_get_root_passphrase_for_boot_pre_rotation_version(mock_db_session, mock_settings):
     """VMs below 1.4.0 get no root_next or root_confirm_nonce."""
     vm_config = _make_vm_config({})
-    mock_settings.luks_passphrase = "build-time-default"
-    mock_db_session.get = AsyncMock(return_value=None)
+    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
 
     with patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
@@ -1911,7 +1898,7 @@ async def test_get_root_passphrase_for_boot_discards_stale_pending(mock_db_sessi
     stale_enc = encrypt_passphrase("stale-pending")
     current_enc = encrypt_passphrase("current-root")
     vm_config = _make_vm_config({"root": current_enc, "pending_root": stale_enc})
-    mock_settings.luks_passphrase = "build-time-default"
+    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
