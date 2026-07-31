@@ -1453,6 +1453,26 @@ async def admin_delete_user(
         support_id=current_user.user_id,
     )
 
+    # Privilege guard (hard, not force-overridable): never delete an account that holds any
+    # role/permission bits -- an admin/support/subnet account must have its roles removed first,
+    # so this endpoint can't be used to nuke a privileged user.
+    if user.permissions_bitmask:
+        logger.warning(
+            f"user deletion blocked: user has special roles "
+            f"(permissions_bitmask={user.permissions_bitmask})"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": (
+                    "User has special roles/permissions and cannot be deleted. "
+                    "Remove their roles first."
+                ),
+                "user_id": user.user_id,
+                "permissions_bitmask": user.permissions_bitmask,
+            },
+        )
+
     # Money guard: refuse to delete an account with outstanding balance/invoicing unless forced.
     balance = user.balance or 0.0
     effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
