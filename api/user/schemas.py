@@ -46,6 +46,15 @@ class AdminUserRequest(BaseModel):
     logo_id: Optional[str] = None
 
 
+class UserDeletionRequest(BaseModel):
+    # Delete the user's blocking resources (chutes/images/secrets) as part of the deletion.
+    # Without this the request fails and returns the list of blockers for support to review.
+    delete_resources: bool = False
+    # Proceed even when the user has a nonzero balance or active invoicing.
+    force: bool = False
+    reason: Optional[str] = None
+
+
 class UserCurrentBalance(Base):
     __tablename__ = "user_current_balance"
     __table_args__ = {"info": {"is_view": True}}

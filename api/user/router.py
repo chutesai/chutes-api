@@ -24,6 +24,7 @@ from api.user.schemas import (
     User,
     PriceOverride,
     AdminUserRequest,
+    UserDeletionRequest,
     InvocationQuota,
     InvocationDiscount,
 )
@@ -113,15 +114,6 @@ class SubnetRoleRequest(BaseModel):
 class SubnetRoleRevokeRequest(BaseModel):
     user: str
     netuid: int
-
-
-class UserDeletionRequest(BaseModel):
-    # Delete the user's blocking resources (chutes/images/secrets) as part of the deletion.
-    # Without this the request fails and returns the list of blockers for support to review.
-    delete_resources: bool = False
-    # Proceed even when the user has a nonzero balance or active invoicing.
-    force: bool = False
-    reason: Optional[str] = None
 
 
 def _normalize_effective_date_input(
@@ -1497,58 +1489,60 @@ async def admin_delete_user(
             },
         )
 
-    # Resources whose NO ACTION FKs block the delete. If the user owns any and support hasn't
-    # opted in, fail and hand back the list so they can review before confirming.
+    # Gate the destructive path behind an explicit allow condition (the account owns nothing
+    # blocking, or support opted in with delete_resources). The hard delete lives ONLY inside
+    # this branch, so no future edit can fall through to it -- anything else refuses by default.
     resources = await get_user_resources(db, user.user_id)
-    if not resources.is_empty and not body.delete_resources:
+    if resources.is_empty or body.delete_resources:
+        # Hard-delete the user + blocking resources (DB work only; commit + side effects below).
+        result = await delete_user_and_resources(db, user, resources)
+        await db.commit()
+
+        # Post-commit side effects (only safe once the delete is durable): conn-tracking cleanup,
+        # miner broadcasts, api-key cache flush.
+        for instance_id, chute_id in result.terminated_instances:
+            await cleanup_instance_conn_tracking(chute_id, instance_id)
+        for message in result.broadcasts:
+            await settings.redis_client.publish("miner_broadcast", json.dumps(message).decode())
+        for api_key_id in result.api_key_ids:
+            await invalidate_api_key_cache(api_key_id)
+
+        # Final audit line; user_id/username/actor/event come from the ambient context bound
+        # above, and the per-resource ids were logged individually in the service teardown.
         logger.warning(
-            f"user deletion blocked: user owns {len(resources.chutes)} chutes, "
-            f"{len(resources.images)} images, {len(resources.secrets)} secrets"
+            f"support hard-deleted user account (force={body.force}, reason={body.reason!r}): "
+            f"{result.chutes_deleted} chutes, {result.images_deleted} images, "
+            f"{result.secrets_deleted} secrets, {len(result.terminated_instances)} instances"
         )
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": (
-                    "User owns resources that block deletion. Re-issue with "
-                    "delete_resources=true to delete them as part of the account deletion."
-                ),
-                "user_id": user.user_id,
-                "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
-                "images": [
-                    {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
-                ],
-                "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
-            },
-        )
+        return {
+            "user_id": user.user_id,
+            "deleted": True,
+            "chutes_deleted": result.chutes_deleted,
+            "images_deleted": result.images_deleted,
+            "secrets_deleted": result.secrets_deleted,
+            "instances_terminated": len(result.terminated_instances),
+        }
 
-    # Hard-delete the user + blocking resources (DB work only; commit + side effects below).
-    result = await delete_user_and_resources(db, user, resources)
-    await db.commit()
-
-    # Post-commit side effects (only safe once the delete is durable): conn-tracking cleanup,
-    # miner broadcasts, api-key cache flush.
-    for instance_id, chute_id in result.terminated_instances:
-        await cleanup_instance_conn_tracking(chute_id, instance_id)
-    for message in result.broadcasts:
-        await settings.redis_client.publish("miner_broadcast", json.dumps(message).decode())
-    for api_key_id in result.api_key_ids:
-        await invalidate_api_key_cache(api_key_id)
-
-    # Final audit line; user_id/username/actor/event come from the ambient context bound above,
-    # and the per-resource ids were logged individually in the service teardown.
+    # Blocked: the account owns resources and support did not opt in to deleting them.
     logger.warning(
-        f"support hard-deleted user account (force={body.force}, reason={body.reason!r}): "
-        f"{result.chutes_deleted} chutes, {result.images_deleted} images, "
-        f"{result.secrets_deleted} secrets, {len(result.terminated_instances)} instances"
+        f"user deletion blocked: user owns {len(resources.chutes)} chutes, "
+        f"{len(resources.images)} images, {len(resources.secrets)} secrets"
     )
-    return {
-        "user_id": user.user_id,
-        "deleted": True,
-        "chutes_deleted": result.chutes_deleted,
-        "images_deleted": result.images_deleted,
-        "secrets_deleted": result.secrets_deleted,
-        "instances_terminated": len(result.terminated_instances),
-    }
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "message": (
+                "User owns resources that block deletion. Re-issue with "
+                "delete_resources=true to delete them as part of the account deletion."
+            ),
+            "user_id": user.user_id,
+            "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
+            "images": [
+                {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
+            ],
+            "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
+        },
+    )
 
 
 @router.get("/set_logo", response_model=SelfResponse)
