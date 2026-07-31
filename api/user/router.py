@@ -11,14 +11,13 @@ import hashlib
 import orjson as json
 from loguru import logger
 from datetime import datetime, timezone, timedelta
-from types import SimpleNamespace
 from typing import Optional
 from pydantic import BaseModel
 from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from fastapi.responses import HTMLResponse
 from api.database import get_db_session
-from api.chute.schemas import ChuteShare, Chute
+from api.chute.schemas import ChuteShare
 from api.user.schemas import (
     UserRequest,
     User,
@@ -31,9 +30,15 @@ from api.util import (
     has_minimum_balance_for_registration,
 )
 from api.user.response import RegistrationResponse, SelfResponse
-from api.user.service import get_current_user, bt_user_exists, require_role, resolve_user
-from api.instance.schemas import Instance
-from api.instance.util import purge_and_notify
+from api.user.service import (
+    get_current_user,
+    bt_user_exists,
+    require_role,
+    resolve_user,
+    get_user_resources,
+    delete_user_and_resources,
+)
+from api.instance.util import cleanup_instance_conn_tracking
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
 from api.payment.schemas import AdminBalanceChange
@@ -54,7 +59,7 @@ from api.permissions import Permissioning
 from api.config import settings
 from api.api_key.schemas import APIKey, APIKeyArgs
 from api.api_key.response import APIKeyCreationResponse
-from api.api_key.util import invalidate_user_api_key_caches
+from api.api_key.util import invalidate_api_key_cache
 from api.user.util import validate_the_username, generate_payment_address
 from api.user.templater import registration_token_form, registration_token_success, error_page
 from api.agent_registration.schemas import (
@@ -110,12 +115,12 @@ class SubnetRoleRevokeRequest(BaseModel):
 
 
 class UserDeletionRequest(BaseModel):
-    reason: str
+    # Delete the user's blocking resources (chutes/images/secrets) as part of the deletion.
+    # Without this the request fails and returns the list of blockers for support to review.
+    delete_resources: bool = False
+    # Proceed even when the user has a nonzero balance or active invoicing.
     force: bool = False
-
-
-class UserRestoreRequest(BaseModel):
-    reason: str
+    reason: Optional[str] = None
 
 
 def _normalize_effective_date_input(
@@ -1414,30 +1419,25 @@ async def delete_my_user(
 
 @router.delete("/{user_id_or_username}")
 async def admin_delete_user(
-    request: Request,
     user_id_or_username: str,
     body: UserDeletionRequest,
     db: AsyncSession = Depends(get_db_session),
     current_user: User = Depends(require_role(Permissioning.chutes_support)),
 ):
     """
-    Soft-delete a user account (support only).
+    Permanently (hard) delete a user account (support only).
 
-    The account is made inert: authentication is rejected, running instances are terminated
-    (which stops miner-side billing), and the user's chutes stop scaling up. All owned
-    resources (chutes, images, secrets, api keys) and the balance are preserved so the
-    account can be restored via ``POST /{user_id_or_username}/restore``. Hard deletes remain
-    a manual DBA operation.
+    Removes the ``users`` row, which the ``on_user_delete`` DB trigger archives into
+    ``deleted_users`` and which CASCADEs ``api_keys``/``jobs``/``logos``/``chute_shares``/
+    ``oauth_*``. The user's ``chutes``/``images``/``secrets`` have ``NO ACTION`` FKs, so they
+    block the delete: the request first returns ``409`` with the list of blockers, and support
+    must re-issue with ``delete_resources=true`` to tear them down as part of the deletion.
+    Financial history (``admin_balance_changes``, ``payments``) has no FK and is preserved.
     """
     user = await resolve_user(db, user_id_or_username)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
-        )
-    if user.deleted_at is not None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"User already deleted: {user.user_id}",
         )
 
     # Money guard: refuse to delete an account with outstanding balance/invoicing unless forced.
@@ -1459,130 +1459,53 @@ async def admin_delete_user(
             },
         )
 
-    # Collect the user's chutes (to block scale-up) and running instances (to terminate).
-    chute_ids = (
-        (await db.execute(select(Chute.chute_id).where(Chute.user_id == user.user_id)))
-        .scalars()
-        .all()
-    )
-    instances = []
-    if chute_ids:
-        instance_rows = (
-            (await db.execute(select(Instance).where(Instance.chute_id.in_(chute_ids))))
-            .unique()
-            .scalars()
-            .all()
-        )
-        # Snapshot the fields purge_and_notify needs before we commit (session may expire objects).
-        instances = [
-            SimpleNamespace(
-                instance_id=inst.instance_id,
-                chute_id=inst.chute_id,
-                miner_hotkey=inst.miner_hotkey,
-                config_id=inst.config_id,
-            )
-            for inst in instance_rows
-        ]
-
-    # Soft-delete + audit record. Balance is preserved (not zeroed); the snapshot keeps the
-    # trail fully accountable in admin_balance_changes.
-    user.deleted_at = func.now()
-    event_id = str(uuid.uuid4())
-    origin_ip = getattr(request.state, "client_ip", None)
-    db.add(
-        AdminBalanceChange(
-            event_id=event_id,
-            user_id=user.user_id,
-            amount=0.0,
-            reason=f"account soft-deleted by support: {body.reason}",
-            timestamp=func.now(),
-            created_by=current_user.user_id,
-            raw_request={
-                "action": "soft_delete",
-                "source_ip": origin_ip,
-                "force": body.force,
-                "balance": balance,
-                "effective_balance": effective_balance,
-                "invoicing_enabled": invoicing_enabled,
+    # Resources whose NO ACTION FKs block the delete. If the user owns any and support hasn't
+    # opted in, fail and hand back the list so they can review before confirming.
+    resources = await get_user_resources(db, user.user_id)
+    if not resources.is_empty and not body.delete_resources:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": (
+                    "User owns resources that block deletion. Re-issue with "
+                    "delete_resources=true to delete them as part of the account deletion."
+                ),
+                "user_id": user.user_id,
+                "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
+                "images": [
+                    {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
+                ],
+                "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
             },
         )
-    )
+
+    # Hard-delete the user + blocking resources (DB work only; commit + side effects below).
+    result = await delete_user_and_resources(db, user, resources)
     await db.commit()
 
-    # Post-commit side effects: terminate instances (valid termination so miners aren't
-    # penalized) via the canonical per-instance primitive, then invalidate cached auth.
-    # Scale-up is blocked automatically once deleted_at is set (bounty creation reads it
-    # directly from the DB), so there is no separate flag to maintain here.
-    for target in instances:
-        await purge_and_notify(target, reason="account deleted", valid_termination=True)
-    await invalidate_user_api_key_caches(db, user.user_id)
+    # Post-commit side effects (only safe once the delete is durable): conn-tracking cleanup,
+    # miner broadcasts, api-key cache flush.
+    for instance_id, chute_id in result.terminated_instances:
+        await cleanup_instance_conn_tracking(chute_id, instance_id)
+    for message in result.broadcasts:
+        await settings.redis_client.publish("miner_broadcast", json.dumps(message).decode())
+    for api_key_id in result.api_key_ids:
+        await invalidate_api_key_cache(api_key_id)
 
     logger.warning(
-        f"admin_delete_user: {current_user.user_id=} soft-deleted {user.user_id=} "
-        f"({user.username=}) force={body.force} balance={balance} "
-        f"reason={body.reason!r} {event_id=}"
+        f"admin_delete_user: {current_user.user_id=} hard-deleted {user.user_id=} "
+        f"({user.username=}) force={body.force} balance={balance} reason={body.reason!r} "
+        f"chutes={result.chutes_deleted} images={result.images_deleted} "
+        f"secrets={result.secrets_deleted}"
     )
     return {
         "user_id": user.user_id,
         "deleted": True,
-        "chutes": len(chute_ids),
-        "instances_terminated": len(instances),
-        "balance": balance,
-        "effective_balance": effective_balance,
-        "event_id": event_id,
+        "chutes_deleted": result.chutes_deleted,
+        "images_deleted": result.images_deleted,
+        "secrets_deleted": result.secrets_deleted,
+        "instances_terminated": len(result.terminated_instances),
     }
-
-
-@router.post("/{user_id_or_username}/restore")
-async def admin_restore_user(
-    request: Request,
-    user_id_or_username: str,
-    body: UserRestoreRequest,
-    db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(require_role(Permissioning.chutes_support)),
-):
-    """
-    Restore a soft-deleted user account (support only).
-
-    Clears ``deleted_at`` and re-enables chute scale-up. Instances are NOT recreated here;
-    the user's chutes redeploy on demand once traffic arrives.
-    """
-    user = await resolve_user(db, user_id_or_username)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
-        )
-    if user.deleted_at is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"User is not deleted: {user.user_id}",
-        )
-
-    user.deleted_at = None
-    event_id = str(uuid.uuid4())
-    origin_ip = getattr(request.state, "client_ip", None)
-    db.add(
-        AdminBalanceChange(
-            event_id=event_id,
-            user_id=user.user_id,
-            amount=0.0,
-            reason=f"account restored by support: {body.reason}",
-            timestamp=func.now(),
-            created_by=current_user.user_id,
-            raw_request={"action": "restore", "source_ip": origin_ip},
-        )
-    )
-    await db.commit()
-
-    # Clearing deleted_at re-enables scale-up automatically (bounty creation reads it from
-    # the DB). Invalidate cached auth so the account can authenticate again promptly.
-    await invalidate_user_api_key_caches(db, user.user_id)
-
-    logger.warning(
-        f"admin_restore_user: {current_user.user_id=} restored {user.user_id=} "
-        f"({user.username=}) reason={body.reason!r} {event_id=}"
-    )
-    return {"user_id": user.user_id, "deleted": False, "event_id": event_id}
 
 
 @router.get("/set_logo", response_model=SelfResponse)
@@ -2094,12 +2017,6 @@ async def login(
             await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
         ).scalar_one_or_none()
         if user:
-            # Treat a deleted account exactly like an unknown one (no info leak).
-            if user.deleted_at is not None:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Invalid fingerprint.",
-                )
             return {"token": create_token(user)}
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -2145,8 +2062,7 @@ async def login(
         # Find user by hotkey
         user = (await db.execute(select(User).where(User.hotkey == hotkey))).scalar_one_or_none()
 
-        if not user or user.deleted_at is not None:
-            # A deleted account is treated exactly like an unknown one (no info leak).
+        if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="No account found for this hotkey.",
