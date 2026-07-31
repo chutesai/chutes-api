@@ -3,7 +3,9 @@ User logic/code.
 """
 
 from typing import Optional
-from sqlalchemy import exists
+from dataclasses import dataclass, field
+from loguru import logger
+from sqlalchemy import exists, or_, delete, text
 from sqlalchemy.future import select
 from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
 from bittensor_wallet.keypair import Keypair
@@ -11,6 +13,11 @@ from api.config import settings
 from api.metagraph import MetagraphNode
 from api.database import get_session
 from api.user.schemas import User
+from api.chute.schemas import Chute
+from api.image.schemas import Image
+from api.secret.schemas import Secret
+from api.instance.schemas import Instance
+from api.api_key.schemas import APIKey
 from api.api_key.util import get_and_check_api_key
 from api.user.tokens import get_user_from_token
 from fastapi.security import APIKeyHeader
@@ -22,6 +29,70 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+
+@dataclass
+class ChuteRef:
+    chute_id: str
+    name: Optional[str] = None
+    version: Optional[str] = None
+
+
+@dataclass
+class ImageRef:
+    image_id: str
+    name: str
+    tag: str
+
+
+@dataclass
+class SecretRef:
+    secret_id: str
+    key: str
+
+
+@dataclass
+class UserResources:
+    """
+    A user's resources whose ``NO ACTION`` foreign keys block a hard delete: chutes, images
+    and secrets. Internal domain object -- everything else CASCADEs or has no FK to ``users``.
+    """
+
+    chutes: list[ChuteRef] = field(default_factory=list)
+    images: list[ImageRef] = field(default_factory=list)
+    secrets: list[SecretRef] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.chutes or self.images or self.secrets)
+
+
+@dataclass
+class UserDeletionResult:
+    """
+    Side effects the caller must run AFTER committing a user hard-delete: they touch Redis
+    and external caches, so they're only safe once the delete is durable.
+    """
+
+    terminated_instances: list[tuple[str, str]] = field(default_factory=list)  # (instance, chute)
+    broadcasts: list[dict] = field(default_factory=list)  # miner_broadcast payloads
+    api_key_ids: list[str] = field(default_factory=list)
+    chutes_deleted: int = 0
+    images_deleted: int = 0
+    secrets_deleted: int = 0
+
+
+@dataclass
+class DeletionEligibility:
+    """
+    Outcome of :func:`check_user_deletable` -- the single source of truth for whether an
+    account may be hard-deleted. ``message``/``context`` describe the block for the caller
+    to surface (e.g. as an HTTP 409 body); no transport concerns leak into the service.
+    """
+
+    allowed: bool
+    message: Optional[str] = None
+    context: dict = field(default_factory=dict)
 
 
 def get_current_user(
@@ -180,6 +251,185 @@ def get_current_user(
             return user
 
     return _authenticate
+
+
+async def resolve_user(session: AsyncSession, identifier: str) -> Optional[User]:
+    """Resolve a user by ``user_id`` or ``username``; return ``None`` if there's no match.
+
+    A pure lookup with no HTTP concerns -- the caller decides what a missing user means.
+    """
+    return (
+        (
+            await session.execute(
+                select(User).where(or_(User.username == identifier, User.user_id == identifier))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+
+
+async def get_user_resources(session: AsyncSession, user_id: str) -> UserResources:
+    """Return the user-owned resources whose ``NO ACTION`` FKs block a hard delete.
+
+    These (chutes, images, secrets) must be torn down before the ``users`` row can be
+    deleted; everything else either CASCADEs or has no FK to ``users``.
+    """
+    chutes = (
+        await session.execute(
+            select(Chute.chute_id, Chute.name, Chute.version).where(Chute.user_id == user_id)
+        )
+    ).all()
+    images = (
+        await session.execute(
+            select(Image.image_id, Image.name, Image.tag).where(Image.user_id == user_id)
+        )
+    ).all()
+    secrets = (
+        await session.execute(select(Secret.secret_id, Secret.key).where(Secret.user_id == user_id))
+    ).all()
+    return UserResources(
+        chutes=[ChuteRef(chute_id=c.chute_id, name=c.name, version=c.version) for c in chutes],
+        images=[ImageRef(image_id=i.image_id, name=i.name, tag=i.tag) for i in images],
+        secrets=[SecretRef(secret_id=s.secret_id, key=s.key) for s in secrets],
+    )
+
+
+def check_user_deletable(
+    user: User, resources: UserResources, *, force: bool, delete_resources: bool
+) -> DeletionEligibility:
+    """Single source of truth for whether a user may be hard-deleted.
+
+    Rules, in order (first failure wins):
+      * privileged accounts (any ``permissions_bitmask`` bit) are never deletable here --
+        a HARD stop that ``force`` cannot override; strip the roles first;
+      * an outstanding/negative balance or active invoicing blocks unless ``force``;
+      * owned chutes/images/secrets block unless ``delete_resources``.
+
+    Returns a :class:`DeletionEligibility`; the caller decides how to surface a block.
+    """
+    if user.permissions_bitmask:
+        return DeletionEligibility(
+            allowed=False,
+            message="User has special roles/permissions and cannot be deleted. "
+            "Remove their roles first.",
+            context={"permissions_bitmask": user.permissions_bitmask},
+        )
+
+    balance = user.balance or 0.0
+    effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
+    invoicing_enabled = user.has_role(Permissioning.invoice_billing)
+    if (balance != 0 or effective_balance != 0 or invoicing_enabled) and not force:
+        return DeletionEligibility(
+            allowed=False,
+            message="User has an outstanding balance or active invoicing. "
+            "Pass force=true to confirm deletion.",
+            context={
+                "balance": balance,
+                "effective_balance": effective_balance,
+                "invoicing_enabled": invoicing_enabled,
+            },
+        )
+
+    if not resources.is_empty and not delete_resources:
+        return DeletionEligibility(
+            allowed=False,
+            message="User owns resources that block deletion. Re-issue with "
+            "delete_resources=true to delete them as part of the account deletion.",
+            context={
+                "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
+                "images": [
+                    {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
+                ],
+                "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
+            },
+        )
+
+    return DeletionEligibility(allowed=True)
+
+
+async def delete_user_and_resources(
+    session: AsyncSession, user: User, resources: UserResources
+) -> UserDeletionResult:
+    """Hard-delete a user and their blocking resources within ``session`` (does NOT commit).
+
+    Teardown order respects the ``NO ACTION`` FKs and the instance billing trigger:
+    instances -> chutes -> images -> secrets -> user. Instances go first so the
+    ``BEFORE DELETE`` billing trigger can still resolve the (not-yet-deleted) chute + user.
+    Deleting the ``users`` row fires the ``on_user_delete`` trigger (archives to
+    ``deleted_users``) and CASCADEs api_keys/jobs/logos/chute_shares/oauth_*.
+
+    Returns the side effects the caller must run *after* commit (Redis broadcasts,
+    conn-tracking cleanup, api-key cache invalidation).
+    """
+    # Capture api key ids before the users delete cascades them away.
+    api_key_ids = list(
+        (await session.execute(select(APIKey.api_key_id).where(APIKey.user_id == user.user_id)))
+        .scalars()
+        .all()
+    )
+
+    chute_ids = [c.chute_id for c in resources.chutes]
+    terminated_instances = []
+    if chute_ids:
+        rows = (
+            await session.execute(
+                select(Instance.instance_id, Instance.chute_id).where(
+                    Instance.chute_id.in_(chute_ids)
+                )
+            )
+        ).all()
+        terminated_instances = [(row.instance_id, row.chute_id) for row in rows]
+        instance_ids = [instance_id for instance_id, _ in terminated_instances]
+        if instance_ids:
+            await session.execute(delete(Instance).where(Instance.instance_id.in_(instance_ids)))
+            # instance_audit has no ORM model and is otherwise trigger-managed; the app only
+            # owns valid_termination (so miners aren't penalized for the termination).
+            await session.execute(
+                text(
+                    "UPDATE instance_audit SET valid_termination = true, "
+                    "deletion_reason = 'account deleted' WHERE instance_id = ANY(:instance_ids)"
+                ),
+                {"instance_ids": instance_ids},
+            )
+            # One line per instance with its single id bound, so a search for that instance_id
+            # matches (a list field would not) -- same for chutes/images below.
+            for terminated_id, terminated_chute_id in terminated_instances:
+                logger.bind(instance_id=terminated_id, chute_id=terminated_chute_id).info(
+                    "terminated instance (account deleted)"
+                )
+
+    broadcasts = []
+    if chute_ids:
+        await session.execute(delete(Chute).where(Chute.chute_id.in_(chute_ids)))
+        for c in resources.chutes:
+            logger.bind(chute_id=c.chute_id).info("deleted chute (account deleted)")
+        broadcasts.extend(
+            {"reason": "chute_deleted", "data": {"chute_id": c.chute_id, "version": c.version}}
+            for c in resources.chutes
+        )
+    image_ids = [i.image_id for i in resources.images]
+    if image_ids:
+        await session.execute(delete(Image).where(Image.image_id.in_(image_ids)))
+        for i in resources.images:
+            logger.bind(image_id=i.image_id).info("deleted image (account deleted)")
+        broadcasts.extend(
+            {"reason": "image_deleted", "data": {"image_id": i.image_id}} for i in resources.images
+        )
+    if resources.secrets:
+        await session.execute(delete(Secret).where(Secret.user_id == user.user_id))
+
+    # Finally the user row: fires on_user_delete (-> deleted_users) and CASCADEs the rest.
+    await session.execute(delete(User).where(User.user_id == user.user_id))
+
+    return UserDeletionResult(
+        terminated_instances=terminated_instances,
+        broadcasts=broadcasts,
+        api_key_ids=api_key_ids,
+        chutes_deleted=len(resources.chutes),
+        images_deleted=len(resources.images),
+        secrets_deleted=len(resources.secrets),
+    )
 
 
 def require_role(role: Role, purpose: str = None):
