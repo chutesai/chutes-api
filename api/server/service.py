@@ -1289,13 +1289,13 @@ async def _fetch_instance_evidence(
         node = instance.nodes[0]
         server = node.server
         client = await TeeServerClient.create(db, server)
-        quote, gpu_evidence, cert = await client.get_chute_evidence(
-            instance.deployment_id, nonce=nonce
-        )
+        evidence = await client.get_chute_evidence(instance.deployment_id, nonce=nonce)
         return TeeInstanceEvidence(
-            quote=base64.b64encode(quote.raw_bytes).decode("utf-8"),
-            gpu_evidence=gpu_evidence,
-            certificate=cert_to_base64_der(cert),
+            quote=base64.b64encode(evidence.quote.raw_bytes).decode("utf-8"),
+            gpu_evidence=evidence.gpu_evidence,
+            certificate=cert_to_base64_der(evidence.cert),
+            signature=evidence.signature,
+            attested_body=evidence.attested_body,
             instance_id=instance.instance_id,
         )
     except GetEvidenceError as e:

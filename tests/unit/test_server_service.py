@@ -25,6 +25,8 @@ from api.server.service import (
     update_server_name,
     get_server_attestation_status,
     delete_server,
+    _fetch_instance_evidence,
+    get_chute_instances_evidence,
 )
 from api.server.util import (
     get_default_root_passphrase,
@@ -39,6 +41,7 @@ from api.server.schemas import (
     ServerArgs,
     VmCacheConfig,
     VmAuthKey,
+    TeeInstanceEvidence,
 )
 from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxVerificationResult
 from api.server.exceptions import (
@@ -2020,3 +2023,112 @@ async def test_confirm_luks_rotation_discards_pending_root_on_failure(mock_db_se
     assert "pending_root" not in vm_config.volume_passphrases
     # Current root survives
     assert "root" in vm_config.volume_passphrases
+
+
+# ---------------------------------------------------------------------------
+# Instance evidence endpoint tests
+# ---------------------------------------------------------------------------
+
+
+def _make_evidence_instance(instance_id: str, deployment_id: str):
+    """Instance stub with a single node/server, as _fetch_instance_evidence expects."""
+    return Mock(
+        instance_id=instance_id,
+        deployment_id=deployment_id,
+        nodes=[Mock(server=Mock())],
+    )
+
+
+def _fake_chute_evidence(signature=None, attested_body=None):
+    """A ChuteEvidenceResponse dataclass (cert is opaque; cert_to_base64_der is patched)."""
+    from api.server.client import ChuteEvidenceResponse
+
+    return ChuteEvidenceResponse(
+        quote=Mock(raw_bytes=b"quote-bytes"),
+        gpu_evidence=[{"gpu": "h200"}],
+        cert=Mock(),
+        signature=signature,
+        attested_body=attested_body,
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_instance_evidence_success(mock_db_session):
+    """Maps ChuteEvidenceResponse attributes onto TeeInstanceEvidence (guards the tuple-unpack
+    regression and the dropped signature/attested_body fields)."""
+    import base64
+
+    instance = _make_evidence_instance("inst-1", "dep-1")
+    client = Mock()
+    client.get_chute_evidence = AsyncMock(
+        return_value=_fake_chute_evidence(signature="sig-b64", attested_body="body-b64")
+    )
+
+    with (
+        patch("api.server.service.TeeServerClient.create", AsyncMock(return_value=client)),
+        patch("api.server.service.cert_to_base64_der", return_value="cert-b64"),
+    ):
+        result = await _fetch_instance_evidence(mock_db_session, instance, "user-nonce")
+
+    assert isinstance(result, TeeInstanceEvidence)
+    assert result.quote == base64.b64encode(b"quote-bytes").decode("utf-8")
+    assert result.gpu_evidence == [{"gpu": "h200"}]
+    assert result.certificate == "cert-b64"
+    assert result.signature == "sig-b64"
+    assert result.attested_body == "body-b64"
+    assert result.instance_id == "inst-1"
+    client.get_chute_evidence.assert_awaited_once_with("dep-1", nonce="user-nonce")
+
+
+@pytest.mark.asyncio
+async def test_fetch_instance_evidence_returns_none_on_error(mock_db_session):
+    """A GetEvidenceError for one instance yields None so the bulk gather can skip it."""
+    from api.server.exceptions import GetEvidenceError
+
+    instance = _make_evidence_instance("inst-2", "dep-2")
+    client = Mock()
+    client.get_chute_evidence = AsyncMock(side_effect=GetEvidenceError("boom"))
+
+    with (
+        patch("api.server.service.TeeServerClient.create", AsyncMock(return_value=client)),
+        patch("api.server.service.cert_to_base64_der", return_value="cert-b64"),
+    ):
+        result = await _fetch_instance_evidence(mock_db_session, instance, "user-nonce")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_chute_instances_evidence_splits_success_and_failure(mock_db_session):
+    """Bulk endpoint returns evidence for healthy instances and ids for failed ones."""
+    from api.server.exceptions import GetEvidenceError
+
+    ok = _make_evidence_instance("inst-ok", "dep-ok")
+    bad = _make_evidence_instance("inst-bad", "dep-bad")
+
+    chute = Mock(tee=True, chutes_version="0.6.0")
+    chute_result = Mock()
+    chute_result.scalar_one_or_none = Mock(return_value=chute)
+    instances_result = Mock()
+    instances_result.unique.return_value.scalars.return_value.all.return_value = [ok, bad]
+    mock_db_session.execute = AsyncMock(side_effect=[chute_result, instances_result])
+
+    def _evidence(deployment_id, nonce=None):
+        if deployment_id == "dep-bad":
+            raise GetEvidenceError("boom")
+        return _fake_chute_evidence()
+
+    client = Mock()
+    client.get_chute_evidence = AsyncMock(side_effect=_evidence)
+
+    with (
+        patch("api.server.service.validate_user_nonce"),
+        patch("api.server.service.TeeServerClient.create", AsyncMock(return_value=client)),
+        patch("api.server.service.cert_to_base64_der", return_value="cert-b64"),
+    ):
+        evidence_list, failed_ids = await get_chute_instances_evidence(
+            mock_db_session, "chute-1", "user-nonce"
+        )
+
+    assert [e.instance_id for e in evidence_list] == ["inst-ok"]
+    assert failed_ids == ["inst-bad"]
