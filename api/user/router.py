@@ -1448,13 +1448,13 @@ async def admin_delete_user(
 
     # Single source of truth for "can we delete this user?" -- the privilege, balance/invoicing,
     # and owned-resource rules (with their force / delete_resources overrides) all live in
-    # check_user_deletable. The destructive path lives ONLY inside `if decision.allowed`, so
+    # check_user_deletable. The destructive path lives ONLY inside `if eligibility.allowed`, so
     # nothing can fall through to it; every other outcome refuses by default (fail closed).
     resources = await get_user_resources(db, user.user_id)
-    decision = check_user_deletable(
+    eligibility = check_user_deletable(
         user, resources, force=body.force, delete_resources=body.delete_resources
     )
-    if decision.allowed:
+    if eligibility.allowed:
         # Hard-delete the user + blocking resources (DB work only; commit + side effects below).
         result = await delete_user_and_resources(db, user, resources)
         await db.commit()
@@ -1475,7 +1475,7 @@ async def admin_delete_user(
             f"{result.chutes_deleted} chutes, {result.images_deleted} images, "
             f"{result.secrets_deleted} secrets, {len(result.terminated_instances)} instances"
         )
-        return {
+        response = {
             "user_id": user.user_id,
             "deleted": True,
             "chutes_deleted": result.chutes_deleted,
@@ -1483,13 +1483,20 @@ async def admin_delete_user(
             "secrets_deleted": result.secrets_deleted,
             "instances_terminated": len(result.terminated_instances),
         }
+    else:
+        # Blocked -- reason + relevant fields come straight from the single check above. The raise
+        # short-circuits (response is never built), so the delete stays gated behind `allowed`.
+        logger.warning(f"user deletion blocked: {eligibility.message}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": eligibility.message,
+                "user_id": user.user_id,
+                **eligibility.context,
+            },
+        )
 
-    # Blocked -- the reason and the relevant fields come straight from the single check above.
-    logger.warning(f"user deletion blocked: {decision.message}")
-    raise HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail={"message": decision.message, "user_id": user.user_id, **decision.context},
-    )
+    return response
 
 
 @router.get("/set_logo", response_model=SelfResponse)

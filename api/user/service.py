@@ -83,7 +83,7 @@ class UserDeletionResult:
 
 
 @dataclass
-class DeletionCheck:
+class DeletionEligibility:
     """
     Outcome of :func:`check_user_deletable` -- the single source of truth for whether an
     account may be hard-deleted. ``message``/``context`` describe the block for the caller
@@ -297,7 +297,7 @@ async def get_user_resources(session: AsyncSession, user_id: str) -> UserResourc
 
 def check_user_deletable(
     user: User, resources: UserResources, *, force: bool, delete_resources: bool
-) -> DeletionCheck:
+) -> DeletionEligibility:
     """Single source of truth for whether a user may be hard-deleted.
 
     Rules, in order (first failure wins):
@@ -306,10 +306,10 @@ def check_user_deletable(
       * an outstanding/negative balance or active invoicing blocks unless ``force``;
       * owned chutes/images/secrets block unless ``delete_resources``.
 
-    Returns a :class:`DeletionCheck`; the caller decides how to surface a block.
+    Returns a :class:`DeletionEligibility`; the caller decides how to surface a block.
     """
     if user.permissions_bitmask:
-        return DeletionCheck(
+        return DeletionEligibility(
             allowed=False,
             message="User has special roles/permissions and cannot be deleted. "
             "Remove their roles first.",
@@ -320,7 +320,7 @@ def check_user_deletable(
     effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
     invoicing_enabled = user.has_role(Permissioning.invoice_billing)
     if (balance != 0 or effective_balance != 0 or invoicing_enabled) and not force:
-        return DeletionCheck(
+        return DeletionEligibility(
             allowed=False,
             message="User has an outstanding balance or active invoicing. "
             "Pass force=true to confirm deletion.",
@@ -332,7 +332,7 @@ def check_user_deletable(
         )
 
     if not resources.is_empty and not delete_resources:
-        return DeletionCheck(
+        return DeletionEligibility(
             allowed=False,
             message="User owns resources that block deletion. Re-issue with "
             "delete_resources=true to delete them as part of the account deletion.",
@@ -345,7 +345,7 @@ def check_user_deletable(
             },
         )
 
-    return DeletionCheck(allowed=True)
+    return DeletionEligibility(allowed=True)
 
 
 async def delete_user_and_resources(
