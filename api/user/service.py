@@ -4,6 +4,7 @@ User logic/code.
 
 from typing import Optional
 from dataclasses import dataclass, field
+from loguru import logger
 from sqlalchemy import exists, or_, delete, text
 from sqlalchemy.future import select
 from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
@@ -325,10 +326,18 @@ async def delete_user_and_resources(
                 ),
                 {"instance_ids": instance_ids},
             )
+            # One line per instance with its single id bound, so a search for that instance_id
+            # matches (a list field would not) -- same for chutes/images below.
+            for terminated_id, terminated_chute_id in terminated_instances:
+                logger.bind(instance_id=terminated_id, chute_id=terminated_chute_id).info(
+                    "terminated instance (account deleted)"
+                )
 
     broadcasts = []
     if chute_ids:
         await session.execute(delete(Chute).where(Chute.chute_id.in_(chute_ids)))
+        for c in resources.chutes:
+            logger.bind(chute_id=c.chute_id).info("deleted chute (account deleted)")
         broadcasts.extend(
             {"reason": "chute_deleted", "data": {"chute_id": c.chute_id, "version": c.version}}
             for c in resources.chutes
@@ -336,6 +345,8 @@ async def delete_user_and_resources(
     image_ids = [i.image_id for i in resources.images]
     if image_ids:
         await session.execute(delete(Image).where(Image.image_id.in_(image_ids)))
+        for i in resources.images:
+            logger.bind(image_id=i.image_id).info("deleted image (account deleted)")
         broadcasts.extend(
             {"reason": "image_deleted", "data": {"image_id": i.image_id}} for i in resources.images
         )

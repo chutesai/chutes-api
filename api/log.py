@@ -235,6 +235,7 @@ class LogType(str, Enum):
     BOUNTY = "bounty"
     AUTOSCALER = "autoscaler"
     SERVER = "server"
+    USER = "user"
 
 
 class LifecycleEvent(str, Enum):
@@ -275,6 +276,8 @@ class LifecycleEvent(str, Enum):
     BOOT_ATTESTATION = "boot_attestation"
     RUNTIME_ATTESTATION = "runtime_attestation"
     ATTESTATION_FAIL = "attestation_fail"
+    # User account -- keyed by user_id
+    USER_DELETE = "user_delete"
 
 
 # Map an event to its coarse log_type by name prefix, so bare bound_logger(event=...) call sites
@@ -290,6 +293,7 @@ _EVENT_NAME_PREFIX_LOG_TYPE = (
     ("BOOT_", LogType.SERVER),
     ("RUNTIME_", LogType.SERVER),
     ("ATTESTATION_", LogType.SERVER),
+    ("USER_", LogType.USER),
 )
 
 

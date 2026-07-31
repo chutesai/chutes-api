@@ -17,6 +17,7 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from fastapi.responses import HTMLResponse
 from api.database import get_db_session
+from api.log import update_log_context, LifecycleEvent, LogType
 from api.chute.schemas import ChuteShare
 from api.user.schemas import (
     UserRequest,
@@ -1440,11 +1441,28 @@ async def admin_delete_user(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
         )
 
+    # Bind the deletion identity into the ambient log context so EVERY log line for the rest of
+    # this request -- here, in the service teardown, and in the downstream redis/cache helpers --
+    # carries it. user_id is the same key other logs bind, so searching a user surfaces this
+    # whole flow alongside everything else that ever happened to them.
+    update_log_context(
+        event=LifecycleEvent.USER_DELETE.value,
+        log_type=LogType.USER.value,
+        user_id=user.user_id,
+        username=user.username,
+        support_id=current_user.user_id,
+    )
+
     # Money guard: refuse to delete an account with outstanding balance/invoicing unless forced.
     balance = user.balance or 0.0
     effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
     invoicing_enabled = user.has_role(Permissioning.invoice_billing)
     if (balance != 0 or effective_balance != 0 or invoicing_enabled) and not body.force:
+        logger.warning(
+            "user deletion blocked: outstanding balance or active invoicing "
+            f"(balance={balance}, effective_balance={effective_balance}, "
+            f"invoicing={invoicing_enabled})"
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -1463,6 +1481,10 @@ async def admin_delete_user(
     # opted in, fail and hand back the list so they can review before confirming.
     resources = await get_user_resources(db, user.user_id)
     if not resources.is_empty and not body.delete_resources:
+        logger.warning(
+            f"user deletion blocked: user owns {len(resources.chutes)} chutes, "
+            f"{len(resources.images)} images, {len(resources.secrets)} secrets"
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
@@ -1492,11 +1514,12 @@ async def admin_delete_user(
     for api_key_id in result.api_key_ids:
         await invalidate_api_key_cache(api_key_id)
 
+    # Final audit line; user_id/username/actor/event come from the ambient context bound above,
+    # and the per-resource ids were logged individually in the service teardown.
     logger.warning(
-        f"admin_delete_user: {current_user.user_id=} hard-deleted {user.user_id=} "
-        f"({user.username=}) force={body.force} balance={balance} reason={body.reason!r} "
-        f"chutes={result.chutes_deleted} images={result.images_deleted} "
-        f"secrets={result.secrets_deleted}"
+        f"support hard-deleted user account (force={body.force}, reason={body.reason!r}): "
+        f"{result.chutes_deleted} chutes, {result.images_deleted} images, "
+        f"{result.secrets_deleted} secrets, {len(result.terminated_instances)} instances"
     )
     return {
         "user_id": user.user_id,
