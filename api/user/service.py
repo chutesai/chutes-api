@@ -339,8 +339,7 @@ def check_user_deletable(
             context={
                 "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
                 "images": [
-                    {"image_id": i.image_id, "name": i.name, "tag": i.tag}
-                    for i in resources.images
+                    {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
                 ],
                 "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
             },
