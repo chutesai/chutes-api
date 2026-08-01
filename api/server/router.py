@@ -2,7 +2,7 @@
 FastAPI routes for server management and TDX attestation.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import orjson as json
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy import select
@@ -92,7 +92,7 @@ router = APIRouter(dependencies=[Depends(bind_request_context)])
 @router.get("/nonce", response_model=NonceResponse)
 async def get_nonce(
     request: Request,
-    miner_hotkey: str,
+    miner_hotkey: Optional[str] = None,
     _mtls=Depends(gate_legacy_attestation()),
 ):
     """
@@ -101,11 +101,12 @@ async def get_nonce(
     This endpoint is called by VMs during boot before any registration.
     No authentication required as the VM doesn't exist in the system yet.
 
-    miner_hotkey is required and bound into the nonce. Boot attestation will reject
-    any request whose args.miner_hotkey does not match the value stored here,
-    preventing cross-miner nonce reuse. VMs that do not supply this param are
-    considered legacy and are rejected — use the measurement version enforcement
-    to drive upgrades.
+    miner_hotkey is OPTIONAL for backwards compatibility: older VM initramfs fetch the nonce
+    without it. When supplied it is bound into the nonce, and boot attestation enforces that
+    args.miner_hotkey matches the value stored here (preventing cross-miner nonce reuse). VMs
+    that omit it get an unbound nonce and the binding check is skipped.
+
+    TODO: make miner_hotkey required when all VMs >= 1.4.0
     """
     try:
         server_ip = request.state.client_ip

@@ -8,6 +8,7 @@ import pytest
 import secrets
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, Mock, patch
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from cryptography.fernet import Fernet
@@ -16,6 +17,7 @@ from api.server.service import (
     BootAttestationResult,
     create_nonce,
     validate_and_consume_nonce,
+    validate_boot_nonce,
     verify_quote,
     process_boot_attestation,
     process_runtime_attestation,
@@ -2132,3 +2134,47 @@ async def test_get_chute_instances_evidence_splits_success_and_failure(mock_db_s
 
     assert [e.instance_id for e in evidence_list] == ["inst-ok"]
     assert failed_ids == ["inst-bad"]
+
+
+# ---------------------------------------------------------------------------
+# Boot nonce hotkey-binding tests (backwards compatibility)
+# ---------------------------------------------------------------------------
+
+
+async def _run_validate_boot_nonce(stored_hotkey, request_hotkey):
+    """Invoke the validate_boot_nonce dependency with a mocked nonce lookup."""
+    request = Mock()
+    request.state.client_ip = TEST_SERVER_IP
+    args = Mock(miner_hotkey=request_hotkey)
+    dependency = validate_boot_nonce()
+    with patch(
+        "api.server.service.validate_and_consume_nonce",
+        AsyncMock(return_value=stored_hotkey),
+    ):
+        return await dependency(request, args, nonce=TEST_NONCE)
+
+
+@pytest.mark.asyncio
+async def test_validate_boot_nonce_legacy_unbound_allowed():
+    """A legacy VM's unbound nonce (no stored hotkey) passes — binding check is skipped."""
+    result = await _run_validate_boot_nonce(stored_hotkey=None, request_hotkey="5FMinerHotkey")
+    assert result == TEST_NONCE
+
+
+@pytest.mark.asyncio
+async def test_validate_boot_nonce_bound_match_allowed():
+    """A bound nonce whose hotkey matches the request body passes."""
+    result = await _run_validate_boot_nonce(
+        stored_hotkey="5FMinerHotkey", request_hotkey="5FMinerHotkey"
+    )
+    assert result == TEST_NONCE
+
+
+@pytest.mark.asyncio
+async def test_validate_boot_nonce_bound_mismatch_rejected():
+    """A bound nonce whose hotkey differs from the request body is rejected with 401."""
+    with pytest.raises(HTTPException) as exc:
+        await _run_validate_boot_nonce(
+            stored_hotkey="5FBoundHotkey", request_hotkey="5FDifferentHotkey"
+        )
+    assert exc.value.status_code == status.HTTP_401_UNAUTHORIZED

@@ -212,9 +212,10 @@ def validate_boot_nonce():
     """
     Dependency for POST /servers/boot/attestation.
 
-    Validates and consumes the BOOT nonce, then enforces miner hotkey binding:
-    - The nonce must have been issued with a miner_hotkey query param (rejects legacy VMs).
-    - The stored hotkey must match args.miner_hotkey in the request body.
+    Validates and consumes the BOOT nonce, then enforces miner hotkey binding when present:
+    - If the nonce was issued with a bound miner_hotkey, it must match args.miner_hotkey.
+    - If the nonce is unbound (legacy VM that fetched /nonce without miner_hotkey), the binding
+      check is skipped for backwards compatibility.
 
     Declaring BootAttestationArgs here is intentional: FastAPI parses the request body
     once and shares the result between this dependency and the handler.
@@ -236,13 +237,8 @@ def validate_boot_nonce():
                 detail="Invalid nonce supplied",
             )
 
-        if not stored_hotkey:
-            logger.warning("Boot attestation rejected: nonce has no bound miner hotkey (legacy VM)")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Nonce was not issued with a miner hotkey binding — please upgrade your VM",
-            )
-        if stored_hotkey != args.miner_hotkey:
+        # TODO: require a bound hotkey once all VMs >= 1.4.0.
+        if stored_hotkey and stored_hotkey != args.miner_hotkey:
             logger.warning(
                 f"Boot attestation hotkey mismatch: nonce bound to {stored_hotkey[:8]}..., "
                 f"request has {args.miner_hotkey[:8] if args.miner_hotkey else 'None'}..."
