@@ -1,8 +1,8 @@
 """Unit tests for support-initiated hard user deletion.
 
-Covers the blocking-resource discovery and the API-key cache flush. The full endpoint
-(balance guard, 409-on-blockers, the ordered teardown + user delete) is DB-heavy and
-exercised by integration tests.
+Covers the delete-eligibility rules, blocking-resource discovery, the API-key cache flush,
+and the (now minimal) user-row delete. The full endpoint is DB-heavy and exercised by
+integration tests.
 """
 
 import api.database.orms  # noqa: F401  # register all ORM models so mappers configure
@@ -74,88 +74,59 @@ async def test_get_user_resources_empty_is_empty():
 # ---------------------------------------------------------------------------
 # check_user_deletable: single source of truth for the delete guards
 # ---------------------------------------------------------------------------
-def _user(*, permissions_bitmask=0, balance=0.0, effective_balance=0.0, invoicing=False):
-    return SimpleNamespace(
-        user_id="u1",
-        permissions_bitmask=permissions_bitmask,
-        balance=balance,
-        current_balance=SimpleNamespace(effective_balance=effective_balance),
-        has_role=lambda role: invoicing,  # only invoice_billing is consulted
-    )
+def _user(*, permissions_bitmask=0, balance=0.0):
+    return SimpleNamespace(user_id="u1", permissions_bitmask=permissions_bitmask, balance=balance)
+
+
+def _empty():
+    return user_service.UserResources()
 
 
 def test_check_user_deletable_allows_clean_user():
-    check = user_service.check_user_deletable(
-        _user(), user_service.UserResources(), force=False, delete_resources=False
-    )
-    assert check.allowed
+    assert user_service.check_user_deletable(_user(), _empty()).allowed
 
 
 def test_check_user_deletable_privileged_is_hard_block():
-    # Not even force overrides a privileged account.
-    check = user_service.check_user_deletable(
-        _user(permissions_bitmask=1 << 14),
-        user_service.UserResources(),
-        force=True,
-        delete_resources=True,
-    )
-    assert not check.allowed
-    assert check.context["permissions_bitmask"] == (1 << 14)
+    eligibility = user_service.check_user_deletable(_user(permissions_bitmask=1 << 14), _empty())
+    assert not eligibility.allowed
+    assert eligibility.context["permissions_bitmask"] == (1 << 14)
 
 
-def test_check_user_deletable_balance_blocks_unless_forced():
-    blocked = user_service.check_user_deletable(
-        _user(balance=-5.0), user_service.UserResources(), force=False, delete_resources=False
-    )
-    assert not blocked.allowed and blocked.context["balance"] == -5.0
-    forced = user_service.check_user_deletable(
-        _user(balance=-5.0), user_service.UserResources(), force=True, delete_resources=False
-    )
-    assert forced.allowed
+def test_check_user_deletable_allows_balance_within_threshold():
+    # Small positive/negative balances (within +/-25, e.g. billing lag) are deletable.
+    assert user_service.check_user_deletable(_user(balance=25.0), _empty()).allowed
+    assert user_service.check_user_deletable(_user(balance=-25.0), _empty()).allowed
 
 
-def test_check_user_deletable_resources_block_unless_opted_in():
+def test_check_user_deletable_balance_outside_threshold_blocks():
+    over = user_service.check_user_deletable(_user(balance=25.01), _empty())
+    assert not over.allowed and over.context["balance"] == 25.01
+    under = user_service.check_user_deletable(_user(balance=-100.0), _empty())
+    assert not under.allowed and under.context["balance"] == -100.0
+
+
+def test_check_user_deletable_resources_block():
     resources = user_service.UserResources(
         chutes=[user_service.ChuteRef(chute_id="c1", name="chute", version="v1")]
     )
-    blocked = user_service.check_user_deletable(
-        _user(), resources, force=False, delete_resources=False
-    )
-    assert not blocked.allowed and blocked.context["chutes"][0]["chute_id"] == "c1"
-    opted_in = user_service.check_user_deletable(
-        _user(), resources, force=False, delete_resources=True
-    )
-    assert opted_in.allowed
+    blocked = user_service.check_user_deletable(_user(), resources)
+    assert not blocked.allowed
+    assert blocked.context["chutes"][0]["chute_id"] == "c1"
 
 
 # ---------------------------------------------------------------------------
-# Teardown: delete_user_and_resources
+# delete_user: minimal row delete (resources are removed manually beforehand)
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_delete_user_and_resources_result_payload():
-    resources = user_service.UserResources(
-        chutes=[user_service.ChuteRef(chute_id="c1", name="chute", version="v1")],
-        images=[user_service.ImageRef(image_id="i1", name="img", tag="latest")],
-        secrets=[user_service.SecretRef(secret_id="s1", key="OPENAI_KEY")],
-    )
-
-    # execute() call order: select api_keys, select instances, delete instances,
-    # update instance_audit, delete chutes, delete images, delete secrets, delete user.
+async def test_delete_user_returns_api_key_ids_and_deletes_row():
     api_keys = MagicMock()
     api_keys.scalars.return_value.all.return_value = ["k1", "k2"]
-    instances = MagicMock()
-    instances.all.return_value = [SimpleNamespace(instance_id="inst1", chute_id="c1")]
-    execute_results = [api_keys, instances] + [MagicMock() for _ in range(6)]
-
     session = AsyncMock()
-    session.execute = AsyncMock(side_effect=execute_results)
+    session.execute = AsyncMock(side_effect=[api_keys, MagicMock()])
     user = SimpleNamespace(user_id="u1", username="bob")
 
-    result = await user_service.delete_user_and_resources(session, user, resources)
+    api_key_ids = await user_service.delete_user(session, user)
 
-    assert result.api_key_ids == ["k1", "k2"]
-    assert result.terminated_instances == [("inst1", "c1")]
-    assert {b["reason"] for b in result.broadcasts} == {"chute_deleted", "image_deleted"}
-    assert (result.chutes_deleted, result.images_deleted, result.secrets_deleted) == (1, 1, 1)
-    # 8 statements: 2 selects, delete instances + audit update, delete chutes/images/secrets/user.
-    assert session.execute.await_count == 8
+    assert api_key_ids == ["k1", "k2"]
+    # Exactly two statements: select api key ids, then delete the user row.
+    assert session.execute.await_count == 2

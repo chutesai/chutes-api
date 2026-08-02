@@ -39,9 +39,8 @@ from api.user.service import (
     resolve_user,
     get_user_resources,
     check_user_deletable,
-    delete_user_and_resources,
+    delete_user,
 )
-from api.instance.util import cleanup_instance_conn_tracking
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
 from api.payment.schemas import AdminBalanceChange
@@ -1423,10 +1422,10 @@ async def admin_delete_user(
 
     Removes the ``users`` row, which the ``on_user_delete`` DB trigger archives into
     ``deleted_users`` and which CASCADEs ``api_keys``/``jobs``/``logos``/``chute_shares``/
-    ``oauth_*``. The user's ``chutes``/``images``/``secrets`` have ``NO ACTION`` FKs, so they
-    block the delete: the request first returns ``409`` with the list of blockers, and support
-    must re-issue with ``delete_resources=true`` to tear them down as part of the deletion.
-    Financial history (``admin_balance_changes``, ``payments``) has no FK and is preserved.
+    ``oauth_*``. Deletion requires: no special roles (``permissions_bitmask`` is 0), a balance
+    within +/-25, and no owned chutes/images/secrets (those have ``NO ACTION`` FKs and must be
+    removed manually first, via their own endpoints). Financial history
+    (``admin_balance_changes``, ``payments``) has no FK and is preserved.
     """
     user = await resolve_user(db, user_id_or_username)
     if not user:
@@ -1434,10 +1433,6 @@ async def admin_delete_user(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
         )
 
-    # Bind the deletion identity into the ambient log context so EVERY log line for the rest of
-    # this request -- here, in the service teardown, and in the downstream redis/cache helpers --
-    # carries it. user_id is the same key other logs bind, so searching a user surfaces this
-    # whole flow alongside everything else that ever happened to them.
     update_log_context(
         event=LifecycleEvent.USER_DELETE.value,
         log_type=LogType.USER.value,
@@ -1446,46 +1441,22 @@ async def admin_delete_user(
         support_id=current_user.user_id,
     )
 
-    # Single source of truth for "can we delete this user?" -- the privilege, balance/invoicing,
-    # and owned-resource rules (with their force / delete_resources overrides) all live in
-    # check_user_deletable. The destructive path lives ONLY inside `if eligibility.allowed`, so
-    # nothing can fall through to it; every other outcome refuses by default (fail closed).
     resources = await get_user_resources(db, user.user_id)
-    eligibility = check_user_deletable(
-        user, resources, force=body.force, delete_resources=body.delete_resources
-    )
+    eligibility = check_user_deletable(user, resources)
     if eligibility.allowed:
-        # Hard-delete the user + blocking resources (DB work only; commit + side effects below).
-        result = await delete_user_and_resources(db, user, resources)
+        # Delete the user row (DB work only; commit + cache flush below). No resources exist to
+        # tear down -- ownership of any is a hard block above.
+        api_key_ids = await delete_user(db, user)
         await db.commit()
 
-        # Post-commit side effects (only safe once the delete is durable): conn-tracking cleanup,
-        # miner broadcasts, api-key cache flush.
-        for instance_id, chute_id in result.terminated_instances:
-            await cleanup_instance_conn_tracking(chute_id, instance_id)
-        for message in result.broadcasts:
-            await settings.redis_client.publish("miner_broadcast", json.dumps(message).decode())
-        for api_key_id in result.api_key_ids:
+        # Post-commit (only safe once the delete is durable): flush the per-key auth caches.
+        for api_key_id in api_key_ids:
             await invalidate_api_key_cache(api_key_id)
 
-        # Final audit line; user_id/username/support/event come from the ambient context bound
-        # above, and the per-resource ids were logged individually in the service teardown.
-        logger.warning(
-            f"support hard-deleted user account (force={body.force}, reason={body.reason!r}): "
-            f"{result.chutes_deleted} chutes, {result.images_deleted} images, "
-            f"{result.secrets_deleted} secrets, {len(result.terminated_instances)} instances"
-        )
-        response = {
-            "user_id": user.user_id,
-            "deleted": True,
-            "chutes_deleted": result.chutes_deleted,
-            "images_deleted": result.images_deleted,
-            "secrets_deleted": result.secrets_deleted,
-            "instances_terminated": len(result.terminated_instances),
-        }
+        # Audit line; user_id/username/support/event come from the ambient context bound above.
+        logger.warning(f"support hard-deleted user account (reason={body.reason!r})")
+        response = {"user_id": user.user_id, "deleted": True}
     else:
-        # Blocked -- reason + relevant fields come straight from the single check above. The raise
-        # short-circuits (response is never built), so the delete stays gated behind `allowed`.
         logger.warning(f"user deletion blocked: {eligibility.message}")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

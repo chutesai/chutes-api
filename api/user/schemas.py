@@ -47,11 +47,7 @@ class AdminUserRequest(BaseModel):
 
 
 class UserDeletionRequest(BaseModel):
-    # Delete the user's blocking resources (chutes/images/secrets) as part of the deletion.
-    # Without this the request fails and returns the list of blockers for support to review.
-    delete_resources: bool = False
-    # Proceed even when the user has a nonzero balance or active invoicing.
-    force: bool = False
+    # Optional free-text note recorded in the deletion audit log.
     reason: Optional[str] = None
 
 

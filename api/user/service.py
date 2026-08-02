@@ -4,8 +4,7 @@ User logic/code.
 
 from typing import Optional
 from dataclasses import dataclass, field
-from loguru import logger
-from sqlalchemy import exists, or_, delete, text
+from sqlalchemy import exists, or_, delete
 from sqlalchemy.future import select
 from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
 from bittensor_wallet.keypair import Keypair
@@ -16,7 +15,6 @@ from api.user.schemas import User
 from api.chute.schemas import Chute
 from api.image.schemas import Image
 from api.secret.schemas import Secret
-from api.instance.schemas import Instance
 from api.api_key.schemas import APIKey
 from api.api_key.util import get_and_check_api_key
 from api.user.tokens import get_user_from_token
@@ -65,21 +63,6 @@ class UserResources:
     @property
     def is_empty(self) -> bool:
         return not (self.chutes or self.images or self.secrets)
-
-
-@dataclass
-class UserDeletionResult:
-    """
-    Side effects the caller must run AFTER committing a user hard-delete: they touch Redis
-    and external caches, so they're only safe once the delete is durable.
-    """
-
-    terminated_instances: list[tuple[str, str]] = field(default_factory=list)  # (instance, chute)
-    broadcasts: list[dict] = field(default_factory=list)  # miner_broadcast payloads
-    api_key_ids: list[str] = field(default_factory=list)
-    chutes_deleted: int = 0
-    images_deleted: int = 0
-    secrets_deleted: int = 0
 
 
 @dataclass
@@ -295,16 +278,24 @@ async def get_user_resources(session: AsyncSession, user_id: str) -> UserResourc
     )
 
 
-def check_user_deletable(
-    user: User, resources: UserResources, *, force: bool, delete_resources: bool
-) -> DeletionEligibility:
+# A user is only auto-deletable when their balance sits within +/- this many USD of zero.
+# A larger magnitude -- real credit we'd be destroying, or a debt beyond ordinary billing lag
+# -- must be reconciled by a human before the account can be deleted.
+DELETABLE_BALANCE_THRESHOLD = 25.0
+
+
+def check_user_deletable(user: User, resources: UserResources) -> DeletionEligibility:
     """Single source of truth for whether a user may be hard-deleted.
 
-    Rules, in order (first failure wins):
-      * privileged accounts (any ``permissions_bitmask`` bit) are never deletable here --
-        a HARD stop that ``force`` cannot override; strip the roles first;
-      * an outstanding/negative balance or active invoicing blocks unless ``force``;
-      * owned chutes/images/secrets block unless ``delete_resources``.
+    Two rules gate the account:
+      * ``permissions_bitmask`` must be 0 -- privileged accounts (admin/support/subnet/...) are
+        never deletable here; strip the roles first;
+      * ``balance`` must sit within +/-``DELETABLE_BALANCE_THRESHOLD``; a larger magnitude must
+        be reconciled manually first.
+
+    Plus a structural precondition: the account must own no chutes/images/secrets (those have
+    ``NO ACTION`` FKs to ``users``, so a delete would FK-error). They are removed manually via
+    their own endpoints, which enforce the public/shared/in-use safety we can't bypass here.
 
     Returns a :class:`DeletionEligibility`; the caller decides how to surface a block.
     """
@@ -317,25 +308,19 @@ def check_user_deletable(
         )
 
     balance = user.balance or 0.0
-    effective_balance = user.current_balance.effective_balance if user.current_balance else 0.0
-    invoicing_enabled = user.has_role(Permissioning.invoice_billing)
-    if (balance != 0 or effective_balance != 0 or invoicing_enabled) and not force:
+    if abs(balance) > DELETABLE_BALANCE_THRESHOLD:
         return DeletionEligibility(
             allowed=False,
-            message="User has an outstanding balance or active invoicing. "
-            "Pass force=true to confirm deletion.",
-            context={
-                "balance": balance,
-                "effective_balance": effective_balance,
-                "invoicing_enabled": invoicing_enabled,
-            },
+            message=f"User balance ({balance}) is outside the deletable range of "
+            f"+/-{DELETABLE_BALANCE_THRESHOLD}; reconcile the balance before deleting.",
+            context={"balance": balance, "threshold": DELETABLE_BALANCE_THRESHOLD},
         )
 
-    if not resources.is_empty and not delete_resources:
+    if not resources.is_empty:
         return DeletionEligibility(
             allowed=False,
-            message="User owns resources that block deletion. Re-issue with "
-            "delete_resources=true to delete them as part of the account deletion.",
+            message="User owns resources (chutes/images/secrets) that must be removed "
+            "manually before the account can be deleted.",
             context={
                 "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
                 "images": [
@@ -348,88 +333,25 @@ def check_user_deletable(
     return DeletionEligibility(allowed=True)
 
 
-async def delete_user_and_resources(
-    session: AsyncSession, user: User, resources: UserResources
-) -> UserDeletionResult:
-    """Hard-delete a user and their blocking resources within ``session`` (does NOT commit).
+async def delete_user(session: AsyncSession, user: User) -> list[str]:
+    """Hard-delete a user row within ``session`` (does NOT commit).
 
-    Teardown order respects the ``NO ACTION`` FKs and the instance billing trigger:
-    instances -> chutes -> images -> secrets -> user. Instances go first so the
-    ``BEFORE DELETE`` billing trigger can still resolve the (not-yet-deleted) chute + user.
+    Only valid once the account owns no chutes/images/secrets -- that is enforced by
+    :func:`check_user_deletable`, which requires those to be removed manually first (their
+    own delete endpoints enforce the public/shared/in-use safety we can't safely bypass here).
     Deleting the ``users`` row fires the ``on_user_delete`` trigger (archives to
     ``deleted_users``) and CASCADEs api_keys/jobs/logos/chute_shares/oauth_*.
 
-    Returns the side effects the caller must run *after* commit (Redis broadcasts,
-    conn-tracking cleanup, api-key cache invalidation).
+    Returns the user's api key ids (captured before the cascade removes them) so the caller
+    can flush the per-key auth caches after commit.
     """
-    # Capture api key ids before the users delete cascades them away.
     api_key_ids = list(
         (await session.execute(select(APIKey.api_key_id).where(APIKey.user_id == user.user_id)))
         .scalars()
         .all()
     )
-
-    chute_ids = [c.chute_id for c in resources.chutes]
-    terminated_instances = []
-    if chute_ids:
-        rows = (
-            await session.execute(
-                select(Instance.instance_id, Instance.chute_id).where(
-                    Instance.chute_id.in_(chute_ids)
-                )
-            )
-        ).all()
-        terminated_instances = [(row.instance_id, row.chute_id) for row in rows]
-        instance_ids = [instance_id for instance_id, _ in terminated_instances]
-        if instance_ids:
-            await session.execute(delete(Instance).where(Instance.instance_id.in_(instance_ids)))
-            # instance_audit has no ORM model and is otherwise trigger-managed; the app only
-            # owns valid_termination (so miners aren't penalized for the termination).
-            await session.execute(
-                text(
-                    "UPDATE instance_audit SET valid_termination = true, "
-                    "deletion_reason = 'account deleted' WHERE instance_id = ANY(:instance_ids)"
-                ),
-                {"instance_ids": instance_ids},
-            )
-            # One line per instance with its single id bound, so a search for that instance_id
-            # matches (a list field would not) -- same for chutes/images below.
-            for terminated_id, terminated_chute_id in terminated_instances:
-                logger.bind(instance_id=terminated_id, chute_id=terminated_chute_id).info(
-                    "terminated instance (account deleted)"
-                )
-
-    broadcasts = []
-    if chute_ids:
-        await session.execute(delete(Chute).where(Chute.chute_id.in_(chute_ids)))
-        for c in resources.chutes:
-            logger.bind(chute_id=c.chute_id).info("deleted chute (account deleted)")
-        broadcasts.extend(
-            {"reason": "chute_deleted", "data": {"chute_id": c.chute_id, "version": c.version}}
-            for c in resources.chutes
-        )
-    image_ids = [i.image_id for i in resources.images]
-    if image_ids:
-        await session.execute(delete(Image).where(Image.image_id.in_(image_ids)))
-        for i in resources.images:
-            logger.bind(image_id=i.image_id).info("deleted image (account deleted)")
-        broadcasts.extend(
-            {"reason": "image_deleted", "data": {"image_id": i.image_id}} for i in resources.images
-        )
-    if resources.secrets:
-        await session.execute(delete(Secret).where(Secret.user_id == user.user_id))
-
-    # Finally the user row: fires on_user_delete (-> deleted_users) and CASCADEs the rest.
     await session.execute(delete(User).where(User.user_id == user.user_id))
-
-    return UserDeletionResult(
-        terminated_instances=terminated_instances,
-        broadcasts=broadcasts,
-        api_key_ids=api_key_ids,
-        chutes_deleted=len(resources.chutes),
-        images_deleted=len(resources.images),
-        secrets_deleted=len(resources.secrets),
-    )
+    return api_key_ids
 
 
 def require_role(role: Role, purpose: str = None):
