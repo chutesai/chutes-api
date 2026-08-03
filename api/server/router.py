@@ -66,7 +66,6 @@ from api.server.util import (
 )
 from api.server.exceptions import (
     AttestationError,
-    NonceError,
     ServerNotFoundError,
     ServerRegistrationError,
 )
