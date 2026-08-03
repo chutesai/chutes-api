@@ -758,7 +758,7 @@ quotaRedis:
 # The API pushes lines directly to it (never via stdout). Not client-reachable (NetworkPolicy).
 loki:
   enabled: true
-  image: grafana/loki:3.1.1
+  image: grafana/loki:3.7.4
   imagePullPolicy: IfNotPresent
   nodeSelector: {}
   affinity: {}

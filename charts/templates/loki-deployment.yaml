@@ -55,7 +55,7 @@ spec:
         fsGroup: 10001
       containers:
         - name: loki
-          image: "{{ .Values.loki.image }}"
+          image: {{ include "chutes.image" (list . .Values.loki.image) | quote }}
           imagePullPolicy: {{ .Values.loki.imagePullPolicy }}
           args:
             - -config.file=/etc/loki/config.yaml
