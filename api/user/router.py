@@ -1415,10 +1415,10 @@ async def admin_delete_user(
     user_id_or_username: str,
     body: UserDeletionRequest,
     db: AsyncSession = Depends(get_db_session),
-    current_user: User = Depends(require_role(Permissioning.chutes_support)),
+    current_user: User = Depends(require_role(Permissioning.delete_user)),
 ):
     """
-    Permanently (hard) delete a user account (support only).
+    Permanently (hard) delete a user account. Requires the explicit ``delete_user`` permission.
 
     Removes the ``users`` row, which the ``on_user_delete`` DB trigger archives into
     ``deleted_users`` and which CASCADEs ``api_keys``/``jobs``/``logos``/``chute_shares``/
@@ -1438,7 +1438,7 @@ async def admin_delete_user(
         log_type=LogType.USER.value,
         user_id=user.user_id,
         username=user.username,
-        support_id=current_user.user_id,
+        deleted_by=current_user.user_id,
     )
 
     resources = await get_user_resources(db, user.user_id)
@@ -1453,8 +1453,8 @@ async def admin_delete_user(
         for api_key_id in api_key_ids:
             await invalidate_api_key_cache(api_key_id)
 
-        # Audit line; user_id/username/support/event come from the ambient context bound above.
-        logger.warning(f"support hard-deleted user account (reason={body.reason!r})")
+        # Audit line; user_id/username/deleted_by/event come from the ambient context bound above.
+        logger.warning(f"hard-deleted user account (reason={body.reason!r})")
         response = {"user_id": user.user_id, "deleted": True}
     else:
         logger.warning(f"user deletion blocked: {eligibility.message}")
