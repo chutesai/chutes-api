@@ -19,12 +19,14 @@ from api.constants import (
     HOTKEY_HEADER,
     NONCE_HEADER,
     SIGNATURE_HEADER,
+    MIN_VM_AUTH_KEY_VERSION,
 )
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
 from api.server.schemas import Server, VmAuthKey
 from api.server.util import _get_server_certificate, decrypt_passphrase
 from api.config import settings
+from api.util import semcomp
 
 
 @dataclass
@@ -51,12 +53,14 @@ class TeeServerClient:
 
     @classmethod
     async def create(cls, db: AsyncSession, server: Server) -> "TeeServerClient":
-        """Async factory that resolves the per-VM auth keypair from the database.
+        """Async factory that resolves the signing keypair for validator->VM calls.
 
-        Looks up the vm_auth_keys row for this server. If one exists, decrypts
-        the seed and reconstructs the ephemeral keypair. If no row exists (legacy
-        VM that hasn't booted with new firmware yet), falls back to the validator's
-        global keypair for backward compatibility.
+        Hard version gate: VMs attested at >= MIN_VM_AUTH_KEY_VERSION sign with their per-VM
+        ephemeral keypair (from vm_auth_keys) -- the firmware line that registers that ephemeral
+        SS58 as an allowed signer. Older VMs (1.3.x) only trust the validator key, so they sign
+        with the validator's global keypair; signing a 1.3.x call with the ephemeral key would 401.
+        Boot attestation only generates the ephemeral key for >= 1.4.0 VMs, so such a server should
+        always have a row -- a missing one is an error (raised below) rather than a silent fallback.
 
         A DB read + keypair reconstruction costs ~1-5ms total, which is negligible
         compared to the TDX quote verification and GPU evidence checks that always
@@ -72,7 +76,13 @@ class TeeServerClient:
         )
         vm_auth_key = result.scalar_one_or_none()
 
-        if vm_auth_key is not None:
+        use_ephemeral = server.version and semcomp(server.version, MIN_VM_AUTH_KEY_VERSION) >= 0
+        if use_ephemeral:
+            if vm_auth_key is None:
+                raise GetEvidenceError(
+                    f"No vm_auth_key row for {server.name} (miner: {server.miner_hotkey}) at "
+                    f"version {server.version} (>= {MIN_VM_AUTH_KEY_VERSION}); cannot sign VM calls"
+                )
             seed_hex = decrypt_passphrase(vm_auth_key.auth_seed)
             keypair = Keypair.create_from_seed(seed_hex)
             logger.debug(
@@ -82,8 +92,8 @@ class TeeServerClient:
         else:
             keypair = settings.validator_keypair
             logger.debug(
-                f"No per-VM auth key found for {server.name} "
-                f"(miner: {server.miner_hotkey}); using validator keypair (legacy VM)"
+                f"Using validator keypair for {server.name} (miner: {server.miner_hotkey}); "
+                f"version={server.version!r} < {MIN_VM_AUTH_KEY_VERSION} (legacy signer path)"
             )
 
         return cls(server=server, keypair=keypair)

@@ -57,6 +57,13 @@ LUKS_STORAGE_VOLUME = "storage"
 # VMs on versions below this receive root_next=null in boot attestation responses.
 MIN_ROOT_ROTATION_VERSION = "1.4.0"
 
+# Minimum VM image version whose firmware registers the per-VM ephemeral auth key (vm_auth_ss58,
+# returned by boot attestation) as an allowed signer for validator->VM calls. Older firmware
+# (1.3.x) only trusts the validator key, so the validator MUST sign those calls with its own
+# keypair -- signing with the ephemeral key 401s on the VM. Gates both key generation (boot) and
+# key usage (TeeServerClient.create).
+MIN_VM_AUTH_KEY_VERSION = "1.4.0"
+
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
 

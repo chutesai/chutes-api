@@ -68,7 +68,7 @@ def _tee_measurements_for_service_tests():
     """TeeMeasurementConfig list matching sample_boot_quote and sample_runtime_quote."""
     return [
         TeeMeasurementConfig(
-            version="1",
+            version="1.4.0",
             mrtd="a" * 96,
             name="test",
             rtmr0="b" * 96,
@@ -1332,6 +1332,8 @@ async def test_tee_server_client_uses_per_vm_keypair(sample_server):
     seed_hex = "0x" + _secrets.token_hex(32)
     real_keypair = Keypair.create_from_seed(seed_hex)
 
+    # Ephemeral key is only used for 1.4.0+ firmware (older VMs 401 on it).
+    sample_server.version = "1.4.0"
     vm_auth_key = VmAuthKey(
         miner_hotkey=sample_server.miner_hotkey,
         vm_name=sample_server.name,
@@ -1373,6 +1375,36 @@ async def test_tee_server_client_falls_back_to_validator_keypair(sample_server):
 
     assert client._keypair is mock_validator_keypair
     mock_db.execute.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_tee_server_client_legacy_version_ignores_vm_key(sample_server):
+    """A pre-1.4.0 VM that HAS a vm_auth_keys row must still use the validator keypair.
+
+    Regression guard: boot attestation created rows for every VM, so a 1.3.x VM has a row but its
+    firmware only trusts the validator key -- signing with the ephemeral key 401s /server/attest.
+    """
+    from api.server.client import TeeServerClient
+
+    sample_server.version = "1.3.1"  # below MIN_VM_AUTH_KEY_VERSION
+    mock_validator_keypair = Mock()
+    mock_validator_keypair.ss58_address = "5ValidatorSS58"
+
+    vm_auth_key = VmAuthKey(
+        miner_hotkey=sample_server.miner_hotkey,
+        vm_name=sample_server.name,
+        auth_seed="encrypted_seed_placeholder",
+    )
+    mock_result = Mock()
+    mock_result.scalar_one_or_none.return_value = vm_auth_key  # row EXISTS
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute.return_value = mock_result
+
+    with patch("api.server.client.settings") as mock_settings:
+        mock_settings.validator_keypair = mock_validator_keypair
+        client = await TeeServerClient.create(mock_db, sample_server)
+
+    assert client._keypair is mock_validator_keypair  # NOT the ephemeral key
 
 
 @pytest.mark.asyncio

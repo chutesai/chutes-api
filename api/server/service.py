@@ -22,7 +22,13 @@ from cryptography.hazmat.primitives.serialization import Encoding
 
 from api.config import settings
 from api.database import get_db_session
-from api.constants import NONCE_HEADER, NoncePurpose, HOTKEY_HEADER, LUKS_STORAGE_VOLUME
+from api.constants import (
+    NONCE_HEADER,
+    NoncePurpose,
+    HOTKEY_HEADER,
+    LUKS_STORAGE_VOLUME,
+    MIN_VM_AUTH_KEY_VERSION,
+)
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
 from api.server.client import TeeServerClient
@@ -451,8 +457,8 @@ async def process_boot_attestation(
 
     Returns:
         BootAttestationResult with root_key, luks_quote_nonce for the subsequent
-        POST /luks/attest flow, optional root_next/root_confirm_nonce for VMs >= 1.4.0,
-        and vm_auth_ss58 (always set on successful attestation).
+        POST /luks/attest flow, and (for VMs >= 1.4.0) root_next/root_confirm_nonce plus
+        vm_auth_ss58 (the freshly-rotated per-VM signing key). vm_auth_ss58 is None for < 1.4.0.
 
     Raises:
         NonceError: If nonce validation fails
@@ -516,11 +522,16 @@ async def process_boot_attestation(
             measurement_config.version,
         )
 
-        # Generate a fresh per-VM ephemeral SR25519 keypair. The SS58 is returned to
-        # the VM so it can trust requests signed with this key; the encrypted seed is
-        # stored in vm_auth_keys for the validator backend to use when calling this VM.
-        vm_keypair = await _generate_and_store_vm_auth_key(db, args.miner_hotkey, args.vm_name)
-        vm_auth_ss58 = vm_keypair.ss58_address
+        # Generate a fresh per-VM ephemeral SR25519 keypair (1.4.0+ firmware only). The SS58 is
+        # returned to the VM so it can trust requests signed with this key; the encrypted seed is
+        # stored in vm_auth_keys for the validator backend to use when calling this VM. 1.3.x
+        # firmware doesn't register this key and only trusts the validator, so we skip generation
+        # for it -- otherwise TeeServerClient would sign with a key the VM rejects (401). Gated to
+        # match TeeServerClient.create's usage gate.
+        vm_auth_ss58 = None
+        if semcomp(measurement_config.version, MIN_VM_AUTH_KEY_VERSION) >= 0:
+            vm_keypair = await _generate_and_store_vm_auth_key(db, args.miner_hotkey, args.vm_name)
+            vm_auth_ss58 = vm_keypair.ss58_address
 
         # All accepted VMs use the POST /luks/attest flow; the tee_minimum_boot_version
         # gate above already rejects any VM older than the current minimum (>= 1.3.1).
