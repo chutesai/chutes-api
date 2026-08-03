@@ -992,6 +992,18 @@ async def hostname_invocation(
                         "reasoning_effort": reasoning_effort,
                     }
                 )
+                # Any reasoning effort (other than "none") implies thinking mode.
+                if (
+                    str(reasoning_effort).lower() != "none"
+                    and "thinking" not in payload["chat_template_kwargs"]
+                    and "enable_thinking" not in payload["chat_template_kwargs"]
+                ):
+                    payload["chat_template_kwargs"].update(
+                        {
+                            "thinking": True,
+                            "enable_thinking": True,
+                        }
+                    )
             if (
                 "thinking" in payload["chat_template_kwargs"]
                 and "enable_thinking" not in payload["chat_template_kwargs"]
