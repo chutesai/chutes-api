@@ -181,6 +181,10 @@ spec:
               value: "{{ .Values.cmRedis.shard_count }}"
             - name: SQUAD_CERT_PATH
               value: /etc/squad/squad_pub.pem
+            # Mounted at its own dir (NOT under /etc/config, which the tee-measurements ConfigMap
+            # already mounts -- a file subPath into another CM volume fails "not a directory").
+            - name: SIGNING_KEYS_BUNDLE_PATH
+              value: /etc/signing-keys/signing_keys_bundle.json
           volumeMounts:
             {{- if .Values.squad_enabled }}
             - name: squad-certs
@@ -191,8 +195,7 @@ spec:
               mountPath: "/etc/config"
               readOnly: true
             - name: signing-keys-bundle
-              mountPath: "/etc/config/signing_keys_bundle.json"
-              subPath: signing_keys_bundle.json
+              mountPath: "/etc/signing-keys"
               readOnly: true
             {{- include "chutes.redisCacertMount" . | nindent 12 }}
             - name: lc-certs
