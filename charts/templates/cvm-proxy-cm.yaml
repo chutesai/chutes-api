@@ -55,11 +55,43 @@ data:
             ssl_prefer_server_ciphers on;
             ssl_verify_client optional_no_ca;
 
-            # All CVM mTLS attestation endpoints (nonce, boot/attestation, luks/attest,
-            # luks/confirm, provision, provision/confirm) plus the chute-log-shipper ingest
-            # (instances/launch_config/{config_id}/logs). Each carries the client cert plus the
-            # proxy-provenance secret; the API rejects any of these lacking the secret.
-            location ~ ^/(servers/(nonce|boot/attestation|[^/]+/luks/attest|[^/]+/luks/confirm|[^/]+/provision|[^/]+/provision/confirm)|instances/launch_config/[^/]+/logs)$ {
+            # Chute-log-shipper ingest. Its own location for ONE reason: to cap the request body.
+            # Log batches are bounded, and FastAPI buffers the whole JSON body into memory before the
+            # app's per-shipment line cap applies -- so an unbounded body (client_max_body_size 0) is
+            # a memory-DoS vector. An 8m ceiling bounds per-request memory while sitting ~8x above the
+            # guest's default 1 MiB batch, so normal shipments never hit it. If a batch ever exceeds
+            # it, nginx returns 413 and the in-guest agent SPLITS the batch and retries smaller -- so
+            # the limit never wedges capture (do NOT return a retryable non-2xx the guest can't split
+            # on; 413 is the agreed size signal).
+            # KEEP the proxy_* / proxy_set_header directives below in sync with the attestation
+            # location -- this configmap has no shared-snippet include.
+            location ~ ^/instances/launch_config/[^/]+/logs$ {
+                client_max_body_size {{ .Values.cvmProxy.logsMaxBodySize | default "8m" }};
+                proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
+                proxy_next_upstream_tries 3;
+                proxy_next_upstream_timeout 45s;
+                proxy_connect_timeout 3s;
+                proxy_http_version 1.1;
+                proxy_set_header Connection "";
+                proxy_send_timeout 60s;
+                proxy_read_timeout 600s;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Resolved-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $remote_addr;
+                proxy_set_header X-Forwarded-Proto https;
+                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+                proxy_set_header X-Client-Verify $ssl_client_verify;
+                proxy_set_header X-Cvm-Proxy-Auth "${CVM_PROXY_SECRET}";
+                proxy_pass http://api.{{ .Release.Namespace }}.svc.cluster.local:8000;
+            }
+
+            # All CVM mTLS attestation endpoints (nonce, boot/attestation, luks/attest, luks/confirm,
+            # provision, provision/confirm). Body stays unbounded (client_max_body_size 0 from the http
+            # block), matching the legacy attestation-proxy: attestation payloads (TDX quote + GPU
+            # evidence) vary and are not guest-splittable. Each carries the client cert plus the
+            # proxy-provenance secret; the API rejects any lacking the secret.
+            location ~ ^/servers/(nonce|boot/attestation|[^/]+/luks/attest|[^/]+/luks/confirm|[^/]+/provision|[^/]+/provision/confirm)$ {
                 proxy_next_upstream error timeout http_500 http_502 http_503 http_504;
                 proxy_next_upstream_tries 3;
                 proxy_next_upstream_timeout 45s;

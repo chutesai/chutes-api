@@ -951,6 +951,11 @@ cvmProxy:
   proxyAuthSecret:
     name: "cvm-proxy-auth"
     key: "secret"
+  # Max request body for the chute-log-shipper ingest location (bounds per-request memory, since
+  # FastAPI buffers the whole JSON body before the app's line cap applies). ~8x the guest's default
+  # 1 MiB batch; if a batch exceeds it, nginx 413s and the guest splits + retries smaller. Only the
+  # logs location is capped; attestation stays unbounded (see cvm-proxy-cm.yaml).
+  logsMaxBodySize: "8m"
   # No realIpFrom: cvm.chutes.ai routes straight to this LB (no PROXY-protocol intermediary),
   # so the client IP is $remote_addr directly (preserved via the Service's
   # externalTrafficPolicy: Local). Contrast attestationProxy, which sits behind the VM-side
