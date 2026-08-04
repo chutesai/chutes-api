@@ -15,7 +15,7 @@ import redis.asyncio as redis
 from redis.retry import Retry
 from redis.backoff import ConstantBackoff
 from boto3.session import Config
-from typing import Dict, List, Optional
+from typing import ClassVar, Dict, List, Optional
 from bittensor_wallet.keypair import Keypair
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -105,29 +105,32 @@ class Settings(BaseSettings):
 
     @cached_property
     def fernet_key(self) -> Optional[Fernet]:
-        """Get validated Fernet cipher for cache passphrase encryption.
+        """Get validated Fernet cipher for LUKS passphrase encryption at rest.
+
+        Encrypts all LUKS passphrases stored in the database (root, storage, cache
+        volumes) so that database read access alone is insufficient to obtain them.
 
         Returns:
-            Fernet cipher instance, or None if CACHE_PASSPHRASE_KEY not configured
+            Fernet cipher instance, or None if PASSPHRASE_ENCRYPTION_KEY not configured
 
         Raises:
-            ValueError: If CACHE_PASSPHRASE_KEY is invalid format
+            ValueError: If PASSPHRASE_ENCRYPTION_KEY is invalid format
         """
-        key = os.getenv("CACHE_PASSPHRASE_KEY")
+        key = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
         if not key:
             return None
 
         # Fernet keys must be 32 url-safe base64-encoded bytes (44 characters)
         if len(key) != 44:
             raise ValueError(
-                f"CACHE_PASSPHRASE_KEY must be 44 characters (32 bytes base64-encoded), got {len(key)} characters. "
+                f"PASSPHRASE_ENCRYPTION_KEY must be 44 characters (32 bytes base64-encoded), got {len(key)} characters. "
                 "Generate a valid key with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
             )
 
         try:
             return Fernet(key.encode())
         except Exception as e:
-            raise ValueError(f"Invalid CACHE_PASSPHRASE_KEY format: {e}")
+            raise ValueError(f"Invalid PASSPHRASE_ENCRYPTION_KEY format: {e}")
 
     sqlalchemy: str = os.getenv(
         "POSTGRESQL", "postgresql+asyncpg://user:password@127.0.0.1:5432/chutes"
@@ -287,7 +290,6 @@ class Settings(BaseSettings):
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
     registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
-    registry_password: str = os.getenv("REGISTRY_PASSWORD", "registrypassword")
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "7200"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "7200"))
@@ -491,7 +493,113 @@ class Settings(BaseSettings):
                 latest = v
         return latest
 
-    cache_passphrase_key: Optional[str] = os.getenv("CACHE_PASSPHRASE_KEY")
+    signing_keys_bundle_path: Path = Path(
+        os.getenv("SIGNING_KEYS_BUNDLE_PATH", "/etc/config/signing_keys_bundle.json")
+    )
+
+    _REQUIRED_SIGNING_KEY_NAMES: ClassVar[frozenset] = frozenset(
+        ["cosign/chutes.pub", "cosign/dockerhub.pub", "helm-pubkey.gpg"]
+    )
+
+    @cached_property
+    def signing_keys_bundle(self) -> Optional[dict]:
+        """Load and validate the signing keys bundle from the configured path.
+
+        Loaded once and cached for the lifetime of the process. Returns None if the
+        file does not exist (pods without the ConfigMap mounted will return 503).
+
+        Raises ValueError if the file exists but fails validation.
+        """
+        if not self.signing_keys_bundle_path.exists():
+            logger.warning(
+                f"Signing keys bundle not found at {self.signing_keys_bundle_path}; "
+                "/servers/signing-keys will return 503"
+            )
+            return None
+
+        with open(self.signing_keys_bundle_path) as fh:
+            bundle = json.loads(fh.read())
+
+        if not isinstance(bundle.get("version"), int):
+            raise ValueError("signing_keys_bundle: 'version' must be an integer")
+        for field in ("keys", "signatures"):
+            if not isinstance(bundle.get(field), dict):
+                raise ValueError(f"signing_keys_bundle: '{field}' must be an object")
+        missing = self._REQUIRED_SIGNING_KEY_NAMES - bundle["keys"].keys()
+        if missing:
+            raise ValueError(f"signing_keys_bundle: missing required keys: {missing}")
+        missing_sigs = self._REQUIRED_SIGNING_KEY_NAMES - bundle["signatures"].keys()
+        if missing_sigs:
+            raise ValueError(f"signing_keys_bundle: missing required signatures: {missing_sigs}")
+        # Validate keys and signatures separately: they share the same names, so
+        # merging them into one dict would let a valid signature mask an empty key.
+        for section in ("keys", "signatures"):
+            for name, value in bundle[section].items():
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(
+                        f"signing_keys_bundle: value for '{section}/{name}' must be a non-empty string"
+                    )
+
+        logger.info(
+            f"Signing keys bundle loaded from {self.signing_keys_bundle_path} "
+            f"(version={bundle['version']}, keys={list(bundle['keys'].keys())})"
+        )
+        return bundle
+
+    # Attestation-proxy provenance secrets. Two proxies front the attestation endpoints during
+    # the 1.3.x -> 1.4.0 migration; the API tells them apart by which secret matched
+    # (see require_attestation_proxy). Every other proxy (esp. api.chutes.ai) must strip both.
+    #   attestation_proxy_secret: injected by the attestation proxy (tdx-attestation.chutes.ai) as
+    #     X-Attestation-Proxy-Auth; used by legacy 1.3.x VMs (throwaway-cert mTLS).
+    #   cvm_proxy_secret: injected by the cvm proxy (cvm.chutes.ai) as X-Cvm-Proxy-Auth; used by
+    #     1.4.0+ VMs (registered-CA mTLS). A match marks the request mTLS-verified and is
+    #     required by the 1.4.0-only endpoints (provision, provision/confirm).
+    attestation_proxy_secret: Optional[str] = os.getenv("ATTESTATION_PROXY_SECRET")
+    cvm_proxy_secret: Optional[str] = os.getenv("CVM_PROXY_SECRET")
+
+    # Chute log shipper (see api/chute_logs): the in-guest agent streams pre-registration chute pod
+    # logs to POST /instances/launch_config/{config_id}/logs; the validator pushes them to a
+    # dedicated in-namespace Loki (NOT the ops monitoring cluster) for a bounded window, read back
+    # by owners / the miner CLI and surfaced to support via the ops Grafana. When loki_url is unset
+    # the ingest endpoint accepts + drops (still returning the cutoff signal) so the guest is a no-op
+    # until Loki is provisioned.
+    loki_url: Optional[str] = os.getenv("LOKI_URL")
+    loki_tenant_id: Optional[str] = os.getenv("LOKI_TENANT_ID")
+    loki_timeout_seconds: float = float(os.getenv("LOKI_TIMEOUT_SECONDS", "10.0"))
+    # Bounds on a single shipment so a misbehaving/hostile guest cannot flood the store.
+    chute_logs_max_lines_per_shipment: int = int(
+        os.getenv("CHUTE_LOGS_MAX_LINES_PER_SHIPMENT", "5000")
+    )
+    chute_logs_max_line_bytes: int = int(os.getenv("CHUTE_LOGS_MAX_LINE_BYTES", "32768"))
+    # Logs stream in as batches, often several back-to-back per poll. Cache the (expensive) mTLS
+    # authentication per (config_id, cert) so we verify the leaf + do the lookups once, not per batch.
+    # The auth result is immutable for the life of a boot, so the TTL is generous.
+    # TTL for the Redis-shared auth cache (config+cert → resolved identity). The identity is stable
+    # for the config's lifetime, so this only bounds staleness on CA/ownership changes.
+    chute_logs_auth_cache_seconds: int = int(os.getenv("CHUTE_LOGS_AUTH_CACHE_SECONDS", "300"))
+
+    # Shared secret injected by the registry.chutes.ai nginx frontend as
+    # X-Registry-Proxy-Auth.  When set, the /registry/auth handler refuses
+    # requests that do not carry this header, preventing X-Client-Cert spoofing
+    # from clients that bypass the registry nginx proxy.
+    registry_proxy_secret: Optional[str] = os.getenv("REGISTRY_PROXY_SECRET")
+
+    # Registry auth path selector (see api/registry/router.py): a VM whose attested
+    # measurement version is >= this must authenticate to the registry via mTLS;
+    # older VMs use legacy Bittensor hotkey/signature/nonce auth.  Defaults to the
+    # 1.4.0 SEK8S release that ships mTLS registry support.  Set to "0.0.0" to force
+    # every attested VM onto mTLS — the kill switch that retires legacy auth.
+    registry_mtls_min_version: str = os.getenv("REGISTRY_MTLS_MIN_VERSION", "1.4.0")
+
+    # Attestation mTLS gate (see gate_legacy_attestation): a VM whose attested measurement
+    # version is >= this must reach the transitional attestation endpoints (nonce, luks/confirm)
+    # via the cvm proxy rather than the legacy api.chutes.ai path. Older/unknown VMs still use
+    # the legacy path. Set to "0.0.0" to force every attested VM onto the cvm proxy -- the kill
+    # switch that closes the legacy attestation path once the fleet is migrated.
+    tee_mtls_min_version: str = os.getenv("TEE_MTLS_MIN_VERSION", "1.4.0")
+
+    luks_passphrase: Optional[str] = os.getenv("LUKS_PASSPHRASE")
+    passphrase_encryption_key: Optional[str] = os.getenv("PASSPHRASE_ENCRYPTION_KEY")
 
     @cached_property
     def luks_passphrases(self) -> Dict[str, str]:

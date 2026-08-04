@@ -1,6 +1,41 @@
 teeMinimumBootVersion: ""
 
+# Signing keys bundle served at GET /servers/signing-keys (rendered to JSON by
+# templates/signing-keys-cm.yaml). These are PUBLIC keys + their detached PGP signatures, so they
+# live in values (not a Secret) -- but the REAL base64 values belong in the env overlay, not here.
+# Placeholders keep the chart renderable; the API validates every entry is a non-empty string, and
+# a booting VM verifies each key against its signature, so real signatures are required too.
+# version MUST stay an int (unquoted). See templates/signing-keys-cm.yaml for how to produce each.
+signingKeysBundle:
+  version: 1
+  keys:
+    cosign/chutes.pub: "PLACEHOLDER_BASE64_COSIGN_CHUTES_PUB"
+    cosign/dockerhub.pub: "PLACEHOLDER_BASE64_COSIGN_DOCKERHUB_PUB"
+    helm-pubkey.gpg: "PLACEHOLDER_BASE64_HELM_PUBKEY_GPG"
+  signatures:
+    cosign/chutes.pub: "PLACEHOLDER_BASE64_COSIGN_CHUTES_PUB_SIG"
+    cosign/dockerhub.pub: "PLACEHOLDER_BASE64_COSIGN_DOCKERHUB_PUB_SIG"
+    helm-pubkey.gpg: "PLACEHOLDER_BASE64_HELM_PUBKEY_GPG_SIG"
+
+# Registry auth path selector (see api/registry/router.py): VMs attested at >= this
+# version must use mTLS to pull; older VMs use legacy hotkey auth.  Set to "0.0.0" to
+# force every attested VM onto mTLS — the kill switch that retires legacy auth once
+# the fleet is fully migrated (coordinated with removing the guest nginx DaemonSet).
+registryMtlsMinVersion: "1.4.0"
+
+# Attestation mTLS gate (TEE_MTLS_MIN_VERSION): VMs attested at >= this must reach the
+# transitional attestation endpoints (nonce, luks/confirm) via the cvm proxy, not the legacy
+# api.chutes.ai path (see gate_legacy_attestation). "0.0.0" forces every attested VM onto cvm.
+teeMtlsMinVersion: "1.4.0"
+
 squad_enabled: false
+
+account_settings:
+  first_payment_bonus:
+    threshold: 100.00
+    bonus: 25.00
+  all_accounts_free: false
+  developer_deposit: 5000.00
 
 chutes_version: "0.6.9"
 
@@ -560,6 +595,8 @@ auditExporter:
   imagePullPolicy: Always
   schedule: "1 * * * *"
   suspend: false
+  # Keep audit Jobs/pods longer than the global default for after-the-fact inspection.
+  ttlSecondsAfterFinished: 21600
   subtensor: "wss://entrypoint-finney.opentensor.ai"
   resources:
     requests:
@@ -715,6 +752,45 @@ quotaRedis:
   config:
     customArgs: []
 
+# Dedicated single-instance Loki for the chute log shipper (pre-registration pod logs). This is
+# NOT the ops monitoring cluster: it is platform-owned, in-namespace, bounded to 24h retention, and
+# read by the API (owner/miner CLI) + the ops Grafana (as a datasource, over the internal network).
+# The API pushes lines directly to it (never via stdout). Not client-reachable (NetworkPolicy).
+loki:
+  enabled: true
+  image: grafana/loki:3.7.4
+  imagePullPolicy: IfNotPresent
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
+  resources:
+    requests:
+      cpu: 1
+      memory: 2Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+  service:
+    type: ClusterIP
+    port: 3100
+  # Bounded local storage; 24h retention keeps the footprint small.
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClassName: ""
+  retentionHours: 24
+  # NetworkPolicy: Loki is default-deny and is NOT client-reachable. In-namespace clients (the API)
+  # opt in via the `loki-access: "true"` pod label — that stays locked to the workloads this chart
+  # deploys. Any OTHER peer that may reach Loki (e.g. the ops Grafana namespace) is cluster-specific
+  # policy: set it here as a list of raw NetworkPolicy ingress `from` peers. The chart names no
+  # external infra and defaults to none; the ops repo, which manages these values and has the
+  # cluster-wide context, sets who/what may read Loki. Example (in the ops repo overlay):
+  #   extraIngressFrom:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: monitoring
+  extraIngressFrom: []
+
 registry:
   enabled: true
   image: registry:3.0.0-rc.3
@@ -742,7 +818,20 @@ registryProxy:
   image: nginx:1.31
   imagePullPolicy: IfNotPresent
   busyboxImage: busybox:1.36
-  tlsSecretName: "registry-proxy-tls"
+  # Public *.chutes.ai cert (GoDaddy). When registry.chutes.ai points straight at this
+  # Service's L4 LB, nginx faces the client directly, so the cert must be publicly trusted and
+  # cover the host. registry-proxy-tls is a Cloudflare Origin cert (not publicly trusted) and
+  # must NOT be used on the client-facing path.
+  tlsSecretName: "chutes-tls"
+  # Optional shared secret proving a /registry/auth request arrived via this proxy (defense in
+  # depth: without it, anyone able to reach the API's /registry/auth off-proxy could spoof
+  # X-Real-IP to force the legacy branch and bypass mTLS). When name is set, the proxy injects
+  # it as X-Registry-Proxy-Auth and the API enforces it; leave name empty to disable. The
+  # secret is created out of band (like attestation-proxy-auth) and its value must be sed-safe
+  # (hex / base64url -- no '|' or '&').
+  proxyAuthSecret:
+    name: ""
+    key: "secret"
   config:
     workerProcesses: 64
     workerConnections: 4096
@@ -771,6 +860,12 @@ registryProxy:
     type: LoadBalancer
     port: 443
     annotations: {}
+    # Local preserves the real VM source IP on the GCP L4 LB (needed for registry auth's
+    # IP-based VM resolution). Only override to Cluster if IP-based resolution is not used.
+    externalTrafficPolicy: Local
+    # Reserved static IP to pin the LB across reconciles (set in the overlay once the address
+    # is reserved in GCP). Empty = let GKE assign an ephemeral IP.
+    loadBalancerIP: ""
 
 # autostaker runs as a CronJob (one-shot api/autostaker.py per tick), not a long-running
 # worker. validatorSs58 left empty here -> cronjobEnv falls back to the validator-credentials
@@ -781,6 +876,10 @@ autostaker:
   imagePullPolicy: Always
   schedule: "* * * * *"
   suspend: false
+  # Retain more staking Job history than the global default.
+  successfulJobsHistoryLimit: 15
+  failedJobsHistoryLimit: 15
+  ttlSecondsAfterFinished: 21600
   subtensor: "wss://entrypoint-finney.opentensor.ai"
   validatorSs58: ""
   resources:
@@ -799,7 +898,14 @@ attestationProxy:
   replicaCount: 2
   image: nginx:1.31
   imagePullPolicy: IfNotPresent
+  busyboxImage: busybox:1.36
   tlsSecretName: "chutes-tls"
+  # Secret the render init container and the API both read (must be the SAME value, so the
+  # injected X-Attestation-Proxy-Auth matches what the API enforces). Wired optional so the pod
+  # starts if unprovisioned; the API guard then fails closed (503) rather than bypassing.
+  proxyAuthSecret:
+    name: "attestation-proxy-auth"
+    key: "secret"
   serverName: "tdx-attestation.chutes.ai"
   # Placeholder source ranges (RFC5737 docs net). Set the real trusted real-IP sources in the
   # overlay -- these are environment-specific load-balancer/NAT addresses.
@@ -818,7 +924,54 @@ attestationProxy:
       ephemeral-storage: "1Gi"
   service:
     type: LoadBalancer
+    # Reserved static LB IP (empty = GCP auto-assigns). Pin in the overlay so the IP survives a
+    # Service recreate and tdx-attestation.chutes.ai keeps resolving.
+    loadBalancerIP: ""
     port: 8443
+    annotations: {}
+  tolerations: []
+  affinity: {}
+
+# cvm-chutes-proxy: single mTLS front for ALL CVM attestation calls on cvm.chutes.ai. Deployed
+# alongside the attestation-proxy LB; fronts all six /servers attestation endpoints and injects
+# X-Attestation-Proxy-Auth (the API's require_attestation_proxy fails closed without it). Enable in the
+# overlay once cvm.chutes.ai DNS + the LB exist. Assumes PROXY protocol in front (matches
+# attestation-proxy); set realIpFrom to the real trusted sources.
+cvmProxy:
+  enabled: false
+  replicaCount: 2
+  image: nginx:1.31
+  imagePullPolicy: IfNotPresent
+  busyboxImage: busybox:1.36
+  tlsSecretName: "chutes-tls"
+  serverName: "cvm.chutes.ai"
+  # Secret the render init container and the API both read (must be the SAME value, so the
+  # injected X-Cvm-Proxy-Auth matches what the API enforces). Wired optional so the pod starts if
+  # unprovisioned; the API guard then fails closed (503) rather than bypassing.
+  proxyAuthSecret:
+    name: "cvm-proxy-auth"
+    key: "secret"
+  # No realIpFrom: cvm.chutes.ai routes straight to this LB (no PROXY-protocol intermediary),
+  # so the client IP is $remote_addr directly (preserved via the Service's
+  # externalTrafficPolicy: Local). Contrast attestationProxy, which sits behind the VM-side
+  # nginx L4 stream and therefore needs set_real_ip_from + proxy_protocol.
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: 250m
+      memory: 512Mi
+      ephemeral-storage: "1Gi"
+  service:
+    type: LoadBalancer
+    # Reserved static LB IP that cvm.chutes.ai resolves to (empty = GCP auto-assigns). Pin in
+    # the overlay.
+    loadBalancerIP: ""
+    # Public HTTPS on 443 (cvm.chutes.ai connects directly, no :port suffix); LB forwards to
+    # the pod's unprivileged targetPort 8443 (nginx runs non-root).
+    port: 443
     annotations: {}
   tolerations: []
   affinity: {}
@@ -939,5 +1092,4 @@ teeMeasurements:
     #         rtmr0: "PLACEHOLDER_H200_RTMR0_96_HEX_CHARS"
     #         expected_gpus:
     #           - "h200"
-    #         gpu_count: 8
-  measurements: []
+  measurements: []    #         gpu_count: 8

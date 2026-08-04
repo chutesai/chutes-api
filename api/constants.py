@@ -33,6 +33,18 @@ PURPOSE_HEADER = "X-Chutes-Purpose"
 MINER_HEADER = "X-Chutes-Miner"
 VALIDATOR_HEADER = "X-Chutes-Validator"
 ENCRYPTED_HEADER = "X-Chutes-Encrypted"
+ATTESTATION_SIGNATURE_HEADER = "X-Signature"
+# Injected by the attestation nginx proxy (tdx-attestation.chutes.ai), carrying
+# ATTESTATION_PROXY_SECRET; proves an attestation request arrived via that proxy. Used by legacy
+# 1.3.x VMs (see require_attestation_proxy).
+ATTESTATION_PROXY_AUTH_HEADER = "X-Attestation-Proxy-Auth"
+# Injected by the cvm nginx proxy (cvm.chutes.ai), carrying CVM_PROXY_SECRET; proves a request
+# arrived via the full-mTLS CVM proxy used by 1.4.0+ VMs. A match marks the request as
+# mTLS-verified (see require_attestation_proxy).
+CVM_PROXY_AUTH_HEADER = "X-Cvm-Proxy-Auth"
+# Injected by the registry-proxy nginx frontend, carrying REGISTRY_PROXY_SECRET; proves a
+# /registry/auth subrequest arrived via the registry proxy (see require_registry_proxy_secret).
+REGISTRY_PROXY_AUTH_HEADER = "X-Registry-Proxy-Auth"
 
 # LUKS volume names allowed in GET/POST (extendable)
 SUPPORTED_LUKS_VOLUMES = ("storage", "tdx-cache")
@@ -40,6 +52,17 @@ SUPPORTED_LUKS_VOLUMES = ("storage", "tdx-cache")
 # The storage volume's first-boot state determines whether a new k3s encryption
 # key must be generated (luksFormat on a raw device vs. luksOpen on existing LUKS).
 LUKS_STORAGE_VOLUME = "storage"
+
+# Minimum VM image version that supports root volume LUKS passphrase rotation.
+# VMs on versions below this receive root_next=null in boot attestation responses.
+MIN_ROOT_ROTATION_VERSION = "1.4.0"
+
+# Minimum VM image version whose firmware registers the per-VM ephemeral auth key (vm_auth_ss58,
+# returned by boot attestation) as an allowed signer for validator->VM calls. Older firmware
+# (1.3.x) only trusts the validator key, so the validator MUST sign those calls with its own
+# keypair -- signing with the ephemeral key 401s on the VM. Gates both key generation (boot) and
+# key usage (TeeServerClient.create).
+MIN_VM_AUTH_KEY_VERSION = "1.4.0"
 
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
@@ -70,8 +93,8 @@ LLM_PRICE_MULT_PER_MILLION_OUT = 0.05434782
 LLM_MIN_PRICE_IN = 0.01
 LLM_MIN_PRICE_OUT = 0.01
 
-# Default discount for cached prompt tokens (50% off).
-DEFAULT_CACHE_DISCOUNT = 0.5
+# Default discount for cached prompt tokens (90% off).
+DEFAULT_CACHE_DISCOUNT = 0.9
 
 # Likewise, for diffusion models, we allow different node selectors and step
 # counts, so we can't really have a fixed "per image" pricing, just a price

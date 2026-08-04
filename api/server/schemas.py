@@ -3,6 +3,9 @@ ORM definitions for servers and TDX attestations.
 """
 
 from datetime import datetime, timezone
+from cryptography import x509
+from cryptography.hazmat.backends import default_backend
+from cryptography.x509 import Certificate
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
@@ -32,6 +35,7 @@ from api.constants import (
     ATTESTATION_PROXY_HEALTH_PATH,
 )
 from api.node.schemas import NodeArgs
+from api.constants import SUPPORTED_LUKS_VOLUMES
 
 
 class TeeInstanceEvidence(BaseModel):
@@ -48,6 +52,14 @@ class TeeInstanceEvidence(BaseModel):
     certificate: str = Field(
         ..., description="Base64-encoded DER format TLS certificate from the server"
     )
+    signature: Optional[str] = Field(
+        None,
+        description="Base64-encoded RSA-PKCS1v15-SHA256 signature of attested_body, signed with the host TLS private key. Present on attestation proxy >= 0.2.0. Verifying this against the certificate public key proves the responder holds the attested private key.",
+    )
+    attested_body: Optional[str] = Field(
+        None,
+        description="Base64-encoded raw response body from the attestation proxy—the exact bytes covered by signature. Present when signature is present.",
+    )
 
 
 class NonceResponse(BaseModel):
@@ -63,6 +75,10 @@ class BootAttestationArgs(BaseModel):
     quote: str = Field(..., description="Base64 encoded TDX quote")
     miner_hotkey: str = Field(..., description="Miner hotkey that owns this VM")
     vm_name: str = Field(..., description="VM name/identifier")
+    first_boot: bool = Field(
+        False,
+        description="True when the VM detected a fresh (re-downloaded) image via its LUKS2 header token",
+    )
 
 
 class BootAttestationResponse(BaseModel):
@@ -70,6 +86,15 @@ class BootAttestationResponse(BaseModel):
 
     key: str
     luks_quote_nonce: Optional[str] = None
+    root_next: Optional[str] = Field(
+        None,
+        description="New root passphrase the VM should rotate to (None for pre-1.4.0 VMs)",
+    )
+    root_confirm_nonce: Optional[str] = Field(
+        None,
+        description="Single-use nonce for confirming root passphrase rotation via POST /luks/confirm",
+    )
+    vm_auth_ss58: Optional[str] = None
 
 
 class RuntimeAttestationArgs(BaseModel):
@@ -101,8 +126,15 @@ class LuksVolumeRotation:
 
 
 @dataclass
-class LuksAttestResult:
-    """Internal result of process_luks_attest_request (not an API model)."""
+class StorageProvisionResult:
+    """Internal result of storage provisioning (not an API model).
+
+    The secrets a VM receives when it (re)provisions storage on boot: the rotated per-volume
+    LUKS passphrases, the k3s encryption key (base64), and the single-use nonce it uses to
+    confirm the rotation succeeded. Returned by both POST /provision (process_provision_request)
+    and the legacy POST /luks/attest (process_luks_attest_request), which share the underlying
+    _issue_storage_secrets helper.
+    """
 
     volumes: Dict[str, "LuksVolumeRotation"]
     confirm_nonce: str
@@ -126,8 +158,6 @@ class LuksAttestRequest(BaseModel):
     @field_validator("volumes")
     @classmethod
     def validate_volumes(cls, v: List[str]) -> List[str]:
-        from api.constants import SUPPORTED_LUKS_VOLUMES
-
         if not v:
             raise ValueError("volumes must be non-empty")
         invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
@@ -180,6 +210,45 @@ class LuksConfirmResponse(BaseModel):
 
     status: str
     volumes: Dict[str, Any]
+
+
+class ProvisionRequest(BaseModel):
+    """
+    Request model for POST /servers/{vm_name}/provision.
+
+    The runtime (RTMR3-attested) provisioning entry point for new VMs. The VM presents its
+    root CA as the mTLS client cert; the quote's REPORTDATA binds SHA256(that cert's pubkey),
+    so the CA identity is recorded from this call. Mirrors the luks/attest body today (quote
+    + volumes) and is the extensible home for future provisioning inputs.
+    """
+
+    quote: str = Field(..., description="Base64-encoded TDX quote (runtime type, RTMR3 extended)")
+    volumes: List[str] = Field(..., description="Volume names to rotate passphrases for")
+
+    @field_validator("volumes")
+    @classmethod
+    def validate_volumes(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("volumes must be non-empty")
+        invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
+        if invalid:
+            raise ValueError(
+                f"Invalid volume name(s): {invalid}. Supported: {list(SUPPORTED_LUKS_VOLUMES)}"
+            )
+        return v
+
+
+class ProvisionResponse(BaseModel):
+    """
+    Response model for POST /servers/{vm_name}/provision.
+
+    Carries the storage-provisioning secrets today (rotated volume passphrases, k3s
+    encryption key, confirm nonce); shaped to extend with future provisioning outputs.
+    """
+
+    volumes: Dict[str, LuksVolumeInfo]
+    confirm_nonce: str = Field(..., description="Single-use nonce for POST /provision/confirm")
+    k3s_encryption_key: str = Field(..., description="k3s encryption key (base64)")
 
 
 class GpuAttestationArgs(BaseModel):
@@ -367,9 +436,29 @@ class Server(Base):
     # Current attested measurement version, updated on every successful boot attestation.
     version = Column(Text, nullable=True)
 
+    # Per-VM root CA cert recorded via POST /servers/{vm_name}/provision (from the mTLS
+    # client cert of the RTMR3-attested runtime call). NULL means the VM has not yet
+    # provisioned (pre-migration or old image) -> legacy auth path.
+    vm_root_ca_cert = Column(Text, nullable=True)
+
     # Timestamp of the last successful TEE /status/health probe; stamped by server_health_prober.py.
     # NULL = never seen healthy. health_status below is derived from this, live.
     last_health_at = Column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def vm_root_ca_certificate(self) -> Optional[Certificate]:
+        """
+        Parsed form of vm_root_ca_cert; None when the VM has not provisioned a CA.
+
+        The raw column stays the PEM string (it is written straight from the mTLS client cert
+        and consumed as-is by ssl_context.load_verify_locations(cadata=...)); this property is
+        for the consumers that need an x509.Certificate (leaf verification). vm_root_ca_cert is
+        always written from a valid cert, so a malformed value here is a data-integrity bug and
+        is allowed to raise rather than be masked as an auth failure.
+        """
+        if not self.vm_root_ca_cert:
+            return None
+        return x509.load_pem_x509_certificate(self.vm_root_ca_cert.encode(), default_backend())
 
     @property
     def in_maintenance(self) -> bool:
@@ -482,3 +571,20 @@ class VmCacheConfig(Base):
         Index("idx_vm_cache_miner", "miner_hotkey"),
         Index("idx_vm_cache_last_boot", "last_boot_at"),
     )
+
+
+class VmAuthKey(Base):
+    """Per-VM ephemeral SR25519 auth key, rotated on every successful boot attestation.
+
+    Lifecycle: created/replaced on each boot attestation; independent of VmCacheConfig
+    which persists across reboots. The auth_seed is Fernet-encrypted at rest.
+    """
+
+    __tablename__ = "vm_auth_keys"
+
+    miner_hotkey = Column(String, primary_key=True)
+    vm_name = Column(String, primary_key=True)
+    auth_seed = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (Index("idx_vm_auth_keys_miner", "miner_hotkey"),)

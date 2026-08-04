@@ -1,0 +1,32 @@
+{{- if .Values.cvmProxy.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: cvm-proxy
+  labels:
+    {{- include "cvmProxy.labels" . | nindent 4 }}
+  {{- with .Values.cvmProxy.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.cvmProxy.service.type | default "LoadBalancer" }}
+  {{- with .Values.cvmProxy.service.loadBalancerIP }}
+  # Pin to the reserved static IP that cvm.chutes.ai resolves to. Must already be a reserved
+  # regional static address in GCP before this is applied.
+  loadBalancerIP: {{ . }}
+  {{- end }}
+  sessionAffinity: None
+  internalTrafficPolicy: Cluster
+  # Preserve the real client source IP (cvm.chutes.ai routes straight to this LB with no
+  # PROXY-protocol intermediary, so $remote_addr must be the VM, not a SNATed node IP).
+  externalTrafficPolicy: Local
+  allocateLoadBalancerNodePorts: true
+  ports:
+    - name: https
+      port: {{ .Values.cvmProxy.service.port | default 8443 }}
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    {{- include "cvmProxy.labels" . | nindent 4 }}
+{{- end }}

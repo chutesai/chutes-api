@@ -64,7 +64,7 @@ class TestFernetRoundTrip:
 
 
 class TestFernetKeyMismatch:
-    """Simulates what happens when CACHE_PASSPHRASE_KEY changes between clusters."""
+    """Simulates what happens when PASSPHRASE_ENCRYPTION_KEY changes between clusters."""
 
     def test_decrypt_with_wrong_key_raises(self):
         """Decrypting a ciphertext with a different Fernet key raises InvalidToken."""
@@ -104,7 +104,7 @@ class TestGetFernet:
     @patch("api.server.util.settings")
     def test_missing_key_raises(self, mock_settings):
         mock_settings.fernet_key = None
-        with pytest.raises(InvalidTdxConfiguration, match="CACHE_PASSPHRASE_KEY"):
+        with pytest.raises(InvalidTdxConfiguration, match="PASSPHRASE_ENCRYPTION_KEY"):
             _get_fernet()
 
     @patch("api.server.util.settings")

@@ -8,12 +8,12 @@ spec:
   schedule: {{ .Values.chuteAutoscaler.dryrunSchedule | default "*/2 * * * *" | quote }}
   suspend: {{ .Values.chuteAutoscaler.dryrunSuspend | default false }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 10
-  failedJobsHistoryLimit: 10
+  successfulJobsHistoryLimit: {{ .Values.chuteAutoscaler.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.chuteAutoscaler.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
   jobTemplate:
     spec:
       backoffLimit: 2
-      ttlSecondsAfterFinished: 15000
+      ttlSecondsAfterFinished: {{ .Values.chuteAutoscaler.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
       activeDeadlineSeconds: 300
       template:
         metadata:

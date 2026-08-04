@@ -3,20 +3,32 @@ Core server management and TDX attestation logic.
 """
 
 import asyncio
+from dataclasses import dataclass
 import pybase64 as base64
 from datetime import datetime, timezone, timedelta
 import json
 import secrets
 from typing import Dict, Any, Optional
-from fastapi import HTTPException, Header, Request, status
+from fastapi import Depends, HTTPException, Header, Request, status
 from loguru import logger
 from api.log import server_logger, LifecycleEvent, update_log_context
 from sqlalchemy import delete, or_, select, func
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
+from bittensor_wallet.keypair import Keypair
+from cryptography import x509 as crypto_x509
+from cryptography.hazmat.primitives.serialization import Encoding
 
 from api.config import settings
-from api.constants import NONCE_HEADER, NoncePurpose, HOTKEY_HEADER, LUKS_STORAGE_VOLUME
+from api.database import get_db_session
+from api.constants import (
+    NONCE_HEADER,
+    NoncePurpose,
+    HOTKEY_HEADER,
+    LUKS_STORAGE_VOLUME,
+    MIN_VM_AUTH_KEY_VERSION,
+)
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
 from api.server.client import TeeServerClient
@@ -35,9 +47,11 @@ from api.server.schemas import (
     UpgradeWindowInfo,
     ConfirmMaintenanceResult,
     LuksAttestRequest,
-    LuksAttestResult,
     LuksConfirmRequest,
     LuksConfirmResult,
+    StorageProvisionResult,
+    ProvisionRequest,
+    VmAuthKey,
 )
 from api.server.exceptions import (
     AttestationError,
@@ -58,6 +72,8 @@ from api.server.util import (
     get_nonce_expiry_seconds,
     verify_quote,
     verify_gpu_evidence,
+    extract_client_cert,
+    verify_server_cert,
     rotate_luks_passphrases,
     generate_confirm_nonce,
     generate_luks_quote_nonce,
@@ -66,6 +82,7 @@ from api.server.util import (
     get_public_key_hash,
     cert_to_base64_der,
     validate_user_nonce,
+    get_root_passphrase_for_boot,
 )
 from api.instance.schemas import Instance, instance_nodes
 from api.instance.util import purge_and_notify
@@ -77,13 +94,16 @@ from api.node.schemas import NodeArgs
 from api.util import semcomp
 
 
-async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
+async def create_nonce(
+    server_ip: str, purpose: NoncePurpose, miner_hotkey: str | None = None
+) -> Dict[str, str]:
     """
     Create a new attestation nonce using Redis.
 
     Args:
         server_ip: IP address of the server/instance requesting the nonce
         purpose: Purpose of the nonce (NoncePurpose enum value)
+        miner_hotkey: Optional miner hotkey to bind the nonce to (BOOT purpose only)
 
     Returns:
         Dictionary with nonce and expiry info
@@ -91,10 +111,10 @@ async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
     nonce = generate_nonce()
     expiry_seconds = get_nonce_expiry_seconds()
 
-    # Use Redis to store nonce with TTL
-    # Store as JSON to include both server_ip and purpose
     redis_key = f"nonce:{nonce}"
-    redis_value = json.dumps({"server_ip": server_ip, "purpose": purpose.value})
+    redis_value = json.dumps(
+        {"server_ip": server_ip, "purpose": purpose.value, "miner_hotkey": miner_hotkey}
+    )
 
     await settings.redis_client.setex(redis_key, expiry_seconds, redis_value)
 
@@ -102,14 +122,17 @@ async def create_nonce(server_ip: str, purpose: NoncePurpose) -> Dict[str, str]:
         seconds=expiry_seconds
     )
 
-    logger.info(f"Created nonce: {nonce[:8]}... for server {server_ip} with purpose {purpose}")
+    logger.info(
+        f"Created nonce: {nonce[:8]}... for server {server_ip} with purpose {purpose}"
+        + (f" bound to hotkey {miner_hotkey[:8]}..." if miner_hotkey else "")
+    )
 
     return {"nonce": nonce, "expires_at": expires_at.isoformat()}
 
 
 async def validate_and_consume_nonce(
     nonce_value: str, server_ip: str, purpose: NoncePurpose
-) -> None:
+) -> Optional[str]:
     """
     Validate and consume a nonce using Redis.
 
@@ -117,6 +140,9 @@ async def validate_and_consume_nonce(
         nonce_value: Nonce to validate
         server_ip: Expected server IP address
         purpose: Expected purpose for the nonce (NoncePurpose enum value)
+
+    Returns:
+        The miner_hotkey the nonce was bound to, or None if not bound.
 
     Raises:
         NonceError: If nonce is invalid, expired, already used, or purpose/server mismatch
@@ -136,9 +162,11 @@ async def validate_and_consume_nonce(
         if isinstance(stored_data, str):
             stored_server = stored_data
             stored_purpose = None
+            stored_hotkey = None
         else:
             stored_server = stored_data.get("server_ip")
             stored_purpose = stored_data.get("purpose")
+            stored_hotkey = stored_data.get("miner_hotkey")
     except (ValueError, AttributeError, json.JSONDecodeError):
         raise NonceError("Invalid nonce format")
 
@@ -154,6 +182,7 @@ async def validate_and_consume_nonce(
         )
 
     logger.info(f"Validated and consumed nonce: {nonce_value[:8]}... for purpose {purpose}")
+    return stored_hotkey
 
 
 def validate_request_nonce(purpose: NoncePurpose):
@@ -174,15 +203,60 @@ def validate_request_nonce(purpose: NoncePurpose):
 
         try:
             await validate_and_consume_nonce(nonce, server_ip, purpose)
-
             return nonce
         except NonceError as e:
             logger.error(f"Request nonce validation failed: {e}")
             raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid nonce supplied"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied",
             )
 
     return _validate_request_nonce
+
+
+def validate_boot_nonce():
+    """
+    Dependency for POST /servers/boot/attestation.
+
+    Validates and consumes the BOOT nonce, then enforces miner hotkey binding when present:
+    - If the nonce was issued with a bound miner_hotkey, it must match args.miner_hotkey.
+    - If the nonce is unbound (legacy VM that fetched /nonce without miner_hotkey), the binding
+      check is skipped for backwards compatibility.
+
+    Declaring BootAttestationArgs here is intentional: FastAPI parses the request body
+    once and shares the result between this dependency and the handler.
+    """
+
+    async def _validate_boot_nonce(
+        request: Request,
+        args: BootAttestationArgs,
+        nonce: str | None = Header(None, alias=NONCE_HEADER),
+    ) -> str:
+        server_ip = request.state.client_ip
+
+        try:
+            stored_hotkey = await validate_and_consume_nonce(nonce, server_ip, NoncePurpose.BOOT)
+        except NonceError as e:
+            logger.error(f"Boot nonce validation failed: {e}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid nonce supplied",
+            )
+
+        # TODO: require a bound hotkey once all VMs >= 1.4.0.
+        if stored_hotkey and stored_hotkey != args.miner_hotkey:
+            logger.warning(
+                f"Boot attestation hotkey mismatch: nonce bound to {stored_hotkey[:8]}..., "
+                f"request has {args.miner_hotkey[:8] if args.miner_hotkey else 'None'}..."
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Nonce hotkey mismatch",
+            )
+
+        return nonce
+
+    return _validate_boot_nonce
 
 
 async def require_luks_quote_nonce(
@@ -252,6 +326,34 @@ async def require_confirm_nonce(
         )
 
 
+async def require_server_mtls(
+    vm_name: str,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    client_cert: crypto_x509.Certificate = Depends(extract_client_cert()),
+) -> Server:
+    """
+    FastAPI dependency: authenticate a post-provision VM by its mTLS client certificate.
+
+    Resolves the server by ``(hotkey, vm_name)`` and verifies the presented client leaf cert
+    was signed by the CA the VM recorded via POST /provision. Returns the authenticated
+    ``Server`` so the handler can use it directly.
+
+    Use on any post-boot mTLS endpoint that expects a request from a registered VM identified
+    by hotkey + vm_name; pair it with ``require_attestation_proxy()`` (which proves the request
+    arrived via a trusted mTLS proxy). It applies only AFTER a VM has provisioned its CA -- the
+    ``POST /provision`` call itself records the CA (presenting the CA as the client cert), so
+    it cannot use this dependency.
+
+    Raises ServerNotFoundError (404) if the ``(hotkey, vm_name)`` server is unknown;
+    NoClientCertError (403) if no leaf cert / no registered CA; InvalidClientCertError (403)
+    if the leaf fails to verify.
+    """
+    server = await get_server_by_name(db, hotkey, vm_name)
+    verify_server_cert(client_cert, server)
+    return server
+
+
 def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> None:
     """
     Validate that the provided GPUs match the expected GPUs for this measurement configuration.
@@ -293,27 +395,70 @@ def validate_gpus_for_measurements(quote: TdxQuote, gpus: list[NodeArgs]) -> Non
     )
 
 
+@dataclass
+class BootAttestationResult:
+    """Result of a successful boot attestation."""
+
+    root_key: str
+    luks_quote_nonce: Optional[str] = None
+    root_next: Optional[str] = None
+    root_confirm_nonce: Optional[str] = None
+    vm_auth_ss58: Optional[str] = None
+
+
+async def _generate_and_store_vm_auth_key(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+) -> Keypair:
+    """Generate a fresh SR25519 keypair for this VM, encrypt the seed, and upsert into vm_auth_keys.
+
+    Called on every successful boot attestation so the key rotates each boot.
+    Returns the new Keypair (seed already committed to DB before return).
+    """
+    seed_hex = "0x" + secrets.token_hex(32)
+    keypair = Keypair.create_from_seed(seed_hex)
+    encrypted_seed = encrypt_passphrase(seed_hex)
+
+    stmt = pg_insert(VmAuthKey).values(
+        miner_hotkey=miner_hotkey,
+        vm_name=vm_name,
+        auth_seed=encrypted_seed,
+    )
+    stmt = stmt.on_conflict_do_update(
+        index_elements=["miner_hotkey", "vm_name"],
+        set_={"auth_seed": encrypted_seed, "created_at": func.now()},
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    logger.info(
+        f"Generated ephemeral auth key for VM {vm_name} (miner: {miner_hotkey}): {keypair.ss58_address}"
+    )
+    return keypair
+
+
 async def process_boot_attestation(
     db: AsyncSession,
     server_ip: str,
     args: BootAttestationArgs,
     nonce: str,
     expected_cert_hash: str,
-) -> tuple[Optional[str], str]:
+) -> "BootAttestationResult":
     """
     Process a boot attestation request.
 
     Args:
         db: Database session
         server_ip: Server IP address
-        args: Boot attestation arguments (includes miner_hotkey and vm_name)
+        args: Boot attestation arguments (includes miner_hotkey, vm_name, first_boot)
         nonce: Validated nonce
         expected_cert_hash: Expected certificate hash
 
     Returns:
-        Tuple of (luks_quote_nonce, measurement_version). The luks_quote_nonce is used
-        for the subsequent POST /luks/attest flow. measurement_version is the matched
-        config version, used to select the version-specific root LUKS passphrase.
+        BootAttestationResult with root_key, luks_quote_nonce for the subsequent
+        POST /luks/attest flow, and (for VMs >= 1.4.0) root_next/root_confirm_nonce plus
+        vm_auth_ss58 (the freshly-rotated per-VM signing key). vm_auth_ss58 is None for < 1.4.0.
 
     Raises:
         NonceError: If nonce validation fails
@@ -324,7 +469,8 @@ async def process_boot_attestation(
     # bound by the router dependency) for every log line in this boot flow.
     update_log_context(ip=server_ip, miner_hotkey=args.miner_hotkey, server_name=args.vm_name)
     logger.info(
-        f"Processing boot attestation for VM {args.vm_name} (miner: {args.miner_hotkey}, IP: {server_ip})"
+        f"Processing boot attestation for VM {args.vm_name} (miner: {args.miner_hotkey}, IP: {server_ip}, "
+        f"first_boot={args.first_boot})"
     )
 
     # Parse and verify quote
@@ -366,11 +512,38 @@ async def process_boot_attestation(
             db, args.miner_hotkey, args.vm_name, measurement_config.version
         )
 
+        # Resolve the root passphrase (current key + optional next rotation).
+        # measurement_config.version serves as the image version for default-passphrase lookup.
+        root_key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
+            db,
+            args.miner_hotkey,
+            args.vm_name,
+            args.first_boot,
+            measurement_config.version,
+        )
+
+        # Generate a fresh per-VM ephemeral SR25519 keypair (1.4.0+ firmware only). The SS58 is
+        # returned to the VM so it can trust requests signed with this key; the encrypted seed is
+        # stored in vm_auth_keys for the validator backend to use when calling this VM. 1.3.x
+        # firmware doesn't register this key and only trusts the validator, so we skip generation
+        # for it -- otherwise TeeServerClient would sign with a key the VM rejects (401). Gated to
+        # match TeeServerClient.create's usage gate.
+        vm_auth_ss58 = None
+        if semcomp(measurement_config.version, MIN_VM_AUTH_KEY_VERSION) >= 0:
+            vm_keypair = await _generate_and_store_vm_auth_key(db, args.miner_hotkey, args.vm_name)
+            vm_auth_ss58 = vm_keypair.ss58_address
+
         # All accepted VMs use the POST /luks/attest flow; the tee_minimum_boot_version
         # gate above already rejects any VM older than the current minimum (>= 1.3.1).
         luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
 
-        return luks_quote_nonce, measurement_config.version
+        return BootAttestationResult(
+            root_key=root_key,
+            luks_quote_nonce=luks_quote_nonce,
+            root_next=root_next,
+            root_confirm_nonce=root_confirm_nonce,
+            vm_auth_ss58=vm_auth_ss58,
+        )
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
         # Create failed attestation record; set measurement_version if quote matched a config
@@ -518,7 +691,7 @@ async def verify_server(
     # verify_gpu_evidence logs -- which have no server context of their own -- are correlatable.
     update_log_context(server_id=server.server_id, ip=server.ip, miner_hotkey=miner_hotkey)
     try:
-        client = TeeServerClient(server)
+        client = await TeeServerClient.create(db, server)
 
         nonce = generate_nonce()
         logger.info(f"Verifying server with nonce {nonce}")
@@ -883,25 +1056,20 @@ async def delete_server(db: AsyncSession, server_id: str, miner_hotkey: str) -> 
     return True
 
 
-async def process_luks_attest_request(
+async def _issue_storage_secrets(
     db: AsyncSession,
     hotkey: str,
     vm_name: str,
-    body: LuksAttestRequest,
-    quote_nonce: str,
-    expected_cert_hash: str,
-) -> LuksAttestResult:
+    volumes: list[str],
+) -> StorageProvisionResult:
     """
-    Process POST /luks/attest for new-format VMs (version >= 1.3.0).
+    Rotate LUKS passphrases, manage the k3s encryption key, and issue a confirm nonce -- the
+    storage-provisioning secrets a VM receives on (re)boot, as a StorageProvisionResult.
 
-    The quote nonce has already been validated and consumed by require_luks_quote_nonce.
-    Verifies the TDX quote (signature + all RTMR measurements including RTMR3), rotates
-    passphrases, manages the k3s encryption key, and issues a confirm nonce.
+    Shared by the runtime provisioning entry points: the new POST /provision
+    (process_provision_request) and the legacy POST /luks/attest (process_luks_attest_request).
     """
-    quote = RuntimeTdxQuote.from_base64(body.quote)
-    await verify_quote(quote, quote_nonce, expected_cert_hash)
-
-    volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, body.volumes)
+    volumes_data, vm_config = await rotate_luks_passphrases(db, hotkey, vm_name, volumes)
 
     # Derive k3s key lifecycle from DB state: if storage had no current passphrase
     # (first boot) or no k3s key is stored yet, generate a new one.
@@ -916,13 +1084,84 @@ async def process_luks_attest_request(
     else:
         k3s_b64 = decrypt_passphrase(vm_config.k3s_encryption_key)
 
-    confirm_nonce = await generate_confirm_nonce(hotkey, vm_name)
-
-    return LuksAttestResult(
+    return StorageProvisionResult(
         volumes=volumes_data,
-        confirm_nonce=confirm_nonce,
+        confirm_nonce=await generate_confirm_nonce(hotkey, vm_name),
         k3s_encryption_key=k3s_b64,
     )
+
+
+async def record_vm_ca_identity(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    client_cert: crypto_x509.Certificate,
+) -> None:
+    """
+    Record the VM's root CA identity from the mTLS client cert of an RTMR3-attested
+    /provision call (idempotent upsert on every boot).
+
+    The VM presents its per-boot root CA as the mTLS client cert; completing the handshake
+    proves possession of the CA private key, and the caller (process_provision_request) has
+    already verified the runtime quote binds SHA256(client_cert pubkey). So the presented
+    cert IS the CA to record. Recorded only from the runtime /provision call (RTMR3-attested),
+    never boot attestation.
+    """
+    server = await get_server_by_name(db, hotkey, vm_name)
+    update_log_context(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
+    server.vm_root_ca_cert = client_cert.public_bytes(Encoding.PEM).decode()
+    await db.commit()
+
+
+async def process_provision_request(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    body: ProvisionRequest,
+    quote_nonce: str,
+    client_cert: crypto_x509.Certificate,
+) -> StorageProvisionResult:
+    """
+    Process POST /provision for new VMs: verify the RTMR3-attested runtime quote, record the
+    VM root CA identity, and issue storage-provisioning secrets.
+
+    The quote nonce has already been validated and consumed by require_luks_quote_nonce. The
+    quote's REPORTDATA binds SHA256(client_cert pubkey) -- the same cert_hash mechanism as
+    /luks/attest, so no bespoke quote logic is needed; the presented client cert IS the VM's
+    root CA. On success server.vm_root_ca_cert is recorded (idempotent) and passphrase
+    rotation proceeds exactly as the legacy luks/attest flow.
+    """
+    quote = RuntimeTdxQuote.from_base64(body.quote)
+    await verify_quote(quote, quote_nonce, get_public_key_hash(client_cert))
+
+    await record_vm_ca_identity(db, hotkey, vm_name, client_cert)
+
+    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
+
+
+async def process_luks_attest_request(
+    db: AsyncSession,
+    hotkey: str,
+    vm_name: str,
+    body: LuksAttestRequest,
+    quote_nonce: str,
+    expected_cert_hash: str,
+) -> StorageProvisionResult:
+    """
+    Process POST /luks/attest for legacy in-field VMs (version >= 1.3.0).
+
+    DEPRECATED: superseded by process_provision_request (POST /provision), which additionally
+    records the VM root CA identity. Retained unchanged for VMs already in the field; retire
+    once the fleet upgrades. Legacy VMs have no root CA, so this path records none.
+
+    The quote nonce has already been validated and consumed by require_luks_quote_nonce.
+    Verifies the TDX quote (signature + all RTMR measurements including RTMR3), rotates
+    passphrases, manages the k3s encryption key, and issues a confirm nonce.
+    """
+    quote = RuntimeTdxQuote.from_base64(body.quote)
+    await verify_quote(quote, quote_nonce, expected_cert_hash)
+
+    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
 
 
 async def process_luks_confirm(
@@ -994,7 +1233,10 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     query = (
         select(Instance)
         .where(Instance.instance_id == instance_id)
-        .options(joinedload(Instance.chute), joinedload(Instance.nodes).joinedload(Node.server))
+        .options(
+            joinedload(Instance.chute),
+            joinedload(Instance.nodes).joinedload(Node.server),
+        )
     )
     result = await db.execute(query)
     instance = result.unique().scalar_one_or_none()
@@ -1011,25 +1253,6 @@ async def get_instance_server(db: AsyncSession, instance_id: str) -> tuple[Serve
     server = node.server
 
     return (server, instance)
-
-
-async def _get_instance_evidence(
-    server: Server, deployment_id: str, nonce: str
-) -> TeeInstanceEvidence:
-    """
-    Get TEE instance evidence via the chute's evidence endpoint (third-party flow).
-    Caller supplies nonce; we call chute-service-{deployment_id}/evidence?nonce=...
-    Verification flow (no caller nonce) uses get_chute_evidence(deployment_id) → verify endpoint.
-    """
-    client = TeeServerClient(server)
-    quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id, nonce=nonce)
-
-    quote_base64 = base64.b64encode(quote.raw_bytes).decode("utf-8")
-    cert_base64 = cert_to_base64_der(cert)
-
-    return TeeInstanceEvidence(
-        quote=quote_base64, gpu_evidence=gpu_evidence, certificate=cert_base64
-    )
 
 
 async def get_instance_evidence(
@@ -1052,20 +1275,35 @@ async def get_instance_evidence(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Instance has no deployment_id; evidence is only available after TEE verification",
         )
-    return await _get_instance_evidence(server, instance.deployment_id, nonce)
+    client = await TeeServerClient.create(db, server)
+    evidence = await client.get_chute_evidence(instance.deployment_id, nonce=nonce)
+    quote_base64 = base64.b64encode(evidence.quote.raw_bytes).decode("utf-8")
+    cert_base64 = cert_to_base64_der(evidence.cert)
+    return TeeInstanceEvidence(
+        quote=quote_base64,
+        gpu_evidence=evidence.gpu_evidence,
+        certificate=cert_base64,
+        signature=evidence.signature,
+        attested_body=evidence.attested_body,
+    )
 
 
-async def _fetch_instance_evidence(instance: Instance, nonce: str) -> TeeInstanceEvidence | None:
-    """Fetch evidence for a single instance, returning None on failure."""
+async def _fetch_instance_evidence(
+    db: AsyncSession, instance: Instance, nonce: str
+) -> TeeInstanceEvidence | None:
+    """Fetch evidence for a single instance, returning None on failure (used by bulk gather)."""
     try:
         node = instance.nodes[0]
         server = node.server
-        evidence = await _get_instance_evidence(server, instance.deployment_id, nonce)
+        client = await TeeServerClient.create(db, server)
+        evidence = await client.get_chute_evidence(instance.deployment_id, nonce=nonce)
         return TeeInstanceEvidence(
-            quote=evidence.quote,
+            quote=base64.b64encode(evidence.quote.raw_bytes).decode("utf-8"),
             gpu_evidence=evidence.gpu_evidence,
+            certificate=cert_to_base64_der(evidence.cert),
+            signature=evidence.signature,
+            attested_body=evidence.attested_body,
             instance_id=instance.instance_id,
-            certificate=evidence.certificate,
         )
     except GetEvidenceError as e:
         logger.error(f"Failed to get evidence for instance {instance.instance_id}: {str(e)}")
@@ -1114,7 +1352,9 @@ async def get_chute_instances_evidence(
     instances_result = await db.execute(instances_query)
     instances = instances_result.unique().scalars().all()
 
-    results = await asyncio.gather(*[_fetch_instance_evidence(inst, nonce) for inst in instances])
+    results = await asyncio.gather(
+        *[_fetch_instance_evidence(db, inst, nonce) for inst in instances]
+    )
     evidence_list: list[TeeInstanceEvidence] = []
     failed_instance_ids: list[str] = []
     for instance, result in zip(instances, results):
@@ -1348,7 +1588,8 @@ async def confirm_maintenance(
             purged_ids.append(inst.instance_id)
         except Exception:
             logger.error(
-                f"Failed to purge instance {inst.instance_id} during maintenance", exc_info=True
+                f"Failed to purge instance {inst.instance_id} during maintenance",
+                exc_info=True,
             )
 
     return ConfirmMaintenanceResult(
@@ -1362,3 +1603,9 @@ async def confirm_maintenance(
             max_concurrent_per_miner=active_window.max_concurrent_per_miner,
         ),
     )
+
+
+async def lookup_server_by_ip(db: AsyncSession, ip: str) -> Server | None:
+    """Return the Server row whose ip matches, or None if not found."""
+    result = await db.execute(select(Server).where(Server.ip == ip))
+    return result.scalar_one_or_none()

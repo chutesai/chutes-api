@@ -28,6 +28,9 @@ spec:
         {{- include "api.labels" . | nindent 8 }}
         {{- include "chutes.dbAccess" . | nindent 8 }}
         {{- include "chutes.redisAccess" . | nindent 8 }}
+        {{- if .Values.loki.enabled }}
+        loki-access: "true"
+        {{- end }}
       {{- if not .Values.gmp.enabled }}
       annotations:
         prometheus.io/scrape: "true"
@@ -63,6 +66,9 @@ spec:
         - name: tee-measurements
           configMap:
             name: tee-measurements
+        - name: signing-keys-bundle
+          configMap:
+            name: signing-keys-bundle
         {{- include "chutes.redisCacertVolume" . | nindent 8 }}
         - name: lc-certs
           secret:
@@ -99,6 +105,11 @@ spec:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
             {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: PASSPHRASE_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: passphrase-encryption-key
+                  key: key
             - name: CHUTES_VERSION
               value: {{ .Values.api.chutesVersion | default .Values.chutes_version | quote }}
             - name: VALIDATOR_SS58
@@ -109,6 +120,10 @@ spec:
                 secretKeyRef:
                   name: validator-credentials
                   key: ss58
+            {{- end }}
+            {{- if .Values.datadog_enabled }}
+            - name: DD_LOGS_INJECTION
+              value: "true"
             {{- end }}
             - name: LAUNCH_CONFIG_PRIVATE_KEY_PATH
               value: /etc/lc-certs/lc_jwt_private.pem
@@ -128,13 +143,48 @@ spec:
             - name: TEE_MINIMUM_BOOT_VERSION
               value: "{{ .Values.teeMinimumBootVersion }}"
             {{- end }}
-            - name: SQUAD_CERT_PATH
-              value: /etc/squad/squad_pub.pem
-            - name: CACHE_PASSPHRASE_KEY
+            # Provenance secrets are optional at the ENV level (optional: true) so the shared
+            # validator image still starts where they aren't provisioned. Enforcement lives in the
+            # per-request guards (require_attestation_proxy / require_cvm_proxy), which FAIL CLOSED
+            # (503) when the secret is unset -- so a missing secret rejects attestation rather than
+            # silently bypassing the check, without taking the whole API (or sibling apps) down.
+            - name: ATTESTATION_PROXY_SECRET
               valueFrom:
                 secretKeyRef:
-                  key: key
-                  name: cache-passphrase-key
+                  name: {{ .Values.attestationProxy.proxyAuthSecret.name | default "attestation-proxy-auth" }}
+                  key: {{ .Values.attestationProxy.proxyAuthSecret.key | default "secret" }}
+                  optional: true
+            - name: CVM_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cvmProxy.proxyAuthSecret.name | default "cvm-proxy-auth" }}
+                  key: {{ .Values.cvmProxy.proxyAuthSecret.key | default "secret" }}
+                  optional: true
+            {{- if .Values.loki.enabled }}
+            # Dedicated chute-log-shipper Loki (in-namespace, not the ops cluster). When unset the
+            # ingest endpoint accepts + drops shipments, so the feature is a safe no-op.
+            - name: LOKI_URL
+              value: "http://loki.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.loki.service.port }}"
+            {{- end }}
+            - name: REGISTRY_MTLS_MIN_VERSION
+              value: "{{ .Values.registryMtlsMinVersion }}"
+            - name: TEE_MTLS_MIN_VERSION
+              value: "{{ .Values.teeMtlsMinVersion }}"
+            {{- if .Values.registryProxy.proxyAuthSecret.name }}
+            - name: REGISTRY_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.registryProxy.proxyAuthSecret.name }}
+                  key: {{ .Values.registryProxy.proxyAuthSecret.key | default "secret" }}
+            {{- end }}
+            - name: CM_REDIS_SHARD_COUNT
+              value: "{{ .Values.cmRedis.shard_count }}"
+            - name: SQUAD_CERT_PATH
+              value: /etc/squad/squad_pub.pem
+            # Mounted at its own dir (NOT under /etc/config, which the tee-measurements ConfigMap
+            # already mounts -- a file subPath into another CM volume fails "not a directory").
+            - name: SIGNING_KEYS_BUNDLE_PATH
+              value: /etc/signing-keys/signing_keys_bundle.json
           volumeMounts:
             {{- if .Values.squad_enabled }}
             - name: squad-certs
@@ -143,6 +193,9 @@ spec:
             {{- end }}
             - name: tee-measurements
               mountPath: "/etc/config"
+              readOnly: true
+            - name: signing-keys-bundle
+              mountPath: "/etc/signing-keys"
               readOnly: true
             {{- include "chutes.redisCacertMount" . | nindent 12 }}
             - name: lc-certs

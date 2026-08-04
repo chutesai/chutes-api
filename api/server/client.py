@@ -1,4 +1,6 @@
 from contextlib import asynccontextmanager
+import base64
+from dataclasses import dataclass
 import hashlib
 import json
 import ssl
@@ -7,30 +9,108 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin
 
 import aiohttp
+from bittensor_wallet.keypair import Keypair
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from cryptography.x509 import Certificate
-from api.constants import HOTKEY_HEADER, NONCE_HEADER, SIGNATURE_HEADER
+from api.constants import (
+    ATTESTATION_SIGNATURE_HEADER,
+    HOTKEY_HEADER,
+    NONCE_HEADER,
+    SIGNATURE_HEADER,
+    MIN_VM_AUTH_KEY_VERSION,
+)
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
-from api.server.schemas import Server
-from api.server.util import _get_server_certificate
+from api.server.schemas import Server, VmAuthKey
+from api.server.util import _get_server_certificate, decrypt_passphrase
 from api.config import settings
+from api.util import semcomp
+
+
+@dataclass
+class ChuteEvidenceResponse:
+    """Structured response from TeeServerClient.get_chute_evidence().
+
+    quote, gpu_evidence, and cert are always present.
+    signature and attested_body are set only when the attestation proxy returns
+    an X-Signature header (proxy >= 0.2.0); both are None on older proxies.
+    """
+
+    quote: TdxQuote
+    gpu_evidence: Dict[str, Any]
+    cert: Certificate
+    signature: Optional[str] = None
+    attested_body: Optional[str] = None
 
 
 class TeeServerClient:
-    def __init__(self, server: Server):
+    def __init__(self, server: Server, keypair: Keypair):
         self.server = server
         self._url = f"https://{server.ip}:30443"
+        self._keypair = keypair
+
+    @classmethod
+    async def create(cls, db: AsyncSession, server: Server) -> "TeeServerClient":
+        """Async factory that resolves the signing keypair for validator->VM calls.
+
+        Hard version gate: VMs attested at >= MIN_VM_AUTH_KEY_VERSION sign with their per-VM
+        ephemeral keypair (from vm_auth_keys) -- the firmware line that registers that ephemeral
+        SS58 as an allowed signer. Older VMs (1.3.x) only trust the validator key, so they sign
+        with the validator's global keypair; signing a 1.3.x call with the ephemeral key would 401.
+        Boot attestation only generates the ephemeral key for >= 1.4.0 VMs, so such a server should
+        always have a row -- a missing one is an error (raised below) rather than a silent fallback.
+
+        A DB read + keypair reconstruction costs ~1-5ms total, which is negligible
+        compared to the TDX quote verification and GPU evidence checks that always
+        surround these calls. Caching is deliberately omitted: these calls are
+        infrequent (boot/registration-time only) and multi-pod deployments make
+        an in-process cache ineffective anyway.
+        """
+        result = await db.execute(
+            select(VmAuthKey).where(
+                VmAuthKey.miner_hotkey == server.miner_hotkey,
+                VmAuthKey.vm_name == server.name,
+            )
+        )
+        vm_auth_key = result.scalar_one_or_none()
+
+        use_ephemeral = server.version and semcomp(server.version, MIN_VM_AUTH_KEY_VERSION) >= 0
+        if use_ephemeral:
+            if vm_auth_key is None:
+                raise GetEvidenceError(
+                    f"No vm_auth_key row for {server.name} (miner: {server.miner_hotkey}) at "
+                    f"version {server.version} (>= {MIN_VM_AUTH_KEY_VERSION}); cannot sign VM calls"
+                )
+            seed_hex = decrypt_passphrase(vm_auth_key.auth_seed)
+            keypair = Keypair.create_from_seed(seed_hex)
+            logger.debug(
+                f"Loaded per-VM auth keypair for {server.name} "
+                f"(miner: {server.miner_hotkey}): {keypair.ss58_address}"
+            )
+        else:
+            keypair = settings.validator_keypair
+            logger.debug(
+                f"Using validator keypair for {server.name} (miner: {server.miner_hotkey}); "
+                f"version={server.version!r} < {MIN_VM_AUTH_KEY_VERSION} (legacy signer path)"
+            )
+
+        return cls(server=server, keypair=keypair)
 
     def _sign_request(
         self, payload: Dict[str, Any] | str | None = None, purpose: str | None = None
     ):
+        """Generate a signed request from validator to attestation proxy.
+
+        Uses the per-VM ephemeral keypair if available, otherwise the validator's
+        global keypair (legacy VMs). The signing protocol is unchanged; only the
+        key identity differs.
         """
-        Generate a signed request from validator to attestation proxy.
-        """
+        ss58 = self._keypair.ss58_address
         nonce = str(int(time.time()))
         headers = {
-            HOTKEY_HEADER: settings.validator_ss58,
+            HOTKEY_HEADER: ss58,
             NONCE_HEADER: nonce,
         }
 
@@ -45,29 +125,34 @@ class TeeServerClient:
         else:
             payload_hash = purpose or ""
 
-        # Sign: validator:nonce:payload_hash
-        signature_string = f"{settings.validator_ss58}:{nonce}:{payload_hash}"
+        # Sign: ss58:nonce:payload_hash
+        signature_string = f"{ss58}:{nonce}:{payload_hash}"
         logger.info(f"Signature string: {signature_string}")
-        signature = settings.validator_keypair.sign(signature_string.encode()).hex()
+        signature = self._keypair.sign(signature_string.encode()).hex()
 
-        logger.info(
-            f"Signing: {settings.validator_ss58=} {nonce=} {payload_hash=} {purpose=} {signature=}"
-        )
+        logger.info(f"Signing: {ss58=} {nonce=} {payload_hash=} {purpose=} {signature=}")
         headers[SIGNATURE_HEADER] = signature
 
         return headers, payload_string
 
     @asynccontextmanager
     async def _attestation_session(self):
-        """
-        Creates an aiohttp session configured for the attestation service.
+        """Creates an aiohttp session configured for the attestation service.
 
-        SSL verification is disabled because certificate authenticity is verified
-        through TDX quotes, which include a hash of the service's public key.
+        For VMs that have registered their attestation CA (vm_root_ca_cert is set),
+        the stored CA cert is used as the trust anchor so the proxy's server cert is
+        verified against it.  For pre-migration VMs (vm_root_ca_cert is None),
+        SSL verification is skipped and certificate authenticity is instead checked
+        out-of-band via the TDX quote's REPORTDATA hash.
         """
         ssl_context = ssl.create_default_context()
         ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
+
+        if self.server.vm_root_ca_cert:
+            ssl_context.verify_mode = ssl.CERT_REQUIRED
+            ssl_context.load_verify_locations(cadata=self.server.vm_root_ca_cert)
+        else:
+            ssl_context.verify_mode = ssl.CERT_NONE
 
         connector = aiohttp.TCPConnector(ssl=ssl_context)
 
@@ -82,15 +167,12 @@ class TeeServerClient:
                 async with session.get(
                     url,
                     headers=headers,
-                    params={
-                        "nonce": nonce,
-                    },
+                    params={"nonce": nonce},
                 ) as resp:
                     cert = _get_server_certificate(resp)
                     data = await resp.json()
                     quote = RuntimeTdxQuote.from_base64(data["tdx_quote"])
                     gpu_evidence = json.loads(data["nvtrust_evidence"])
-
                     return quote, gpu_evidence, cert
         except Exception as exc:
             logger.error(f"Failed to get attestation evidence from {self._url}: {exc}")
@@ -98,7 +180,7 @@ class TeeServerClient:
 
     async def get_chute_evidence(
         self, deployment_id: str, nonce: Optional[str] = None
-    ) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
+    ) -> ChuteEvidenceResponse:
         """Get attestation evidence for a specific chute deployment.
 
         Two flows:
@@ -112,7 +194,9 @@ class TeeServerClient:
             nonce: Optional. If set, request goes to evidence endpoint with this nonce as query param.
 
         Returns:
-            Tuple of (quote, gpu_evidence, cert). Callers can hash cert if needed.
+            ChuteEvidenceResponse with quote, gpu_evidence, cert always populated.
+            signature and attested_body are set when the proxy returns X-Signature (>= 0.2.0),
+            otherwise both are None.
         """
         try:
             target_endpoint = "evidence" if nonce else "verify"
@@ -122,10 +206,21 @@ class TeeServerClient:
             async with self._attestation_session() as session:
                 async with session.get(url, headers=headers, params=params) as resp:
                     cert = _get_server_certificate(resp)
-                    data = await resp.json()
+                    signature = resp.headers.get(ATTESTATION_SIGNATURE_HEADER)
+                    raw_body = await resp.read()
+                    data = json.loads(raw_body)
+                    attested_body_b64 = (
+                        base64.b64encode(raw_body).decode("ascii") if signature else None
+                    )
                     quote = RuntimeTdxQuote.from_base64(data["evidence"]["tdx_quote"])
                     gpu_evidence = json.loads(data["evidence"]["nvtrust_evidence"])
-                    return quote, gpu_evidence, cert
+                    return ChuteEvidenceResponse(
+                        quote=quote,
+                        gpu_evidence=gpu_evidence,
+                        cert=cert,
+                        signature=signature,
+                        attested_body=attested_body_b64,
+                    )
         except Exception as exc:
             logger.error(f"Failed to get chute evidence from {self._url}: {exc}")
             raise GetEvidenceError()

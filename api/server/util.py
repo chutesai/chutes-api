@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
-from fastapi import HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
+from api.database import get_db_session
 from loguru import logger
 import time
 from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
@@ -22,7 +23,9 @@ from api.config import settings, TeeMeasurementConfig
 from cryptography import x509
 from cryptography.x509 import Certificate
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import padding, ec
 from cryptography.hazmat.backends import default_backend
+from cryptography.exceptions import InvalidSignature
 from api.server.exceptions import (
     AttestationError,
     GpuEvidenceError,
@@ -40,6 +43,12 @@ from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_st
 import hashlib
 
 from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
+from api.constants import (
+    MIN_ROOT_ROTATION_VERSION,
+    ATTESTATION_PROXY_AUTH_HEADER,
+    CVM_PROXY_AUTH_HEADER,
+    REGISTRY_PROXY_AUTH_HEADER,
+)
 from api.util import semcomp
 
 
@@ -53,23 +62,150 @@ def get_nonce_expiry_seconds(minutes: int = 10) -> int:
     return minutes * 60
 
 
+def _proxy_provenance(request: Request) -> tuple[bool, bool]:
+    """Return ``(via_cvm_proxy, via_attestation_proxy)`` for the request.
+
+    Each flag is a constant-time match of the proxy's injected header against its configured
+    secret; an unset secret never matches. Two proxies front attestation during the 1.3.x ->
+    1.4.0 migration -- the cvm proxy (full-mTLS 1.4.0 VMs) and the attestation proxy (legacy
+    1.3.x VMs) -- and callers key their policy off which one stamped the request.
+    """
+
+    def _matches(secret: Optional[str], header: str) -> bool:
+        if not secret:
+            return False
+        provided = request.headers.get(header, "")
+        return secrets.compare_digest(provided.encode(), secret.encode())
+
+    return (
+        _matches(settings.cvm_proxy_secret, CVM_PROXY_AUTH_HEADER),
+        _matches(settings.attestation_proxy_secret, ATTESTATION_PROXY_AUTH_HEADER),
+    )
+
+
+def require_attestation_proxy():
+    """
+    FastAPI dependency for endpoints BOTH VM generations reach through a proxy
+    (boot/attestation, luks/attest): the legacy 1.3.x attestation proxy or the 1.4.0 cvm proxy.
+
+    Accepts either proxy's secret. Fails closed only when NEITHER is configured (503) -- so a
+    deploy that predates provisioning doesn't 503 the fleet -- and 403s a request carrying no
+    valid secret. The spoofable Host check was dropped: the secrets are the provenance signal,
+    so the proxy DNS names are pure infra config.
+    """
+
+    async def _check(request: Request):
+        via_cvm, via_att = _proxy_provenance(request)
+        if not settings.cvm_proxy_secret and not settings.attestation_proxy_secret:
+            logger.error(
+                "attestation endpoint rejected: no proxy secret is configured; refusing to "
+                f"serve unguarded path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attestation proxy secret is not configured.",
+            )
+        if not (via_cvm or via_att):
+            logger.warning(
+                f"attestation endpoint rejected: proxy secret mismatch path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request did not arrive via a trusted attestation proxy.",
+            )
+
+    return _check
+
+
+def require_cvm_proxy():
+    """
+    FastAPI dependency for full-mTLS 1.4.0 endpoints: the request must arrive via the cvm proxy
+    (cvm.chutes.ai), which injects ``X-Cvm-Proxy-Auth`` = CVM_PROXY_SECRET.
+
+    Used by the 1.4.0-only endpoints (provision, provision/confirm). nonce and luks/confirm use
+    gate_legacy_attestation, which upgrades to this behaviour per-VM via the version gate.
+    Fails closed: 503 if CVM_PROXY_SECRET is unconfigured, 403 if the request is not via the cvm
+    proxy.
+    """
+
+    async def _check(request: Request):
+        via_cvm, _ = _proxy_provenance(request)
+        if not settings.cvm_proxy_secret:
+            logger.error(
+                f"cvm endpoint rejected: CVM_PROXY_SECRET is not configured path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="CVM proxy secret is not configured.",
+            )
+        if not via_cvm:
+            logger.warning(f"cvm endpoint rejected: not via the cvm proxy path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This endpoint is only accessible via the CVM mTLS proxy.",
+            )
+
+    return _check
+
+
+def gate_legacy_attestation():
+    """
+    FastAPI dependency for the transitional attestation endpoints (nonce, luks/confirm) that
+    1.3.x VMs reach on api.chutes.ai (VALIDATOR_BASE_URL), where no proxy can inject a secret.
+
+    Not a blind allow -- it forces already-upgraded VMs onto the cvm proxy so they can't be
+    serviced on the insecure legacy path:
+
+      * request carries the cvm secret (came via the cvm proxy) -> allow (1.4.0, provenance
+        proven); no DB lookup.
+      * else resolve the VM by caller IP: if it is a known server attested at
+        >= ``tee_mtls_min_version``, reject (403) -- a VM this new must use cvm.chutes.ai.
+      * else (older / unknown / first boot) -> allow (legacy 1.3.x path).
+
+    Tightens automatically as the fleet upgrades; setting ``tee_mtls_min_version`` to "0.0.0" is
+    the kill switch that closes the legacy path entirely (mirrors the registry auth gate).
+    """
+
+    async def _check(request: Request, db: AsyncSession = Depends(get_db_session)):
+        via_cvm, _ = _proxy_provenance(request)
+        if via_cvm:
+            return
+        # Always set by the HTTP middleware (X-Resolved-IP or the socket peer); read directly.
+        client_ip = request.state.client_ip
+        result = await db.execute(select(Server).where(Server.ip == client_ip))
+        server = result.scalar_one_or_none()
+        if (
+            server is not None
+            and server.version
+            and semcomp(server.version, settings.tee_mtls_min_version) >= 0
+        ):
+            logger.warning(
+                f"legacy attestation rejected: server {server.name} at {client_ip} is on "
+                f"{server.version} (>= {settings.tee_mtls_min_version}); must use the cvm proxy "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="This VM must use the CVM mTLS proxy (cvm.chutes.ai).",
+            )
+
+    return _check
+
+
 def extract_client_cert_hash():
     async def _extract_request_client_cert(request: Request):
         try:
             cert = _get_client_certificate(request)
-            cert_hash = get_public_key_hash(cert)
-
-            return cert_hash
+            return get_public_key_hash(cert)
+        except NoClientCertError:
+            raise
         except Exception as e:
             # This runs as a FastAPI dependency (before the route body), so a route-level
             # try/except cannot map it -- convert to HTTPException here, at the dependency
             # boundary, exactly like the sibling nonce dependencies. Keep the raw parse
             # error in the log only; return a safe message to the client.
             logger.error(f"Boot attestation failed, no client cert provided:\n{e}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="No client certificate found.",
-            )
+            raise NoClientCertError(detail=str(e))
 
     return _extract_request_client_cert
 
@@ -173,21 +309,113 @@ def cert_to_base64_der(cert: Certificate) -> str:
     return cert_base64
 
 
-def _get_client_certificate(request: Request) -> bytes:
+def require_proxy_secret(expected_secret: Optional[str], header_name: str):
     """
-    Extract client certificate from Uvicorn request.
-    Simplified for FastAPI-to-FastAPI communication.
+    Build a FastAPI dependency asserting a request arrived via the proxy that injects
+    ``header_name`` with ``expected_secret``.
+
+    When ``expected_secret`` is falsy the guard is a no-op (the check is disabled),
+    matching the "optional hardening" rollout posture: the proxy injects an empty header
+    and the API does not enforce it until a secret is provisioned on both sides.
+    """
+
+    async def _dep(request: Request):
+        if not expected_secret:
+            return
+        provided = request.headers.get(header_name, "")
+        if not secrets.compare_digest(provided.encode(), expected_secret.encode()):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Request did not arrive via the expected proxy.",
+            )
+
+    return _dep
+
+
+def require_registry_proxy_secret():
+    """
+    FastAPI dependency guarding /registry/auth: when REGISTRY_PROXY_SECRET is configured,
+    the request must carry the registry proxy's auth header.  Single point that binds the
+    setting to its header — see require_proxy_secret for the no-op-when-unset semantics.
+    """
+    return require_proxy_secret(settings.registry_proxy_secret, REGISTRY_PROXY_AUTH_HEADER)
+
+
+def _parse_client_cert_header(request: Request) -> Optional[Certificate]:
+    """
+    Parse the nginx-injected ``X-Client-Cert`` header into a typed ``Certificate``.
+
+    Pure extraction with no trust logic: returns ``None`` when the header is absent or
+    empty (a legacy client that presented no mTLS cert), and raises ``HTTPException(400)``
+    when a cert is present but cannot be parsed.  Trust that the request actually came
+    through the mTLS proxy is enforced separately (``require_attestation_proxy`` /
+    ``require_proxy_secret``), so this helper never inspects proxy secrets.
     """
     cert_header = request.headers.get("X-Client-Cert")
     if not cert_header:
+        return None
+    try:
+        # nginx URL-escapes the PEM in $ssl_client_escaped_cert.
+        return x509.load_pem_x509_certificate(unquote(cert_header).encode(), default_backend())
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Malformed client certificate.",
+        ) from e
+
+
+def extract_client_cert():
+    """
+    FastAPI dependency returning the mTLS client ``Certificate``, or raising
+    ``NoClientCertError`` when none was presented.  For mTLS-required endpoints.
+    """
+
+    async def _dep(request: Request) -> Certificate:
+        return _get_client_certificate(request)
+
+    return _dep
+
+
+def extract_optional_client_cert():
+    """
+    FastAPI dependency returning the mTLS client ``Certificate`` when one is presented,
+    or ``None`` when it is absent — for dual-auth endpoints (e.g. the registry) that
+    accept either an mTLS cert or a legacy credential.  A present-but-malformed cert
+    still raises ``HTTPException(400)`` via ``_parse_client_cert_header``.
+    """
+
+    async def _dep(request: Request) -> Optional[Certificate]:
+        return _parse_client_cert_header(request)
+
+    return _dep
+
+
+def _get_client_certificate(request: Request) -> Certificate:
+    """
+    Extract the required mTLS client certificate from the nginx-injected X-Client-Cert
+    header, returning a typed ``Certificate`` or raising ``NoClientCertError``.
+
+    When a proxy secret is configured the request must carry a matching proxy header (from
+    either the attestation or the cvm proxy) before we trust anything in ``X-Client-Cert``.
+    This is a second line of defence against header-injection attacks: even if
+    ``require_attestation_proxy`` is somehow absent from a future endpoint the cert header
+    cannot be forged without also knowing a proxy secret.
+    """
+    if settings.attestation_proxy_secret or settings.cvm_proxy_secret:
+        via_cvm, via_att = _proxy_provenance(request)
+        if not (via_cvm or via_att):
+            raise NoClientCertError(
+                detail="X-Client-Cert header rejected: request did not arrive via a trusted mTLS proxy."
+            )
+
+    try:
+        cert = _parse_client_cert_header(request)
+    except HTTPException as e:
+        # Present-but-malformed cert: preserve the "no valid client cert" contract that
+        # callers (and extract_client_cert_hash) already expect from this helper.
+        raise NoClientCertError(detail="No client certificate provided") from e
+    if cert is None:
         raise NoClientCertError(detail="No client certificate provided")
-
-    # Decode the URL-encoded PEM cert from nginx
-    cert_pem = unquote(cert_header).encode()
-
-    # Parse the certificate
-    cert = x509.load_pem_x509_certificate(cert_pem, default_backend())
-
     return cert
 
 
@@ -438,30 +666,6 @@ def _verify_measurements(
         raise AttestationError("Measurement verification failed due to an unexpected error.")
 
 
-def get_luks_passphrase(version: str) -> str:
-    """
-    Get the root-volume LUKS passphrase for the given measurement version.
-
-    Each VM image bakes in a version-specific passphrase, so the passphrase returned by
-    /boot/attestation is keyed by the attested measurement version. There is no fallback.
-
-    Args:
-        version: Attested measurement version (e.g. "1.3.0").
-
-    Returns:
-        LUKS passphrase string for that version.
-
-    Raises:
-        InvalidTdxConfiguration: If no passphrase is configured for the version.
-    """
-    passphrase = settings.luks_passphrases.get(version)
-    if not passphrase:
-        logger.error(f"No LUKS passphrase configured for version {version}")
-        raise InvalidTdxConfiguration(f"No LUKS passphrase configured for version {version}")
-
-    return passphrase
-
-
 def generate_cache_passphrase() -> str:
     """
     Generate a new cryptographically secure passphrase for cache volume encryption.
@@ -483,9 +687,9 @@ def _get_fernet() -> Fernet:
     """
     fernet = settings.fernet_key
     if not fernet:
-        logger.error("No cache passphrase encryption key configured")
+        logger.error("No passphrase encryption key configured")
         raise InvalidTdxConfiguration(
-            "CACHE_PASSPHRASE_KEY environment variable must be set. "
+            "PASSPHRASE_ENCRYPTION_KEY environment variable must be set. "
             "Generate a valid key with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"
         )
     return fernet
@@ -636,6 +840,83 @@ async def rotate_luks_passphrases(
     return result, vm_config
 
 
+def get_default_root_passphrase(image_version: Optional[str]) -> str:
+    """Return the build-time default root LUKS passphrase for the given image version.
+
+    Each VM image bakes in a version-specific root-volume passphrase, so the passphrase
+    returned by /boot/attestation is keyed by the attested measurement version. Sourced from
+    the version-keyed LUKS_PASSPHRASES secret (settings.luks_passphrases), never the database:
+    build-time defaults are identical for every VM on a given image version, so they stay in
+    the mounted secret (blast radius unchanged) and are kept out of the DB. Only per-VM
+    *rotated* passphrases are persisted (encrypted) in vm_cache_configs.volume_passphrases.
+
+    Raises:
+        InvalidTdxConfiguration: If image_version is None or no passphrase is configured for it.
+    """
+    passphrase = settings.luks_passphrases.get(image_version) if image_version else None
+    if not passphrase:
+        logger.error(f"No LUKS passphrase configured for version {image_version}")
+        raise InvalidTdxConfiguration(f"No LUKS passphrase configured for version {image_version}")
+    return passphrase
+
+
+async def get_root_passphrase_for_boot(
+    db: AsyncSession,
+    miner_hotkey: str,
+    vm_name: str,
+    first_boot: bool,
+    measurement_version: str,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Resolve the current root passphrase and optionally stage the next rotation.
+
+    Returns a tuple of (key, root_next, root_confirm_nonce):
+    - key: passphrase the VM should use to unlock the root volume right now.
+    - root_next: new passphrase for the VM to rotate into (None for pre-1.4.0 VMs).
+    - root_confirm_nonce: single-use confirm nonce (None for pre-1.4.0 VMs).
+
+    The measurement_version is used both to gate rotation capability and as the
+    image version key for looking up the build-time default passphrase.
+    """
+    vm_config = await _get_vm_cache_config(db, miner_hotkey, vm_name)
+    if vm_config is None:
+        vm_config = await _create_vm_cache_config(db, miner_hotkey, vm_name)
+
+    stored: Dict[str, str] = dict(vm_config.volume_passphrases or {})
+
+    if first_boot:
+        stored.pop("root", None)
+        stored.pop("pending_root", None)
+        key = get_default_root_passphrase(measurement_version)
+    else:
+        current_enc = stored.get("root")
+        if current_enc:
+            key = decrypt_passphrase(current_enc)
+        else:
+            key = get_default_root_passphrase(measurement_version)
+
+    root_next: Optional[str] = None
+    root_confirm_nonce: Optional[str] = None
+
+    if semcomp(measurement_version, MIN_ROOT_ROTATION_VERSION) >= 0:
+        # Discard any stale pending from a prior unconfirmed rotation.
+        stored.pop("pending_root", None)
+        new_passphrase = generate_cache_passphrase()
+        stored["pending_root"] = encrypt_passphrase(new_passphrase)
+        root_next = new_passphrase
+        root_confirm_nonce = await generate_confirm_nonce(miner_hotkey, vm_name)
+
+    vm_config.volume_passphrases = stored
+    vm_config.last_boot_at = func.now()
+    await db.commit()
+    await db.refresh(vm_config)
+
+    logger.info(
+        f"Root passphrase resolved for VM {vm_name} (miner: {miner_hotkey}, "
+        f"first_boot={first_boot}, rotation={'yes' if root_next else 'no'})"
+    )
+    return key, root_next, root_confirm_nonce
+
+
 async def _track_server(
     db: AsyncSession,
     server_id: str,
@@ -677,6 +958,68 @@ async def verify_quote(
     verify_measurements(quote)
 
     return result
+
+
+def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:
+    """
+    Verify that the ``leaf`` certificate was issued and signed by the ``ca``.
+
+    Both are already-parsed ``Certificate`` objects: ``leaf`` is the mTLS client cert extracted by
+    the ``extract_optional_client_cert`` / ``extract_client_cert`` dependency; ``ca`` is the VM's
+    registered root CA (``server.vm_root_ca_certificate``).
+
+    Raises InvalidClientCertError (403) on any verification failure so callers need not
+    catch specific crypto exceptions.  Self-signed leaf certs (issuer == subject)
+    are rejected even if the signature could technically verify.
+    """
+    # Reject self-signed leaf certs.
+    if leaf.subject == leaf.issuer:
+        raise InvalidClientCertError(detail="Self-signed leaf cert not allowed.")
+
+    # Leaf issuer must match CA subject.
+    if leaf.issuer != ca.subject:
+        raise InvalidClientCertError(detail="Leaf cert issuer does not match CA cert subject.")
+
+    # Verify leaf signature against CA public key.
+    ca_pubkey = ca.public_key()
+    try:
+        if isinstance(ca_pubkey, ec.EllipticCurvePublicKey):
+            ca_pubkey.verify(
+                leaf.signature, leaf.tbs_certificate_bytes, ec.ECDSA(leaf.signature_hash_algorithm)
+            )
+        else:
+            ca_pubkey.verify(
+                leaf.signature,
+                leaf.tbs_certificate_bytes,
+                padding.PKCS1v15(),
+                leaf.signature_hash_algorithm,
+            )
+    except InvalidSignature:
+        raise InvalidClientCertError(detail="Leaf cert signature verification failed.")
+    except Exception as e:
+        logger.warning(f"verify_leaf_cert_signed_by_ca unexpected error: {e}")
+        raise InvalidClientCertError(detail="Leaf cert signature verification failed.")
+
+
+def verify_server_cert(client_cert: Optional[Certificate], server: Server) -> None:
+    """
+    Verify a VM's presented mTLS client cert against the root CA it registered.
+
+    The shared core of "authenticate a post-provision VM by its client cert": a VM records its
+    root CA via POST /provision, then presents a leaf signed by that CA on subsequent mTLS
+    calls. This verifies the leaf against ``server.vm_root_ca_cert``, regardless of how the
+    server was resolved (by source IP for the registry, by ``(hotkey, vm_name)`` for
+    ``require_server_mtls``).
+
+    Raises NoClientCertError (403) if no client cert is presented or the VM has no CA on file;
+    verify_leaf_cert_signed_by_ca raises InvalidClientCertError (403) if the leaf fails to verify.
+    """
+    ca = server.vm_root_ca_certificate
+    if client_cert is None or ca is None:
+        raise NoClientCertError(
+            detail="VM must present an mTLS leaf certificate signed by its registered CA."
+        )
+    verify_leaf_cert_signed_by_ca(client_cert, ca)
 
 
 async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: str) -> None:

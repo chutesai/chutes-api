@@ -46,6 +46,11 @@ class AdminUserRequest(BaseModel):
     logo_id: Optional[str] = None
 
 
+class UserDeletionRequest(BaseModel):
+    # Optional free-text note recorded in the deletion audit log.
+    reason: Optional[str] = None
+
+
 class UserCurrentBalance(Base):
     __tablename__ = "user_current_balance"
     __table_args__ = {"info": {"is_view": True}}

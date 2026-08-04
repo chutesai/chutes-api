@@ -1,0 +1,51 @@
+{{- if .Values.loki.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  labels:
+    {{- include "loki.labels" . | nindent 4 }}
+data:
+  # Single-binary Loki, filesystem storage, single tenant (auth_enabled: false — the API is the
+  # only writer and the ops Grafana the only reader, both gated by the NetworkPolicy). Retention is
+  # enforced by the compactor. High-cardinality identifiers ride in the JSON log line, not labels.
+  config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: {{ .Values.loki.service.port }}
+      grpc_listen_port: 9096
+      log_level: info
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /loki
+      storage:
+        filesystem:
+          chunks_directory: /loki/chunks
+          rules_directory: /loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2020-10-24
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      retention_period: {{ .Values.loki.retentionHours }}h
+      reject_old_samples: false
+      max_query_lookback: {{ .Values.loki.retentionHours }}h
+      allow_structured_metadata: true
+      volume_enabled: true
+    compactor:
+      working_directory: /loki/compactor
+      retention_enabled: true
+      delete_request_store: filesystem
+      compaction_interval: 10m
+    analytics:
+      reporting_enabled: false
+{{- end }}

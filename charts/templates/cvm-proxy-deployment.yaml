@@ -1,0 +1,99 @@
+{{- if .Values.cvmProxy.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cvm-proxy
+  labels:
+    {{- include "cvmProxy.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.cvmProxy.replicaCount | default 2 }}
+  strategy:
+    type: {{ .Values.cvmProxy.strategy | default "RollingUpdate" }}
+    {{- if eq (.Values.cvmProxy.strategy | default "RollingUpdate") "RollingUpdate" }}
+    rollingUpdate:
+      maxSurge: {{ (.Values.cvmProxy.rollingUpdate | default dict).maxSurge | default "25%" }}
+      maxUnavailable: {{ (.Values.cvmProxy.rollingUpdate | default dict).maxUnavailable | default "25%" }}
+    {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cvmProxy.labels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cvmProxy.labels" . | nindent 8 }}
+    spec:
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.cvmProxy.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.cvmProxy.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        - name: cvm-proxy-template
+          configMap:
+            name: cvm-proxy-config
+        - name: cvm-proxy-rendered
+          emptyDir: {}
+        - name: chutes-tls
+          secret:
+            secretName: {{ .Values.cvmProxy.tlsSecretName | default "chutes-tls" }}
+      initContainers:
+        # Renders nginx.conf.template -> nginx.conf, substituting ${CVM_PROXY_SECRET} so the
+        # provenance secret is never stored in the ConfigMap. Mirrors registry-proxy.
+        - name: render-config
+          image: {{ include "chutes.image" (list . (.Values.cvmProxy.busyboxImage | default "busybox:1.36")) | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          resources:
+            limits:
+              ephemeral-storage: 1Gi
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 1Gi
+          command:
+            - sh
+            - -c
+            - |
+              sed -e "s|\${CVM_PROXY_SECRET}|${CVM_PROXY_SECRET}|g" \
+                  /templates/nginx.conf.template > /rendered/nginx.conf
+          env:
+            # Same secret the API reads for CVM_PROXY_SECRET, so injected == expected. Injects
+            # empty (1.4.0 requests then fail the cvm-only guard) unless proxyAuthSecret.name is set.
+            - name: CVM_PROXY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.cvmProxy.proxyAuthSecret.name | default "cvm-proxy-auth" }}
+                  key: {{ .Values.cvmProxy.proxyAuthSecret.key | default "secret" }}
+                  optional: true
+          volumeMounts:
+            - name: cvm-proxy-template
+              mountPath: /templates
+            - name: cvm-proxy-rendered
+              mountPath: /rendered
+      containers:
+        - name: proxy
+          image: {{ include "chutes.image" (list . .Values.cvmProxy.image) | quote }}
+          imagePullPolicy: {{ .Values.cvmProxy.imagePullPolicy | default "IfNotPresent" }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+          resources:
+            {{- toYaml .Values.cvmProxy.resources | nindent 12 }}
+          volumeMounts:
+            - name: cvm-proxy-rendered
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+            - name: chutes-tls
+              mountPath: /etc/nginx/ssl
+              readOnly: true
+{{- end }}

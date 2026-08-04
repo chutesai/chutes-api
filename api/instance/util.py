@@ -1069,11 +1069,11 @@ async def verify_tee_chute(
             )
 
         # Use the TeeServerClient to get evidence from the chute proxy
-        client = TeeServerClient(server)
+        client = await TeeServerClient.create(db, server)
 
         # Get quote, GPU evidence, cert from chute verify endpoint (no nonce; chute uses stored nonce)
-        quote, gpu_evidence, cert = await client.get_chute_evidence(deployment_id)
-        expected_cert_hash = get_public_key_hash(cert)
+        evidence = await client.get_chute_evidence(deployment_id)
+        expected_cert_hash = get_public_key_hash(evidence.cert)
 
         # For chutes >= 0.6.0, report_data and GPU evidence use sha256(nonce + e2e_pubkey); else raw nonce
         if semcomp(instance.chutes_version or "0.0.0", "0.6.0") >= 0:
@@ -1086,11 +1086,11 @@ async def verify_tee_chute(
             expected_report_data = (
                 hashlib.sha256((expected_nonce + e2e_pubkey).encode()).hexdigest().lower()
             )
-            await verify_quote(quote, expected_report_data, expected_cert_hash)
-            await verify_gpu_evidence(gpu_evidence, expected_report_data)
+            await verify_quote(evidence.quote, expected_report_data, expected_cert_hash)
+            await verify_gpu_evidence(evidence.gpu_evidence, expected_report_data)
         else:
-            await verify_quote(quote, expected_nonce, expected_cert_hash)
-            await verify_gpu_evidence(gpu_evidence, expected_nonce)
+            await verify_quote(evidence.quote, expected_nonce, expected_cert_hash)
+            await verify_gpu_evidence(evidence.gpu_evidence, expected_nonce)
 
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
     except GetEvidenceError as exc:

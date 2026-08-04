@@ -1,0 +1,56 @@
+# Signing Keys Bundle ConfigMap
+#
+# This ConfigMap holds the JSON bundle served at GET /servers/signing-keys.
+# Booting VMs fetch this bundle, verify each key's detached PGP signature against the
+# root public key baked into the image, then write the verified keys to tmpfs.
+#
+# HOW TO PRODUCE THE BUNDLE
+# ==========================
+# Run the signing workflow on an offline machine that has the root PGP private key.
+# See docs/specs/dynamic-signing-keys.md for the full signing workflow.
+#
+# KEY EXPORT NOTES
+# ================
+#
+# cosign keys (chutes.pub, dockerhub.pub)
+#   These are plain text files produced by `cosign generate-key-pair`.
+#   Export as-is; no special handling needed.
+#   base64 encode with no line wrapping:
+#     base64 -w0 ~/.cosign/chutes.pub
+#
+# helm-pubkey.gpg — MUST be binary OpenPGP, NOT ASCII-armored
+#   Helm (all versions) requires the keyring in the legacy binary OpenPGP packet
+#   format. ASCII-armored keys (--armor / .asc) will silently fail signature
+#   verification in many Helm versions.
+#
+#   CORRECT (binary, no --armor):
+#     gpg --export KEY_ID > helm-pubkey.gpg
+#     base64 -w0 helm-pubkey.gpg
+#
+#   If your GnuPG keyring is in the modern keybox format (.kbx) and the above
+#   produces an empty file, export via a temporary legacy keyring:
+#     gpg --export KEY_ID | gpg --no-default-keyring \
+#         --keyring /tmp/helm-keyring.gpg --import
+#     gpg --no-default-keyring --keyring /tmp/helm-keyring.gpg \
+#         --export KEY_ID > helm-pubkey.gpg
+#     base64 -w0 helm-pubkey.gpg
+#
+# HOW TO ROTATE KEYS
+# ==================
+# 1. Produce a new bundle JSON on the offline machine (see spec).
+# 2. Update `signingKeysBundle` in the env overlay (chutes-ops values) with the new base64s.
+# 3. Roll the API pods — settings.signing_keys_bundle is a cached_property
+#    loaded at first access, so a pod restart picks up the new file.
+#
+# The bundle content is supplied by `.Values.signingKeysBundle` (real base64 values live in the
+# env overlay, NOT this file) and rendered to JSON below. The API validates at load that every
+# key + signature is present and a non-empty string.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signing-keys-bundle
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+data:
+  signing_keys_bundle.json: |
+    {{- .Values.signingKeysBundle | toPrettyJson | nindent 4 }}

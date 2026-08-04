@@ -1,0 +1,36 @@
+{{- if .Values.loki.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: loki-network-policy
+  labels:
+    {{- include "loki.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "loki.labels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  # Loki must NEVER be client-reachable (spec §6). Default-deny: only in-namespace pods explicitly
+  # labelled loki-access (the API) may reach it. Any other peer (e.g. the ops Grafana namespace) is
+  # cluster-specific policy supplied via loki.extraIngressFrom in the ops-repo values; the chart
+  # itself names no external infra.
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              loki-access: "true"
+        {{- with .Values.loki.extraIngressFrom }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.loki.service.port }}
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}

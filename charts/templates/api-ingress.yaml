@@ -18,6 +18,14 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "3"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "90"
+    # Strip proxy-provenance headers from PUBLIC traffic so they can only ever be set by the
+    # trusted mTLS/registry proxies (require_attestation_proxy / require_registry_proxy_secret,
+    # _get_client_certificate). Without this, a request to api.chutes.ai carrying a forged
+    # X-Client-Cert (+ X-Attestation-Proxy-Auth) could reach the attestation handlers directly.
+    # more_clear_input_headers is provided by ingress-nginx's bundled headers-more module;
+    # requires allow-snippet-annotations=true on the ingress controller.
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_clear_input_headers "X-Client-Cert" "X-Client-Verify" "X-Attestation-Proxy-Auth" "X-Registry-Proxy-Auth";
     {{- with .Values.ingress.whitelistSourceRange }}
     nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
     {{- end }}

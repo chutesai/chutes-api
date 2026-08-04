@@ -17,12 +17,14 @@ from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Header, status, Request
 from fastapi.responses import HTMLResponse
 from api.database import get_db_session
+from api.log import update_log_context, LifecycleEvent, LogType
 from api.chute.schemas import ChuteShare
 from api.user.schemas import (
     UserRequest,
     User,
     PriceOverride,
     AdminUserRequest,
+    UserDeletionRequest,
     InvocationQuota,
     InvocationDiscount,
 )
@@ -30,7 +32,15 @@ from api.util import (
     has_minimum_balance_for_registration,
 )
 from api.user.response import RegistrationResponse, SelfResponse
-from api.user.service import get_current_user, bt_user_exists
+from api.user.service import (
+    get_current_user,
+    bt_user_exists,
+    require_role,
+    resolve_user,
+    get_user_resources,
+    check_user_deletable,
+    delete_user,
+)
 from api.user.events import generate_uid as generate_user_uid
 from api.user.tokens import create_token
 from api.payment.schemas import AdminBalanceChange
@@ -51,6 +61,7 @@ from api.permissions import Permissioning
 from api.config import settings
 from api.api_key.schemas import APIKey, APIKeyArgs
 from api.api_key.response import APIKeyCreationResponse
+from api.api_key.util import invalidate_api_key_cache
 from api.user.util import validate_the_username, generate_payment_address
 from api.user.templater import registration_token_form, registration_token_success, error_page
 from api.agent_registration.schemas import (
@@ -1397,6 +1408,66 @@ async def delete_my_user(
     )
     await db.commit()
     return {"deleted": True}
+
+
+@router.delete("/{user_id_or_username}")
+async def admin_delete_user(
+    user_id_or_username: str,
+    body: UserDeletionRequest,
+    db: AsyncSession = Depends(get_db_session),
+    current_user: User = Depends(require_role(Permissioning.delete_user)),
+):
+    """
+    Permanently (hard) delete a user account. Requires the explicit ``delete_user`` permission.
+
+    Removes the ``users`` row, which the ``on_user_delete`` DB trigger archives into
+    ``deleted_users`` and which CASCADEs ``api_keys``/``jobs``/``logos``/``chute_shares``/
+    ``oauth_*``. Deletion requires: no special roles (``permissions_bitmask`` is 0), a balance
+    within +/-25, and no owned chutes/images/secrets (those have ``NO ACTION`` FKs and must be
+    removed manually first, via their own endpoints). Financial history
+    (``admin_balance_changes``, ``payments``) has no FK and is preserved.
+    """
+    user = await resolve_user(db, user_id_or_username)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
+        )
+
+    update_log_context(
+        event=LifecycleEvent.USER_DELETE.value,
+        log_type=LogType.USER.value,
+        user_id=user.user_id,
+        username=user.username,
+        deleted_by=current_user.user_id,
+    )
+
+    resources = await get_user_resources(db, user.user_id)
+    eligibility = check_user_deletable(user, resources)
+    if eligibility.allowed:
+        # Delete the user row (DB work only; commit + cache flush below). No resources exist to
+        # tear down -- ownership of any is a hard block above.
+        api_key_ids = await delete_user(db, user)
+        await db.commit()
+
+        # Post-commit (only safe once the delete is durable): flush the per-key auth caches.
+        for api_key_id in api_key_ids:
+            await invalidate_api_key_cache(api_key_id)
+
+        # Audit line; user_id/username/deleted_by/event come from the ambient context bound above.
+        logger.warning(f"hard-deleted user account (reason={body.reason!r})")
+        response = {"user_id": user.user_id, "deleted": True}
+    else:
+        logger.warning(f"user deletion blocked: {eligibility.message}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": eligibility.message,
+                "user_id": user.user_id,
+                **eligibility.context,
+            },
+        )
+
+    return response
 
 
 @router.get("/set_logo", response_model=SelfResponse)

@@ -4,6 +4,7 @@ Helpers and application logic related to API keys and OAuth access tokens.
 
 import re
 import pickle
+from loguru import logger
 from async_lru import alru_cache
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
@@ -53,6 +54,20 @@ async def _load_key(token_id: str):
             serialized = pickle.dumps(api_key)
             await settings.redis_client.set(cache_key, serialized, ex=60)
         return api_key
+
+
+async def invalidate_api_key_cache(api_key_id: str) -> None:
+    """
+    Drop a single API key from both caches populated by :func:`_load_key`.
+
+    Clears the shared Redis ``akey:`` entry (authoritative across workers) and this process's
+    in-process alru entry. Other workers' alru copies expire on their own 60s TTL.
+    """
+    try:
+        await settings.redis_client.delete(f"akey:{api_key_id}")
+    except Exception as exc:
+        logger.warning(f"Failed to clear akey cache for {api_key_id}: {exc}")
+    _load_key.cache_invalidate(api_key_id)
 
 
 async def get_user_from_oauth_token(token: str, request: Request):

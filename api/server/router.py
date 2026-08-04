@@ -2,7 +2,7 @@
 FastAPI routes for server management and TDX attestation.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import orjson as json
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Header, Query
 from sqlalchemy import select
@@ -10,15 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError, DatabaseError
 from loguru import logger
 from api.request_context import bind_request_context
+from cryptography.x509 import Certificate
 
 from api.database import get_db_session
 from api.config import settings
 from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
+from api.metagraph import get_miner_by_hotkey
 from api.constants import HOTKEY_HEADER, NoncePurpose
 
 from api.server.schemas import (
+    ProvisionRequest,
+    ProvisionResponse,
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
@@ -40,9 +44,11 @@ from api.server.schemas import (
     TeeMeasurementResponse,
 )
 from api.server.service import (
+    BootAttestationResult,
     create_nonce,
     process_boot_attestation,
     register_server,
+    process_provision_request,
     check_server_ownership,
     get_server_by_name_or_id,
     update_server_name,
@@ -50,6 +56,7 @@ from api.server.service import (
     get_server_attestation_status,
     delete_server,
     validate_request_nonce,
+    validate_boot_nonce,
     require_luks_quote_nonce,
     require_confirm_nonce,
     process_luks_attest_request,
@@ -62,11 +69,13 @@ from api.server.service import (
 )
 from api.server.util import (
     extract_client_cert_hash,
-    get_luks_passphrase,
+    require_attestation_proxy,
+    require_cvm_proxy,
+    gate_legacy_attestation,
+    extract_client_cert,
 )
 from api.server.exceptions import (
     AttestationError,
-    NonceError,
     ServerNotFoundError,
     ServerRegistrationError,
 )
@@ -81,16 +90,29 @@ router = APIRouter(dependencies=[Depends(bind_request_context)])
 
 
 @router.get("/nonce", response_model=NonceResponse)
-async def get_nonce(request: Request):
+async def get_nonce(
+    request: Request,
+    miner_hotkey: Optional[str] = None,
+    _mtls=Depends(gate_legacy_attestation()),
+):
     """
     Generate a nonce for boot attestation.
 
     This endpoint is called by VMs during boot before any registration.
     No authentication required as the VM doesn't exist in the system yet.
+
+    miner_hotkey is OPTIONAL for backwards compatibility: older VM initramfs fetch the nonce
+    without it. When supplied it is bound into the nonce, and boot attestation enforces that
+    args.miner_hotkey matches the value stored here (preventing cross-miner nonce reuse). VMs
+    that omit it get an unbound nonce and the binding check is skipped.
+
+    TODO: make miner_hotkey required when all VMs >= 1.4.0
     """
     try:
         server_ip = request.state.client_ip
-        nonce_info = await create_nonce(server_ip, purpose=NoncePurpose.BOOT)
+        nonce_info = await create_nonce(
+            server_ip, purpose=NoncePurpose.BOOT, miner_hotkey=miner_hotkey
+        )
 
         return NonceResponse(nonce=nonce_info["nonce"], expires_at=nonce_info["expires_at"])
     except Exception as e:
@@ -105,7 +127,8 @@ async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
-    nonce=Depends(validate_request_nonce(NoncePurpose.BOOT)),
+    _mtls=Depends(require_attestation_proxy()),
+    nonce: str = Depends(validate_boot_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
     """
@@ -118,13 +141,28 @@ async def verify_boot_attestation(
     """
     try:
         server_ip = request.state.client_ip
-        luks_quote_nonce, measurement_version = await process_boot_attestation(
+
+        # Verify the miner hotkey is actually registered on the subnet.
+        miner_node = await get_miner_by_hotkey(args.miner_hotkey, db)
+        if not miner_node:
+            logger.warning(
+                f"Boot attestation rejected: miner hotkey {args.miner_hotkey} is not registered on subnet {settings.netuid}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Miner hotkey is not registered on the subnet",
+            )
+
+        result: BootAttestationResult = await process_boot_attestation(
             db, server_ip, args, nonce, expected_cert_hash
         )
 
         return BootAttestationResponse(
-            key=get_luks_passphrase(measurement_version),
-            luks_quote_nonce=luks_quote_nonce,
+            key=result.root_key,
+            luks_quote_nonce=result.luks_quote_nonce,
+            root_next=result.root_next,
+            root_confirm_nonce=result.root_confirm_nonce,
+            vm_auth_ss58=result.vm_auth_ss58,
         )
     except AttestationError as e:
         # Includes NonceError (400) and all quote/GPU errors. The failure was already logged
@@ -143,11 +181,16 @@ async def attest_luks(
     body: LuksAttestRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_attestation_proxy()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
     validated_nonce: str = Depends(require_luks_quote_nonce),
 ):
     """
     Rotate LUKS passphrases for new-format VMs (version >= 1.3.0).
+
+    DEPRECATED: superseded by POST /provision, which does the same storage rotation and
+    additionally records the VM root CA identity. Kept unchanged for legacy in-field VMs;
+    retire once the fleet upgrades.
 
     The VM embeds the luks_quote_nonce (received in the boot attestation response)
     in a TDX quote after extending RTMR3 in initramfs. require_luks_quote_nonce
@@ -187,10 +230,15 @@ async def confirm_luks_rotation(
     body: LuksConfirmRequest,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(gate_legacy_attestation()),
     _=Depends(require_confirm_nonce),
 ):
     """
     Confirm or discard pending LUKS passphrase rotation results.
+
+    DEPRECATED for the storage-rotation flow: new VMs use POST /provision/confirm (same
+    shared logic). Kept for legacy in-field VMs; note the boot-phase root-passphrase confirm
+    still uses this route until /luks/* is fully retired.
 
     The VM reports per-volume success/failure. require_confirm_nonce validates
     and consumes the nonce before the handler runs. Volumes with rotated=True
@@ -206,6 +254,83 @@ async def confirm_luks_rotation(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="LUKS confirm failed",
+        )
+
+
+@router.post("/{vm_name}/provision", response_model=ProvisionResponse)
+async def provision(
+    vm_name: str,
+    body: ProvisionRequest,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_cvm_proxy()),
+    client_cert: Certificate = Depends(extract_client_cert()),
+    validated_nonce: str = Depends(require_luks_quote_nonce),
+):
+    """
+    Provision a new VM at runtime: record its root CA identity and issue storage secrets.
+
+    The RTMR3-attested runtime entry point for new VMs (supersedes /luks/attest going
+    forward). The VM presents its per-boot root CA as the mTLS client cert; the quote's
+    REPORTDATA binds SHA256(that cert's pubkey), so the same cert_hash check that guards
+    /luks/attest also proves CA possession — no bespoke quote logic is needed.
+    require_luks_quote_nonce validates and consumes the runtime nonce; the handler verifies
+    the quote (signature + all RTMR measurements incl. RTMR3), records
+    server.vm_root_ca_cert (idempotent), and returns rotated passphrases, the k3s encryption
+    key, and a confirm nonce.
+    """
+    try:
+        result = await process_provision_request(
+            db, hotkey, vm_name, body, validated_nonce, client_cert
+        )
+        return ProvisionResponse(
+            volumes={
+                vol: LuksVolumeInfo(current=r.current, next=r.next)
+                for vol, r in result.volumes.items()
+            },
+            confirm_nonce=result.confirm_nonce,
+            k3s_encryption_key=result.k3s_encryption_key,
+        )
+    except AttestationError as e:
+        # Failure already logged at its detection site (with ambient identity); the boundary
+        # only maps the internal exception to HTTP.
+        raise HTTPException(status_code=e.http_status, detail=e.message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in provision for {vm_name}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provisioning failed",
+        )
+
+
+@router.post("/{vm_name}/provision/confirm", response_model=LuksConfirmResponse)
+async def provision_confirm(
+    vm_name: str,
+    body: LuksConfirmRequest,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _mtls=Depends(require_cvm_proxy()),
+    _=Depends(require_confirm_nonce),
+):
+    """
+    Confirm or discard pending storage-passphrase rotations from POST /provision.
+
+    Delegates to the same shared logic as the legacy /luks/confirm (process_luks_confirm):
+    require_confirm_nonce validates and consumes the nonce, then volumes with rotated=True
+    have pending passphrases promoted to current and rotated=False discards pending.
+    """
+    try:
+        result = await process_luks_confirm(db, hotkey, vm_name, body)
+        return LuksConfirmResponse(status="confirmed", volumes=result.volumes)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in provision confirm for {vm_name}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Provision confirm failed",
         )
 
 
@@ -349,6 +474,25 @@ async def get_tee_measurements():
         ex=TEE_MEASUREMENTS_CACHE_TTL,
     )
     return result
+
+
+@router.get("/signing-keys")
+async def get_signing_keys():
+    """
+    Return the signed key bundle used by booting VMs to fetch and verify cosign/Helm keys.
+
+    Each entry in 'keys' is a base64-encoded public key; the corresponding entry in
+    'signatures' is a base64-encoded detached PGP signature produced by the root signing key.
+    Intentionally public — no mTLS required. Independent third parties and auditors can
+    fetch these public keys to verify TDX quotes without needing to be a VM client.
+    """
+    bundle = settings.signing_keys_bundle
+    if bundle is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Signing keys bundle not available",
+        )
+    return bundle
 
 
 @router.get("/maintenance/policy", response_model=MaintenancePolicyResponse)
@@ -610,7 +754,7 @@ async def verify_runtime_attestation(
     _: User = Depends(
         get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
     ),
-    nonce=Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
+    nonce: str = Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
     """

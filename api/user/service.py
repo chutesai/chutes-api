@@ -3,25 +3,79 @@ User logic/code.
 """
 
 from typing import Optional
-from sqlalchemy import exists
+from dataclasses import dataclass, field
+from sqlalchemy import exists, or_, delete
 from sqlalchemy.future import select
-from fastapi import APIRouter, Header, Request, HTTPException, Security, status
+from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
 from bittensor_wallet.keypair import Keypair
 from api.config import settings
 from api.metagraph import MetagraphNode
 from api.database import get_session
 from api.user.schemas import User
+from api.chute.schemas import Chute
+from api.image.schemas import Image
+from api.secret.schemas import Secret
+from api.api_key.schemas import APIKey
 from api.api_key.util import get_and_check_api_key
 from api.user.tokens import get_user_from_token
 from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
 from api.constants import NONCE_HEADER, INTEGRATED_SUBNETS
 from api.util import nonce_is_valid, get_signing_message
-from api.permissions import Permissioning
+from api.permissions import Permissioning, Role
 from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 api_key_header = APIKeyHeader(name="Authorization", auto_error=False)
+
+
+@dataclass
+class ChuteRef:
+    chute_id: str
+    name: Optional[str] = None
+    version: Optional[str] = None
+
+
+@dataclass
+class ImageRef:
+    image_id: str
+    name: str
+    tag: str
+
+
+@dataclass
+class SecretRef:
+    secret_id: str
+    key: str
+
+
+@dataclass
+class UserResources:
+    """
+    A user's resources whose ``NO ACTION`` foreign keys block a hard delete: chutes, images
+    and secrets. Internal domain object -- everything else CASCADEs or has no FK to ``users``.
+    """
+
+    chutes: list[ChuteRef] = field(default_factory=list)
+    images: list[ImageRef] = field(default_factory=list)
+    secrets: list[SecretRef] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not (self.chutes or self.images or self.secrets)
+
+
+@dataclass
+class DeletionEligibility:
+    """
+    Outcome of :func:`check_user_deletable` -- the single source of truth for whether an
+    account may be hard-deleted. ``message``/``context`` describe the block for the caller
+    to surface (e.g. as an HTTP 409 body); no transport concerns leak into the service.
+    """
+
+    allowed: bool
+    message: Optional[str] = None
+    context: dict = field(default_factory=dict)
 
 
 def get_current_user(
@@ -180,6 +234,155 @@ def get_current_user(
             return user
 
     return _authenticate
+
+
+async def resolve_user(session: AsyncSession, identifier: str) -> Optional[User]:
+    """Resolve a user by ``user_id`` or ``username``; return ``None`` if there's no match.
+
+    A pure lookup with no HTTP concerns -- the caller decides what a missing user means.
+    """
+    return (
+        (
+            await session.execute(
+                select(User).where(or_(User.username == identifier, User.user_id == identifier))
+            )
+        )
+        .unique()
+        .scalar_one_or_none()
+    )
+
+
+async def get_user_resources(session: AsyncSession, user_id: str) -> UserResources:
+    """Return the user-owned resources whose ``NO ACTION`` FKs block a hard delete.
+
+    These (chutes, images, secrets) must be torn down before the ``users`` row can be
+    deleted; everything else either CASCADEs or has no FK to ``users``.
+    """
+    chutes = (
+        await session.execute(
+            select(Chute.chute_id, Chute.name, Chute.version).where(Chute.user_id == user_id)
+        )
+    ).all()
+    images = (
+        await session.execute(
+            select(Image.image_id, Image.name, Image.tag).where(Image.user_id == user_id)
+        )
+    ).all()
+    secrets = (
+        await session.execute(select(Secret.secret_id, Secret.key).where(Secret.user_id == user_id))
+    ).all()
+    return UserResources(
+        chutes=[ChuteRef(chute_id=c.chute_id, name=c.name, version=c.version) for c in chutes],
+        images=[ImageRef(image_id=i.image_id, name=i.name, tag=i.tag) for i in images],
+        secrets=[SecretRef(secret_id=s.secret_id, key=s.key) for s in secrets],
+    )
+
+
+# A user is only auto-deletable when their balance sits within +/- this many USD of zero.
+# A larger magnitude -- real credit we'd be destroying, or a debt beyond ordinary billing lag
+# -- must be reconciled by a human before the account can be deleted.
+DELETABLE_BALANCE_THRESHOLD = 25.0
+
+
+def check_user_deletable(user: User, resources: UserResources) -> DeletionEligibility:
+    """Single source of truth for whether a user may be hard-deleted.
+
+    Two rules gate the account:
+      * ``permissions_bitmask`` must be 0 -- privileged accounts (admin/support/subnet/...) are
+        never deletable here; strip the roles first;
+      * ``balance`` must sit within +/-``DELETABLE_BALANCE_THRESHOLD``; a larger magnitude must
+        be reconciled manually first.
+
+    Plus a structural precondition: the account must own no chutes/images/secrets (those have
+    ``NO ACTION`` FKs to ``users``, so a delete would FK-error). They are removed manually via
+    their own endpoints, which enforce the public/shared/in-use safety we can't bypass here.
+
+    Returns a :class:`DeletionEligibility`; the caller decides how to surface a block.
+    """
+    if user.permissions_bitmask:
+        return DeletionEligibility(
+            allowed=False,
+            message="User has special roles/permissions and cannot be deleted. "
+            "Remove their roles first.",
+            context={"permissions_bitmask": user.permissions_bitmask},
+        )
+
+    balance = user.balance or 0.0
+    if abs(balance) > DELETABLE_BALANCE_THRESHOLD:
+        return DeletionEligibility(
+            allowed=False,
+            message=f"User balance ({balance}) is outside the deletable range of "
+            f"+/-{DELETABLE_BALANCE_THRESHOLD}; reconcile the balance before deleting.",
+            context={"balance": balance, "threshold": DELETABLE_BALANCE_THRESHOLD},
+        )
+
+    if not resources.is_empty:
+        return DeletionEligibility(
+            allowed=False,
+            message="User owns resources (chutes/images/secrets) that must be removed "
+            "manually before the account can be deleted.",
+            context={
+                "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
+                "images": [
+                    {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
+                ],
+                "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
+            },
+        )
+
+    return DeletionEligibility(allowed=True)
+
+
+async def delete_user(session: AsyncSession, user: User) -> list[str]:
+    """Hard-delete a user row within ``session`` (does NOT commit).
+
+    Only valid once the account owns no chutes/images/secrets -- that is enforced by
+    :func:`check_user_deletable`, which requires those to be removed manually first (their
+    own delete endpoints enforce the public/shared/in-use safety we can't safely bypass here).
+    Deleting the ``users`` row fires the ``on_user_delete`` trigger (archives to
+    ``deleted_users``) and CASCADEs api_keys/jobs/logos/chute_shares/oauth_*.
+
+    Returns the user's api key ids (captured before the cascade removes them) so the caller
+    can flush the per-key auth caches after commit.
+    """
+    api_key_ids = list(
+        (await session.execute(select(APIKey.api_key_id).where(APIKey.user_id == user.user_id)))
+        .scalars()
+        .all()
+    )
+    await session.execute(delete(User).where(User.user_id == user.user_id))
+    return api_key_ids
+
+
+def require_role(role: Role, purpose: str = None):
+    """FastAPI dependency: authenticate the caller AND require that they hold ``role``.
+
+    Declarative role enforcement — attach it to the endpoint signature (or a router's
+    ``dependencies=``) so the required role is visible in the route and checked *before*
+    the handler runs. Prefer this over an in-body ``current_user.has_role(...)`` check,
+    which a new endpoint can silently omit and which is far harder to audit than a role
+    gate that lives in the signature. Returns the authenticated ``User``.
+
+    ``purpose`` is a pass-through to the **hotkey-signature** auth path only — it binds the
+    signed message (``get_signing_message``). API-key / JWT / OAuth auth ignores it, so
+    leave it ``None`` for endpoints reached with a bearer token.
+    """
+    authenticate = get_current_user(purpose=purpose)
+
+    async def _dep(current_user: Optional[User] = Depends(authenticate)) -> User:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authentication required.",
+            )
+        if not current_user.has_role(role):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You do not have permission to perform this action.",
+            )
+        return current_user
+
+    return _dep
 
 
 async def chutes_user_id():

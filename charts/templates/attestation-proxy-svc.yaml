@@ -11,6 +11,11 @@ metadata:
   {{- end }}
 spec:
   type: {{ .Values.attestationProxy.service.type | default "LoadBalancer" }}
+  {{- with .Values.attestationProxy.service.loadBalancerIP }}
+  # Pin to a reserved static IP so the LB (and tdx-attestation.chutes.ai DNS) survive a
+  # Service recreate. The IP must already be a reserved regional static address in GCP.
+  loadBalancerIP: {{ . }}
+  {{- end }}
   sessionAffinity: None
   internalTrafficPolicy: Cluster
   externalTrafficPolicy: Cluster
