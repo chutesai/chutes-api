@@ -487,7 +487,9 @@ async def test_verify_server_rejects_evidence_cert_not_signed_by_boot_record_ca(
             return_value=MagicMock(rc=False, version="1.4.0"),
         ),
         # The CA to bind against comes from the boot record.
-        patch("api.server.service.get_boot_record_ca", new=AsyncMock(return_value=_cert_pem(ca_cert))),
+        patch(
+            "api.server.service.get_boot_record_ca", new=AsyncMock(return_value=_cert_pem(ca_cert))
+        ),
         patch("api.server.service.verify_quote", new_callable=AsyncMock) as mock_vq,
     ):
         with pytest.raises(AttestationError) as exc_info:

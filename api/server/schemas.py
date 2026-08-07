@@ -441,14 +441,18 @@ class VmBootRecord(Base):
 
     attestation_id = Column(String, primary_key=True, default=generate_uuid)
     boot_quote = Column(Text, nullable=False)  # base64 boot quote; every row is a boot attestation
-    provision_quote = Column(Text, nullable=True)  # base64 runtime quote (/provision), set on update
+    provision_quote = Column(
+        Text, nullable=True
+    )  # base64 runtime quote (/provision), set on update
     # The luks_quote_nonce issued at /boot/attestation and consumed at /provision -- ties the two
     # calls of one boot deterministically to this row.
     provision_nonce = Column(String, nullable=True)
     server_ip = Column(String, nullable=True)
     miner_hotkey = Column(String, nullable=True)
     vm_name = Column(String, nullable=True)
-    vm_root_ca_cert = Column(Text, nullable=True)  # per-boot VM root CA (PEM), recorded at /provision
+    vm_root_ca_cert = Column(
+        Text, nullable=True
+    )  # per-boot VM root CA (PEM), recorded at /provision
     verification_error = Column(String, nullable=True)
     measurement_version = Column(
         String, nullable=True

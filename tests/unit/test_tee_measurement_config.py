@@ -16,9 +16,11 @@ from api.config import Settings, TeeMeasurementConfig
 
 def _make_pubkey_pem() -> str:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    return key.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
+    return (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
 
 
 _VALID_PUBKEY_PEM = _make_pubkey_pem()

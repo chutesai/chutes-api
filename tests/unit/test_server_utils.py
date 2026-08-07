@@ -1359,9 +1359,11 @@ def _rsa_key():
 
 
 def _rsa_pub_pem(private_key) -> str:
-    return private_key.public_key().public_bytes(
-        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-    ).decode()
+    return (
+        private_key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
 
 
 def _rsa_sign_hex(private_key, nonce: str) -> str:
@@ -1427,7 +1429,9 @@ def test_authorize_rc_signed_rejects_unauthorized_key():
     config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(authorized)])
     nonce = generate_nonce()
     with pytest.raises(MeasurementMismatchError):
-        authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(attacker, nonce)))
+        authorize_rc_measurement(
+            config, nonce, AttestationAuth.signed(_rsa_sign_hex(attacker, nonce))
+        )
 
 
 def test_authorize_rc_signed_rejects_missing_signature():
@@ -1475,7 +1479,11 @@ def _hotkey_auth(kp, *, nonce=None, purpose="tee", body_sha256=None, sign_with=N
     nonce = nonce if nonce is not None else str(int(time.time()))
     signer = sign_with or kp
     message = get_signing_message(
-        hotkey=signer.ss58_address, nonce=nonce, payload_str=None, payload_hash=body_sha256, purpose=purpose
+        hotkey=signer.ss58_address,
+        nonce=nonce,
+        payload_str=None,
+        payload_hash=body_sha256,
+        purpose=purpose,
     )
     signature = signer.sign(message).hex()
     if tamper:
@@ -1661,7 +1669,9 @@ async def test_extract_attestation_auth_no_headers_fails_closed():
     """With neither proof header the returned auth carries no material, so the rc gate has nothing
     to verify and fails closed."""
     dep = extract_attestation_auth()
-    auth = await dep(_auth_request(), operator_signature=None, hotkey=None, signature=None, nonce=None)
+    auth = await dep(
+        _auth_request(), operator_signature=None, hotkey=None, signature=None, nonce=None
+    )
     assert auth.rc_signature is None
     assert auth.miner_hotkey is None
     assert auth.hotkey_signature is None

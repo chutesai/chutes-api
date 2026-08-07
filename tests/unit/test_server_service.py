@@ -689,7 +689,12 @@ async def test_boot_attestation_propagates_rc_rejection_without_releasing_secret
     ):
         with pytest.raises(MeasurementMismatchError):
             await process_boot_attestation(
-                mock_db_session, TEST_SERVER_IP, boot_attestation_args, TEST_NONCE, TEST_CERT_HASH, None
+                mock_db_session,
+                TEST_SERVER_IP,
+                boot_attestation_args,
+                TEST_NONCE,
+                TEST_CERT_HASH,
+                None,
             )
     # No boot secrets were resolved or issued.
     mock_root.assert_not_awaited()
@@ -738,7 +743,9 @@ async def test_provision_propagates_rc_rejection_before_recording_ca(mock_db_ses
     body = ProvisionRequest(quote="ignored", volumes=["storage"])
     with (
         patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=Mock()),
-        patch("api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())),
+        patch(
+            "api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())
+        ),
         patch("api.server.service.get_public_key_hash", return_value="hash"),
         patch("api.server.service.record_vm_ca_identity", new=AsyncMock()) as mock_record,
         patch("api.server.service._issue_storage_secrets", new=AsyncMock()) as mock_issue,
@@ -791,7 +798,9 @@ async def test_verify_server_propagates_rc_rejection(
 
     with (
         patch("api.server.service.TeeServerClient.create", new=AsyncMock(return_value=mock_client)),
-        patch("api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())),
+        patch(
+            "api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())
+        ),
         patch("api.server.service.get_public_key_hash", return_value="hash"),
         patch("api.server.service.get_boot_record_ca", new=AsyncMock(return_value=None)),
     ):
@@ -929,7 +938,12 @@ async def test_register_server_success(mock_db_session, server_args, sample_serv
                 new_callable=AsyncMock,
                 return_value="1.0.0",
             ):
-                await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
+                await register_server(
+                    mock_db_session,
+                    server_args,
+                    miner_hotkey,
+                    AttestationAuth.hotkey_signed(miner_hotkey),
+                )
 
     assert sample_server.version == "1.0.0"
     mock_db_session.commit.assert_called()
@@ -952,7 +966,12 @@ async def test_register_server_integrity_error(mock_db_session, server_args, sam
                 return_value="1.0.0",
             ):
                 with pytest.raises(ServerRegistrationError):
-                    await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
+                    await register_server(
+                        mock_db_session,
+                        server_args,
+                        miner_hotkey,
+                        AttestationAuth.hotkey_signed(miner_hotkey),
+                    )
 
     mock_db_session.rollback.assert_called_once()
 
@@ -1195,7 +1214,12 @@ async def test_register_server_general_exception(mock_db_session, server_args, s
                 return_value="1.0.0",
             ):
                 with pytest.raises(ServerRegistrationError):
-                    await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
+                    await register_server(
+                        mock_db_session,
+                        server_args,
+                        miner_hotkey,
+                        AttestationAuth.hotkey_signed(miner_hotkey),
+                    )
 
     mock_db_session.rollback.assert_called_once()
 
@@ -1400,7 +1424,12 @@ async def test_server_lifecycle_flow(mock_db_session, sample_server, server_args
                 new_callable=AsyncMock,
                 return_value="1.0.0",
             ):
-                await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
+                await register_server(
+                    mock_db_session,
+                    server_args,
+                    miner_hotkey,
+                    AttestationAuth.hotkey_signed(miner_hotkey),
+                )
     mock_db_session.commit.assert_called()
 
     # Step 2: Check ownership
