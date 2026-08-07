@@ -149,6 +149,63 @@ class LuksConfirmResult:
     """Per-volume outcome: {"result": "promoted"|"discarded"|"no_pending"}."""
 
 
+@dataclass
+class AttestationAuth:
+    """Authorization presented with an attestation: the raw proof that the caller may use the
+    matched measurement. Threaded to ``verify_quote``'s rc gate, which VERIFIES it -- the gate never
+    trusts a caller-supplied "already authenticated" flag; it proves possession from the material
+    carried here. Two modes, each matched to its environment and each self-verifying:
+
+      * ``signed`` (boot/provision, initramfs): ``rc_signature`` is a hex RSA PKCS#1 v1.5 / SHA-256
+        signature over the server-issued nonce; the gate verifies it against the measurement's
+        ``authorized_signing_keys``. No hotkey/sr25519 (unavailable in the measured initramfs).
+      * ``hotkey`` (register/runtime, userspace): the miner's STANDARD request auth material --
+        ``miner_hotkey`` + the ``X-Chutes-Signature`` over ``get_signing_message(hotkey, nonce,
+        body_sha256, purpose)``. The gate re-runs that exact verification (``nonce_is_valid`` +
+        ``Keypair.verify``) and then checks ``miner_hotkey`` against ``authorized_hotkeys``. This is
+        the same signature ``get_current_user`` checks, re-verified so the gate depends on no
+        upstream assumption.
+
+    An empty value proves nothing and may only use published (non-rc) measurements -- rc fails
+    closed. See ``api.server.util.authorize_rc_measurement``.
+    """
+
+    # signed mode: hex RSA PKCS#1 v1.5 / SHA-256 signature over the nonce by an operator key.
+    rc_signature: Optional[str] = None
+    # hotkey mode: the miner's standard request-auth material, re-verified by the gate.
+    miner_hotkey: Optional[str] = None
+    hotkey_signature: Optional[str] = None  # hex sr25519 X-Chutes-Signature
+    hotkey_nonce: Optional[str] = None  # X-Chutes-Nonce
+    body_sha256: Optional[str] = None  # request.state.body_sha256 (payload hash)
+    purpose: Optional[str] = None  # the endpoint's get_current_user purpose
+
+    @classmethod
+    def signed(cls, rc_signature: Optional[str]) -> "AttestationAuth":
+        # Boot/provision proof is purely the RSA signature; the identity is whichever authorized
+        # operator key verifies it, so no hotkey is carried.
+        return cls(rc_signature=rc_signature)
+
+    @classmethod
+    def hotkey_signed(
+        cls,
+        miner_hotkey: Optional[str],
+        *,
+        signature: Optional[str] = None,
+        nonce: Optional[str] = None,
+        body_sha256: Optional[str] = None,
+        purpose: Optional[str] = None,
+    ) -> "AttestationAuth":
+        # Register/runtime proof is the standard request hotkey signature; the gate re-verifies it
+        # (it is NOT trusted just because it was carried here).
+        return cls(
+            miner_hotkey=miner_hotkey,
+            hotkey_signature=signature,
+            hotkey_nonce=nonce,
+            body_sha256=body_sha256,
+            purpose=purpose,
+        )
+
+
 class LuksAttestRequest(BaseModel):
     """Request model for POST /luks/attest."""
 
@@ -360,21 +417,44 @@ class TeeMeasurementResponse(BaseModel):
     gpu_count: int
 
 
-class BootAttestation(Base):
-    """Track anonymous boot attestations (pre-registration)."""
+class VmBootRecord(Base):
+    """The pre-server initramfs boot record for a VM -- one row per boot (append; history retained).
 
-    __tablename__ = "boot_attestations"
+    A VM boots in fully-measured initramfs, before the miner registers it via POST /servers, so
+    there is no Server row yet. Each row captures one boot's full initramfs lifecycle:
+      * ``boot_quote``      -- the boot attestation quote, set on /boot/attestation (row insert)
+      * ``provision_quote`` -- the runtime provisioning quote, set when /provision updates this row
+      * ``vm_root_ca_cert`` -- the per-boot VM root CA recorded in measured initramfs (/provision)
+      * ``measurement_version``, ``server_ip``, and (on failed boots) ``verification_error``
+
+    /provision updates the VM's most recent boot row (correlating the two initramfs calls of the
+    same boot), so a successful boot ends up with both quotes + the CA in a single row -- the boot
+    vs provision distinction is which quote column is set, so no phase discriminator is needed. The
+    *current* CA is the ``vm_root_ca_cert`` of the VM's latest row that has one; ``register_server``
+    syncs it onto ``servers.vm_root_ca_cert`` (the copy every mTLS consumer reads). Ephemeral
+    per-boot auth keys live in ``VmAuthKey``, deliberately not here -- no history of throwaway keys.
+
+    (Formerly ``boot_attestations`` -- broadened in place; existing rows are preserved.)
+    """
+
+    __tablename__ = "vm_boot_records"
 
     attestation_id = Column(String, primary_key=True, default=generate_uuid)
-    quote_data = Column(Text, nullable=False)  # Base64 encoded quote
-    server_ip = Column(String, nullable=True)  # For later linking to server
+    boot_quote = Column(Text, nullable=False)  # base64 boot quote; every row is a boot attestation
+    provision_quote = Column(Text, nullable=True)  # base64 runtime quote (/provision), set on update
+    # The luks_quote_nonce issued at /boot/attestation and consumed at /provision -- ties the two
+    # calls of one boot deterministically to this row.
+    provision_nonce = Column(String, nullable=True)
+    server_ip = Column(String, nullable=True)
     miner_hotkey = Column(String, nullable=True)
     vm_name = Column(String, nullable=True)
+    vm_root_ca_cert = Column(Text, nullable=True)  # per-boot VM root CA (PEM), recorded at /provision
     verification_error = Column(String, nullable=True)
     measurement_version = Column(
         String, nullable=True
     )  # Matched TEE measurement config version (audit trail); NULL if verification failed
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
     verified_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (

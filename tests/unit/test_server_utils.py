@@ -6,20 +6,29 @@ Tests TDX quote parsing, validation, and utility functions.
 import base64
 import pytest
 import secrets
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, Mock, AsyncMock
 
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from bittensor_wallet.keypair import Keypair
+
 from api.config import TeeMeasurementConfig
+from api.util import get_signing_message
 from api.server.util import (
     generate_nonce,
     get_nonce_expiry_seconds,
+    verify_quote,
     verify_quote_signature,
     verify_measurements,
     verify_result,
     get_matching_measurement_config,
     extract_nonce,
     get_default_root_passphrase,
+    authorize_rc_measurement,
+    extract_attestation_auth,
 )
 from api.server.quote import (
     TdxQuote,
@@ -27,6 +36,7 @@ from api.server.quote import (
     RuntimeTdxQuote,
     TdxVerificationResult,
 )
+from api.server.schemas import AttestationAuth
 from api.server.exceptions import (
     InvalidQuoteError,
     InvalidSignatureError,
@@ -673,7 +683,7 @@ def test_verify_measurements_boot_success(mock_settings, sample_boot_quote):
     mock_settings.tee_measurements = _tee_measurements_for_quotes()
 
     result = verify_measurements(sample_boot_quote)
-    assert result is True
+    assert result.version == "1"  # verify_measurements now returns the matched config
 
 
 @patch("api.server.util.settings")
@@ -682,7 +692,7 @@ def test_verify_measurements_runtime_success(mock_settings, sample_runtime_quote
     mock_settings.tee_measurements = _tee_measurements_for_quotes()
 
     result = verify_measurements(sample_runtime_quote)
-    assert result is True
+    assert result.version == "1"
 
 
 @patch("api.server.util.settings")
@@ -742,7 +752,7 @@ def test_verify_measurements_partial_rtmrs(mock_settings, sample_runtime_quote):
     mock_settings.tee_measurements = _tee_measurements_for_quotes()
 
     result = verify_measurements(sample_runtime_quote)
-    assert result is True
+    assert result.version == "1"
 
 
 @patch("api.server.util.settings")
@@ -1141,10 +1151,10 @@ def test_measurement_verification_with_actual_config(mock_settings):
     )
 
     # Boot quote should verify successfully
-    assert verify_measurements(boot_quote) is True
+    assert verify_measurements(boot_quote).version == "1"
 
     # Runtime quote should also verify (same RTMR0/1/2, runtime RTMR3)
-    assert verify_measurements(runtime_quote) is True
+    assert verify_measurements(runtime_quote).version == "1"
 
 
 # Comprehensive error case coverage
@@ -1308,8 +1318,8 @@ def test_boot_vs_runtime_verification_differences():
             ),
         ]
 
-        assert verify_measurements(boot_quote) is True
-        assert verify_measurements(runtime_quote) is True
+        assert verify_measurements(boot_quote).version == "1"
+        assert verify_measurements(runtime_quote).version == "1"
 
         # A boot quote carrying the runtime RTMR3 must NOT match: boot RTMR3
         # is enforced to zeros, so a non-zero RTMR3 on a boot quote fails.
@@ -1332,3 +1342,329 @@ def test_boot_vs_runtime_verification_differences():
 
         with pytest.raises(MeasurementMismatchError):
             verify_measurements(boot_quote_with_runtime_rtmr3)
+
+
+# -----------------------------------------------------------------------------
+# RC (release-candidate) measurement authorization gate — authorize_rc_measurement
+#
+# Two modes with different primitives:
+#   * signed (boot/provision, initramfs)  -> RSA-SHA256 signature over the nonce vs authorized_signing_keys
+#   * authenticated (register/runtime)     -> miner_hotkey in authorized_hotkeys (get_current_user proved it)
+# -----------------------------------------------------------------------------
+
+
+def _rsa_key():
+    """A fresh RSA private key (the operator signing key)."""
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _rsa_pub_pem(private_key) -> str:
+    return private_key.public_key().public_bytes(
+        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+    ).decode()
+
+
+def _rsa_sign_hex(private_key, nonce: str) -> str:
+    """openssl-equivalent: RSA PKCS#1 v1.5 SHA-256 over the raw nonce, hex-encoded."""
+    return private_key.sign(nonce.encode(), padding.PKCS1v15(), hashes.SHA256()).hex()
+
+
+def _rc_config(*, authorized_hotkeys=(), authorized_signing_keys=(), rc=True, name="rc-8xh200"):
+    return TeeMeasurementConfig(
+        version="9.9.9-rc",
+        name=name,
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        runtime_rtmr3="e" * 96,
+        expected_gpus=["h200"],
+        gpu_count=8,
+        rc=rc,
+        authorized_hotkeys=list(authorized_hotkeys),
+        authorized_signing_keys=list(authorized_signing_keys),
+    )
+
+
+# Published (non-rc) measurements: the gate is a complete no-op regardless of the auth passed.
+
+
+def test_authorize_rc_noop_for_published_measurement_empty_auth():
+    """Backward compatibility: a non-rc measurement needs no proof at all."""
+    config = _rc_config(rc=False)
+    authorize_rc_measurement(config, generate_nonce(), AttestationAuth())
+
+
+def test_authorize_rc_noop_for_published_even_with_signature():
+    key = _rsa_key()
+    config = _rc_config(rc=False, authorized_signing_keys=[_rsa_pub_pem(key)])
+    nonce = generate_nonce()
+    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(key, nonce)))
+
+
+# signed mode (boot/provision): RSA signature over the nonce vs authorized_signing_keys.
+
+
+def test_authorize_rc_signed_success_with_valid_signature_over_fresh_nonce():
+    key = _rsa_key()
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(key)])
+    nonce = generate_nonce()
+    # Must not raise.
+    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(key, nonce)))
+
+
+def test_authorize_rc_signed_success_when_any_authorized_key_matches():
+    """authorized_signing_keys may list several keys; a signature by any one authorizes."""
+    k1, k2 = _rsa_key(), _rsa_key()
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(k1), _rsa_pub_pem(k2)])
+    nonce = generate_nonce()
+    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(k2, nonce)))
+
+
+def test_authorize_rc_signed_rejects_unauthorized_key():
+    """A signature by a key NOT in authorized_signing_keys must fail, however valid."""
+    authorized, attacker = _rsa_key(), _rsa_key()
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(authorized)])
+    nonce = generate_nonce()
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(attacker, nonce)))
+
+
+def test_authorize_rc_signed_rejects_missing_signature():
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(_rsa_key())])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), AttestationAuth.signed(None))
+
+
+def test_authorize_rc_signed_rejects_malformed_signature_hex():
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(_rsa_key())])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), AttestationAuth.signed("not-hex-zzzz"))
+
+
+def test_authorize_rc_signed_rejects_stale_nonce_signature():
+    """A signature over one (issued) nonce must not verify against a different nonce -- this is
+    what bounds replay once the single-use nonce is consumed."""
+    key = _rsa_key()
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(key)])
+    sig = _rsa_sign_hex(key, generate_nonce())  # signed over some already-issued nonce
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), AttestationAuth.signed(sig))
+
+
+def test_authorize_rc_signed_rejects_empty_signing_key_allowlist():
+    """Defense in depth: an rc config with no signing keys can never authorize a signed caller."""
+    key = _rsa_key()
+    config = _rc_config(authorized_signing_keys=[])  # empty
+    nonce = generate_nonce()
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(key, nonce)))
+
+
+# hotkey mode (register/runtime): the gate RE-VERIFIES the standard sr25519 request signature,
+# then checks miner_hotkey in authorized_hotkeys. No trusted "already authenticated" flag.
+
+
+def _hotkey_kp():
+    """A real sr25519 miner keypair."""
+    return Keypair.create_from_seed("0x" + secrets.token_hex(32))
+
+
+def _hotkey_auth(kp, *, nonce=None, purpose="tee", body_sha256=None, sign_with=None, tamper=False):
+    """Build a hotkey-mode AttestationAuth with a genuine (or deliberately bad) request signature."""
+    nonce = nonce if nonce is not None else str(int(time.time()))
+    signer = sign_with or kp
+    message = get_signing_message(
+        hotkey=signer.ss58_address, nonce=nonce, payload_str=None, payload_hash=body_sha256, purpose=purpose
+    )
+    signature = signer.sign(message).hex()
+    if tamper:
+        signature = "00" + signature[2:]
+    return AttestationAuth.hotkey_signed(
+        kp.ss58_address, signature=signature, nonce=nonce, body_sha256=body_sha256, purpose=purpose
+    )
+
+
+def test_authorize_rc_hotkey_success_with_valid_request_signature():
+    kp = _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=[kp.ss58_address])
+    # Must not raise.
+    authorize_rc_measurement(config, generate_nonce(), _hotkey_auth(kp))
+
+
+def test_authorize_rc_hotkey_rejects_unlisted_hotkey():
+    kp = _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=["5AuthorizedElsewhere"])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), _hotkey_auth(kp))
+
+
+def test_authorize_rc_hotkey_rejects_empty_hotkey_allowlist():
+    """Defense in depth: an rc config with an empty hotkey allowlist is never open-to-all."""
+    kp = _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=[])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), _hotkey_auth(kp))
+
+
+def test_authorize_rc_hotkey_rejects_missing_signature():
+    """An allowlisted hotkey with no request signature can't authorize -- the gate verifies, it
+    doesn't trust the hotkey field."""
+    kp = _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=[kp.ss58_address])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(
+            config, generate_nonce(), AttestationAuth.hotkey_signed(kp.ss58_address)
+        )
+
+
+def test_authorize_rc_hotkey_rejects_signature_by_other_key():
+    """A signature by a DIFFERENT key than the claimed (allowlisted) hotkey must fail."""
+    kp, attacker = _hotkey_kp(), _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=[kp.ss58_address])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), _hotkey_auth(kp, sign_with=attacker))
+
+
+def test_authorize_rc_hotkey_rejects_tampered_signature():
+    kp = _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=[kp.ss58_address])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), _hotkey_auth(kp, tamper=True))
+
+
+def test_authorize_rc_hotkey_rejects_expired_nonce():
+    """The request nonce must be fresh (nonce_is_valid); an old timestamp is rejected."""
+    kp = _hotkey_kp()
+    config = _rc_config(authorized_hotkeys=[kp.ss58_address])
+    stale = str(int(time.time()) - 10_000)  # well outside the 600s window
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, generate_nonce(), _hotkey_auth(kp, nonce=stale))
+
+
+# verify_quote wires the rc gate centrally: every trust-granting flow runs it here.
+
+
+@pytest.mark.asyncio
+async def test_verify_quote_enforces_rc_gate_rejecting_unauthorized_signature(sample_boot_quote):
+    """A full verify_quote pass matching an rc measurement rejects a signature by an unauthorized
+    key -- proving the gate is enforced in the one central place, not just at the call sites."""
+    attacker = _rsa_key()
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(_rsa_key())])
+    with (
+        patch("api.server.util.settings") as mock_settings,
+        patch(
+            "api.server.util.verify_quote_signature",
+            new=AsyncMock(return_value=_sample_verification_result()),
+        ),
+        patch("api.server.util.extract_report_data", return_value=("thenonce", "certhash")),
+    ):
+        mock_settings.tee_measurements = [config]
+        with pytest.raises(MeasurementMismatchError):
+            await verify_quote(
+                sample_boot_quote,
+                "thenonce",
+                "certhash",
+                auth=AttestationAuth.signed(_rsa_sign_hex(attacker, "thenonce")),
+            )
+
+
+@pytest.mark.asyncio
+async def test_verify_quote_allows_rc_with_authorized_signing_key(sample_boot_quote):
+    key = _rsa_key()
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(key)])
+    with (
+        patch("api.server.util.settings") as mock_settings,
+        patch(
+            "api.server.util.verify_quote_signature",
+            new=AsyncMock(return_value=_sample_verification_result()),
+        ),
+        patch("api.server.util.extract_report_data", return_value=("thenonce", "certhash")),
+    ):
+        mock_settings.tee_measurements = [config]
+        result = await verify_quote(
+            sample_boot_quote,
+            "thenonce",
+            "certhash",
+            auth=AttestationAuth.signed(_rsa_sign_hex(key, "thenonce")),
+        )
+    assert result.is_valid is True
+
+
+@pytest.mark.asyncio
+async def test_verify_quote_published_measurement_ignores_rc_args(sample_boot_quote):
+    """Backward compatibility: for a published measurement verify_quote never runs the rc check,
+    so omitting the auth (the legacy call shape) still succeeds."""
+    with (
+        patch("api.server.util.settings") as mock_settings,
+        patch(
+            "api.server.util.verify_quote_signature",
+            new=AsyncMock(return_value=_sample_verification_result()),
+        ),
+        patch("api.server.util.extract_report_data", return_value=("thenonce", "certhash")),
+    ):
+        mock_settings.tee_measurements = _tee_measurements_for_quotes()  # non-rc
+        result = await verify_quote(sample_boot_quote, "thenonce", "certhash")
+    assert result.is_valid is True
+
+
+# ---------------------------------------------------------------------------
+# extract_attestation_auth — header-based mode detection
+# ---------------------------------------------------------------------------
+
+
+def _auth_request(body_sha256="bodyhash"):
+    request = Mock()
+    request.state.body_sha256 = body_sha256
+    return request
+
+
+@pytest.mark.asyncio
+async def test_extract_attestation_auth_signed_mode_from_operator_header():
+    """An X-Operator-Signature header populates signed mode and never touches the hotkey fields,
+    even when a hotkey header is also present (as /provision sends one for its CA lookup)."""
+    dep = extract_attestation_auth()
+    auth = await dep(
+        _auth_request(),
+        operator_signature="rsasig",
+        hotkey="5Hotkey",  # provision sends this for CA/storage lookup; must be ignored by the gate
+        signature="ignored",
+        nonce="ignored",
+    )
+    assert auth.rc_signature == "rsasig"
+    assert auth.miner_hotkey is None
+    assert auth.hotkey_signature is None
+
+
+@pytest.mark.asyncio
+async def test_extract_attestation_auth_hotkey_mode_when_no_operator_header():
+    """Absent the operator header the dependency builds hotkey mode from the sr25519 request auth,
+    threading purpose and body hash through for signing-message reconstruction."""
+    dep = extract_attestation_auth(purpose="tee")
+    auth = await dep(
+        _auth_request(body_sha256="abc123"),
+        operator_signature=None,
+        hotkey="5Hotkey",
+        signature="sr25519sig",
+        nonce="thenonce",
+    )
+    assert auth.rc_signature is None
+    assert auth.miner_hotkey == "5Hotkey"
+    assert auth.hotkey_signature == "sr25519sig"
+    assert auth.hotkey_nonce == "thenonce"
+    assert auth.body_sha256 == "abc123"
+    assert auth.purpose == "tee"
+
+
+@pytest.mark.asyncio
+async def test_extract_attestation_auth_no_headers_fails_closed():
+    """With neither proof header the returned auth carries no material, so the rc gate has nothing
+    to verify and fails closed."""
+    dep = extract_attestation_auth()
+    auth = await dep(_auth_request(), operator_signature=None, hotkey=None, signature=None, nonce=None)
+    assert auth.rc_signature is None
+    assert auth.miner_hotkey is None
+    assert auth.hotkey_signature is None
+    config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(_rsa_key())])
+    with pytest.raises(MeasurementMismatchError):
+        authorize_rc_measurement(config, "thenonce", auth)

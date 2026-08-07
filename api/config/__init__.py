@@ -8,7 +8,7 @@ from pathlib import Path
 import aioboto3
 import json
 import yaml
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from api.safe_redis import SafeRedis
 from functools import cached_property, lru_cache
 import redis.asyncio as redis
@@ -65,6 +65,16 @@ class TeeMeasurementConfig:
     expected_gpus: List[str]
     gpu_count: Optional[int] = None
     rc: bool = False  # release candidate / in-test: attestable but unpublished
+    # rc authorization allowlists (both required non-empty when rc is True; ignored for published
+    # measurements). The two gate modes use different primitives, matched to their environment:
+    #   * authorized_hotkeys -- miner hotkeys allowed on the register/runtime (userspace,
+    #     get_current_user-authenticated) paths.
+    #   * authorized_signing_keys -- operator RSA *public* keys (PEM) allowed on the boot/provision
+    #     (initramfs) paths, where the VM signs the nonce with `openssl dgst -sha256 -sign` and no
+    #     sr25519/substrate signer is available.
+    # See api.server.util.authorize_rc_measurement.
+    authorized_hotkeys: List[str] = dataclass_field(default_factory=list)
+    authorized_signing_keys: List[str] = dataclass_field(default_factory=list)
 
     @property
     def boot_rtmrs(self) -> Dict[str, str]:
@@ -430,6 +440,48 @@ class Settings(BaseSettings):
             runtime_rtmr3 = _hex96(version_config["runtime_rtmr3"], "runtime RTMR3", version)
             rc = bool(version_config.get("rc", False))
 
+            # rc authorization allowlists. Meaningful only for rc measurements (published ones lock
+            # down identical guest software for everyone, so operator identity is irrelevant there):
+            #   authorized_hotkeys      -> register/runtime paths, authorized_signing_keys -> boot/provision.
+            authorized_hotkeys = [
+                str(hk).strip()
+                for hk in (version_config.get("authorized_hotkeys") or [])
+                if str(hk).strip()
+            ]
+            authorized_signing_keys = [
+                str(k).strip()
+                for k in (version_config.get("authorized_signing_keys") or [])
+                if str(k).strip()
+            ]
+
+            # Load-time invariant: an rc measurement with no allowlist would be usable by anyone who
+            # can build the same image -- exactly the exposure rc gating exists to prevent. A full VM
+            # lifecycle hits BOTH gate modes, so require both allowlists non-empty, and require every
+            # signing key to parse as a PEM public key (a bad key can't verify anything, so treating
+            # it as usable would be a silent hole). Drop the whole version (all hardware variants) and
+            # log loudly rather than raise, so one misconfigured rc entry can't take down attestation
+            # for published VMs; a dropped entry never matches any quote, so affected VMs fail closed.
+            drop_reason = None
+            if rc and not authorized_hotkeys:
+                drop_reason = "'authorized_hotkeys' allowlist is empty"
+            elif rc and not authorized_signing_keys:
+                drop_reason = "'authorized_signing_keys' allowlist is empty"
+            elif rc:
+                for pem in authorized_signing_keys:
+                    try:
+                        serialization.load_pem_public_key(pem.encode())
+                    except Exception as e:
+                        drop_reason = f"an 'authorized_signing_keys' entry is not a valid PEM public key ({e})"
+                        break
+            if drop_reason:
+                logger.error(
+                    f"Refusing to load rc measurement version '{version}': {drop_reason}. rc "
+                    "measurements MUST declare non-empty, valid 'authorized_hotkeys' and "
+                    "'authorized_signing_keys'. This version is UNUSABLE until fixed; VMs on it "
+                    "will fail attestation."
+                )
+                continue
+
             hardware = version_config.get("hardware") or []
             if not hardware:
                 raise ValueError(
@@ -461,6 +513,8 @@ class Settings(BaseSettings):
                         expected_gpus=[gpu.lower() for gpu in hw["expected_gpus"]],
                         gpu_count=gpu_count,
                         rc=rc,
+                        authorized_hotkeys=authorized_hotkeys,
+                        authorized_signing_keys=authorized_signing_keys,
                     )
                 )
 

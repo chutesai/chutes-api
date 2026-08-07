@@ -28,6 +28,11 @@ HOTKEY_HEADER = "X-Chutes-Hotkey"
 COLDKEY_HEADER = "X-Chutes-Coldkey"
 SIGNATURE_HEADER = "X-Chutes-Signature"
 NONCE_HEADER = "X-Chutes-Nonce"
+# RSA operator signature over the quote nonce, used only by the initramfs (signed) attestation
+# path where sr25519 is unavailable. Distinct from SIGNATURE_HEADER so the rc gate can tell the
+# signed proof from the sr25519 request signature by header presence alone (see
+# extract_attestation_auth / authorize_rc_measurement).
+OPERATOR_SIGNATURE_HEADER = "X-Operator-Signature"
 AUTHORIZATION_HEADER = "Authorization"
 PURPOSE_HEADER = "X-Chutes-Purpose"
 MINER_HEADER = "X-Chutes-Miner"

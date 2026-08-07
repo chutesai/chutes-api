@@ -37,7 +37,8 @@ from api.server.util import (
 from api.server.schemas import (
     Server,
     ServerAttestation,
-    BootAttestation,
+    VmBootRecord,
+    AttestationAuth,
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
@@ -300,8 +301,12 @@ def mock_verify_quote_signature(sample_verification_result):
 
 @pytest.fixture
 def mock_verify_measurements():
-    """Mock verify_measurements function."""
-    with patch("api.server.util.verify_measurements", return_value=True) as mock:
+    """Mock verify_measurements function.
+
+    Returns a published (non-rc) config so verify_quote's central rc gate is a no-op -- matching
+    what verify_measurements now returns (the matched TeeMeasurementConfig, not a bool)."""
+    published = _tee_measurements_for_service_tests()[0]
+    with patch("api.server.util.verify_measurements", return_value=published) as mock:
         yield mock
 
 
@@ -526,9 +531,13 @@ async def test_process_boot_attestation_success(
         assert result.root_confirm_nonce is None
         assert result.vm_auth_ss58 == "5EphemeralSS58TestAddress"
 
-        # Verify database operations
+        # Verify database operations: the boot record is inserted and committed.
         mock_db_session.add.assert_called_once()
         mock_db_session.commit.assert_called_once()
+
+        # The record stores the runtime quote nonce so /provision can find this exact row.
+        added = mock_db_session.add.call_args[0][0]
+        assert added.provision_nonce == "test-luks-nonce"
 
 
 @pytest.mark.asyncio
@@ -567,9 +576,262 @@ async def test_process_boot_attestation_verification_failure(
                     TEST_CERT_HASH,
                 )
 
-            # Should still create failed attestation record
+            # A failed boot appends a boot record capturing the failure.
             mock_db_session.add.assert_called_once()
             mock_db_session.commit.assert_called_once()
+
+
+# RC (release-candidate) measurement gate integration
+#
+# The gate logic (allowlist + proof-of-possession) is centralized in verify_quote and unit-tested
+# directly via authorize_rc_measurement / verify_quote (see test_server_utils.py). These tests
+# assert the SERVICE-LEVEL WIRING: each trust-granting flow passes the right identity args to
+# verify_quote, and an rc rejection propagates before any secret/row is produced.
+
+
+def _rc_boot_config_list(authorized_hotkeys):
+    """Single-element list holding an RC TeeMeasurementConfig matching sample_boot_quote."""
+    return [
+        TeeMeasurementConfig(
+            version="1.5.0",
+            name="rc-8xh200",
+            mrtd="a" * 96,
+            rtmr0="b" * 96,
+            rtmr1="c" * 96,
+            rtmr2="d" * 96,
+            runtime_rtmr3="e" * 96,
+            expected_gpus=["h200"],
+            gpu_count=None,
+            rc=True,
+            authorized_hotkeys=list(authorized_hotkeys),
+        )
+    ]
+
+
+def _sample_boot_result():
+    return TdxVerificationResult(
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        rtmr3="0" * 96,
+        user_data="test",
+        parsed_at=datetime.now(timezone.utc),
+        status="UpToDate",
+        advisory_ids=[],
+        td_attributes="0000001000000000",
+    )
+
+
+def _boot_downstream_patches():
+    """Patch everything downstream of verify_quote so process_boot_attestation can complete."""
+    mock_keypair = Mock()
+    mock_keypair.ss58_address = "5EphemeralSS58TestAddress"
+    return (
+        patch("api.server.service.generate_luks_quote_nonce", return_value="rc-luks-nonce"),
+        patch("api.server.service._handle_boot_version_update", new_callable=AsyncMock),
+        patch(
+            "api.server.service.get_root_passphrase_for_boot",
+            new_callable=AsyncMock,
+            return_value=("rc_root_key", None, None),
+        ),
+        patch(
+            "api.server.service._generate_and_store_vm_auth_key",
+            new_callable=AsyncMock,
+            return_value=mock_keypair,
+        ),
+    )
+
+
+# --- boot attestation: signature-based possession (no request-level hotkey auth) ---
+
+
+@pytest.mark.asyncio
+async def test_boot_attestation_threads_hotkey_and_signature_to_verify_quote(
+    mock_db_session, mock_quote_parsing, valid_quote_base64
+):
+    """process_boot_attestation forwards the caller (signed mode: RSA signature, no hotkey) to the
+    central rc gate in verify_quote."""
+    args = BootAttestationArgs(
+        quote=valid_quote_base64, miner_hotkey="5FTestHotkey123", vm_name="vm-x"
+    )
+    mock_db_session.refresh.side_effect = lambda o: setattr(o, "attestation_id", "b1")
+    mock_vq = AsyncMock(return_value=_sample_boot_result())
+    caller = AttestationAuth.signed("deadbeef")
+
+    d1, d2, d3, d4 = _boot_downstream_patches()
+    with patch("api.server.service.verify_quote", mock_vq), d1, d2, d3, d4:
+        await process_boot_attestation(
+            mock_db_session, TEST_SERVER_IP, args, TEST_NONCE, TEST_CERT_HASH, caller
+        )
+
+    _, kwargs = mock_vq.await_args
+    assert kwargs["auth"].rc_signature == "deadbeef"
+    assert kwargs["auth"].miner_hotkey is None
+
+
+@pytest.mark.asyncio
+async def test_boot_attestation_propagates_rc_rejection_without_releasing_secrets(
+    mock_db_session, boot_attestation_args, mock_quote_parsing
+):
+    """The central rc gate rejects by raising the ordinary MeasurementMismatchError (so an
+    unauthorized rc caller is indistinguishable from a normal mismatch); process_boot_attestation
+    surfaces it and never releases boot secrets. It still records a failed-attestation audit row,
+    exactly like any other measurement mismatch."""
+    mock_vq = AsyncMock(side_effect=MeasurementMismatchError())
+    mock_root = AsyncMock(return_value=("root_key", None, None))
+    mock_luks_nonce = AsyncMock(return_value="luks-nonce")
+    with (
+        patch("api.server.service.verify_quote", mock_vq),
+        patch("api.server.service.get_root_passphrase_for_boot", mock_root),
+        patch("api.server.service.generate_luks_quote_nonce", mock_luks_nonce),
+        patch("api.server.service._handle_boot_version_update", new_callable=AsyncMock),
+    ):
+        with pytest.raises(MeasurementMismatchError):
+            await process_boot_attestation(
+                mock_db_session, TEST_SERVER_IP, boot_attestation_args, TEST_NONCE, TEST_CERT_HASH, None
+            )
+    # No boot secrets were resolved or issued.
+    mock_root.assert_not_awaited()
+    mock_luks_nonce.assert_not_awaited()
+
+
+# --- provision: signature-based possession ---
+
+
+@pytest.mark.asyncio
+async def test_provision_threads_hotkey_and_signature_to_verify_quote(mock_db_session):
+    from api.server.service import process_provision_request
+    from api.server.schemas import ProvisionRequest, StorageProvisionResult
+
+    body = ProvisionRequest(quote="ignored", volumes=["storage"])
+    expected = StorageProvisionResult(volumes={}, confirm_nonce="cn", k3s_encryption_key="k")
+    mock_vq = AsyncMock()
+
+    with (
+        patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=Mock()),
+        patch("api.server.service.verify_quote", mock_vq),
+        patch("api.server.service.get_public_key_hash", return_value="hash"),
+        patch("api.server.service.record_vm_ca_identity", new=AsyncMock()),
+        patch("api.server.service._issue_storage_secrets", new=AsyncMock(return_value=expected)),
+    ):
+        await process_provision_request(
+            mock_db_session,
+            "5Hk",
+            "rc-vm",
+            body,
+            "quote-nonce",
+            Mock(),
+            auth=AttestationAuth.signed("sig"),
+        )
+
+    _, kwargs = mock_vq.await_args
+    assert kwargs["auth"].rc_signature == "sig"
+    assert kwargs["auth"].miner_hotkey is None
+
+
+@pytest.mark.asyncio
+async def test_provision_propagates_rc_rejection_before_recording_ca(mock_db_session):
+    from api.server.service import process_provision_request
+    from api.server.schemas import ProvisionRequest
+
+    body = ProvisionRequest(quote="ignored", volumes=["storage"])
+    with (
+        patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=Mock()),
+        patch("api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())),
+        patch("api.server.service.get_public_key_hash", return_value="hash"),
+        patch("api.server.service.record_vm_ca_identity", new=AsyncMock()) as mock_record,
+        patch("api.server.service._issue_storage_secrets", new=AsyncMock()) as mock_issue,
+    ):
+        with pytest.raises(MeasurementMismatchError):
+            await process_provision_request(
+                mock_db_session, "5Hk", "rc-vm", body, "quote-nonce", Mock(), auth=None
+            )
+    mock_record.assert_not_called()
+    mock_issue.assert_not_called()
+
+
+# --- server-create: pre-authenticated hotkey (get_current_user already proved possession) ---
+
+
+@pytest.mark.asyncio
+async def test_verify_server_forwards_authenticated_auth_to_verify_quote(
+    mock_db_session, sample_server, sample_runtime_quote
+):
+    """verify_server no longer fabricates the authenticated auth -- it forwards the one it's given
+    (minted by the endpoint's auth dependency) to the central rc gate."""
+    from api.server.service import verify_server
+
+    auth = AttestationAuth.hotkey_signed("5Hk")
+    mock_vq = AsyncMock()
+    mock_client = Mock()
+    mock_client.get_server_evidence = AsyncMock(return_value=(sample_runtime_quote, [], Mock()))
+
+    with (
+        patch("api.server.service.TeeServerClient.create", new=AsyncMock(return_value=mock_client)),
+        patch("api.server.service.verify_quote", mock_vq),
+        patch("api.server.service.get_public_key_hash", return_value="hash"),
+        patch("api.server.service.get_boot_record_ca", new=AsyncMock(return_value=None)),
+        patch("api.server.service.validate_gpus_for_measurements"),
+    ):
+        await verify_server(mock_db_session, sample_server, "5Hk", [_sample_node_args()], auth)
+
+    _, kwargs = mock_vq.await_args
+    assert kwargs["auth"] is auth
+
+
+@pytest.mark.asyncio
+async def test_verify_server_propagates_rc_rejection(
+    mock_db_session, sample_server, sample_runtime_quote
+):
+    from api.server.service import verify_server
+
+    mock_client = Mock()
+    mock_client.get_server_evidence = AsyncMock(return_value=(sample_runtime_quote, [], Mock()))
+
+    with (
+        patch("api.server.service.TeeServerClient.create", new=AsyncMock(return_value=mock_client)),
+        patch("api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())),
+        patch("api.server.service.get_public_key_hash", return_value="hash"),
+        patch("api.server.service.get_boot_record_ca", new=AsyncMock(return_value=None)),
+    ):
+        with pytest.raises(MeasurementMismatchError):
+            await verify_server(
+                mock_db_session,
+                sample_server,
+                "5Hk",
+                [_sample_node_args()],
+                AttestationAuth.hotkey_signed("5Hk"),
+            )
+
+
+# --- runtime attestation: pre-authenticated hotkey ---
+
+
+@pytest.mark.asyncio
+async def test_runtime_attestation_forwards_authenticated_auth_to_verify_quote(
+    mock_db_session, runtime_attestation_args, sample_server, sample_runtime_quote
+):
+    auth = AttestationAuth.hotkey_signed(sample_server.miner_hotkey)
+    mock_vq = AsyncMock()
+    mock_db_session.refresh.side_effect = lambda o: setattr(o, "attestation_id", "r1")
+    with (
+        patch("api.server.service.check_server_ownership", return_value=sample_server),
+        patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=sample_runtime_quote),
+        patch("api.server.service.verify_quote", mock_vq),
+    ):
+        await process_runtime_attestation(
+            mock_db_session,
+            sample_server.server_id,
+            sample_server.ip,
+            runtime_attestation_args,
+            sample_server.miner_hotkey,
+            TEST_NONCE,
+            TEST_CERT_HASH,
+            auth,
+        )
+    _, kwargs = mock_vq.await_args
+    assert kwargs["auth"] is auth
 
 
 # Runtime Attestation Tests
@@ -616,6 +878,7 @@ async def test_process_runtime_attestation_success(
                     miner_hotkey,
                     TEST_NONCE,
                     TEST_CERT_HASH,
+                    AttestationAuth.hotkey_signed(miner_hotkey),
                 )
 
             assert result["attestation_id"] == "runtime-attest-123"
@@ -647,6 +910,7 @@ async def test_process_runtime_attestation_server_not_found(
                 miner_hotkey,
                 TEST_NONCE,
                 TEST_CERT_HASH,
+                AttestationAuth.hotkey_signed(miner_hotkey),
             )
 
 
@@ -665,7 +929,7 @@ async def test_register_server_success(mock_db_session, server_args, sample_serv
                 new_callable=AsyncMock,
                 return_value="1.0.0",
             ):
-                await register_server(mock_db_session, server_args, miner_hotkey)
+                await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
 
     assert sample_server.version == "1.0.0"
     mock_db_session.commit.assert_called()
@@ -688,7 +952,7 @@ async def test_register_server_integrity_error(mock_db_session, server_args, sam
                 return_value="1.0.0",
             ):
                 with pytest.raises(ServerRegistrationError):
-                    await register_server(mock_db_session, server_args, miner_hotkey)
+                    await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
 
     mock_db_session.rollback.assert_called_once()
 
@@ -931,7 +1195,7 @@ async def test_register_server_general_exception(mock_db_session, server_args, s
                 return_value="1.0.0",
             ):
                 with pytest.raises(ServerRegistrationError):
-                    await register_server(mock_db_session, server_args, miner_hotkey)
+                    await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
 
     mock_db_session.rollback.assert_called_once()
 
@@ -1117,6 +1381,7 @@ async def test_full_runtime_flow_end_to_end(
                     miner_hotkey,
                     TEST_NONCE,
                     TEST_CERT_HASH,
+                    AttestationAuth.hotkey_signed(miner_hotkey),
                 )
 
                 assert result["status"] == "verified"
@@ -1135,7 +1400,7 @@ async def test_server_lifecycle_flow(mock_db_session, sample_server, server_args
                 new_callable=AsyncMock,
                 return_value="1.0.0",
             ):
-                await register_server(mock_db_session, server_args, miner_hotkey)
+                await register_server(mock_db_session, server_args, miner_hotkey, AttestationAuth.hotkey_signed(miner_hotkey))
     mock_db_session.commit.assert_called()
 
     # Step 2: Check ownership
@@ -1159,8 +1424,7 @@ async def test_server_lifecycle_flow(mock_db_session, sample_server, server_args
 async def test_boot_attestation_partial_failure_recovery(
     mock_db_session, boot_attestation_args, sample_boot_quote
 ):
-    """Test boot attestation handles partial failures gracefully."""
-    # Simulate verification failure but ensure failed record is still created
+    """Boot attestation surfaces verification failures and appends a failed boot record."""
     with patch("api.server.service.BootTdxQuote.from_base64", return_value=sample_boot_quote):
         with patch(
             "api.server.service.verify_quote",
@@ -1175,13 +1439,12 @@ async def test_boot_attestation_partial_failure_recovery(
                     TEST_CERT_HASH,
                 )
 
-            # Should still create failed attestation record
+            # A failed boot appends a record capturing the failure.
             mock_db_session.add.assert_called_once()
             mock_db_session.commit.assert_called_once()
 
-            # Verify the failed record has correct fields
             call_args = mock_db_session.add.call_args[0][0]
-            assert isinstance(call_args, BootAttestation)
+            assert isinstance(call_args, VmBootRecord)
             assert call_args.verification_error == "MRTD mismatch"
 
 
@@ -1211,6 +1474,7 @@ async def test_runtime_attestation_partial_failure_recovery(
                         miner_hotkey,
                         TEST_NONCE,
                         TEST_CERT_HASH,
+                        AttestationAuth.hotkey_signed(miner_hotkey),
                     )
 
                 # Should still create failed attestation record
@@ -1616,8 +1880,8 @@ async def test_boot_attestation_database_rollback_on_error(
                     TEST_CERT_HASH,
                 )
 
-            # Verify add was called but rollback should not be called
-            # (since we're not explicitly handling this exception)
+            # The boot record was added; the commit then failed. Rollback is not called here
+            # (this exception is not explicitly handled).
             mock_db_session.add.assert_called_once()
             mock_db_session.commit.assert_called_once()
 
@@ -1661,6 +1925,7 @@ async def test_runtime_attestation_database_rollback_on_error(
                         miner_hotkey,
                         TEST_NONCE,
                         TEST_CERT_HASH,
+                        AttestationAuth.hotkey_signed(miner_hotkey),
                     )
 
                 mock_db_session.add.assert_called_once()
