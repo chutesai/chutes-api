@@ -30,6 +30,7 @@ from api.chute.util import (
     count_prompt_tokens,
 )
 from api.util import recreate_vlm_payload
+from api.permissions import Permissioning
 from api.user.schemas import User
 from api.user.service import chutes_user_id, get_current_user, subnet_role_accessible
 from api.database import get_session, get_db_ro_session
@@ -958,10 +959,15 @@ async def hostname_invocation(
                 payload["continue_final_message"] = False
             logger.warning("Resolved continue_final_message/add_generation_prompt conflict")
 
-        # Disable logprobs for all models, for now - 2026-01-29 JD
-        if "affine" not in model.lower():
-            payload.pop("logprobs", None)
-            payload.pop("top_logprobs", None)
+        # Toggles based on user permissions to avoid.. problems.. on the engines.
+        if not current_user.has_role(Permissioning.enhanced_inference):
+            # logprobs spike memory badly depending on prompt size etc.
+            if "affine" not in model.lower():
+                payload.pop("logprobs", None)
+                payload.pop("top_logprobs", None)
+
+            # Likewise we don't want to blow up prefix cache...
+            payload.pop("cache_salt", None)
 
         # Header and/or model name options to enable thinking mode for various models.
         enable_thinking = False
