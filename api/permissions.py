@@ -71,6 +71,10 @@ class Permissioning:
         bitmask=1 << 14,
         description="Chutes team support role",
     )
+    enhanced_inference = Role(
+        bitmask=1 << 15,
+        description="Enable toggles for inference, such as logprob returns, etc.",
+    )
 
     @classmethod
     def enabled(cls, user, role):
