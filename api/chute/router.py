@@ -1611,6 +1611,7 @@ async def _deploy_chute(
         or "turbovision" in chute_args.name.lower()
         or "vocence" in chute_args.name.lower()
         or "leoma" in chute_args.name.lower()
+        or "prometheon" in chute_args.name.lower()
     ):
         allow_egress = False
 

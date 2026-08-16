@@ -193,6 +193,11 @@ INTEGRATED_SUBNETS = {
         "model_substring": "leoma",
         "max_public_chutes": 3,
     },
+    "prometheon": {
+        "netuid": 108,
+        "model_substring": "prometheon",
+        "max_public_chutes": 3,
+    },
     "score": {
         "netuid": 44,
         "model_substring": "turbovision",
