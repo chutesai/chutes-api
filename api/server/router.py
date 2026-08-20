@@ -21,6 +21,7 @@ from api.metagraph import get_miner_by_hotkey
 from api.constants import HOTKEY_HEADER, NoncePurpose
 
 from api.server.schemas import (
+    AttestationAuth,
     ProvisionRequest,
     ProvisionResponse,
     BootAttestationArgs,
@@ -68,6 +69,7 @@ from api.server.service import (
     _count_active_maintenance_slots,
 )
 from api.server.util import (
+    extract_attestation_auth,
     extract_client_cert_hash,
     require_attestation_proxy,
     require_cvm_proxy,
@@ -130,9 +132,16 @@ async def verify_boot_attestation(
     _mtls=Depends(require_attestation_proxy()),
     nonce: str = Depends(validate_boot_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
+    auth: AttestationAuth = Depends(extract_attestation_auth()),
 ):
     """
     Verify boot attestation and return LUKS passphrase.
+
+    auth (signed mode) carries the X-Chutes-Signature header, only consulted when the matched
+    measurement is a release candidate: it must be an RSA-SHA256 signature (openssl dgst) over the
+    boot nonce by one of the measurement's authorized operator signing keys, proving possession
+    (see authorize_rc_measurement). Ignored for published measurements, so existing VMs are
+    unaffected.
 
     This endpoint verifies the TDX quote against expected boot measurements
     and returns the LUKS passphrase for disk decryption if valid.
@@ -154,7 +163,12 @@ async def verify_boot_attestation(
             )
 
         result: BootAttestationResult = await process_boot_attestation(
-            db, server_ip, args, nonce, expected_cert_hash
+            db,
+            server_ip,
+            args,
+            nonce,
+            expected_cert_hash,
+            auth=auth,
         )
 
         return BootAttestationResponse(
@@ -266,9 +280,15 @@ async def provision(
     _mtls=Depends(require_cvm_proxy()),
     client_cert: Certificate = Depends(extract_client_cert()),
     validated_nonce: str = Depends(require_luks_quote_nonce),
+    auth: AttestationAuth = Depends(extract_attestation_auth()),
 ):
     """
     Provision a new VM at runtime: record its root CA identity and issue storage secrets.
+
+    auth (signed mode) carries the X-Chutes-Signature header, only consulted when the matched
+    measurement is a release candidate: it must be an RSA-SHA256 signature (openssl dgst) over the
+    quote nonce by one of the measurement's authorized operator signing keys, proving possession
+    (see authorize_rc_measurement). Ignored for published measurements.
 
     The RTMR3-attested runtime entry point for new VMs (supersedes /luks/attest going
     forward). The VM presents its per-boot root CA as the mTLS client cert; the quote's
@@ -281,7 +301,13 @@ async def provision(
     """
     try:
         result = await process_provision_request(
-            db, hotkey, vm_name, body, validated_nonce, client_cert
+            db,
+            hotkey,
+            vm_name,
+            body,
+            validated_nonce,
+            client_cert,
+            auth=auth,
         )
         return ProvisionResponse(
             volumes={
@@ -342,6 +368,7 @@ async def create_server(
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    auth: AttestationAuth = Depends(extract_attestation_auth()),
 ):
     """
     Register a new server.
@@ -389,7 +416,7 @@ async def create_server(
                 detail = "Conflict with an existing server. Please contact support to resolve."
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
 
-        await register_server(db, args, hotkey)
+        await register_server(db, args, hotkey, auth)
 
         return {"message": "Server registered successfully."}
 
@@ -754,6 +781,7 @@ async def verify_runtime_attestation(
     _: User = Depends(
         get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
     ),
+    auth: AttestationAuth = Depends(extract_attestation_auth(purpose="tee")),
     nonce: str = Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
     expected_cert_hash=Depends(extract_client_cert_hash()),
 ):
@@ -764,7 +792,7 @@ async def verify_runtime_attestation(
         server = await check_server_ownership(db, server_id, hotkey)
         actual_ip = request.state.client_ip
         result = await process_runtime_attestation(
-            db, server.server_id, actual_ip, args, hotkey, nonce, expected_cert_hash
+            db, server.server_id, actual_ip, args, hotkey, nonce, expected_cert_hash, auth
         )
 
         return RuntimeAttestationResponse(

@@ -165,6 +165,7 @@ async def test_boot_stale_window_cleared(mock_get):
 )
 async def test_register_server_sets_version(mock_track_server, mock_verify, mock_track_nodes):
     from api.server.service import register_server
+    from api.server.schemas import AttestationAuth
     from api.server.schemas import ServerArgs
     from api.node.schemas import NodeArgs
 
@@ -182,7 +183,7 @@ async def test_register_server_sets_version(mock_track_server, mock_verify, mock
     args.host = "10.0.0.1"
     args.gpus = [gpu]
 
-    await register_server(db, args, TEST_HOTKEY)
+    await register_server(db, args, TEST_HOTKEY, AttestationAuth.hotkey_signed(TEST_HOTKEY))
 
     assert server.version == TEST_VERSION_TARGET
     db.commit.assert_awaited()
@@ -200,6 +201,7 @@ async def test_register_server_version_none_when_verify_returns_none(
     mock_track_server, mock_verify, mock_track_nodes
 ):
     from api.server.service import register_server
+    from api.server.schemas import AttestationAuth
     from api.server.schemas import ServerArgs
     from api.node.schemas import NodeArgs
 
@@ -217,6 +219,6 @@ async def test_register_server_version_none_when_verify_returns_none(
     args.host = "10.0.0.1"
     args.gpus = [gpu]
 
-    await register_server(db, args, TEST_HOTKEY)
+    await register_server(db, args, TEST_HOTKEY, AttestationAuth.hotkey_signed(TEST_HOTKEY))
 
     assert server.version is None

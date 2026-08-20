@@ -93,12 +93,19 @@ class InvalidSignatureError(AttestationError):
 
 
 class MeasurementMismatchError(AttestationError):
-    """Raised when measurements don't match expected values."""
+    """Raised when measurements don't match expected values.
+
+    The default message is the generic "no recognized measurement" text used for every
+    non-informative rejection -- a quote matching nothing, and (deliberately identical, so it leaks
+    nothing) a release-candidate measurement the caller isn't authorized for. Raise it bare
+    (``MeasurementMismatchError()``) for those; pass an explicit message only where revealing the
+    reason to the operator is intended and safe (e.g. GPU-count or version-outdated at registration).
+    """
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "measurement_mismatch"
     default_message = (
-        "Measurement verification failed. Please ensure your server is running the most recent VM."
+        "Quote does not match expected measurements. Ensure you are running a supported VM."
     )
 
 

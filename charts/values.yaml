@@ -1085,6 +1085,18 @@ teeMeasurements:
     # # configured). Each version must be unique (stored on attestation for audit trail). Set
     # # `rc: true` on a version to mark it a release candidate: attestable but excluded from
     # # GET /tee/measurements and the minimum-version fallback.
+    # #
+    # # An rc measurement is reproducible from source, so it authenticates software, not an
+    # # operator: ANYONE who can build the image could otherwise present it. A `rc: true` version is
+    # # gated by proof of possession on both entry points, so it MUST declare BOTH allowlists:
+    # #   * authorized_hotkeys       -- miner hotkeys allowed on the register/runtime (userspace)
+    # #     paths; possession is proven by the standard sr25519 request auth.
+    # #   * authorized_signing_keys  -- operator RSA *public* keys (PEM) allowed on the boot/provision
+    # #     (initramfs) paths; the VM signs the server nonce with `openssl dgst -sha256 -sign` and the
+    # #     signature is sent in the dedicated X-Operator-Signature header (distinct from the sr25519
+    # #     X-Chutes-Signature so the two proof types can't be confused).
+    # # An rc version missing either allowlist, or with a signing key that isn't a valid PEM public
+    # # key, is dropped at load time (unusable). Omit both for published (non-rc) versions.
     # measurements:
     #   # Example measurement configuration - replace with actual values
     #   - version: "1.3.0"
@@ -1092,6 +1104,14 @@ teeMeasurements:
     #     rtmr1: "PLACEHOLDER_RTMR1_96_HEX_CHARS"
     #     rtmr2: "PLACEHOLDER_RTMR2_96_HEX_CHARS"
     #     runtime_rtmr3: "PLACEHOLDER_RUNTIME_RTMR3_96_HEX_CHARS"
+    #     # rc: true                       # uncomment for a release candidate, then set BOTH:
+    #     # authorized_hotkeys:            # REQUIRED when rc is true (register/runtime)
+    #     #   - "5PLACEHOLDER_AUTHORIZED_MINER_HOTKEY"
+    #     # authorized_signing_keys:       # REQUIRED when rc is true (boot/provision, RSA PEM)
+    #     #   - |
+    #     #     -----BEGIN PUBLIC KEY-----
+    #     #     ...operator RSA public key...
+    #     #     -----END PUBLIC KEY-----
     #     hardware:
     #       - name: "8xh200"
     #         rtmr0: "PLACEHOLDER_H200_RTMR0_96_HEX_CHARS"

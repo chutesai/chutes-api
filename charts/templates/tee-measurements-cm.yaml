@@ -10,6 +10,9 @@ data:
     # Managed via Helm values (teeMeasurements.measurements).
     # MRTD/RTMR1/RTMR2 (firmware, kernel/initrd) and runtime_rtmr3 are shared across all
     # hardware for a version; only RTMR0 (GPU topology) varies per hardware. Set `rc: true`
-    # to mark a version a release candidate (attestable but excluded from the public list).
+    # to mark a version a release candidate (attestable but excluded from the public list); an
+    # rc version MUST also list BOTH `authorized_hotkeys` (register/runtime) and
+    # `authorized_signing_keys` (boot/provision, operator RSA public keys in PEM) or it is dropped
+    # as unusable at load time.
     measurements:
 {{ .Values.teeMeasurements.measurements | toYaml | indent 6 }}
