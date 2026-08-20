@@ -44,6 +44,7 @@ from api.encrypted_logs.router import router as encrypted_logs_router
 from api.chute_logs.router import router as chute_logs_router
 from api.chute_logs.loki import LokiClient
 from api.model_alias.router import router as model_alias_router
+from api.partners.router import router as partners_router
 from api.chute.util import chute_id_by_slug
 from api.database import Base, engine, get_session
 from api.config import settings
@@ -178,6 +179,7 @@ default_router.include_router(
 )
 default_router.include_router(chute_logs_router, prefix="/logs", tags=["Logs"])
 default_router.include_router(model_alias_router, prefix="/model_aliases", tags=["Model Aliases"])
+default_router.include_router(partners_router, prefix="/partners", tags=["Partners"])
 
 
 # Do not use app for this, else middleware picks it up

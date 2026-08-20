@@ -8,7 +8,7 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-credentials: "false"
     nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-Chute-Id,X-Instance-Id,X-E2E-Nonce,X-E2E-Stream,X-E2E-Path,X-Enable-Thinking,X-Provider,X-Provider-Version,X-Title"
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
-    nginx.ingress.kubernetes.io/cors-expose-headers: "X-Chutes-Quota-Total,X-Chutes-Quota-Used,X-Chutes-Quota-Remaining,X-Chutes-RL-User,X-Chutes-RL-Chute,X-Chutes-InvocationID"
+    nginx.ingress.kubernetes.io/cors-expose-headers: "X-Chutes-Quota-Total,X-Chutes-Quota-Used,X-Chutes-Quota-Remaining,X-Chutes-RL-User,X-Chutes-RL-Chute,X-Chutes-InvocationID,Inference-Id"
     nginx.ingress.kubernetes.io/cors-max-age: "1728000"
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
