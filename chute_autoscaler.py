@@ -232,6 +232,7 @@ LIMIT_OVERRIDES = {
     "b637b82f-0262-516a-ab2a-23d998889600": 4,
     "ce6a92e4-5c2f-5681-9742-c80a4447bbdf": 1,
     "e51e818e-fa63-570d-9f68-49d7d1b4d12f": 2,
+    "9ecb73cc-909b-5334-9cd8-74985945cff5": 65,
 }
 FAILSAFE = {
     "aac09863-35b4-5d9b-9b67-6e6a9d54273a": 5,

@@ -280,7 +280,7 @@ async def get_free_balance(
         params=[address],
         block_hash=block_hash,
     )
-    return result["data"]["free"]
+    return result.value["data"]["free"]
 
 
 async def get_alpha_stake(
