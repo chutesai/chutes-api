@@ -1303,13 +1303,11 @@ async def store_host_profile(
     """
     Park a submitted host profile in object storage, first-write-wins.
 
-    The object is the exact bytes the miner signed, with the signature material carried in object
-    metadata, so whoever generates the measurement can re-verify who submitted it. Nothing is
-    recorded in the database: once measurements exist for the host class the object is deleted by
-    the generation tooling, and the published measurement is the record.
+    Stores the exact bytes the miner signed, with the signature material in object metadata so the
+    generation job can re-verify who submitted it. Nothing goes in the database -- the object is
+    deleted once measurements ship, and the published measurement is the record.
 
-    Returns the profile's fingerprint and whether this call created the object (False means that
-    host class was already submitted).
+    Returns (fingerprint, created); created=False means that host class was already submitted.
     """
     fingerprint = profile.fingerprint
     bucket = settings.host_profile_bucket or settings.storage_bucket

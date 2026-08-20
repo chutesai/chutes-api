@@ -30,7 +30,7 @@ async def check_rate_limit(
     Count one call against a fixed window and raise 429 once it exceeds ``limit``.
 
     Shared by both dependencies below. An ``identity`` gives each caller their own counter;
-    without one the counter is global to the endpoint. Pass 0 for ``limit`` to disable.
+    without one it is global to the endpoint. Pass 0 for ``limit`` to disable.
     """
     if limit <= 0:
         return

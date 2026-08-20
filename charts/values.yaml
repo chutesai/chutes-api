@@ -101,16 +101,12 @@ api:
   dbOverflow: 8
   rateLimitCount: 10
   openclGravalUrl: "https://new-graval.chutes.ai:8443"
-  # Miner-submitted host profiles (POST /servers/tdx/host_profiles) are parked in object storage
-  # until measurements are generated for that host class, then deleted by the generation tooling.
-  # They live in the main storage bucket under the host-profiles/ prefix -- one bucket keeps
-  # backup/restore and credentials uniform, and R2 charges per byte and per operation with no
-  # per-bucket fee, so splitting them out would save nothing. Give the generation job a
-  # bucket-scoped read-only token (R2 API tokens do not scope to a prefix; mint a prefix-scoped
-  # temporary credential if you ever need narrower access), and put a prefix-scoped lifecycle rule
-  # on host-profiles/ so abandoned submissions expire on their own.
-  # Leave hostProfileBucket empty to use STORAGE_BUCKET; set it only to isolate profiles in their
-  # own bucket. S3 credentials/endpoint come from the shared s3SecretName either way.
+  # Miner-submitted host profiles (POST /servers/tdx/host_profiles), parked until measurements are
+  # generated for that host class, then deleted by the generation tooling. Empty bucket ->
+  # STORAGE_BUCKET under the prefix below; set it only to isolate them in their own bucket.
+  # Put a prefix-scoped lifecycle rule on host-profiles/ so abandoned submissions expire.
+  # Note R2 API tokens scope to buckets, not prefixes -- use a temporary credential if the
+  # generation job ever needs narrower access than bucket-wide.
   hostProfileBucket: ""
   hostProfilePrefix: "host-profiles"
   rollingUpdate:

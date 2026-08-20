@@ -430,60 +430,47 @@ class TeeMeasurementResponse(BaseModel):
 
 
 # Constrained scalars for miner-submitted host profiles. A submission is untrusted input that
-# reaches object metadata (HTTP headers), log lines, and an offline measurement-generation job, so
-# every field is bounded and pattern-checked. Combined with ``extra="forbid"`` on every block, the
-# whole document is closed: a submission validates completely or not at all, and nothing free-form
-# reaches the generation tooling.
-#
-# ``HostProfileText`` is the loose case: bounded, and free of control characters (the part that
-# enables header and log injection), but otherwise any character, since DMI strings are
-# vendor-supplied and not ours to predict.
+# reaches object metadata (HTTP headers), log lines, and an offline generation job, so every field
+# is bounded and pattern-checked.
+# Bounded, no control chars (the header/log injection vector); otherwise vendor text we can't predict.
 HostProfileText = Annotated[str, StringConstraints(max_length=256, pattern=r"^[^\x00-\x1f\x7f]*$")]
-# 4 hex chars, exactly what ``lspci`` prints after the vendor id (e.g. 10de:2901 -> "2901").
+# The 4 hex chars lspci prints after the vendor id (10de:2901 -> "2901").
 HostProfilePciId = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{4}$")]
-# A PCI address in full domain:bus:device.function form, e.g. "0000:1b:00.0".
+# PCI address, domain:bus:device.function ("0000:1b:00.0").
 HostProfileBdf = Annotated[
     str, StringConstraints(pattern=r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$")
 ]
-# CPUID leaf-1 EAX|EDX as hex; discover-profile.sh emits 16 chars, null when a field was unreadable.
+# CPUID leaf-1 EAX|EDX as hex (16 chars), null when unreadable.
 HostProfileProcessorId = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{1,32}$")]
-# lscpu vendor strings ("GenuineIntel", "AuthenticAMD").
 HostProfileVendor = Annotated[
     str, StringConstraints(max_length=64, pattern=r"^[A-Za-z0-9 _.()-]*$")
 ]
-# A bare version number ("10.1.0"); the full distro string is HostProfileText instead.
+# Bare version number ("10.1.0"); the full distro string is HostProfileText.
 HostProfileVersion = Annotated[
     str, StringConstraints(max_length=64, pattern=r"^[0-9][0-9A-Za-z.+~:_-]*$")
 ]
-# A GPU VBIOS version ("96.00.89.00.01"), empty when unreadable.
 HostProfileVbios = Annotated[str, StringConstraints(max_length=64, pattern=r"^[0-9A-Za-z.-]*$")]
-# QEMU argument strings (the -cpu string, the summarised host topology). Deliberately excludes
-# shell metacharacters: these describe a command line, and the offline job that consumes them may
-# well build one.
+# QEMU argument strings. Excludes shell metacharacters: these describe a command line, and the
+# offline job that consumes them may build one.
 HostProfileQemuArgs = Annotated[
     str, StringConstraints(max_length=256, pattern=r"^[A-Za-z0-9_,.=+-]*$")
 ]
-# A sysfs cpulist ("0-47", "0-23,48-71"), or "?" when the node's cpulist was unreadable.
+# sysfs cpulist ("0-47,96-143"), or "?" when unreadable.
 HostProfileCpuList = Annotated[str, StringConstraints(max_length=256, pattern=r"^[0-9,?-]*$")]
-# The ``lspci -tv`` tree: multi-line by nature, so newlines and tabs are allowed where
-# HostProfileText forbids them, but every other control character is still rejected.
+# The lspci -tv tree: drawn with newlines and tabs, so those are allowed; other control chars aren't.
 HostProfileTopology = Annotated[
     str,
     StringConstraints(
         max_length=HOST_PROFILE_MAX_TOPOLOGY_CHARS, pattern=r"^[^\x00-\x08\x0b-\x1f\x7f]*$"
     ),
 ]
-# A NUMA node index, or -1 where sysfs did not report one.
+# NUMA node index, or -1 where sysfs reported none.
 HostProfileNumaIndex = Annotated[int, Field(ge=-1, le=HOST_PROFILE_MAX_NUMA_NODES)]
 
 
 class HostProfilePlatform(BaseModel):
-    """The machine's DMI/SMBIOS identity -- board, BIOS, chassis -- plus its OS release.
-
-    Firmware and board identity are what a measurement divergence between two supposedly
-    identical hosts usually traces back to, so this block is recorded even though none of it
-    feeds the fingerprint (BIOS revisions move independently of the host class).
-    """
+    """DMI/SMBIOS identity (board, BIOS, chassis) plus OS release. Recorded, not fingerprinted --
+    BIOS revisions move independently of the host class."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -497,19 +484,11 @@ class HostProfilePlatform(BaseModel):
 
 
 class HostProfileQemu(BaseModel):
-    """The hypervisor-side launch inputs: the QEMU build and the ``-cpu`` string it launches with.
+    """QEMU build and the ``-cpu`` string it launches with -- both RTMR0 determinants.
 
-    QEMU generates the guest ACPI tables and TD HOB that TDVF measures into RTMR0, and ``-cpu``
-    shapes the CPUID leaves the guest sees (discover-profile.sh derives it from the host's Ubuntu
-    VERSION_ID), so two hosts identical in every other respect but running different QEMU builds
-    or OS releases extend different RTMR0s.
-
-    Carried on the wire under discover-profile.sh's ``launch_determinism`` key. Its last three
-    members are restatements of values that belong to other blocks -- ``numa_node_count`` and
-    ``numa_topology_eligible`` (the latter is simply ``node_count == 2``) from ``numa``, and
-    ``host_cpu_topology`` from ``cpu``. They are declared so a submission validates, but nothing
-    reads them: ``HostProfile.fingerprint`` deliberately takes those values from their canonical
-    block, so a document whose restated copy disagrees cannot shift the fingerprint.
+    Wire key is ``launch_determinism``. Its last three members restate ``numa`` and ``cpu``; they
+    are declared so real submissions validate, but nothing reads them (``fingerprint`` takes those
+    values from their canonical block, so a disagreeing copy cannot shift it).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -518,7 +497,7 @@ class HostProfileQemu(BaseModel):
     qemu_version_full: HostProfileText = ""
     cpu_args: HostProfileQemuArgs = ""
 
-    # Restated from `numa` / `cpu`; declared, never read. See the class docstring.
+    # Restated from `numa` / `cpu`; declared, never read.
     numa_node_count: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_NUMA_NODES)
     numa_topology_eligible: bool = False
     host_cpu_topology: HostProfileQemuArgs = ""
@@ -556,11 +535,8 @@ class HostProfileCpu(BaseModel):
 
 
 class HostProfileMemory(BaseModel):
-    """Host RAM, which some profiles (e.g. B200) derive guest RAM from.
-
-    The ``suggested_*`` fields are discover-profile.sh's own sizing advice, recorded for whoever
-    reads the document but not used here.
-    """
+    """Host RAM, which some profiles (e.g. B200) derive guest RAM from. The ``suggested_*`` fields
+    are the script's own sizing advice, recorded but unused."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -570,7 +546,7 @@ class HostProfileMemory(BaseModel):
 
 
 class HostProfileNuma(BaseModel):
-    """NUMA layout of the host: node count, node indices, and each node's cpulist."""
+    """NUMA layout: node count, node indices, per-node cpulists."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -614,16 +590,12 @@ class HostProfileNvswitch(BaseModel):
 
 
 class HostProfile(BaseModel):
-    """A host profile: the document sek8s ``discover-profile.sh`` emits for one machine.
+    """The document sek8s ``discover-profile.sh`` emits for one machine -- the whole submitted
+    body, and what gets stored.
 
-    This is the whole submitted body, not a request wrapper around it -- the JSON a miner posts
-    IS the profile, and it is what gets stored.
-
-    Every field discover-profile.sh emits is modeled, and every block sets ``extra="forbid"``, so
-    an unknown key is a 422 rather than something free-form handed to the generation tooling. The
-    compatibility direction that buys is one-way: a script OLDER than the API still validates
-    (missing keys fall back to defaults), but a script that adds a key must not ship before the
-    API that knows it. Add the field here first, deploy, then roll out discover-profile.sh.
+    Every key the script emits is modeled and every block forbids extras, so compatibility is
+    one-way: an older script still validates (defaults fill in), but a script that adds a key 422s
+    until the API models it. Add the field here, deploy, then roll out the script.
     """
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
@@ -643,26 +615,20 @@ class HostProfile(BaseModel):
     @field_validator("gpu")
     @classmethod
     def _require_gpus(cls, gpu: HostProfileGpu) -> HostProfileGpu:
-        """A profile with no GPUs cannot produce a measurement, so it is never worth storing."""
+        """A profile with no GPUs cannot produce a measurement."""
         if gpu.count <= 0 or not gpu.pci_device_ids:
             raise ValueError("host profile must report at least one GPU")
         return gpu
 
     @property
     def fingerprint(self) -> str:
-        """
-        A stable id for the host CLASS this profile describes -- the storage key, and the unit
-        measurements are generated for.
+        """Stable id for the host CLASS -- the storage key, and the unit measurements are generated
+        for.
 
-        Only the facts that change the measurement we would generate participate: the passthrough
-        inventory (GPU ids/count/BARs, NVSwitches, IB NICs), the CPU identity and topology, host
-        RAM (some profiles derive guest RAM from it), the NUMA layout, and the QEMU/-cpu launch
-        arguments. Everything else discover-profile.sh reports (hostname, BIOS strings, the lspci
-        tree, ...) is kept in the stored document but excluded here, so every host of one class in
-        a fleet fingerprints identically and measurements are generated once.
-
-        Changing what goes into ``identity`` re-keys every future submission, so profiles already
-        parked in the bucket will not collide with resubmissions of the same hardware.
+        Covers only what changes the generated measurement: passthrough inventory, CPU identity and
+        topology, host RAM, NUMA layout, QEMU/-cpu args. Hostname, BIOS strings and the lspci tree
+        are stored but excluded, so every host of one class fingerprints identically. Changing this
+        set re-keys every future submission.
         """
         identity = {
             "gpu_pci_device_ids": sorted(set(self.gpu.pci_device_ids)),

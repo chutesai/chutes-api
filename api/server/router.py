@@ -535,12 +535,10 @@ async def submit_host_profile(
     """
     Submit a host profile (sek8s `discover-profile.sh` output) for measurement generation.
 
-    A VM only launches on a host class we have published measurements for, so an operator with
-    new hardware is gated until measurements exist for it. This is how they ask for them: the
-    profile is parked in object storage keyed by a fingerprint of the host class, and the offline
-    generation tooling picks it up, produces the measurements, and deletes the object. There is
-    no status to poll -- a host class becomes usable when its measurement ships in a release,
-    which the miner-side tooling already knows how to detect.
+    A VM only launches on a host class with published measurements, so new hardware is gated until
+    they exist. This is how an operator asks: the profile is parked in object storage keyed by a
+    fingerprint of the host class, and offline tooling generates the measurements and deletes the
+    object. Nothing to poll -- the host class becomes usable when its measurement ships.
 
     Signed by the miner hotkey with no purpose, so the signature covers the request body.
     """
