@@ -184,6 +184,15 @@ class Settings(BaseSettings):
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
 
+    # Miner-submitted host profiles (POST /servers/tdx/host_profiles): raw discover-profile.sh
+    # output parked in object storage until measurements are generated for that host class, then
+    # deleted. Normally unset, putting them in storage_bucket under the host_profile_prefix --
+    # one bucket keeps backup/restore and credentials uniform, and object storage bills per byte
+    # and per operation rather than per bucket. Set it only to isolate profiles in their own
+    # bucket.
+    host_profile_bucket: Optional[str] = os.getenv("HOST_PROFILE_BUCKET")
+    host_profile_prefix: str = os.getenv("HOST_PROFILE_PREFIX", "host-profiles")
+
     # Base redis settings.
     redis_host: str = Field(
         default_factory=lambda: os.getenv("REDIS_HOST", "172.16.0.100"),

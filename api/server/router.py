@@ -18,7 +18,17 @@ from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
 from api.metagraph import get_miner_by_hotkey
-from api.constants import HOTKEY_HEADER, NoncePurpose
+from api.constants import (
+    HOTKEY_HEADER,
+    NONCE_HEADER,
+    SIGNATURE_HEADER,
+    NoncePurpose,
+    HOST_PROFILE_MAX_BYTES,
+    HOST_PROFILE_SUBMISSIONS_PER_HOTKEY,
+    HOST_PROFILE_SUBMISSIONS_GLOBAL,
+    HOST_PROFILE_WINDOW_SECONDS,
+)
+from api.rate_limit import rate_limit_miner
 
 from api.server.schemas import (
     AttestationAuth,
@@ -43,6 +53,8 @@ from api.server.schemas import (
     TeeUpgradeWindow,
     UpgradeWindowInfo,
     TeeMeasurementResponse,
+    HostProfile,
+    HostProfileSubmissionResponse,
 )
 from api.server.service import (
     BootAttestationResult,
@@ -69,6 +81,7 @@ from api.server.service import (
     _count_active_maintenance_slots,
 )
 from api.server.util import (
+    store_host_profile,
     extract_attestation_auth,
     extract_client_cert_hash,
     require_attestation_proxy,
@@ -501,6 +514,67 @@ async def get_tee_measurements():
         ex=TEE_MEASUREMENTS_CACHE_TTL,
     )
     return result
+
+
+@router.post("/tdx/host_profiles", response_model=HostProfileSubmissionResponse)
+async def submit_host_profile(
+    request: Request,
+    profile: HostProfile,
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    nonce: str | None = Header(None, alias=NONCE_HEADER),
+    signature: str | None = Header(None, alias=SIGNATURE_HEADER),
+    _: User = Depends(
+        rate_limit_miner(
+            "host_profile_submit",
+            HOST_PROFILE_SUBMISSIONS_PER_HOTKEY,
+            window_seconds=HOST_PROFILE_WINDOW_SECONDS,
+            global_limit=HOST_PROFILE_SUBMISSIONS_GLOBAL,
+        )
+    ),
+):
+    """
+    Submit a host profile (sek8s `discover-profile.sh` output) for measurement generation.
+
+    A VM only launches on a host class we have published measurements for, so an operator with
+    new hardware is gated until measurements exist for it. This is how they ask for them: the
+    profile is parked in object storage keyed by a fingerprint of the host class, and the offline
+    generation tooling picks it up, produces the measurements, and deletes the object. There is
+    no status to poll -- a host class becomes usable when its measurement ships in a release,
+    which the miner-side tooling already knows how to detect.
+
+    Signed by the miner hotkey with no purpose, so the signature covers the request body.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > HOST_PROFILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Host profile exceeds {HOST_PROFILE_MAX_BYTES} bytes.",
+        )
+
+    try:
+        fingerprint, stored = await store_host_profile(
+            profile=profile,
+            raw_body=raw_body,
+            hotkey=hotkey,
+            nonce=nonce,
+            signature=signature,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to store host profile from {hotkey=}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to store host profile, please try again later.",
+        )
+
+    return HostProfileSubmissionResponse(
+        fingerprint=fingerprint,
+        stored=stored,
+        detail=(
+            "Host profile accepted, measurements will be generated and published in a future release."
+            if stored
+            else "This host profile was already submitted, no action needed."
+        ),
+    )
 
 
 @router.get("/signing-keys")

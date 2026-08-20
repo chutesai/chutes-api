@@ -69,6 +69,34 @@ MIN_ROOT_ROTATION_VERSION = "1.4.0"
 # key usage (TeeServerClient.create).
 MIN_VM_AUTH_KEY_VERSION = "1.4.0"
 
+# Host profile submissions (POST /servers/tdx/host_profiles). discover-profile.sh output is a few
+# KB (pci_topology, the lspci tree, dominates), so the cap is generous but still bounds what a
+# single miner can push into the bucket. Both rate limits are counted only AFTER the signature
+# verifies, so a forged hotkey header can't burn a real miner's quota.
+HOST_PROFILE_MAX_BYTES = 256 * 1024
+
+# Bounds on the modeled fields of a submitted profile. discover-profile.sh produces
+# machine-generated values (PCI device ids are the 4 hex chars lspci prints, the processor id is
+# 16 hex chars of CPUID leaf-1, cpu_args is "host" or "host,-avx10"), but a submission is
+# attacker-controlled data from a miner: these fields end up in object metadata -- i.e. HTTP
+# request headers -- in log lines, and in front of an offline generation job running with more
+# privilege than this API. None of them may be unbounded or free-form. Ranges are generous enough
+# that plausible future hardware still validates.
+HOST_PROFILE_MAX_GPUS = 64
+HOST_PROFILE_MAX_NUMA_NODES = 64
+HOST_PROFILE_MAX_SOCKETS = 64
+HOST_PROFILE_MAX_CPUS = 8192
+HOST_PROFILE_MAX_THREADS_PER_CORE = 16
+HOST_PROFILE_MAX_RAM_GB = 262144
+HOST_PROFILE_MAX_VRAM_GB = 65536
+HOST_PROFILE_MAX_BAR_MB = 16 * 1024 * 1024
+HOST_PROFILE_MAX_NICS = 256
+# The lspci -tv tree; a few KB on a large box, bounded well under the whole-body cap.
+HOST_PROFILE_MAX_TOPOLOGY_CHARS = 64 * 1024
+HOST_PROFILE_SUBMISSIONS_PER_HOTKEY = 10
+HOST_PROFILE_SUBMISSIONS_GLOBAL = 120
+HOST_PROFILE_WINDOW_SECONDS = 3600
+
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
 

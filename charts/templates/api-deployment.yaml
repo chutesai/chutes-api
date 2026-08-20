@@ -112,6 +112,14 @@ spec:
                   key: key
             - name: CHUTES_VERSION
               value: {{ .Values.api.chutesVersion | default .Values.chutes_version | quote }}
+            {{- if .Values.api.hostProfileBucket }}
+            - name: HOST_PROFILE_BUCKET
+              value: {{ .Values.api.hostProfileBucket | quote }}
+            {{- end }}
+            {{- if .Values.api.hostProfilePrefix }}
+            - name: HOST_PROFILE_PREFIX
+              value: {{ .Values.api.hostProfilePrefix | quote }}
+            {{- end }}
             - name: VALIDATOR_SS58
             {{- if .Values.api.validatorSs58 }}
               value: {{ .Values.api.validatorSs58 | quote }}

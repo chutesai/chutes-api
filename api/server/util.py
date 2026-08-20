@@ -7,6 +7,7 @@ import secrets
 import base64
 import json
 import tempfile
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.sql import func
@@ -43,7 +44,13 @@ from api.server.exceptions import (
 from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
 
-from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, AttestationAuth
+from api.server.schemas import (
+    Server,
+    VmCacheConfig,
+    LuksVolumeRotation,
+    AttestationAuth,
+    HostProfile,
+)
 from api.constants import (
     MIN_ROOT_ROTATION_VERSION,
     ATTESTATION_PROXY_AUTH_HEADER,
@@ -1284,3 +1291,58 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
         raise InvalidGpuEvidenceError()
 
     logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))
+
+
+async def store_host_profile(
+    profile: HostProfile,
+    raw_body: bytes,
+    hotkey: str,
+    nonce: str,
+    signature: str,
+) -> tuple[str, bool]:
+    """
+    Park a submitted host profile in object storage, first-write-wins.
+
+    The object is the exact bytes the miner signed, with the signature material carried in object
+    metadata, so whoever generates the measurement can re-verify who submitted it. Nothing is
+    recorded in the database: once measurements exist for the host class the object is deleted by
+    the generation tooling, and the published measurement is the record.
+
+    Returns the profile's fingerprint and whether this call created the object (False means that
+    host class was already submitted).
+    """
+    fingerprint = profile.fingerprint
+    bucket = settings.host_profile_bucket or settings.storage_bucket
+    key = f"{settings.host_profile_prefix}/{fingerprint}.json"
+    async with settings.s3_client() as s3:
+        try:
+            await s3.head_object(Bucket=bucket, Key=key)
+            logger.info(f"Host profile {fingerprint} already submitted, ignoring {hotkey=}")
+            return fingerprint, False
+        except Exception as exc:
+            if getattr(exc, "response", {}).get("Error", {}).get("Code") not in (
+                "404",
+                "NoSuchKey",
+            ):
+                raise
+
+        await s3.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=raw_body,
+            ContentType="application/json",
+            Metadata={
+                "hotkey": hotkey,
+                "nonce": nonce,
+                "signature": signature,
+                "fingerprint": fingerprint,
+                "gpu-count": str(profile.gpu.count),
+                "gpu-pci-device-ids": ",".join(sorted(set(profile.gpu.pci_device_ids))),
+                "submitted-at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+    logger.success(
+        f"Stored host profile {fingerprint} from {hotkey=}: "
+        f"{profile.gpu.count}x{'/'.join(sorted(set(profile.gpu.pci_device_ids)))}"
+    )
+    return fingerprint, True
