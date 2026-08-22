@@ -5,8 +5,10 @@ valid `authorized_hotkeys` (register/runtime) AND `authorized_signing_keys` (boo
 operator public keys) or it is dropped as unusable.
 """
 
+import copy
 from pathlib import Path
 
+import pytest
 import yaml
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
@@ -184,3 +186,60 @@ def test_teemeasurementconfig_defaults_allowlists_empty():
     assert cfg.authorized_hotkeys == []
     assert cfg.authorized_signing_keys == []
     assert cfg.rc is False
+
+
+def _with_fingerprint(value):
+    """PUBLISHED_VERSION with a fingerprint on its single hardware entry."""
+    version = copy.deepcopy(PUBLISHED_VERSION)
+    version["hardware"][0]["fingerprint"] = value
+    return version
+
+
+def test_hardware_fingerprint_loads(tmp_path):
+    s = _settings_for([_with_fingerprint("a" * 64)], tmp_path)
+    assert s._load_tee_measurements()[0].fingerprint == "a" * 64
+
+
+def test_hardware_fingerprint_is_normalised(tmp_path):
+    s = _settings_for([_with_fingerprint("  " + "A" * 64 + "  ")], tmp_path)
+    assert s._load_tee_measurements()[0].fingerprint == "a" * 64
+
+
+def test_hardware_fingerprint_is_optional(tmp_path):
+    """Entries predating the field must still load -- they are simply unmatchable."""
+    s = _settings_for([PUBLISHED_VERSION], tmp_path)
+    loaded = s._load_tee_measurements()
+    assert len(loaded) == 1
+    assert loaded[0].fingerprint is None
+
+
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_blank_hardware_fingerprint_is_treated_as_absent(tmp_path, value):
+    s = _settings_for([_with_fingerprint(value)], tmp_path)
+    assert s._load_tee_measurements()[0].fingerprint is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["a" * 63, "a" * 65, "g" * 64, "0x" + "a" * 62, "a" * 32 + "-" + "a" * 31],
+)
+def test_malformed_hardware_fingerprint_is_rejected(tmp_path, value):
+    """A wrong fingerprint is worse than none: it would match the wrong host class."""
+    s = _settings_for([_with_fingerprint(value)], tmp_path)
+    with pytest.raises(ValueError, match="fingerprint"):
+        s._load_tee_measurements()
+
+
+def test_fingerprint_defaults_to_none_on_the_dataclass():
+    cfg = TeeMeasurementConfig(
+        version="1",
+        name="x",
+        mrtd="a" * 96,
+        rtmr0="b" * 96,
+        rtmr1="c" * 96,
+        rtmr2="d" * 96,
+        runtime_rtmr3="e" * 96,
+        expected_gpus=["h200"],
+        gpu_count=8,
+    )
+    assert cfg.fingerprint is None

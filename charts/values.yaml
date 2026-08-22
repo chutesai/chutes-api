@@ -104,7 +104,10 @@ api:
   # Miner-submitted host profiles (POST /servers/tdx/host_profiles), parked until measurements are
   # generated for that host class, then deleted by the generation tooling. Empty bucket ->
   # STORAGE_BUCKET under the prefix below; set it only to isolate them in their own bucket.
-  # Put a prefix-scoped lifecycle rule on host-profiles/ so abandoned submissions expire.
+  # Submissions land under host-profiles/pending/; the generator moves them to
+  # host-profiles/measured/ once a measurement exists. Scope the expiry lifecycle rule to
+  # pending/ ONLY -- measured/ is permanent, since a fingerprint cannot be inverted back to the
+  # topology inputs an RTMR0 regen would need.
   # Note R2 API tokens scope to buckets, not prefixes -- use a temporary credential if the
   # generation job ever needs narrower access than bucket-wide.
   hostProfileBucket: ""
@@ -430,6 +433,27 @@ watchtower:
       ephemeral-storage: "1Gi"
   affinity: {}
   tolerations: []
+
+# Host profile bucket lifecycle. Notifies on new pending/ submissions (generation stays manual --
+# a human decides) and promotes pending/ -> measured/ once a fingerprint appears in the published
+# measurement config. Never triggers generation itself.
+hostProfileReconciler:
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/15 * * * *"
+  suspend: false
+  # Secret holding the Discord webhook URL for "new host class submitted" alerts. Leave unset to
+  # disable alerting -- reconcile still runs.
+  discordWebhookSecretName: ""
+  discordWebhookSecretKey: webhook-url
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "200m"
+      memory: "512Mi"
 
 cacher:
   image: validator:latest

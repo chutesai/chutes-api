@@ -1,0 +1,108 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: host-profile-reconciler
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.hostProfileReconciler.schedule | default "*/15 * * * *" | quote }}
+  suspend: {{ .Values.hostProfileReconciler.suspend | default false }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.hostProfileReconciler.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.hostProfileReconciler.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: {{ .Values.hostProfileReconciler.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "api.labels" . | nindent 12 }}
+            {{- include "chutes.dbAccess" . | nindent 12 }}
+            {{- include "chutes.redisAccess" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.hostProfileReconciler.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.hostProfileReconciler.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumes:
+            # Reconcile reads the published measurement set to decide what to promote, so it needs
+            # the same ConfigMap the API mounts.
+            - name: tee-measurements
+              configMap:
+                name: tee-measurements
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
+          containers:
+            - name: host-profile-reconciler
+              image: {{ include "chutes.image" (list . .Values.hostProfileReconciler.image) | quote }}
+              imagePullPolicy: {{ .Values.hostProfileReconciler.imagePullPolicy }}
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - host_profile_reconciler.py
+              env:
+                {{- include "chutes.cronjobEnv" (dict "Values" .Values) | nindent 16 }}
+                {{- if .Values.s3ProxyUrl }}
+                - name: S3_PROXY_URL
+                  value: {{ .Values.s3ProxyUrl | quote }}
+                {{- end }}
+                {{- if .Values.api.hostProfileBucket }}
+                - name: HOST_PROFILE_BUCKET
+                  value: {{ .Values.api.hostProfileBucket | quote }}
+                {{- end }}
+                {{- if .Values.api.hostProfilePrefix }}
+                - name: HOST_PROFILE_PREFIX
+                  value: {{ .Values.api.hostProfilePrefix | quote }}
+                {{- end }}
+                {{- if .Values.hostProfileReconciler.discordWebhookSecretName }}
+                - name: DISCORD_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.hostProfileReconciler.discordWebhookSecretName }}
+                      key: {{ .Values.hostProfileReconciler.discordWebhookSecretKey | default "webhook-url" }}
+                {{- end }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: access-key-id
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: secret-access-key
+                - name: AWS_ENDPOINT_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: endpoint-url
+                - name: AWS_REGION
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: aws-region
+                - name: STORAGE_BUCKET
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
+                      key: bucket
+              volumeMounts:
+                - name: tee-measurements
+                  mountPath: "/etc/config"
+                  readOnly: true
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
+              resources:
+                {{- include "chutes.cronjobResources" .Values.hostProfileReconciler.resources | nindent 16 }}

@@ -69,11 +69,43 @@ MIN_ROOT_ROTATION_VERSION = "1.4.0"
 # key usage (TeeServerClient.create).
 MIN_VM_AUTH_KEY_VERSION = "1.4.0"
 
+# Minimum VM version whose measurements count toward host profile status. 1.4.0 is the first
+# version shipping the CLI that calls POST /servers/tdx/host_profiles, so nothing older ever asks.
+# The gate is also what makes the answer true: "accepted" means the version the caller runs can
+# launch here, and a host class measured only on 1.3.x cannot launch 1.4.0. It also scopes the
+# `fingerprint` backfill to 1.4.0 entries, which are generated with one from the start.
+MIN_HOST_PROFILE_MEASUREMENT_VERSION = "1.4.0"
+
 # Host profile submissions (POST /servers/tdx/host_profiles). Output is a few KB (the lspci tree
 # dominates), so the cap is generous but bounds what one miner can push into the bucket. Both rate
 # limits are counted only AFTER the signature verifies, so a forged hotkey can't burn a real
 # miner's quota.
 HOST_PROFILE_MAX_BYTES = 256 * 1024
+
+# Host profile object lifecycle, under host_profile_prefix. Submissions land in pending/ and the
+# offline generator MOVES them to measured/ once a measurement exists for that host class. measured/
+# is a permanent store: a fingerprint cannot be inverted back to the topology inputs, and
+# regenerating RTMR0 after a firmware change needs them. Only pending/ gets an expiry rule.
+HOST_PROFILE_PENDING_PREFIX = "pending"
+HOST_PROFILE_MEASURED_PREFIX = "measured"
+
+# Stripped from a host profile before it is published on GET /servers/tdx/topologies: these
+# identify the individual machine that submitted it, not the host class. Everything else --
+# gpu/cpu/memory/numa/qemu plus BIOS, board and the lspci tree -- is generic host-class data and
+# is exactly what a third party needs to reproduce RTMR0.
+HOST_PROFILE_PRIVATE_FIELDS = {"hostname", "timestamp"}
+
+
+class HostProfileStatus(str, Enum):
+    """Whether a submitted host class can launch yet."""
+
+    # Fingerprint is on a non-rc measurement hardware entry: this host class can launch.
+    ACCEPTED = "accepted"
+    # Parked in the bucket, awaiting measurement generation.
+    PENDING = "pending"
+    # Neither -- only reachable via dry_run, since a real submission gets parked.
+    UNKNOWN = "unknown"
+
 
 # Bounds on the modeled fields of a submitted profile. The values are machine-generated, but a
 # submission is attacker-controlled and lands in object metadata (HTTP headers), log lines, and in
@@ -93,6 +125,10 @@ HOST_PROFILE_MAX_TOPOLOGY_CHARS = 64 * 1024
 HOST_PROFILE_SUBMISSIONS_PER_HOTKEY = 10
 HOST_PROFILE_SUBMISSIONS_GLOBAL = 120
 HOST_PROFILE_WINDOW_SECONDS = 3600
+
+# GET /servers/tdx/topologies: public and unauthenticated, so it carries an anonymous global cap
+# like the other public TEE endpoints. Responses are redis-cached, so this bounds cache misses.
+TOPOLOGIES_RATE_LIMIT_PER_MINUTE = 60
 
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25

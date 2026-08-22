@@ -15,15 +15,22 @@ with new hardware had no in-band way to ask for measurements.
 This adds the request channel: the miner CLI runs `discover-profile.sh`, signs the JSON with the
 miner hotkey, and POSTs it. The API parks the document in object storage keyed by a fingerprint of
 the host class; offline tooling (CI or local) reads the bucket, generates measurements, ships them
-in a release, and deletes the object.
+in a release, and promotes the object from `pending/` to `measured/`.
 
 - **Key files**:
   - `api/server/router.py` — `submit_host_profile` (`POST /servers/tdx/host_profiles`)
   - `api/server/schemas.py` — `HostProfile` (+ `HostProfile.fingerprint`), `HostProfileSubmissionResponse`
-  - `api/server/util.py` — `store_host_profile`
+  - `api/server/util.py` — `store_host_profile`, `resolve_host_profile_status`,
+    `topology_measurement_status`, `list_measured_topologies`, `promote_host_profile`,
+    `reconcile_host_profiles`
+  - `host_profile_reconciler.py` + `charts/templates/host-profile-reconciler-cronjob.yaml` —
+    notify + reconcile job
+  - `api/notify.py` — Discord webhook alerts
+  - `api/server/host_profile_fingerprint.py` — `python -m` fingerprint utility for the generator
   - `api/rate_limit.py` — `rate_limit_miner` (auth + per-miner metering), `check_rate_limit`
   - `api/constants.py` — size cap, submission limits, field bounds
-  - `api/config/__init__.py` — `host_profile_bucket`, `host_profile_prefix`
+  - `api/config/__init__.py` — `host_profile_bucket`, `host_profile_prefix`,
+    `TeeMeasurementConfig.fingerprint`, `_load_tee_measurements`
   - `charts/` — `api.hostProfileBucket` / `api.hostProfilePrefix`
 
 ---
@@ -54,8 +61,11 @@ in a release, and deletes the object.
   `numa_topology_eligible`) and `cpu` (`host_cpu_topology`). Declared so submissions validate, but
   never read — `fingerprint` takes those from their canonical block, so a disagreeing copy is inert.
 
-- **Bucket only, no database**: a submission is a transient request. Once measurements ship, the
-  published measurement is the record and the object is deleted.
+- **Bucket only, no database**, and profiles under `measured/` are **retained permanently**. A
+  fingerprint is a one-way hash: it cannot be inverted back to the topology inputs it was computed
+  from. Regenerating RTMR0 after a firmware or QEMU change needs those inputs, so discarding a
+  profile once its measurement ships would throw away the only copy. Only `pending/` — submissions
+  that were never generated — expires.
 
 - **One bucket, one prefix**: profiles land in the main storage bucket under `host-profiles/`,
   beside `audit/`, `forge/`, `jobs/`, `logos/`. Single bucket keeps backup/restore and credentials
@@ -81,8 +91,34 @@ in a release, and deletes the object.
   The global ceiling is metered there too — a pre-auth global counter can be run down with
   unauthenticated junk.
 
-- **No status endpoint**: a host class becomes usable when its measurement ships in a release, which
-  needs a sek8s code change anyway, and the miner tooling already detects that.
+- **The API owns the fingerprint, and answers the status question** (reversing an earlier decision
+  in this spec that there should be no status endpoint). That decision assumed the miner could tell
+  for itself whether its hardware was supported. It cannot, without reimplementing the fingerprint —
+  and a second implementation that drifts silently breaks the accepted/pending distinction. So the
+  miner sends raw platform metadata and gets back a status word; computation, keying and matching
+  all live here. If the key definition changes, it changes in one place.
+
+- **The fingerprint is the id linking the two halves**: submissions (bucket object key) and
+  measurements (`fingerprint` on each `hardware` entry). It is computed once, by
+  `HostProfile.fingerprint`, at submission — never recomputed by a second code path.
+
+- **Measurements stay in the config map**, not a database. The git history of the values file is the
+  audit trail for what was accepted and when, reviewed like any other change. Status is answered by
+  reading the loaded measurement set directly — no new store, and no cache: the parse costs ~5ms and
+  submissions are capped at 120/hour, while the attestation path already pays the same cost far more
+  often. Caching would only have bought staleness.
+
+- **Gated to measurements ≥1.4.0**: 1.4.0 is the first VM version shipping the CLI that calls this
+  endpoint, so nothing older ever asks. The gate is what makes the answer *true* rather than merely
+  convenient — `accepted` means "the version you are running can launch here", and a host class
+  measured only on 1.3.x cannot launch 1.4.0, so reporting `accepted` off a 1.3.x entry would be a
+  lie. It also scopes the `fingerprint` backfill: the 24 pre-1.4.0 entries never need one, because
+  1.4.0 entries are generated with a fingerprint from the start.
+
+- **`dry_run` for check-without-write**: computes and reports status but stores nothing. Serves a
+  pure "is my hardware supported?" check, and lets the release workflow mint a fingerprint for a
+  profile that was never submitted. Without it, only `accepted` and `pending` are reachable, since a
+  real submission either matches a measurement or gets parked.
 
 ---
 
@@ -117,7 +153,8 @@ describes hardware, and nothing proves they own it.
 
 - **Cost is bounded** by the rate limits: 120/hour × 256 KiB ≈ 21 GB/month worst case (~$0.32), with
   Class A operations inside the free tier. Fingerprint dedup does *not* bound this, since the
-  submitter controls the fingerprint inputs.
+  submitter controls the fingerprint inputs. Note the `pending/` expiry rule is what reclaims junk;
+  `measured/` grows only when a real measurement ships, so it stays small.
 
 - **Known limitation**: the 256 KiB cap is a policy check, not a memory guard. The body-hashing
   middleware buffers the body and FastAPI parses it before the handler's size check runs, and the
@@ -141,6 +178,8 @@ Content-Type: application/json
 <discover-profile.sh output, verbatim>
 ```
 
+Optional query param: `dry_run=true` to compute status without storing.
+
 Bodies over 256 KiB are rejected with 413; unknown or malformed fields with 422.
 
 ### Response
@@ -148,13 +187,14 @@ Bodies over 256 KiB are rejected with 413; unknown or malformed fields with 422.
 ```json
 {
   "fingerprint": "<sha256 hex>",
+  "status": "pending",
   "stored": true,
-  "detail": "Host profile accepted, measurements will be generated and published in a future release."
+  "detail": "Host profile stored; measurements will be generated and published in a future release."
 }
 ```
 
-`stored: false` means that host class was already submitted — the correct outcome for the second
-host in a fleet, not an error.
+`stored: false` means nothing was written — either the host class is already `accepted`, or it was
+already submitted (the correct outcome for the second host in a fleet, not an error).
 
 ### Schema compatibility
 
@@ -167,15 +207,174 @@ Release order: add the field to `HostProfile` (with a bound and a pattern), depl
 roll out the script. `tests/unit/test_host_profile_submission.py` holds a complete sample document
 and asserts it validates — that is the test that fails when the script grows a field.
 
+### Status
+
+Every submission returns `status`, computed from the fingerprint:
+
+Only measurements at or above `MIN_HOST_PROFILE_MEASUREMENT_VERSION` (1.4.0) are considered:
+
+| condition | status |
+| --- | --- |
+| a **non-rc** measurement ≥1.4.0 carries the fingerprint | `accepted` — this host class can launch |
+| otherwise, an object under `pending/` or `measured/` | `pending` — queued or generated |
+| none of the above | `unknown` — only reachable with `dry_run`, since a real submission gets parked |
+
+**rc is a property of a version, not of a topology.** A topology is measured or it is not, so there
+is no measured-but-rc state: rc measurements are simply skipped when reading topology status, and a
+fingerprint carried only by an rc version reports `pending` off the bucket. Correct — nothing it can
+launch is published yet.
+
+**Status comes from the measurement config, never from the `measured/` prefix.** The config is the
+sole truth for attestability; `measured/` is just the retained generation store. Deriving `accepted`
+from the prefix would let the bucket and the config drift into disagreeing about what can launch.
+
+A real submission stores whenever we do not already hold the profile — *including* when a
+measurement already covers it, since a fingerprint cannot be inverted and an accepted host class
+with no stored profile could never be regenerated. `dry_run` never writes.
+
+`dry_run=true` (query param, default false) computes and reports status without writing. It uses the
+same signed auth and consumes the same quota as a real submission.
+
+### Release-workflow contract (fingerprint propagation)
+
+The generator **propagates** the fingerprint onto each `hardware` entry it publishes. It must never
+recompute it with its own algorithm: a mismatch silently breaks accepted-detection, and a host class
+that has measurements keeps reporting `pending` forever.
+
+Two sources, both single-sourced from `HostProfile.fingerprint`:
+
+1. **Submission-driven topologies** — the fingerprint *is* the bucket object key
+   (`host-profiles/pending/{fingerprint}.json`). Read it off the key, copy it onto the entry, then
+   move the object to `measured/`.
+2. **Seed / build-time topologies** never submitted through the API:
+
+   ```
+   python -m api.server.host_profile_fingerprint <profile.json>   # or - for stdin
+   ```
+
+   which prints the fingerprint for a discover-profile.sh document. (`dry_run=true` against a
+   running API returns the same value and is the alternative if invoking this repo is inconvenient.)
+
+### `GET /servers/tdx/topologies` (public)
+
+Unauthenticated, redis-cached, anonymously rate-limited — same shape as `GET /tee/measurements`,
+and designed to be read alongside it.
+
+```json
+[{"fingerprint": "<sha256 hex>", "profile": { ...discover-profile document... }}]
+```
+
+One entry per object under `measured/` — the generated set. The profile is the stored document
+re-emitted in its **wire shape** (`host`, `launch_determinism`, ...), stripped of the fields that
+identify the individual machine rather than the host class: `hostname` and `timestamp`
+(`HOST_PROFILE_PRIVATE_FIELDS`). The submitter's hotkey/nonce/signature live in S3 object metadata,
+which this path never reads, so they cannot leak. Everything else — gpu/cpu/memory/numa/qemu plus
+BIOS, board and the lspci tree — is generic host-class data and is exactly what reproducing RTMR0
+needs.
+
+Two consumers:
+
+- **Independent verification.** Join to `GET /tee/measurements` on `fingerprint`: regenerate RTMR0
+  from the inputs here and compare it to the published measurement. A quote holder can also see
+  which host class their own RTMR0 corresponds to.
+- **The sek8s `chutes-cvm generate-measurements` CLI**, which reads topologies from here rather
+  than S3. That is why it is public: the generation side needs topologies, not bucket credentials.
+
+### Bucket lifecycle job (notify + reconcile)
+
+`host_profile_reconciler.py`, on a CronJob. Two responsibilities, both owned by the API rather than
+the CLI, so the generation side stays storage-agnostic:
+
+- **Notify** — a new fingerprint under `pending/` posts a Discord alert. Deduplicated through a
+  redis set, and only marked once the webhook actually accepts it, so an outage re-alerts rather
+  than silently swallowing the only notification. It **never triggers generation** — a human
+  decides.
+- **Reconcile** — the measurement config is the source of truth. For every fingerprint published
+  there, if `pending/{fp}` exists it is moved to `measured/{fp}`. Idempotent, and copy-then-delete
+  so a crash mid-move leaves the object in both prefixes (the next run resolves it) rather than in
+  neither. Reconcile follows the config regardless of `rc`: an rc entry means the topology *was*
+  generated, so its profile belongs in the retained set even though it cannot launch yet.
+
 ### Bucket layout (what the generation tooling consumes)
 
 | | |
 | --- | --- |
 | Bucket | `STORAGE_BUCKET` (override with `HOST_PROFILE_BUCKET` to isolate them) |
-| Key | `{HOST_PROFILE_PREFIX}/{fingerprint}.json` (default prefix `host-profiles`) |
+| Queued | `{HOST_PROFILE_PREFIX}/pending/{fingerprint}.json` — where submissions land; expires |
+| Generated | `{HOST_PROFILE_PREFIX}/measured/{fingerprint}.json` — retained permanently |
 | Body | the exact JSON the miner signed |
 | Metadata | `hotkey`, `nonce`, `signature`, `fingerprint`, `gpu-count`, `gpu-pci-device-ids`, `submitted-at` |
 
-The generation job lists the prefix, produces measurements for each object's host class, and deletes
-the object once published. Put a prefix-scoped lifecycle rule on `host-profiles/` so abandoned
-submissions expire — the API never deletes.
+A host class is **known** if an object exists under *either* prefix; neither is ever overwritten, so
+a generated profile is never re-queued.
+
+The generation job lists `pending/`, produces measurements for each object's host class, and
+**moves** the object to `measured/`. That move is release-workflow, not API — this service only lays
+out the two prefixes and reads them. The API never deletes and never writes to `measured/`.
+
+Put the expiry lifecycle rule on **`pending/` only**: those are submissions nobody generated. A rule
+covering `measured/` would delete topology inputs that cannot be reconstructed.
+
+### Measurement config: `fingerprint` on `hardware` entries
+
+```yaml
+measurements:
+  - version: "1.4.0"
+    mrtd: "..."
+    hardware:
+      - name: "8xh200"
+        rtmr0: "..."
+        fingerprint: "5fcb3e1c..."   # optional; 64 hex chars; links to the submitted profile
+        expected_gpus: ["h200"]
+        gpu_count: 8
+```
+
+Optional and validated only when present (64 hex chars, lower-cased), because existing entries
+predate the field. Surfaced on `GET /servers/tee/measurements` — public transparency, so a third
+party can see which host class a measurement covers.
+
+**An entry ≥1.4.0 without a fingerprint is unmatchable**: its host class reports `pending` forever
+even though it launches fine. Every 1.4.0+ entry must carry one. Pre-1.4.0 entries are outside the
+gate and need no backfill.
+
+---
+
+## Rollout Notes
+
+1. **Create the `pending/` expiry lifecycle rule** scoped to that prefix alone — never
+   `measured/`, and never the bare `host-profiles/` prefix.
+2. **No backfill of the 24 pre-1.4.0 entries** — they sit below
+   `MIN_HOST_PROFILE_MEASUREMENT_VERSION` and are ignored by status. This is deliberate: their
+   fingerprints cannot be recovered from source anyway (`HostProfile.fingerprint` hashes host RAM,
+   BAR size, VRAM, NUMA and NIC counts, which a `TopologyFingerprint` in `profiles.py` does not
+   carry), so backfilling them would mean running `discover-profile.sh` on a live host of each of
+   the 24 classes. Instead, **every 1.4.0 `hardware` entry must ship with a `fingerprint`** — it is
+   generated alongside RTMR0, so there is nothing to reconstruct.
+3. **Freshness after publish**: status reads the measurement set live, so a newly published
+   measurement takes effect as soon as the ConfigMap remount propagates — no cache to wait out.
+   (`GET /servers/tee/measurements` is separately cached for `TEE_MEASUREMENTS_CACHE_TTL`, so newly
+   published `fingerprint` values appear *there* on that delay; status is unaffected.)
+
+---
+
+## Attestation failure messages
+
+The sek8s initramfs reads the response body's `detail` on a failed boot attestation and prints it,
+so an operator sees a reason rather than a bare status code. The attestation exception layer already
+maps `AttestationError.message` -> `detail`; what changed is that the messages now say what to *do*:
+
+- `MeasurementMismatchError` — names the actual condition (no registered measurement for this
+  host's topology x QEMU) and points at `chutes-cvm discover-profile`. **The wording is deliberately
+  identical for "nothing matched" and "an rc measurement you are not authorized for"**: those two
+  must stay indistinguishable, so the message may not reveal which occurred.
+- `NonceError` and the nonce dependencies — say that nonces are single-use and short-lived, and
+  which call issues the one being asked for.
+- `NoClientCertError` / `InvalidClientCertError` — name the CVM proxy and the per-boot certificate.
+- `InvalidQuoteError` / `InvalidSignatureError` — distinguish "could not parse" from "could not
+  verify against Intel collateral".
+
+**The fingerprint is not included**, despite being the most useful thing to print. It is not
+derivable from a quote: a quote carries MRTD/RTMRs, and RTMR0 is a one-way hash chain over the
+topology, not the topology itself. Mapping RTMR0 -> fingerprint would need a measurement entry for
+that topology — which by definition does not exist in the failure case. The operator gets the
+fingerprint from the submission response instead, where it is computed from the real document.

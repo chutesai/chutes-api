@@ -27,8 +27,10 @@ from api.constants import (
     HOST_PROFILE_SUBMISSIONS_PER_HOTKEY,
     HOST_PROFILE_SUBMISSIONS_GLOBAL,
     HOST_PROFILE_WINDOW_SECONDS,
+    HostProfileStatus,
+    TOPOLOGIES_RATE_LIMIT_PER_MINUTE,
 )
-from api.rate_limit import rate_limit_miner
+from api.rate_limit import rate_limit, rate_limit_miner
 
 from api.server.schemas import (
     AttestationAuth,
@@ -53,6 +55,7 @@ from api.server.schemas import (
     TeeUpgradeWindow,
     UpgradeWindowInfo,
     TeeMeasurementResponse,
+    TopologyResponse,
     HostProfile,
     HostProfileSubmissionResponse,
 )
@@ -81,7 +84,8 @@ from api.server.service import (
     _count_active_maintenance_slots,
 )
 from api.server.util import (
-    store_host_profile,
+    list_measured_topologies,
+    resolve_host_profile_status,
     extract_attestation_auth,
     extract_client_cert_hash,
     require_attestation_proxy,
@@ -99,6 +103,17 @@ from api.util import is_valid_host, semcomp
 
 
 router = APIRouter(dependencies=[Depends(bind_request_context)])
+
+HOST_PROFILE_STATUS_DETAIL = {
+    HostProfileStatus.ACCEPTED: "This host class already has published measurements and can launch.",
+    HostProfileStatus.PENDING: (
+        "Host profile stored; measurements will be generated and published."
+    ),
+    HostProfileStatus.UNKNOWN: (
+        "This host class has no measurements and no pending submission. Submit without dry_run to "
+        "request measurements."
+    ),
+}
 
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
@@ -133,7 +148,8 @@ async def get_nonce(
     except Exception as e:
         logger.error(f"Failed to generate boot nonce: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate nonce"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not issue a boot nonce (validator-side error). Retry shortly.",
         )
 
 
@@ -172,7 +188,10 @@ async def verify_boot_attestation(
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Miner hotkey is not registered on the subnet",
+                detail=(
+                    f"Miner hotkey is not registered on subnet {settings.netuid}. Register the "
+                    "hotkey before booting a VM against it."
+                ),
             )
 
         result: BootAttestationResult = await process_boot_attestation(
@@ -198,7 +217,11 @@ async def verify_boot_attestation(
     except Exception as e:
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Boot attestation failed"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Boot attestation failed with an unexpected validator-side error. Retry; if it "
+                "persists, contact the Chutes team with the VM name and time of this attempt."
+            ),
         )
 
 
@@ -504,6 +527,7 @@ async def get_tee_measurements():
             runtime_rtmrs=m.runtime_rtmrs,
             expected_gpus=m.expected_gpus,
             gpu_count=m.gpu_count,
+            fingerprint=m.fingerprint,
         )
         for m in measurements
         if not m.rc
@@ -516,6 +540,49 @@ async def get_tee_measurements():
     return result
 
 
+TOPOLOGIES_CACHE_KEY = "tdx_topologies"
+
+
+@router.get("/tdx/topologies", response_model=List[TopologyResponse])
+async def get_topologies(
+    _: None = Depends(rate_limit("tdx_topologies", TOPOLOGIES_RATE_LIMIT_PER_MINUTE)),
+):
+    """
+    Return every generated host topology: the platform inputs each measurement was built from.
+
+    Pairs with GET /servers/tee/measurements, joined on `fingerprint`. Together they make RTMR0
+    independently reproducible: regenerate it from the inputs here and compare it to the published
+    measurement for the same fingerprint. A quote holder can also see which host class their RTMR0
+    corresponds to.
+
+    Also the source the sek8s `chutes-cvm generate-measurements` CLI reads, which is why it is
+    public and unauthenticated -- the generation side needs topologies, not bucket credentials.
+
+    Machine-identifying fields (hostname, submission timestamp) are stripped, and the submitter's
+    hotkey/nonce/signature live in object metadata that is never read here. What remains is
+    host-class data. No authentication required.
+    """
+    cached = await settings.redis_client.get(TOPOLOGIES_CACHE_KEY)
+    if cached:
+        return json.loads(cached)
+
+    try:
+        topologies = await list_measured_topologies()
+    except Exception as exc:
+        logger.error(f"Failed to list measured topologies: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to read topologies, please try again later.",
+        )
+
+    await settings.redis_client.set(
+        TOPOLOGIES_CACHE_KEY,
+        json.dumps(topologies).decode(),
+        ex=TEE_MEASUREMENTS_CACHE_TTL,
+    )
+    return topologies
+
+
 @router.post("/tdx/host_profiles", response_model=HostProfileSubmissionResponse)
 async def submit_host_profile(
     request: Request,
@@ -523,6 +590,7 @@ async def submit_host_profile(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     nonce: str | None = Header(None, alias=NONCE_HEADER),
     signature: str | None = Header(None, alias=SIGNATURE_HEADER),
+    dry_run: bool = Query(False, description="Report status without storing the profile."),
     _: User = Depends(
         rate_limit_miner(
             "host_profile_submit",
@@ -533,14 +601,18 @@ async def submit_host_profile(
     ),
 ):
     """
-    Submit a host profile (sek8s `discover-profile.sh` output) for measurement generation.
+    Submit a host profile (sek8s `discover-profile.sh` output) and get its status back.
 
     A VM only launches on a host class with published measurements, so new hardware is gated until
-    they exist. This is how an operator asks: the profile is parked in object storage keyed by a
-    fingerprint of the host class, and offline tooling generates the measurements and deletes the
-    object. Nothing to poll -- the host class becomes usable when its measurement ships.
+    they exist. The API owns the topology fingerprint -- the miner sends raw platform metadata and
+    gets a status word:
 
-    Signed by the miner hotkey with no purpose, so the signature covers the request body.
+      * `accepted` -- the fingerprint is on a published measurement; this host class can launch
+      * `pending`  -- parked in object storage, awaiting measurement generation
+      * `unknown`  -- neither, reachable only with `dry_run` (a real submission gets parked)
+
+    `dry_run` reports status without storing. Signed by the miner hotkey with no purpose, so the
+    signature covers the request body.
     """
     raw_body = await request.body()
     if len(raw_body) > HOST_PROFILE_MAX_BYTES:
@@ -550,15 +622,16 @@ async def submit_host_profile(
         )
 
     try:
-        fingerprint, stored = await store_host_profile(
+        fingerprint, profile_status, stored = await resolve_host_profile_status(
             profile=profile,
             raw_body=raw_body,
             hotkey=hotkey,
             nonce=nonce,
             signature=signature,
+            dry_run=dry_run,
         )
     except Exception as exc:
-        logger.error(f"Failed to store host profile from {hotkey=}: {exc}")
+        logger.error(f"Failed to resolve host profile status from {hotkey=}: {exc}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to store host profile, please try again later.",
@@ -566,12 +639,9 @@ async def submit_host_profile(
 
     return HostProfileSubmissionResponse(
         fingerprint=fingerprint,
+        status=profile_status,
         stored=stored,
-        detail=(
-            "Host profile accepted, measurements will be generated and published in a future release."
-            if stored
-            else "This host profile was already submitted, no action needed."
-        ),
+        detail=HOST_PROFILE_STATUS_DETAIL[profile_status],
     )
 
 

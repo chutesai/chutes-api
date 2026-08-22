@@ -131,3 +131,50 @@ async def test_cache_hit_skips_settings_and_write(mock_settings):
         mock_settings.tee_measurements, "__iter__"
     ) else None
     assert result is not None
+
+
+@pytest.mark.asyncio
+@patch("api.server.router.settings")
+async def test_fingerprint_is_surfaced(mock_settings):
+    """Public transparency: a third party can see which host class a measurement covers."""
+    mock_settings.tee_measurements = [_make_measurement(fingerprint="a" * 64)]
+    mock_settings.redis_client.get = AsyncMock(return_value=None)
+    mock_settings.redis_client.set = AsyncMock()
+
+    result = await get_tee_measurements()
+
+    assert result[0].fingerprint == "a" * 64
+
+
+@pytest.mark.asyncio
+@patch("api.server.router.settings")
+async def test_fingerprint_is_none_for_entries_predating_it(mock_settings):
+    mock_settings.tee_measurements = [_make_measurement()]
+    mock_settings.redis_client.get = AsyncMock(return_value=None)
+    mock_settings.redis_client.set = AsyncMock()
+
+    result = await get_tee_measurements()
+
+    assert result[0].fingerprint is None
+
+
+@pytest.mark.asyncio
+@patch("api.server.router.settings")
+async def test_stale_cache_without_fingerprint_still_deserialises(mock_settings):
+    """A cache entry written before this field existed must not break the endpoint on deploy."""
+    stale = [
+        {
+            "version": "1",
+            "name": "8xh200",
+            "mrtd": "A" * 96,
+            "boot_rtmrs": {},
+            "runtime_rtmrs": {},
+            "expected_gpus": ["h200"],
+            "gpu_count": 8,
+        }
+    ]
+    mock_settings.redis_client.get = AsyncMock(return_value=json.dumps(stale))
+
+    result = await get_tee_measurements()
+
+    assert TeeMeasurementResponse(**result[0]).fingerprint is None

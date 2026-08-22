@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from api.config import settings
 from api.database import Base, generate_uuid
 from api.constants import (
+    HostProfileStatus,
     HOST_PROFILE_MAX_BAR_MB,
     HOST_PROFILE_MAX_CPUS,
     HOST_PROFILE_MAX_GPUS,
@@ -427,6 +428,8 @@ class TeeMeasurementResponse(BaseModel):
     runtime_rtmrs: Dict[str, str]
     expected_gpus: List[str]
     gpu_count: int
+    # Topology fingerprint of the host class this measurement covers; None for entries predating it.
+    fingerprint: Optional[str] = None
 
 
 # Constrained scalars for miner-submitted host profiles. A submission is untrusted input that
@@ -653,10 +656,21 @@ class HostProfile(BaseModel):
         return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+class TopologyResponse(BaseModel):
+    """Public entry for GET /servers/tdx/topologies: one generated host class."""
+
+    fingerprint: str
+    # The stored discover-profile document in its wire shape, minus the machine-identifying
+    # fields. Typed loosely on purpose -- it is republished as recorded, and a verifier feeds it
+    # straight back into RTMR0 generation.
+    profile: Dict[str, Any]
+
+
 class HostProfileSubmissionResponse(BaseModel):
     """Response for POST /servers/tdx/host_profiles."""
 
     fingerprint: str
+    status: HostProfileStatus
     stored: bool
     detail: str
 
