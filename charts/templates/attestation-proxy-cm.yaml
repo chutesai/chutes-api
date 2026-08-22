@@ -60,8 +60,6 @@ data:
                 proxy_connect_timeout 3s;
                 proxy_http_version 1.1;
                 proxy_set_header Connection "";
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_protocol_addr;
                 proxy_set_header X-Forwarded-Proto https;
                 proxy_send_timeout 60s;
                 proxy_read_timeout 600s;
