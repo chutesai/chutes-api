@@ -300,142 +300,66 @@ class TestValidation:
         assert _profile(numa={"node_count": 8}).fingerprint != _profile().fingerprint
 
 
-def _mock_s3(present=None):
-    """S3 double where `present` is the prefix holding the object: None, pending, or measured."""
-    s3 = MagicMock()
-
-    async def head_object(Bucket=None, Key=None):
-        if present and f"/{present}/" in Key:
-            return {"ETag": "abc"}
-        error = Exception("not found")
-        error.response = {"Error": {"Code": "404"}}
-        raise error
-
-    s3.head_object = AsyncMock(side_effect=head_object)
-    s3.put_object = AsyncMock()
-    client = MagicMock()
-    client.__aenter__ = AsyncMock(return_value=s3)
-    client.__aexit__ = AsyncMock(return_value=False)
-    return client, s3
-
-
-def _mock_storage_settings(mock_settings, bucket="host-profiles-bucket", present=None):
-    client, s3 = _mock_s3(present=present)
-    mock_settings.s3_client = MagicMock(return_value=client)
-    mock_settings.host_profile_bucket = bucket
-    mock_settings.host_profile_prefix = "host-profiles"
-    return s3
+def _mock_session(created=True, known=False):
+    """
+    AsyncSession double. `created` is what the INSERT ... RETURNING yields (None = conflict, i.e.
+    the host class was already on file); `known` is what the existence SELECT reports.
+    """
+    db = MagicMock()
+    result = MagicMock()
+    result.scalar_one_or_none = MagicMock(return_value="fp" if created else None)
+    db.execute = AsyncMock(return_value=result)
+    db.scalar = AsyncMock(return_value="fp" if known else None)
+    db.commit = AsyncMock()
+    return db
 
 
 class TestStorage:
     @pytest.mark.asyncio
-    @patch("api.server.util.settings")
-    async def test_new_profile_is_written_to_pending(self, mock_settings):
-        s3 = _mock_storage_settings(mock_settings)
+    async def test_new_profile_is_recorded(self):
+        db = _mock_session(created=True)
         profile = _profile()
-        raw = json.dumps(SAMPLE_PROFILE)
-
-        fingerprint, stored = await store_host_profile(
-            profile=profile,
-            raw_body=raw,
-            hotkey="5Fhotkey",
-            nonce="1755690000",
-            signature="ab" * 64,
-        )
+        fingerprint, stored = await store_host_profile(db=db, profile=profile, hotkey="5Fhotkey")
 
         assert stored is True
         assert fingerprint == profile.fingerprint
-        kwargs = s3.put_object.call_args.kwargs
-        assert kwargs["Bucket"] == "host-profiles-bucket"
-        assert kwargs["Key"] == f"host-profiles/pending/{profile.fingerprint}.json"
-        assert kwargs["Body"] == raw
-        assert kwargs["Metadata"]["hotkey"] == "5Fhotkey"
-        assert kwargs["Metadata"]["signature"] == "ab" * 64
-        assert kwargs["Metadata"]["fingerprint"] == profile.fingerprint
-        assert kwargs["Metadata"]["gpu-count"] == "8"
+        db.commit.assert_awaited_once()
+        values = db.execute.await_args.args[0].compile().params
+        assert values["fingerprint"] == profile.fingerprint
+        assert values["miner_hotkey"] == "5Fhotkey"
+        # The signature is admission control at the endpoint, not something re-checked later, so
+        # the signed bytes are deliberately not retained.
+        assert "raw_body" not in values
+        assert "signature" not in values
 
     @pytest.mark.asyncio
-    @patch("api.server.util.settings")
-    async def test_key_comes_from_the_model_fingerprint(self, mock_settings):
-        """The storage key is the model's fingerprint -- no second implementation to drift."""
-        s3 = _mock_storage_settings(mock_settings)
-        profile = _profile(gpu={"count": 4, "pci_device_ids": ["2901"]})
+    async def test_profile_column_is_the_wire_shape(self):
+        """Stored under the keys discover-profile.sh emits, so it is queryable as submitted."""
+        db = _mock_session(created=True)
 
-        await store_host_profile(
-            profile=profile,
-            raw_body=b"{}",
-            hotkey="5Fhotkey",
-            nonce="1755690000",
-            signature="ab" * 64,
-        )
+        await store_host_profile(db=db, profile=_profile(), hotkey="5Fhotkey")
 
-        assert (
-            s3.put_object.call_args.kwargs["Key"]
-            == f"host-profiles/pending/{profile.fingerprint}.json"
-        )
+        stored_profile = db.execute.await_args.args[0].compile().params["profile"]
+        assert stored_profile["launch_determinism"]["qemu_version"] == "8.2.2"
+        assert stored_profile["gpu"]["pci_device_ids"] == ["2335"]
 
     @pytest.mark.asyncio
-    @patch("api.server.util.settings")
-    async def test_falls_back_to_storage_bucket(self, mock_settings):
-        s3 = _mock_storage_settings(mock_settings, bucket=None)
-        mock_settings.storage_bucket = "chutes"
+    async def test_known_host_class_is_not_overwritten(self):
+        """ON CONFLICT DO NOTHING: first write wins, whether it is pending or already measured."""
+        db = _mock_session(created=False)
 
-        await store_host_profile(
-            profile=_profile(),
-            raw_body=b"{}",
-            hotkey="5Fhotkey",
-            nonce="1755690000",
-            signature="ab" * 64,
-        )
-
-        assert s3.put_object.call_args.kwargs["Bucket"] == "chutes"
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("present", ["pending", "measured"])
-    @patch("api.server.util.settings")
-    async def test_either_prefix_means_already_known(self, mock_settings, present):
-        """measured/ counts as known too -- a generated profile must never be re-queued."""
-        s3 = _mock_storage_settings(mock_settings, present=present)
-
-        fingerprint, stored = await store_host_profile(
-            profile=_profile(),
-            raw_body=b"{}",
-            hotkey="5Fother",
-            nonce="1755690000",
-            signature="ab" * 64,
-        )
+        fingerprint, stored = await store_host_profile(db=db, profile=_profile(), hotkey="5Fother")
 
         assert stored is False
         assert fingerprint == _profile().fingerprint
-        s3.put_object.assert_not_called()
+        db.commit.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("api.server.util.settings")
-    async def test_unexpected_s3_error_propagates(self, mock_settings):
-        s3 = _mock_storage_settings(mock_settings)
-        error = Exception("access denied")
-        error.response = {"Error": {"Code": "403"}}
-        s3.head_object = AsyncMock(side_effect=error)
+    @pytest.mark.parametrize("known, expected", [(False, False), (True, True)])
+    async def test_known_checks_the_table(self, known, expected):
+        db = _mock_session(known=known)
 
-        with pytest.raises(Exception, match="access denied"):
-            await store_host_profile(
-                profile=_profile(),
-                raw_body=b"{}",
-                hotkey="5Fhotkey",
-                nonce="1755690000",
-                signature="ab" * 64,
-            )
-        s3.put_object.assert_not_called()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "present, expected", [(None, False), ("pending", True), ("measured", True)]
-    )
-    @patch("api.server.util.settings")
-    async def test_known_checks_both_prefixes(self, mock_settings, present, expected):
-        _mock_storage_settings(mock_settings, present=present)
-
-        assert await host_profile_is_known(_profile().fingerprint) is expected
+        assert await host_profile_is_known(db, _profile().fingerprint) is expected
 
 
 class TestRateLimitMinerDependency:
@@ -554,9 +478,8 @@ class TestEndpoint:
         return await submit_host_profile(
             request=_mock_request(body),
             profile=_profile(),
+            db=MagicMock(),
             hotkey="5Fhotkey",
-            nonce="1755690000",
-            signature="ab" * 64,
             dry_run=dry_run,
             _=None,
         )
@@ -571,10 +494,7 @@ class TestEndpoint:
         assert result.stored is True
         assert result.status == HostProfileStatus.PENDING
         assert result.fingerprint == _profile().fingerprint
-        # The exact signed bytes are stored, not a re-serialization of the parsed model.
-        assert resolve.await_args.kwargs["raw_body"] == json.dumps(SAMPLE_PROFILE)
         assert resolve.await_args.kwargs["hotkey"] == "5Fhotkey"
-        assert resolve.await_args.kwargs["signature"] == "ab" * 64
         assert resolve.await_args.kwargs["dry_run"] is False
 
     @pytest.mark.asyncio
@@ -756,6 +676,7 @@ class TestStatusResolution:
 
     async def _resolve(self, dry_run=False, config_status=None, known=False, stored=True):
         profile = _profile()
+        db = MagicMock()
         with (
             patch(
                 "api.server.util.topology_measurement_status",
@@ -768,12 +689,7 @@ class TestStatusResolution:
             ) as store,
         ):
             result = await resolve_host_profile_status(
-                profile=profile,
-                raw_body=json.dumps(SAMPLE_PROFILE),
-                hotkey="5Fhotkey",
-                nonce="1755690000",
-                signature="ab" * 64,
-                dry_run=dry_run,
+                db=db, profile=profile, hotkey="5Fhotkey", dry_run=dry_run
             )
         return result, store, head
 
@@ -899,11 +815,7 @@ class TestStatusResolution:
             ),
         ):
             fingerprint, profile_status, _ = await resolve_host_profile_status(
-                profile=profile,
-                raw_body=b"{}",
-                hotkey="5Fhotkey",
-                nonce="1755690000",
-                signature="ab" * 64,
+                db=MagicMock(), profile=profile, hotkey="5Fhotkey"
             )
 
         assert seen["asked"] == profile.fingerprint

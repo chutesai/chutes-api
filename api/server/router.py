@@ -20,8 +20,6 @@ from api.user.service import get_current_user
 from api.metagraph import get_miner_by_hotkey
 from api.constants import (
     HOTKEY_HEADER,
-    NONCE_HEADER,
-    SIGNATURE_HEADER,
     NoncePurpose,
     HOST_PROFILE_MAX_BYTES,
     HOST_PROFILE_SUBMISSIONS_PER_HOTKEY,
@@ -545,6 +543,7 @@ TOPOLOGIES_CACHE_KEY = "tdx_topologies"
 
 @router.get("/tdx/topologies", response_model=List[TopologyResponse])
 async def get_topologies(
+    db: AsyncSession = Depends(get_db_session),
     _: None = Depends(rate_limit("tdx_topologies", TOPOLOGIES_RATE_LIMIT_PER_MINUTE)),
 ):
     """
@@ -559,15 +558,15 @@ async def get_topologies(
     public and unauthenticated -- the generation side needs topologies, not bucket credentials.
 
     Machine-identifying fields (hostname, submission timestamp) are stripped, and the submitter's
-    hotkey/nonce/signature live in object metadata that is never read here. What remains is
-    host-class data. No authentication required.
+    hotkey/nonce/signature are columns this query never selects. What remains is host-class data.
+    No authentication required.
     """
     cached = await settings.redis_client.get(TOPOLOGIES_CACHE_KEY)
     if cached:
         return json.loads(cached)
 
     try:
-        topologies = await list_measured_topologies()
+        topologies = await list_measured_topologies(db)
     except Exception as exc:
         logger.error(f"Failed to list measured topologies: {exc}")
         raise HTTPException(
@@ -587,9 +586,8 @@ async def get_topologies(
 async def submit_host_profile(
     request: Request,
     profile: HostProfile,
+    db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    nonce: str | None = Header(None, alias=NONCE_HEADER),
-    signature: str | None = Header(None, alias=SIGNATURE_HEADER),
     dry_run: bool = Query(False, description="Report status without storing the profile."),
     _: User = Depends(
         rate_limit_miner(
@@ -623,11 +621,9 @@ async def submit_host_profile(
 
     try:
         fingerprint, profile_status, stored = await resolve_host_profile_status(
+            db=db,
             profile=profile,
-            raw_body=raw_body,
             hotkey=hotkey,
-            nonce=nonce,
-            signature=signature,
             dry_run=dry_run,
         )
     except Exception as exc:

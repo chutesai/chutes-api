@@ -1,58 +1,64 @@
 """
-Host profile bucket lifecycle: notify on new submissions, reconcile against the measurement config.
+Host profile lifecycle: notify on new submissions, reconcile against the measurement config.
 
-Runs on a schedule. Two jobs, deliberately kept out of the generation CLI so that side stays
-storage-agnostic -- the API owns the bucket:
+Runs on a schedule. Deliberately kept out of the generation CLI so that side stays storage-agnostic
+-- the API owns the profile store:
 
-  * notify    -- a new host class landed under pending/; alert so someone can generate for it.
-                 Generation is NEVER triggered automatically; a human decides.
+  * notify    -- a new host class was submitted; alert so someone can generate for it. Generation
+                 is NEVER triggered automatically; a human decides.
   * reconcile -- the measurement config is the source of truth. Once a fingerprint is published
-                 there, its profile belongs in the retained set, so move pending/ -> measured/.
+                 there, its profile is marked measured.
 
-Both are idempotent: notifications are deduplicated in redis, and promotion no-ops on a
-fingerprint that has already moved.
+Nothing here deletes: every profile is retained, measured or not. A submission nobody generated for
+is still the record that someone asked, and a fingerprint cannot be inverted back to the topology
+inputs, so a row is the only copy of them. Both are idempotent.
 """
 
 import asyncio
 
 from loguru import logger
+from sqlalchemy import update
+from sqlalchemy.sql import func
 
 import api.database.orms  # noqa
-from api.config import settings
+from api.database import get_session
 from api.notify import send_discord_alert
-from api.server.util import list_pending_fingerprints, reconcile_host_profiles
-
-# Fingerprints already alerted on. Regenerable state -- losing it re-alerts, it never re-generates.
-NOTIFIED_KEY = "host_profile:notified"
+from api.server.schemas import HostProfileRecord
+from api.server.util import list_pending_profiles, reconcile_host_profiles
 
 
-async def notify_new_submissions() -> list[str]:
+async def notify_new_submissions(db) -> list[str]:
     """Alert once per newly submitted host class."""
-    pending = await list_pending_fingerprints()
-    if not pending:
-        return []
-
-    new = [fp for fp in pending if not await settings.redis_client.sismember(NOTIFIED_KEY, fp)]
-    for fingerprint in new:
+    notified = []
+    for record in await list_pending_profiles(db):
+        if record.notified_at:
+            continue
+        gpu = (record.profile or {}).get("gpu") or {}
         sent = await send_discord_alert(
             f"**New host profile submitted**\n"
-            f"Fingerprint: `{fingerprint}`\n"
-            f"Awaiting measurement generation. Fetch it from "
-            f"`{settings.host_profile_prefix}/pending/{fingerprint}.json`, generate, then add the "
-            f"hardware entry with this fingerprint to the measurement config."
+            f"Fingerprint: `{record.fingerprint}`\n"
+            f"GPUs: {gpu.get('count')}x {', '.join(gpu.get('pci_device_ids') or []) or 'unknown'}\n"
+            f"Awaiting measurement generation."
         )
-        # Only mark once it actually went out, so a webhook outage re-alerts next run.
+        # Stamp only once it actually went out, so a webhook outage re-alerts next run.
         if sent:
-            await settings.redis_client.sadd(NOTIFIED_KEY, fingerprint)
-    return new
+            await db.execute(
+                update(HostProfileRecord)
+                .where(HostProfileRecord.fingerprint == record.fingerprint)
+                .values(notified_at=func.now())
+            )
+            await db.commit()
+            notified.append(record.fingerprint)
+    return notified
 
 
 async def main() -> None:
-    new = await notify_new_submissions()
-    logger.info(f"Host profile notify: {len(new)} new submission(s)")
+    async with get_session() as db:
+        notified = await notify_new_submissions(db)
+        logger.info(f"Host profile notify: alerted on {len(notified)} new submission(s)")
 
-    promoted = await reconcile_host_profiles()
-    logger.info(f"Host profile reconcile: promoted {len(promoted)} profile(s) to measured/")
+        promoted = await reconcile_host_profiles(db)
+        logger.info(f"Host profile reconcile: marked {len(promoted)} profile(s) measured")
 
 
 if __name__ == "__main__":

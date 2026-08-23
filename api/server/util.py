@@ -7,9 +7,9 @@ import secrets
 import base64
 import json
 import tempfile
-from datetime import datetime, timezone
 from typing import Dict, List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
@@ -45,6 +45,7 @@ from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_st
 import hashlib
 
 from api.server.schemas import (
+    HostProfileRecord,
     Server,
     VmCacheConfig,
     LuksVolumeRotation,
@@ -53,8 +54,6 @@ from api.server.schemas import (
 )
 from api.constants import (
     HostProfileStatus,
-    HOST_PROFILE_MEASURED_PREFIX,
-    HOST_PROFILE_PENDING_PREFIX,
     HOST_PROFILE_PRIVATE_FIELDS,
     MIN_HOST_PROFILE_MEASUREMENT_VERSION,
     MIN_ROOT_ROTATION_VERSION,
@@ -1298,72 +1297,36 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
     logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))
 
 
-def host_profile_keys(fingerprint: str) -> tuple[str, str]:
-    """The (pending, measured) object keys for a host class."""
-    base = settings.host_profile_prefix
-    return (
-        f"{base}/{HOST_PROFILE_PENDING_PREFIX}/{fingerprint}.json",
-        f"{base}/{HOST_PROFILE_MEASURED_PREFIX}/{fingerprint}.json",
-    )
-
-
-def _is_missing(exc: Exception) -> bool:
-    return getattr(exc, "response", {}).get("Error", {}).get("Code") in ("404", "NoSuchKey")
-
-
-async def _head(s3, bucket: str, key: str) -> bool:
-    try:
-        await s3.head_object(Bucket=bucket, Key=key)
-        return True
-    except Exception as exc:
-        if not _is_missing(exc):
-            raise
-    return False
-
-
 async def store_host_profile(
+    db: AsyncSession,
     profile: HostProfile,
-    raw_body: bytes,
     hotkey: str,
-    nonce: str,
-    signature: str,
 ) -> tuple[str, bool]:
     """
-    Park a submitted host profile under pending/, first-write-wins.
+    Record a submitted host profile, first-write-wins.
 
-    A host class is already known if an object exists under EITHER prefix -- pending/ (queued for
-    generation) or measured/ (generated, retained permanently) -- and neither is overwritten.
-    Stores the exact bytes the miner signed, with the signature material in object metadata so the
-    generation job can re-verify who submitted it. Nothing goes in the database.
+    A host class already on file -- pending or measured -- is left untouched; the row is keyed by
+    fingerprint, so ON CONFLICT DO NOTHING gives idempotency without a read-then-write race.
 
     Returns (fingerprint, created); created=False means that host class was already known.
     """
     fingerprint = profile.fingerprint
-    bucket = settings.host_profile_bucket or settings.storage_bucket
-    pending_key, measured_key = host_profile_keys(fingerprint)
-    async with settings.s3_client() as s3:
-        for key in (pending_key, measured_key):
-            if await _head(s3, bucket, key):
-                logger.info(
-                    f"Host profile {fingerprint} already known at {key}, ignoring {hotkey=}"
-                )
-                return fingerprint, False
-
-        await s3.put_object(
-            Bucket=bucket,
-            Key=pending_key,
-            Body=raw_body,
-            ContentType="application/json",
-            Metadata={
-                "hotkey": hotkey,
-                "nonce": nonce,
-                "signature": signature,
-                "fingerprint": fingerprint,
-                "gpu-count": str(profile.gpu.count),
-                "gpu-pci-device-ids": ",".join(sorted(set(profile.gpu.pci_device_ids))),
-                "submitted-at": datetime.now(timezone.utc).isoformat(),
-            },
+    result = await db.execute(
+        pg_insert(HostProfileRecord)
+        .values(
+            fingerprint=fingerprint,
+            profile=profile.model_dump(by_alias=True),
+            miner_hotkey=hotkey,
         )
+        .on_conflict_do_nothing(index_elements=["fingerprint"])
+        .returning(HostProfileRecord.fingerprint)
+    )
+    created = result.scalar_one_or_none() is not None
+    if not created:
+        logger.info(f"Host profile {fingerprint} already known, ignoring {hotkey=}")
+        return fingerprint, False
+
+    await db.commit()
     logger.success(
         f"Stored host profile {fingerprint} from {hotkey=}: "
         f"{profile.gpu.count}x{'/'.join(sorted(set(profile.gpu.pci_device_ids)))}"
@@ -1378,19 +1341,19 @@ def topology_measurement_status(fingerprint: str) -> Optional[HostProfileStatus]
     ACCEPTED when a published (non-rc) measurement at or above
     MIN_HOST_PROFILE_MEASUREMENT_VERSION carries the fingerprint -- that is the only thing that
     makes a host class attestable. Anything else returns None and the caller falls through to the
-    bucket (held -> PENDING, otherwise UNKNOWN).
+    profile table (on file -> PENDING, otherwise UNKNOWN).
 
     rc is a property of a VERSION, not of a topology: a topology is measured or it is not, so
     there is no measured-but-rc state to report. rc measurements are simply skipped here, which
-    means a fingerprint carried only by an rc version reports PENDING off the bucket -- correct,
-    since nothing it can launch is published yet.
+    means a fingerprint carried only by an rc version reports PENDING -- correct, since nothing it
+    can launch is published yet.
 
     The version gate matters because the caller runs the CLI that ships with
     MIN_HOST_PROFILE_MEASUREMENT_VERSION; a host class measured solely on an older version cannot
     actually launch for them, so reporting ACCEPTED off a 1.3.x entry would be a lie.
 
-    The config is the sole truth for attestability. Deriving ACCEPTED from the measured/ prefix
-    instead would let the bucket and the config drift into disagreeing about what can launch.
+    The config is the sole truth for attestability. Deriving ACCEPTED from ``measured_at`` instead
+    would let the table and the config drift into disagreeing about what can launch.
     """
     for measurement in settings.tee_measurements:
         if measurement.fingerprint != fingerprint or measurement.rc:
@@ -1401,35 +1364,34 @@ def topology_measurement_status(fingerprint: str) -> Optional[HostProfileStatus]
     return None
 
 
-async def host_profile_is_known(fingerprint: str) -> bool:
-    """Whether a profile for this host class is held under pending/ or measured/."""
-    bucket = settings.host_profile_bucket or settings.storage_bucket
-    async with settings.s3_client() as s3:
-        for key in host_profile_keys(fingerprint):
-            if await _head(s3, bucket, key):
-                return True
-    return False
+async def host_profile_is_known(db: AsyncSession, fingerprint: str) -> bool:
+    """Whether a profile for this host class is on file, pending or measured."""
+    return (
+        await db.scalar(
+            select(HostProfileRecord.fingerprint).where(
+                HostProfileRecord.fingerprint == fingerprint
+            )
+        )
+    ) is not None
 
 
 async def resolve_host_profile_status(
+    db: AsyncSession,
     profile: HostProfile,
-    raw_body: bytes,
     hotkey: str,
-    nonce: str,
-    signature: str,
     dry_run: bool = False,
 ) -> tuple[str, HostProfileStatus, bool]:
     """
-    Decide whether a submitted host class can launch, storing it if we do not already hold it.
+    Decide whether a submitted host class can launch, recording it if we do not already hold it.
 
-    Status comes from the measurement config first; the bucket only distinguishes "queued" from
-    "never seen" for a host class no measurement mentions. A real submission is always stored when
-    unknown, so it can never return UNKNOWN -- only ``dry_run`` can, because it writes nothing.
+    Status comes from the measurement config first; the profile table only distinguishes "on file"
+    from "never seen" for a host class no measurement mentions. A real submission is always stored
+    when unknown, so it can never return UNKNOWN -- only ``dry_run`` can, because it writes nothing.
 
     A real submission stores even when a measurement already covers the fingerprint, if we hold no
     profile for it: a fingerprint cannot be inverted back to its topology inputs, so an accepted
     host class with no stored profile cannot have its RTMR0 regenerated after a firmware change.
-    store_host_profile no-ops when either prefix already holds it.
+    store_host_profile no-ops when the row already exists.
 
     Returns (fingerprint, status, stored).
     """
@@ -1439,112 +1401,73 @@ async def resolve_host_profile_status(
     if dry_run:
         if config_status is not None:
             return fingerprint, config_status, False
-        known = await host_profile_is_known(fingerprint)
+        known = await host_profile_is_known(db, fingerprint)
         return (
             fingerprint,
             HostProfileStatus.PENDING if known else HostProfileStatus.UNKNOWN,
             False,
         )
 
-    _, stored = await store_host_profile(
-        profile=profile,
-        raw_body=raw_body,
-        hotkey=hotkey,
-        nonce=nonce,
-        signature=signature,
-    )
+    _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
     return fingerprint, config_status or HostProfileStatus.PENDING, stored
 
 
-async def _list_fingerprints(s3, bucket: str, prefix: str) -> list[str]:
-    """Every fingerprint with an object directly under ``prefix`` (paginated)."""
-    fingerprints: list[str] = []
-    token = None
-    while True:
-        kwargs = {"Bucket": bucket, "Prefix": f"{prefix}/"}
-        if token:
-            kwargs["ContinuationToken"] = token
-        response = await s3.list_objects_v2(**kwargs)
-        for obj in response.get("Contents") or []:
-            name = obj["Key"].rsplit("/", 1)[-1]
-            if name.endswith(".json"):
-                fingerprints.append(name[: -len(".json")])
-        if not response.get("IsTruncated"):
-            return fingerprints
-        token = response.get("NextContinuationToken")
+async def list_pending_profiles(db: AsyncSession) -> list[HostProfileRecord]:
+    """Host classes awaiting measurement generation, oldest first."""
+    result = await db.execute(
+        select(HostProfileRecord)
+        .where(HostProfileRecord.measured_at.is_(None))
+        .order_by(HostProfileRecord.created_at)
+    )
+    return list(result.scalars().all())
 
 
-async def list_pending_fingerprints() -> list[str]:
-    """Fingerprints awaiting measurement generation."""
-    bucket = settings.host_profile_bucket or settings.storage_bucket
-    async with settings.s3_client() as s3:
-        return await _list_fingerprints(
-            s3, bucket, f"{settings.host_profile_prefix}/{HOST_PROFILE_PENDING_PREFIX}"
-        )
-
-
-async def list_measured_topologies() -> list[dict]:
+async def list_measured_topologies(db: AsyncSession) -> list[dict]:
     """
     The published topology set: every generated host class, as {fingerprint, profile}.
 
-    The profile is the stored discover-profile document re-emitted in its wire shape, minus the
-    instance-identifying fields. Object metadata (hotkey/nonce/signature) is never read here, so
-    it cannot leak into a public response.
+    The profile is re-emitted in its wire shape minus the machine-identifying fields. The
+    submitter's hotkey/nonce/signature are columns that this query never selects, so they cannot
+    leak into a public response.
     """
-    bucket = settings.host_profile_bucket or settings.storage_bucket
-    prefix = f"{settings.host_profile_prefix}/{HOST_PROFILE_MEASURED_PREFIX}"
-    topologies = []
-    async with settings.s3_client() as s3:
-        for fingerprint in await _list_fingerprints(s3, bucket, prefix):
-            obj = await s3.get_object(Bucket=bucket, Key=f"{prefix}/{fingerprint}.json")
-            body = await obj["Body"].read()
-            try:
-                profile = HostProfile(**json.loads(body))
-            except Exception as exc:
-                logger.warning(f"Skipping unparseable measured profile {fingerprint}: {exc}")
-                continue
-            topologies.append(
-                {
-                    "fingerprint": fingerprint,
-                    "profile": profile.model_dump(
-                        by_alias=True, exclude=HOST_PROFILE_PRIVATE_FIELDS
-                    ),
-                }
-            )
-    return sorted(topologies, key=lambda t: t["fingerprint"])
+    result = await db.execute(
+        select(HostProfileRecord.fingerprint, HostProfileRecord.profile)
+        .where(HostProfileRecord.measured_at.isnot(None))
+        .order_by(HostProfileRecord.fingerprint)
+    )
+    return [
+        {
+            "fingerprint": fingerprint,
+            "profile": {k: v for k, v in profile.items() if k not in HOST_PROFILE_PRIVATE_FIELDS},
+        }
+        for fingerprint, profile in result.all()
+    ]
 
 
-async def promote_host_profile(fingerprint: str) -> bool:
+async def reconcile_host_profiles(db: AsyncSession) -> list[str]:
     """
-    Move ``pending/{fingerprint}`` to ``measured/{fingerprint}``. Idempotent.
-
-    Returns True only when this call performed the move; already-promoted (or never-submitted)
-    fingerprints are a no-op. Copy-then-delete: a crash between the two leaves the object in both
-    prefixes, which the next run resolves, whereas delete-first could lose it outright.
-    """
-    bucket = settings.host_profile_bucket or settings.storage_bucket
-    pending_key, measured_key = host_profile_keys(fingerprint)
-    async with settings.s3_client() as s3:
-        if not await _head(s3, bucket, pending_key):
-            return False
-        await s3.copy_object(
-            Bucket=bucket, Key=measured_key, CopySource={"Bucket": bucket, "Key": pending_key}
-        )
-        await s3.delete_object(Bucket=bucket, Key=pending_key)
-    logger.success(f"Promoted host profile {fingerprint} to {HOST_PROFILE_MEASURED_PREFIX}/")
-    return True
-
-
-async def reconcile_host_profiles() -> list[str]:
-    """
-    Promote every pending profile whose fingerprint now appears in the measurement config.
+    Mark every pending profile measured whose fingerprint now appears in the measurement config.
 
     The config is the source of truth: a fingerprint published there means the topology has been
-    generated, so its profile belongs in the retained set. Runs from the cronjob rather than the
-    CLI, so the generation side never needs bucket credentials.
+    generated, so its profile moves into the retained set. One atomic UPDATE -- unlike the
+    copy-then-delete this replaces, there is no window where a crash leaves it half-moved. rc
+    counts here: an rc entry means the topology WAS generated, even though it cannot launch yet.
     """
     published = {m.fingerprint for m in settings.tee_measurements if m.fingerprint}
-    promoted = [fp for fp in sorted(published) if await promote_host_profile(fp)]
+    if not published:
+        return []
+
+    result = await db.execute(
+        update(HostProfileRecord)
+        .where(
+            HostProfileRecord.fingerprint.in_(published),
+            HostProfileRecord.measured_at.is_(None),
+        )
+        .values(measured_at=func.now())
+        .returning(HostProfileRecord.fingerprint)
+    )
+    promoted = sorted(result.scalars().all())
     if promoted:
-        logger.success(f"Reconciled {len(promoted)} host profile(s) into measured/")
+        await db.commit()
+        logger.success(f"Reconciled {len(promoted)} host profile(s) as measured")
     return promoted

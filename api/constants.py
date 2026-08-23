@@ -77,17 +77,9 @@ MIN_VM_AUTH_KEY_VERSION = "1.4.0"
 MIN_HOST_PROFILE_MEASUREMENT_VERSION = "1.4.0"
 
 # Host profile submissions (POST /servers/tdx/host_profiles). Output is a few KB (the lspci tree
-# dominates), so the cap is generous but bounds what one miner can push into the bucket. Both rate
-# limits are counted only AFTER the signature verifies, so a forged hotkey can't burn a real
-# miner's quota.
+# dominates), so the cap is generous but bounds what one miner can store. Both rate limits are
+# counted only AFTER the signature verifies, so a forged hotkey can't burn a real miner's quota.
 HOST_PROFILE_MAX_BYTES = 256 * 1024
-
-# Host profile object lifecycle, under host_profile_prefix. Submissions land in pending/ and the
-# offline generator MOVES them to measured/ once a measurement exists for that host class. measured/
-# is a permanent store: a fingerprint cannot be inverted back to the topology inputs, and
-# regenerating RTMR0 after a firmware change needs them. Only pending/ gets an expiry rule.
-HOST_PROFILE_PENDING_PREFIX = "pending"
-HOST_PROFILE_MEASURED_PREFIX = "measured"
 
 # Stripped from a host profile before it is published on GET /servers/tdx/topologies: these
 # identify the individual machine that submitted it, not the host class. Everything else --
@@ -101,16 +93,16 @@ class HostProfileStatus(str, Enum):
 
     # Fingerprint is on a non-rc measurement hardware entry: this host class can launch.
     ACCEPTED = "accepted"
-    # Parked in the bucket, awaiting measurement generation.
+    # On file, awaiting measurement generation.
     PENDING = "pending"
-    # Neither -- only reachable via dry_run, since a real submission gets parked.
+    # Neither -- only reachable via dry_run, since a real submission is always recorded.
     UNKNOWN = "unknown"
 
 
 # Bounds on the modeled fields of a submitted profile. The values are machine-generated, but a
-# submission is attacker-controlled and lands in object metadata (HTTP headers), log lines, and in
-# front of a privileged offline job -- so nothing may be unbounded. Generous enough that plausible
-# future hardware still validates.
+# submission is attacker-controlled and lands in log lines, a public endpoint, and in front of a
+# privileged offline job -- so nothing may be unbounded. Generous enough that plausible future
+# hardware still validates.
 HOST_PROFILE_MAX_GPUS = 64
 HOST_PROFILE_MAX_NUMA_NODES = 64
 HOST_PROFILE_MAX_SOCKETS = 64

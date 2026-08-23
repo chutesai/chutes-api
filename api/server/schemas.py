@@ -675,6 +675,33 @@ class HostProfileSubmissionResponse(BaseModel):
     detail: str
 
 
+class HostProfileRecord(Base):
+    """A submitted host profile: one row per host CLASS, keyed by its topology fingerprint.
+
+    ``measured_at`` is the whole lifecycle -- NULL means pending (awaiting measurement generation),
+    set means a measurement was published for this fingerprint and the row is retained permanently.
+    Retention is not optional: a fingerprint cannot be inverted back to the topology inputs, so this
+    row is the only copy of what an RTMR0 regen would need after a firmware or QEMU change.
+
+    ``miner_hotkey`` is attribution, not proof: the request signature is admission control at the
+    endpoint, so a row existing already means it verified.
+    """
+
+    __tablename__ = "host_profiles"
+
+    fingerprint = Column(String, primary_key=True)
+    profile = Column(JSONB, nullable=False)
+    miner_hotkey = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    measured_at = Column(DateTime(timezone=True), nullable=True)
+    notified_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_host_profiles_measured_at", "measured_at"),
+        Index("idx_host_profiles_profile", "profile", postgresql_using="gin"),
+    )
+
+
 class VmBootRecord(Base):
     """The pre-server initramfs boot record for a VM -- one row per boot (append; history retained).
 

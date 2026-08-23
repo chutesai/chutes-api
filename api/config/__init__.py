@@ -188,16 +188,9 @@ class Settings(BaseSettings):
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
 
-    # Miner-submitted host profiles (POST /servers/tdx/host_profiles), parked until measurements
-    # are generated for that host class. Normally unset -> storage_bucket under host_profile_prefix;
-    # one bucket keeps backup/restore and credentials uniform, and storage bills per byte and
-    # operation, not per bucket. Set only to isolate profiles in their own bucket.
     # Discord webhook for operational alerts (a new host class was submitted, ...). Unset
     # disables alerting rather than failing.
     discord_webhook_url: Optional[str] = os.getenv("DISCORD_WEBHOOK_URL")
-
-    host_profile_bucket: Optional[str] = os.getenv("HOST_PROFILE_BUCKET")
-    host_profile_prefix: str = os.getenv("HOST_PROFILE_PREFIX", "host-profiles")
 
     # Base redis settings.
     redis_host: str = Field(

@@ -13,9 +13,9 @@ captures the host's shape, the miner-side tooling matches it against the baselin
 with new hardware had no in-band way to ask for measurements.
 
 This adds the request channel: the miner CLI runs `discover-profile.sh`, signs the JSON with the
-miner hotkey, and POSTs it. The API parks the document in object storage keyed by a fingerprint of
-the host class; offline tooling (CI or local) reads the bucket, generates measurements, ships them
-in a release, and promotes the object from `pending/` to `measured/`.
+miner hotkey, and POSTs it. The API records the document keyed by a fingerprint of
+the host class in the `host_profiles` table; offline tooling generates measurements, ships them in a
+release, and the reconciler marks the row measured.
 
 - **Key files**:
   - `api/server/router.py` — `submit_host_profile` (`POST /servers/tdx/host_profiles`)
@@ -29,9 +29,10 @@ in a release, and promotes the object from `pending/` to `measured/`.
   - `api/server/host_profile_fingerprint.py` — `python -m` fingerprint utility for the generator
   - `api/rate_limit.py` — `rate_limit_miner` (auth + per-miner metering), `check_rate_limit`
   - `api/constants.py` — size cap, submission limits, field bounds
-  - `api/config/__init__.py` — `host_profile_bucket`, `host_profile_prefix`,
-    `TeeMeasurementConfig.fingerprint`, `_load_tee_measurements`
-  - `charts/` — `api.hostProfileBucket` / `api.hostProfilePrefix`
+  - `api/server/schemas.py` — `HostProfileRecord` ORM model
+  - `api/migrations/20260821120000_host_profiles.sql`
+  - `api/config/__init__.py` — `discord_webhook_url`, `TeeMeasurementConfig.fingerprint`,
+    `_load_tee_measurements`
 
 ---
 
@@ -61,28 +62,44 @@ in a release, and promotes the object from `pending/` to `measured/`.
   `numa_topology_eligible`) and `cpu` (`host_cpu_topology`). Declared so submissions validate, but
   never read — `fingerprint` takes those from their canonical block, so a disagreeing copy is inert.
 
-- **Bucket only, no database**, and profiles under `measured/` are **retained permanently**. A
-  fingerprint is a one-way hash: it cannot be inverted back to the topology inputs it was computed
-  from. Regenerating RTMR0 after a firmware or QEMU change needs those inputs, so discarding a
-  profile once its measurement ships would throw away the only copy. Only `pending/` — submissions
-  that were never generated — expires.
+- **A table, not object storage** (reversing the original "bucket only, no database" decision).
+  That call was right for what a profile *was*: a transient request, deleted once measurements
+  shipped. Two things changed it. Retention became permanent — a fingerprint is a one-way hash that
+  cannot be inverted back to the topology inputs an RTMR0 regen needs, so the row is the only copy.
+  And the day-to-day question turned out to be *review*: "which GPU types are waiting?". Permanent
+  structured data you query belongs in the database. Concretely it buys:
 
-- **One bucket, one prefix**: profiles land in the main storage bucket under `host-profiles/`,
-  beside `audit/`, `forge/`, `jobs/`, `logos/`. Single bucket keeps backup/restore and credentials
-  uniform and costs nothing extra (R2 bills per byte and operation, no per-bucket fee). Two
-  consequences: R2 API tokens scope to buckets not prefixes, so a permanent prefix-limited
-  credential is impossible (use a temporary credential); and per-bucket metrics do not break out by
-  prefix. Lifecycle rules *do* take a prefix, which is what matters. `HOST_PROFILE_BUCKET` moves
-  them to a dedicated bucket without a code change.
+  - **Queryability** — `WHERE profile @> '{"gpu": {"pci_device_ids": ["2901"]}}'` over a GIN index,
+    instead of a LIST plus N GetObjects and reading raw JSON by hand.
+  - **An atomic lifecycle** — `measured_at` replaces the `pending/` → `measured/` object move, so
+    promotion is one UPDATE with no copy-then-delete crash window.
+  - **Cheaper reads** — the topologies endpoint is one SELECT rather than N+1 round trips to R2.
+  - **Attribution as a column** — `miner_hotkey` is queryable rather than S3 metadata.
+
+- **The signed bytes are not kept, and nothing is ever deleted.** Two decisions that follow from
+  what this table is *for*.
+
+  The sr25519 signature is admission control at the endpoint: a request that fails it is rejected
+  and never reaches the table, so a row existing already means it verified. Retaining `raw_body` to
+  re-check that later would only defend against someone who can write to this table — an adversary
+  nothing else in the schema defends against — at the cost of a second copy of every document that
+  can silently disagree with `profile`. `miner_hotkey` stays as attribution for triage; `nonce` and
+  `signature` went with the bytes, since a signature you cannot verify against anything is dead
+  weight.
+
+  (There is no cheaper middle: the signed message is `hotkey:nonce:sha256(body)`, so storing just
+  the 64-char hash would preserve verifiability — but JSONB normalisation means it cannot be
+  recomputed from `profile`, so it would only prove someone signed *something*.)
+
+  There is also no expiry. Retention is the point: a measured row is the only copy of its
+  topology's inputs, and a pending row nobody generated for is still the record that someone asked.
+  If a reason to remove one ever appears, it should be a soft delete that keeps the history.
 
 - **Fingerprint keying, first-write-wins**: key is `{prefix}/{HostProfile.fingerprint}.json`,
   covering only what changes the generated measurement — passthrough inventory, CPU identity and
   topology, host RAM, NUMA layout, QEMU/`-cpu` args. Hostname, BIOS strings and the lspci tree are
   stored but excluded, so a 200-host fleet of one class produces one object. A known fingerprint
   HEADs the key, returns `stored: false`, and writes nothing.
-
-- **Exact signed bytes are stored**, with hotkey/nonce/signature in object metadata, so the
-  generation job can re-verify who submitted the document and that it is unmodified.
 
 - **One dependency for auth and metering**: the route declares
   `Depends(rate_limit_miner("host_profile_submit", ...))` and nothing else. Auth is a
@@ -98,7 +115,7 @@ in a release, and promotes the object from `pending/` to `measured/`.
   miner sends raw platform metadata and gets back a status word; computation, keying and matching
   all live here. If the key definition changes, it changes in one place.
 
-- **The fingerprint is the id linking the two halves**: submissions (bucket object key) and
+- **The fingerprint is the id linking the two halves**: submissions (the row's primary key) and
   measurements (`fingerprint` on each `hardware` entry). It is computed once, by
   `HostProfile.fingerprint`, at submission — never recomputed by a second code path.
 
@@ -131,11 +148,10 @@ describes hardware, and nothing proves they own it.
   `hotkey:nonce:sha256(body)` with a nonce inside ±600s. Registration cost is the sybil bound; rate
   limits (10/hotkey/hour, 120/hour overall) are counted only after the signature verifies.
 
-- **Why the constraints matter**: `gpu.pci_device_ids` and `gpu.count` are written into S3 object
-  metadata (HTTP headers) and a log line. Unconstrained, a CRLF in a device id is a log-injection
-  primitive — the HTTP client rejects the header itself, so R2 metadata injection fails closed as a
-  503, but loguru validates nothing. After validation every metadata value is provably constrained:
-  verified ss58, digits, hex, SHA-256 digest, 4-hex device ids.
+- **Why the constraints matter**: `gpu.pci_device_ids` and `gpu.count` reach log lines, Discord
+  alerts, and the public topologies endpoint. Unconstrained, a CRLF in a device id is a
+  log-injection primitive (loguru validates nothing). After validation every such value is provably
+  constrained: 4-hex device ids, bounded counts.
 
 - **The loosest fields** are `pci_topology` (bounded; newlines and tabs allowed since the tree is
   drawn with them, other control characters rejected) and the DMI strings. Bounded is not the same
@@ -153,8 +169,8 @@ describes hardware, and nothing proves they own it.
 
 - **Cost is bounded** by the rate limits: 120/hour × 256 KiB ≈ 21 GB/month worst case (~$0.32), with
   Class A operations inside the free tier. Fingerprint dedup does *not* bound this, since the
-  submitter controls the fingerprint inputs. Note the `pending/` expiry rule is what reclaims junk;
-  `measured/` grows only when a real measurement ships, so it stays small.
+  submitter controls the fingerprint inputs. Nothing reclaims junk, since nothing is deleted — the
+  rate limits are the only bound, and at a few KB per host class the table stays small regardless.
 
 - **Known limitation**: the 256 KiB cap is a policy check, not a memory guard. The body-hashing
   middleware buffers the body and FastAPI parses it before the handler's size check runs, and the
@@ -216,17 +232,17 @@ Only measurements at or above `MIN_HOST_PROFILE_MEASUREMENT_VERSION` (1.4.0) are
 | condition | status |
 | --- | --- |
 | a **non-rc** measurement ≥1.4.0 carries the fingerprint | `accepted` — this host class can launch |
-| otherwise, an object under `pending/` or `measured/` | `pending` — queued or generated |
+| otherwise, a row on file (pending or measured) | `pending` — queued or generated |
 | none of the above | `unknown` — only reachable with `dry_run`, since a real submission gets parked |
 
 **rc is a property of a version, not of a topology.** A topology is measured or it is not, so there
 is no measured-but-rc state: rc measurements are simply skipped when reading topology status, and a
-fingerprint carried only by an rc version reports `pending` off the bucket. Correct — nothing it can
+fingerprint carried only by an rc version reports `pending` off the table. Correct — nothing it can
 launch is published yet.
 
-**Status comes from the measurement config, never from the `measured/` prefix.** The config is the
-sole truth for attestability; `measured/` is just the retained generation store. Deriving `accepted`
-from the prefix would let the bucket and the config drift into disagreeing about what can launch.
+**Status comes from the measurement config, never from `measured_at`.** The config is the sole
+truth for attestability; `measured_at` just records that generation happened. Deriving `accepted`
+from the column would let the table and the config drift into disagreeing about what can launch.
 
 A real submission stores whenever we do not already hold the profile — *including* when a
 measurement already covers it, since a fingerprint cannot be inverted and an accepted host class
@@ -243,9 +259,9 @@ that has measurements keeps reporting `pending` forever.
 
 Two sources, both single-sourced from `HostProfile.fingerprint`:
 
-1. **Submission-driven topologies** — the fingerprint *is* the bucket object key
-   (`host-profiles/pending/{fingerprint}.json`). Read it off the key, copy it onto the entry, then
-   move the object to `measured/`.
+1. **Submission-driven topologies** — the fingerprint *is* the row's primary key. Read it from
+   `host_profiles` (or from the submission response) and copy it onto the entry; the reconciler
+   marks the row measured once the config carries it.
 2. **Seed / build-time topologies** never submitted through the API:
 
    ```
@@ -264,11 +280,11 @@ and designed to be read alongside it.
 [{"fingerprint": "<sha256 hex>", "profile": { ...discover-profile document... }}]
 ```
 
-One entry per object under `measured/` — the generated set. The profile is the stored document
+One row per measured host class — the generated set. The profile is the stored document
 re-emitted in its **wire shape** (`host`, `launch_determinism`, ...), stripped of the fields that
 identify the individual machine rather than the host class: `hostname` and `timestamp`
-(`HOST_PROFILE_PRIVATE_FIELDS`). The submitter's hotkey/nonce/signature live in S3 object metadata,
-which this path never reads, so they cannot leak. Everything else — gpu/cpu/memory/numa/qemu plus
+(`HOST_PROFILE_PRIVATE_FIELDS`). The submitter's `miner_hotkey` is a column this query never
+selects, so it cannot leak. Everything else — gpu/cpu/memory/numa/qemu plus
 BIOS, board and the lspci tree — is generic host-class data and is exactly what reproducing RTMR0
 needs.
 
@@ -278,84 +294,42 @@ Two consumers:
   from the inputs here and compare it to the published measurement. A quote holder can also see
   which host class their own RTMR0 corresponds to.
 - **The sek8s `chutes-cvm generate-measurements` CLI**, which reads topologies from here rather
-  than S3. That is why it is public: the generation side needs topologies, not bucket credentials.
+  than storage directly. That is why it is public: the generation side needs topologies, not
+  database credentials.
 
-### Bucket lifecycle job (notify + reconcile)
+### Lifecycle job (notify + reconcile)
 
-`host_profile_reconciler.py`, on a CronJob. Two responsibilities, both owned by the API rather than
-the CLI, so the generation side stays storage-agnostic:
+`host_profile_reconciler.py`, on a CronJob. Both responsibilities are the API's rather than the
+CLI's, so the generation side stays storage-agnostic. Neither deletes anything:
 
-- **Notify** — a new fingerprint under `pending/` posts a Discord alert. Deduplicated through a
-  redis set, and only marked once the webhook actually accepts it, so an outage re-alerts rather
-  than silently swallowing the only notification. It **never triggers generation** — a human
-  decides.
-- **Reconcile** — the measurement config is the source of truth. For every fingerprint published
-  there, if `pending/{fp}` exists it is moved to `measured/{fp}`. Idempotent, and copy-then-delete
-  so a crash mid-move leaves the object in both prefixes (the next run resolves it) rather than in
-  neither. Reconcile follows the config regardless of `rc`: an rc entry means the topology *was*
-  generated, so its profile belongs in the retained set even though it cannot launch yet.
+- **Notify** — a pending row with no `notified_at` posts a Discord alert naming the fingerprint and
+  the GPU count/ids, so triage does not require opening the document. `notified_at` is stamped only
+  after the webhook accepts, so an outage re-alerts rather than silently swallowing the only
+  notification. It **never triggers generation** — a human decides.
+- **Reconcile** — the measurement config is the source of truth. Every published fingerprint with a
+  pending row is marked measured in one atomic UPDATE. rc counts here: an rc entry means the
+  topology *was* generated, even though it cannot launch yet.
 
-### Bucket layout (what the generation tooling consumes)
+### Storage layout
 
 | | |
 | --- | --- |
-| Bucket | `STORAGE_BUCKET` (override with `HOST_PROFILE_BUCKET` to isolate them) |
-| Queued | `{HOST_PROFILE_PREFIX}/pending/{fingerprint}.json` — where submissions land; expires |
-| Generated | `{HOST_PROFILE_PREFIX}/measured/{fingerprint}.json` — retained permanently |
-| Body | the exact JSON the miner signed |
-| Metadata | `hotkey`, `nonce`, `signature`, `fingerprint`, `gpu-count`, `gpu-pci-device-ids`, `submitted-at` |
+| Table | `host_profiles`, primary key `fingerprint` |
+| `profile` | JSONB, the document in wire shape; GIN-indexed for containment queries |
+| `miner_hotkey` | who submitted it (attribution for triage) |
+| `measured_at` | NULL = pending; set = measured and retained permanently |
+| `notified_at` | when the "new host class" alert went out |
 
-A host class is **known** if an object exists under *either* prefix; neither is ever overwritten, so
-a generated profile is never re-queued.
+Review queries, which are the reason this is a table:
 
-The generation job lists `pending/`, produces measurements for each object's host class, and
-**moves** the object to `measured/`. That move is release-workflow, not API — this service only lays
-out the two prefixes and reads them. The API never deletes and never writes to `measured/`.
+```sql
+-- What hardware is waiting on measurements?
+SELECT fingerprint, profile->'gpu'->>'count' AS gpus, profile->'gpu'->'pci_device_ids' AS ids
+FROM host_profiles WHERE measured_at IS NULL ORDER BY created_at;
 
-Put the expiry lifecycle rule on **`pending/` only**: those are submissions nobody generated. A rule
-covering `measured/` would delete topology inputs that cannot be reconstructed.
-
-### Measurement config: `fingerprint` on `hardware` entries
-
-```yaml
-measurements:
-  - version: "1.4.0"
-    mrtd: "..."
-    hardware:
-      - name: "8xh200"
-        rtmr0: "..."
-        fingerprint: "5fcb3e1c..."   # optional; 64 hex chars; links to the submitted profile
-        expected_gpus: ["h200"]
-        gpu_count: 8
+-- Every host class with a given GPU.
+SELECT fingerprint FROM host_profiles WHERE profile @> '{"gpu": {"pci_device_ids": ["2901"]}}';
 ```
-
-Optional and validated only when present (64 hex chars, lower-cased), because existing entries
-predate the field. Surfaced on `GET /servers/tee/measurements` — public transparency, so a third
-party can see which host class a measurement covers.
-
-**An entry ≥1.4.0 without a fingerprint is unmatchable**: its host class reports `pending` forever
-even though it launches fine. Every 1.4.0+ entry must carry one. Pre-1.4.0 entries are outside the
-gate and need no backfill.
-
----
-
-## Rollout Notes
-
-1. **Create the `pending/` expiry lifecycle rule** scoped to that prefix alone — never
-   `measured/`, and never the bare `host-profiles/` prefix.
-2. **No backfill of the 24 pre-1.4.0 entries** — they sit below
-   `MIN_HOST_PROFILE_MEASUREMENT_VERSION` and are ignored by status. This is deliberate: their
-   fingerprints cannot be recovered from source anyway (`HostProfile.fingerprint` hashes host RAM,
-   BAR size, VRAM, NUMA and NIC counts, which a `TopologyFingerprint` in `profiles.py` does not
-   carry), so backfilling them would mean running `discover-profile.sh` on a live host of each of
-   the 24 classes. Instead, **every 1.4.0 `hardware` entry must ship with a `fingerprint`** — it is
-   generated alongside RTMR0, so there is nothing to reconstruct.
-3. **Freshness after publish**: status reads the measurement set live, so a newly published
-   measurement takes effect as soon as the ConfigMap remount propagates — no cache to wait out.
-   (`GET /servers/tee/measurements` is separately cached for `TEE_MEASUREMENTS_CACHE_TTL`, so newly
-   published `fingerprint` values appear *there* on that delay; status is unaffected.)
-
----
 
 ## Attestation failure messages
 

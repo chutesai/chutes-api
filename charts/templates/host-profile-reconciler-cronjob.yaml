@@ -55,18 +55,6 @@ spec:
                 - host_profile_reconciler.py
               env:
                 {{- include "chutes.cronjobEnv" (dict "Values" .Values) | nindent 16 }}
-                {{- if .Values.s3ProxyUrl }}
-                - name: S3_PROXY_URL
-                  value: {{ .Values.s3ProxyUrl | quote }}
-                {{- end }}
-                {{- if .Values.api.hostProfileBucket }}
-                - name: HOST_PROFILE_BUCKET
-                  value: {{ .Values.api.hostProfileBucket | quote }}
-                {{- end }}
-                {{- if .Values.api.hostProfilePrefix }}
-                - name: HOST_PROFILE_PREFIX
-                  value: {{ .Values.api.hostProfilePrefix | quote }}
-                {{- end }}
                 {{- if .Values.hostProfileReconciler.discordWebhookSecretName }}
                 - name: DISCORD_WEBHOOK_URL
                   valueFrom:
@@ -74,31 +62,6 @@ spec:
                       name: {{ .Values.hostProfileReconciler.discordWebhookSecretName }}
                       key: {{ .Values.hostProfileReconciler.discordWebhookSecretKey | default "webhook-url" }}
                 {{- end }}
-                - name: AWS_ACCESS_KEY_ID
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
-                      key: access-key-id
-                - name: AWS_SECRET_ACCESS_KEY
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
-                      key: secret-access-key
-                - name: AWS_ENDPOINT_URL
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
-                      key: endpoint-url
-                - name: AWS_REGION
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
-                      key: aws-region
-                - name: STORAGE_BUCKET
-                  valueFrom:
-                    secretKeyRef:
-                      name: {{ .Values.s3SecretName | default "s3-credentials" }}
-                      key: bucket
               volumeMounts:
                 - name: tee-measurements
                   mountPath: "/etc/config"
