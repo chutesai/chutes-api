@@ -355,7 +355,11 @@ async def host_router_middleware(request: Request, call_next):
 
         if request.state.auth_method != "invoke":
             # Handle /users/me/* paths specially for OAuth scope checking
-            if request.url.path.startswith("/users/me"):
+            if request.url.path == "/partners/huggingface/billing":
+                request.state.auth_method = "read"
+                request.state.auth_object_type = "billing"
+                request.state.auth_object_id = "__self__"
+            elif request.url.path.startswith("/users/me"):
                 if "/balance" in request.url.path:
                     request.state.auth_object_type = "billing"
                 elif "/quota" in request.url.path:
