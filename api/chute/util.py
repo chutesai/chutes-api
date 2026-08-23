@@ -670,6 +670,7 @@ async def _get_one(name_or_id: str, nonce: int = None):
                         or_(
                             Chute.name == name_or_id,
                             Chute.chute_id == name_or_id,
+                            Chute.slug == name_or_id,
                         )
                     )
                     .order_by((Chute.user_id == chute_user).desc())
@@ -705,19 +706,23 @@ async def get_one(name_or_id: str, nonce: int = None):
     return await _get_one(name_or_id, nonce=nonce)
 
 
-async def invalidate_chute_cache(chute_id: str, chute_name: str = None):
+async def invalidate_chute_cache(chute_id: str, chute_name: str = None, chute_slug: str = None):
     """
-    Invalidate all caches for a chute (both by ID and by name).
+    Invalidate all caches for a chute (by ID, name, and slug).
     """
     # Clear Redis cache
     await settings.redis_client.delete(f"_chute:{chute_id}")
     if chute_name:
         await settings.redis_client.delete(f"_chute:{chute_name}")
+    if chute_slug:
+        await settings.redis_client.delete(f"_chute:{chute_slug}")
 
     # Clear in-memory alru_cache
     _get_one.cache_invalidate(chute_id)
     if chute_name:
         _get_one.cache_invalidate(chute_name)
+    if chute_slug:
+        _get_one.cache_invalidate(chute_slug)
 
 
 @alru_cache(maxsize=5000, ttl=300)
