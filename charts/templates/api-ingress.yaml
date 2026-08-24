@@ -12,7 +12,7 @@ metadata:
     nginx.ingress.kubernetes.io/cors-max-age: "1728000"
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
-    nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "20"
     nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout http_500 http_502 http_503 http_504"
     nginx.ingress.kubernetes.io/proxy-next-upstream-timeout: "45"
     nginx.ingress.kubernetes.io/proxy-next-upstream-tries: "3"
