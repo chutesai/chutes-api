@@ -207,6 +207,27 @@ class TestValidation:
         assert profile.nic.eth_class_count == 2
         assert profile.nvswitch.present is True
 
+    @pytest.mark.parametrize("field", ["hostname", "timestamp"])
+    def test_machine_identifying_fields_are_never_serialised(self, field):
+        """
+        They identify one machine, not a host class. Accepted so a real document validates, but
+        excluded from every dump -- so they never reach the stored column and cannot leak from the
+        public endpoint, whatever serialisation path is used.
+        """
+        profile = _profile()
+
+        assert getattr(profile, field) is not None
+        assert field not in profile.model_dump()
+        assert field not in profile.model_dump(by_alias=True)
+        assert field not in profile.model_dump(mode="json")
+        assert field not in json.loads(profile.model_dump_json())
+
+    def test_omitting_them_entirely_still_validates(self):
+        data = copy.deepcopy(SAMPLE_PROFILE)
+        del data["hostname"], data["timestamp"]
+
+        assert HostProfile(**data).fingerprint == _profile().fingerprint
+
     def test_wire_keys_map_to_descriptive_attributes(self):
         """discover-profile.sh's ``host`` / ``launch_determinism`` keys, named for what they hold."""
         profile = _profile()

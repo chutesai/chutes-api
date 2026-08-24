@@ -81,12 +81,6 @@ MIN_HOST_PROFILE_MEASUREMENT_VERSION = "1.4.0"
 # counted only AFTER the signature verifies, so a forged hotkey can't burn a real miner's quota.
 HOST_PROFILE_MAX_BYTES = 256 * 1024
 
-# Stripped from a host profile before it is published on GET /servers/tdx/host_profiles: these
-# identify the individual machine that submitted it, not the host class. Everything else --
-# gpu/cpu/memory/numa/qemu plus BIOS, board and the lspci tree -- is generic host-class data and
-# is exactly what a third party needs to reproduce RTMR0.
-HOST_PROFILE_PRIVATE_FIELDS = {"hostname", "timestamp"}
-
 
 class HostProfileStatus(str, Enum):
     """Whether a submitted host class can launch yet."""

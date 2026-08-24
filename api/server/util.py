@@ -54,7 +54,6 @@ from api.server.schemas import (
 )
 from api.constants import (
     HostProfileStatus,
-    HOST_PROFILE_PRIVATE_FIELDS,
     MIN_HOST_PROFILE_MEASUREMENT_VERSION,
     MIN_ROOT_ROTATION_VERSION,
     ATTESTATION_PROXY_AUTH_HEADER,
@@ -1426,9 +1425,9 @@ async def list_measured_host_profiles(db: AsyncSession) -> list[dict]:
     """
     The published topology set: every generated host class, as {fingerprint, profile}.
 
-    The profile is re-emitted in its wire shape minus the machine-identifying fields. The
-    submitter's hotkey/nonce/signature are columns that this query never selects, so they cannot
-    leak into a public response.
+    Returned as stored: the machine-identifying fields are dropped at submission (HostProfile
+    declares them ``exclude=True``), so the column holds only host-class data and there is nothing
+    to filter here. ``miner_hotkey`` is a column this query never selects.
     """
     result = await db.execute(
         select(HostProfileRecord.fingerprint, HostProfileRecord.profile)
@@ -1436,11 +1435,7 @@ async def list_measured_host_profiles(db: AsyncSession) -> list[dict]:
         .order_by(HostProfileRecord.fingerprint)
     )
     return [
-        {
-            "fingerprint": fingerprint,
-            "profile": {k: v for k, v in profile.items() if k not in HOST_PROFILE_PRIVATE_FIELDS},
-        }
-        for fingerprint, profile in result.all()
+        {"fingerprint": fingerprint, "profile": profile} for fingerprint, profile in result.all()
     ]
 
 

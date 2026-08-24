@@ -603,8 +603,12 @@ class HostProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    hostname: Optional[HostProfileText] = None
-    timestamp: Optional[HostProfileText] = None
+    # Accepted so a real discover-profile.sh document validates, but `exclude=True` keeps them out
+    # of every model_dump -- so they never reach the stored column, and a published profile cannot
+    # leak them however it is serialised. They identify one machine; a host CLASS does not have a
+    # hostname.
+    hostname: Optional[HostProfileText] = Field(default=None, exclude=True)
+    timestamp: Optional[HostProfileText] = Field(default=None, exclude=True)
     platform: HostProfilePlatform = Field(default_factory=HostProfilePlatform, alias="host")
     qemu: HostProfileQemu = Field(alias="launch_determinism")
     gpu: HostProfileGpu

@@ -70,13 +70,15 @@ def _session(rows=None, scalars=None):
 
 class TestPublishedProfile:
     @pytest.mark.asyncio
-    async def test_machine_identifying_fields_are_stripped(self):
-        db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
+    async def test_returned_as_stored(self):
+        """
+        Nothing is filtered on read: the machine-identifying fields never enter the column, so a
+        published profile is exactly the stored one.
+        """
+        stored = _profile().model_dump(by_alias=True)
+        db = _session(rows=[(FP_A, stored)])
 
-        profile = (await list_measured_host_profiles(db))[0]["profile"]
-
-        assert "hostname" not in profile
-        assert "timestamp" not in profile
+        assert (await list_measured_host_profiles(db))[0]["profile"] == stored
 
     @pytest.mark.asyncio
     async def test_generic_host_class_data_is_published(self):

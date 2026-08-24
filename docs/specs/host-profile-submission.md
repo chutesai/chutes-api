@@ -54,6 +54,12 @@ generates measurements and ships them in a release; the reconciler then marks th
   extras. Accepting unknown keys would hand unvalidated attacker content to a privileged offline
   job, and would not work anyway — the load balancers validate against the published OpenAPI schema.
 
+- **Machine-identifying fields are never persisted.** `hostname` and `timestamp` are declared
+  `exclude=True` on `HostProfile`, so a real `discover-profile.sh` document still validates but
+  they are dropped from every `model_dump` — including the one that writes the row. The column
+  therefore holds only host-class data, and the public endpoint cannot leak them regardless of how
+  it serialises, with no filter to keep in sync. A host class does not have a hostname.
+
 - **One field, one home**: `launch_determinism` restates `numa` (`numa_node_count`,
   `numa_topology_eligible`) and `cpu` (`host_cpu_topology`). Declared so submissions validate, but
   never read — `fingerprint` takes those from their canonical block, so a disagreeing copy is inert.
@@ -231,12 +237,11 @@ rate-limited — same shape as `GET /tee/measurements`, and designed to be read 
 [{"fingerprint": "<sha256 hex>", "profile": { ...discover-profile document... }}]
 ```
 
-One row per measured host class. The profile is the stored document re-emitted in its **wire shape**
-(`host`, `launch_determinism`, ...), stripped of the fields that identify the individual machine
-rather than the host class: `hostname` and `timestamp` (`HOST_PROFILE_PRIVATE_FIELDS`).
-`miner_hotkey` is a column this query never selects, so it cannot leak. Everything else —
-gpu/cpu/memory/numa/qemu plus BIOS, board and the lspci tree — is generic host-class data and is
-exactly what reproducing RTMR0 needs.
+One row per measured host class, returned exactly as stored — in the **wire shape** (`host`,
+`launch_determinism`, ...). Nothing is filtered on read, because the machine-identifying fields
+never enter the column in the first place (see below). `miner_hotkey` is a column this query never
+selects. What remains — gpu/cpu/memory/numa/qemu plus BIOS, board and the lspci tree — is generic
+host-class data and is exactly what reproducing RTMR0 needs.
 
 Two consumers:
 
