@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: host-profile-reconciler
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.hostProfileReconciler.schedule | default "*/15 * * * *" | quote }}
+  suspend: {{ .Values.hostProfileReconciler.suspend | default false }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.hostProfileReconciler.successfulJobsHistoryLimit | default .Values.cronjobDefaults.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.hostProfileReconciler.failedJobsHistoryLimit | default .Values.cronjobDefaults.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: {{ .Values.hostProfileReconciler.ttlSecondsAfterFinished | default .Values.cronjobDefaults.ttlSecondsAfterFinished }}
+      template:
+        metadata:
+          labels:
+            {{- include "api.labels" . | nindent 12 }}
+            {{- include "chutes.dbAccess" . | nindent 12 }}
+            {{- include "chutes.redisAccess" . | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          securityContext:
+            {{- include "chutes.podSecurityContext" . | nindent 12 }}
+          tolerations:
+            {{- include "chutes.defaultTolerations" . | nindent 12 }}
+            {{- with .Values.hostProfileReconciler.tolerations }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.hostProfileReconciler.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumes:
+            # Reconcile reads the published measurement set to decide what to promote, so it needs
+            # the same ConfigMap the API mounts.
+            - name: tee-measurements
+              configMap:
+                name: tee-measurements
+            {{- include "chutes.redisCacertVolume" . | nindent 12 }}
+          containers:
+            - name: host-profile-reconciler
+              image: {{ include "chutes.image" (list . .Values.hostProfileReconciler.image) | quote }}
+              imagePullPolicy: {{ .Values.hostProfileReconciler.imagePullPolicy }}
+              securityContext:
+                {{- include "chutes.containerSecurityContext" . | nindent 16 }}
+              command:
+                - uv
+                - run
+                - python
+                - host_profile_reconciler.py
+              env:
+                {{- include "chutes.cronjobEnv" (dict "Values" .Values) | nindent 16 }}
+                {{- if .Values.hostProfileReconciler.discordWebhookSecretName }}
+                - name: DISCORD_WEBHOOK_URL
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.hostProfileReconciler.discordWebhookSecretName }}
+                      key: {{ .Values.hostProfileReconciler.discordWebhookSecretKey | default "webhook-url" }}
+                {{- end }}
+              volumeMounts:
+                - name: tee-measurements
+                  mountPath: "/etc/config"
+                  readOnly: true
+                {{- include "chutes.redisCacertMount" . | nindent 16 }}
+              resources:
+                {{- include "chutes.cronjobResources" .Values.hostProfileReconciler.resources | nindent 16 }}

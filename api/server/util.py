@@ -8,7 +8,8 @@ import base64
 import json
 import tempfile
 from typing import Dict, List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
@@ -43,8 +44,17 @@ from api.server.exceptions import (
 from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
 
-from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation, AttestationAuth
+from api.server.schemas import (
+    HostProfileRecord,
+    Server,
+    VmCacheConfig,
+    LuksVolumeRotation,
+    AttestationAuth,
+    HostProfile,
+)
 from api.constants import (
+    HostProfileStatus,
+    MIN_HOST_PROFILE_MEASUREMENT_VERSION,
     MIN_ROOT_ROTATION_VERSION,
     ATTESTATION_PROXY_AUTH_HEADER,
     CVM_PROXY_AUTH_HEADER,
@@ -1284,3 +1294,175 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
         raise InvalidGpuEvidenceError()
 
     logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))
+
+
+async def store_host_profile(
+    db: AsyncSession,
+    profile: HostProfile,
+    hotkey: str,
+) -> tuple[str, bool]:
+    """
+    Record a submitted host profile, first-write-wins.
+
+    A host class already on file -- pending or measured -- is left untouched; the row is keyed by
+    fingerprint, so ON CONFLICT DO NOTHING gives idempotency without a read-then-write race.
+
+    Returns (fingerprint, created); created=False means that host class was already known.
+    """
+    fingerprint = profile.fingerprint
+    result = await db.execute(
+        pg_insert(HostProfileRecord)
+        .values(
+            fingerprint=fingerprint,
+            profile=profile.model_dump(by_alias=True),
+            miner_hotkey=hotkey,
+        )
+        .on_conflict_do_nothing(index_elements=["fingerprint"])
+        .returning(HostProfileRecord.fingerprint)
+    )
+    created = result.scalar_one_or_none() is not None
+    if not created:
+        logger.info(f"Host profile {fingerprint} already known, ignoring {hotkey=}")
+        return fingerprint, False
+
+    await db.commit()
+    logger.success(
+        f"Stored host profile {fingerprint} from {hotkey=}: "
+        f"{profile.gpu.count}x{'/'.join(sorted(set(profile.gpu.pci_device_ids)))}"
+    )
+    return fingerprint, True
+
+
+def host_profile_measurement_status(fingerprint: str) -> Optional[HostProfileStatus]:
+    """
+    What the measurement config says about a host class, or None if it says nothing.
+
+    ACCEPTED when a published (non-rc) measurement at or above
+    MIN_HOST_PROFILE_MEASUREMENT_VERSION carries the fingerprint -- that is the only thing that
+    makes a host class attestable. Anything else returns None and the caller falls through to the
+    profile table (on file -> PENDING, otherwise UNKNOWN).
+
+    rc is a property of a VERSION, not of a topology: a topology is measured or it is not, so
+    there is no measured-but-rc state to report. rc measurements are simply skipped here, which
+    means a fingerprint carried only by an rc version reports PENDING -- correct, since nothing it
+    can launch is published yet.
+
+    The version gate matters because the caller runs the CLI that ships with
+    MIN_HOST_PROFILE_MEASUREMENT_VERSION; a host class measured solely on an older version cannot
+    actually launch for them, so reporting ACCEPTED off a 1.3.x entry would be a lie.
+
+    The config is the sole truth for attestability. Deriving ACCEPTED from ``measured_at`` instead
+    would let the table and the config drift into disagreeing about what can launch.
+    """
+    for measurement in settings.tee_measurements:
+        if measurement.fingerprint != fingerprint or measurement.rc:
+            continue
+        if semcomp(measurement.version, MIN_HOST_PROFILE_MEASUREMENT_VERSION) < 0:
+            continue
+        return HostProfileStatus.ACCEPTED
+    return None
+
+
+async def host_profile_is_known(db: AsyncSession, fingerprint: str) -> bool:
+    """Whether a profile for this host class is on file, pending or measured."""
+    return (
+        await db.scalar(
+            select(HostProfileRecord.fingerprint).where(
+                HostProfileRecord.fingerprint == fingerprint
+            )
+        )
+    ) is not None
+
+
+async def resolve_host_profile_status(
+    db: AsyncSession,
+    profile: HostProfile,
+    hotkey: str,
+    dry_run: bool = False,
+) -> tuple[str, HostProfileStatus, bool]:
+    """
+    Decide whether a submitted host class can launch, recording it if we do not already hold it.
+
+    Status comes from the measurement config first; the profile table only distinguishes "on file"
+    from "never seen" for a host class no measurement mentions. A real submission is always stored
+    when unknown, so it can never return UNKNOWN -- only ``dry_run`` can, because it writes nothing.
+
+    A real submission stores even when a measurement already covers the fingerprint, if we hold no
+    profile for it: a fingerprint cannot be inverted back to its topology inputs, so an accepted
+    host class with no stored profile cannot have its RTMR0 regenerated after a firmware change.
+    store_host_profile no-ops when the row already exists.
+
+    Returns (fingerprint, status, stored).
+    """
+    fingerprint = profile.fingerprint
+    config_status = host_profile_measurement_status(fingerprint)
+
+    if dry_run:
+        if config_status is not None:
+            return fingerprint, config_status, False
+        known = await host_profile_is_known(db, fingerprint)
+        return (
+            fingerprint,
+            HostProfileStatus.PENDING if known else HostProfileStatus.UNKNOWN,
+            False,
+        )
+
+    _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
+    return fingerprint, config_status or HostProfileStatus.PENDING, stored
+
+
+async def list_pending_profiles(db: AsyncSession) -> list[HostProfileRecord]:
+    """Host classes awaiting measurement generation, oldest first."""
+    result = await db.execute(
+        select(HostProfileRecord)
+        .where(HostProfileRecord.measured_at.is_(None))
+        .order_by(HostProfileRecord.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def list_measured_host_profiles(db: AsyncSession) -> list[dict]:
+    """
+    The published topology set: every generated host class, as {fingerprint, profile}.
+
+    Returned as stored: the machine-identifying fields are dropped at submission (HostProfile
+    declares them ``exclude=True``), so the column holds only host-class data and there is nothing
+    to filter here. ``miner_hotkey`` is a column this query never selects.
+    """
+    result = await db.execute(
+        select(HostProfileRecord.fingerprint, HostProfileRecord.profile)
+        .where(HostProfileRecord.measured_at.isnot(None))
+        .order_by(HostProfileRecord.fingerprint)
+    )
+    return [
+        {"fingerprint": fingerprint, "profile": profile} for fingerprint, profile in result.all()
+    ]
+
+
+async def reconcile_host_profiles(db: AsyncSession) -> list[str]:
+    """
+    Mark every pending profile measured whose fingerprint now appears in the measurement config.
+
+    The config is the source of truth: a fingerprint published there means the topology has been
+    generated, so its profile moves into the retained set. One atomic UPDATE -- unlike the
+    copy-then-delete this replaces, there is no window where a crash leaves it half-moved. rc
+    counts here: an rc entry means the topology WAS generated, even though it cannot launch yet.
+    """
+    published = {m.fingerprint for m in settings.tee_measurements if m.fingerprint}
+    if not published:
+        return []
+
+    result = await db.execute(
+        update(HostProfileRecord)
+        .where(
+            HostProfileRecord.fingerprint.in_(published),
+            HostProfileRecord.measured_at.is_(None),
+        )
+        .values(measured_at=func.now())
+        .returning(HostProfileRecord.fingerprint)
+    )
+    promoted = sorted(result.scalars().all())
+    if promoted:
+        await db.commit()
+        logger.success(f"Reconciled {len(promoted)} host profile(s) as measured")
+    return promoted

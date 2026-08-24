@@ -69,6 +69,53 @@ MIN_ROOT_ROTATION_VERSION = "1.4.0"
 # key usage (TeeServerClient.create).
 MIN_VM_AUTH_KEY_VERSION = "1.4.0"
 
+# Minimum VM version whose measurements count toward host profile status. 1.4.0 is the first
+# version shipping the CLI that calls POST /servers/tdx/host_profiles, so nothing older ever asks.
+# The gate is also what makes the answer true: "accepted" means the version the caller runs can
+# launch here, and a host class measured only on 1.3.x cannot launch 1.4.0. It also scopes the
+# `fingerprint` backfill to 1.4.0 entries, which are generated with one from the start.
+MIN_HOST_PROFILE_MEASUREMENT_VERSION = "1.4.0"
+
+# Host profile submissions (POST /servers/tdx/host_profiles). Output is a few KB (the lspci tree
+# dominates), so the cap is generous but bounds what one miner can store. Both rate limits are
+# counted only AFTER the signature verifies, so a forged hotkey can't burn a real miner's quota.
+HOST_PROFILE_MAX_BYTES = 256 * 1024
+
+
+class HostProfileStatus(str, Enum):
+    """Whether a submitted host class can launch yet."""
+
+    # Fingerprint is on a non-rc measurement hardware entry: this host class can launch.
+    ACCEPTED = "accepted"
+    # On file, awaiting measurement generation.
+    PENDING = "pending"
+    # Neither -- only reachable via dry_run, since a real submission is always recorded.
+    UNKNOWN = "unknown"
+
+
+# Bounds on the modeled fields of a submitted profile. The values are machine-generated, but a
+# submission is attacker-controlled and lands in log lines, a public endpoint, and in front of a
+# privileged offline job -- so nothing may be unbounded. Generous enough that plausible future
+# hardware still validates.
+HOST_PROFILE_MAX_GPUS = 64
+HOST_PROFILE_MAX_NUMA_NODES = 64
+HOST_PROFILE_MAX_SOCKETS = 64
+HOST_PROFILE_MAX_CPUS = 8192
+HOST_PROFILE_MAX_THREADS_PER_CORE = 16
+HOST_PROFILE_MAX_RAM_GB = 262144
+HOST_PROFILE_MAX_VRAM_GB = 65536
+HOST_PROFILE_MAX_BAR_MB = 16 * 1024 * 1024
+HOST_PROFILE_MAX_NICS = 256
+# The lspci -tv tree; a few KB on a large box.
+HOST_PROFILE_MAX_TOPOLOGY_CHARS = 64 * 1024
+HOST_PROFILE_SUBMISSIONS_PER_HOTKEY = 10
+HOST_PROFILE_SUBMISSIONS_GLOBAL = 120
+HOST_PROFILE_WINDOW_SECONDS = 3600
+
+# GET /servers/tdx/host_profiles: public and unauthenticated, so it carries an anonymous global cap
+# like the other public TEE endpoints. Responses are redis-cached, so this bounds cache misses.
+HOST_PROFILES_RATE_LIMIT_PER_MINUTE = 60
+
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25
 

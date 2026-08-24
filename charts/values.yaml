@@ -423,6 +423,27 @@ watchtower:
   affinity: {}
   tolerations: []
 
+# Host profile bucket lifecycle. Notifies on new pending/ submissions (generation stays manual --
+# a human decides) and promotes pending/ -> measured/ once a fingerprint appears in the published
+# measurement config. Never triggers generation itself.
+hostProfileReconciler:
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/15 * * * *"
+  suspend: false
+  # Secret holding the Discord webhook URL for "new host class submitted" alerts. Leave unset to
+  # disable alerting -- reconcile still runs.
+  discordWebhookSecretName: ""
+  discordWebhookSecretKey: webhook-url
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "200m"
+      memory: "512Mi"
+
 cacher:
   image: validator:latest
   imagePullPolicy: Always

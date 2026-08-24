@@ -64,6 +64,10 @@ class TeeMeasurementConfig:
     runtime_rtmr3: str  # shared across hardware; runtime-only (boot RTMR3 is zero)
     expected_gpus: List[str]
     gpu_count: Optional[int] = None
+    # Topology fingerprint of the host class this hardware entry covers -- the same value
+    # HostProfile.fingerprint produces at submission, propagated here by the measurement generator.
+    # Optional: entries predating the field have none and are simply unmatchable.
+    fingerprint: Optional[str] = None
     rc: bool = False  # release candidate / in-test: attestable but unpublished
     # rc authorization allowlists (both required non-empty when rc is True; ignored for published
     # measurements). The two gate modes use different primitives, matched to their environment:
@@ -183,6 +187,10 @@ class Settings(BaseSettings):
 
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
+
+    # Discord webhook for operational alerts (a new host class was submitted, ...). Unset
+    # disables alerting rather than failing.
+    discord_webhook_url: Optional[str] = os.getenv("DISCORD_WEBHOOK_URL")
 
     # Base redis settings.
     redis_host: str = Field(
@@ -419,6 +427,20 @@ class Settings(BaseSettings):
                 )
             return cleaned
 
+        def _fingerprint(value, owner: str) -> Optional[str]:
+            """Lower-case/strip a topology fingerprint and validate it is 64 hex chars."""
+            if value is None:
+                return None
+            cleaned = str(value).lower().strip()
+            if not cleaned:
+                return None
+            if len(cleaned) != 64 or any(c not in "0123456789abcdef" for c in cleaned):
+                raise ValueError(
+                    f"Invalid fingerprint for measurement config '{owner}': expected 64 hex "
+                    f"chars, got {cleaned!r}."
+                )
+            return cleaned
+
         measurements: List[TeeMeasurementConfig] = []
         for version_config in config.get("measurements", []):
             version = version_config.get("version")
@@ -512,6 +534,7 @@ class Settings(BaseSettings):
                         runtime_rtmr3=runtime_rtmr3,
                         expected_gpus=[gpu.lower() for gpu in hw["expected_gpus"]],
                         gpu_count=gpu_count,
+                        fingerprint=_fingerprint(hw.get("fingerprint"), owner),
                         rc=rc,
                         authorized_hotkeys=authorized_hotkeys,
                         authorized_signing_keys=authorized_signing_keys,

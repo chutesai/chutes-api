@@ -211,7 +211,10 @@ def validate_request_nonce(purpose: NoncePurpose):
             logger.error(f"Request nonce validation failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid nonce supplied",
+                detail=(
+                    f"Nonce is invalid, expired, or already used (purpose={purpose.value}). "
+                    "Request a fresh nonce immediately before this call; nonces are single-use."
+                ),
             )
 
     return _validate_request_nonce
@@ -243,7 +246,10 @@ def validate_boot_nonce():
             logger.error(f"Boot nonce validation failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid nonce supplied",
+                detail=(
+                    "Boot nonce is invalid, expired, or already used. Fetch a fresh one from "
+                    "GET /servers/nonce immediately before attesting; nonces are single-use."
+                ),
             )
 
         # TODO: require a bound hotkey once all VMs >= 1.4.0.
@@ -254,7 +260,10 @@ def validate_boot_nonce():
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Nonce hotkey mismatch",
+                detail=(
+                    "This nonce was issued for a different miner hotkey. Fetch the nonce with the "
+                    "same miner_hotkey used for attestation."
+                ),
             )
 
         return nonce
@@ -278,7 +287,10 @@ async def require_luks_quote_nonce(
     if not quote_nonce or not hotkey:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Quote nonce (X-Quote-Nonce) and hotkey are required",
+            detail=(
+                "Missing X-Quote-Nonce or X-Chutes-Hotkey header. Both are required; the quote "
+                "nonce is the luks_quote_nonce returned by boot attestation."
+            ),
         )
     redis_key = f"luks_quote_nonce:{hotkey}:{vm_name}"
     stored = await settings.redis_client.getdel(redis_key)
@@ -286,13 +298,19 @@ async def require_luks_quote_nonce(
         logger.warning(f"LUKS quote nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Quote nonce not found or expired",
+            detail=(
+                "Quote nonce not found or expired. Use the luks_quote_nonce from the boot "
+                "attestation response, and attest immediately -- it is single-use."
+            ),
         )
     if stored.decode() != quote_nonce:
         logger.warning(f"LUKS quote nonce mismatch for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Quote nonce mismatch",
+            detail=(
+                "Quote nonce does not match the one issued to this VM. Use the luks_quote_nonce "
+                "returned by this VM's own boot attestation."
+            ),
         )
     return quote_nonce
 
@@ -311,7 +329,10 @@ async def require_confirm_nonce(
     if not confirm_nonce or not hotkey:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Confirm nonce (X-Confirm-Nonce) and hotkey are required",
+            detail=(
+                "Missing X-Confirm-Nonce or X-Chutes-Hotkey header. Both are required; the "
+                "confirm nonce is the one returned by the preceding attest call."
+            ),
         )
     redis_key = f"confirm:{hotkey}:{vm_name}"
     stored = await settings.redis_client.getdel(redis_key)
@@ -319,13 +340,19 @@ async def require_confirm_nonce(
         logger.warning(f"Confirm nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Confirm nonce not found or expired",
+            detail=(
+                "Confirm nonce not found or expired. Confirm immediately after the attest call "
+                "that issued it -- it is single-use and short-lived."
+            ),
         )
     if stored.decode() != confirm_nonce:
         logger.warning(f"Confirm nonce mismatch for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Confirm nonce mismatch",
+            detail=(
+                "Confirm nonce does not match the one issued to this VM. Use the confirm nonce "
+                "returned by this VM's own attest call."
+            ),
         )
 
 

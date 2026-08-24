@@ -2,11 +2,13 @@
 ORM definitions for servers and TDX attestations.
 """
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.x509 import Certificate
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 from sqlalchemy import (
@@ -25,11 +27,22 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.dialects.postgresql import JSONB
-from typing import Dict, Any, List, Optional
+from typing import Annotated, Dict, Any, List, Optional
 from dataclasses import dataclass
 from api.config import settings
 from api.database import Base, generate_uuid
 from api.constants import (
+    HostProfileStatus,
+    HOST_PROFILE_MAX_BAR_MB,
+    HOST_PROFILE_MAX_CPUS,
+    HOST_PROFILE_MAX_GPUS,
+    HOST_PROFILE_MAX_NICS,
+    HOST_PROFILE_MAX_NUMA_NODES,
+    HOST_PROFILE_MAX_RAM_GB,
+    HOST_PROFILE_MAX_SOCKETS,
+    HOST_PROFILE_MAX_THREADS_PER_CORE,
+    HOST_PROFILE_MAX_TOPOLOGY_CHARS,
+    HOST_PROFILE_MAX_VRAM_GB,
     ServerHealthStatus,
     ATTESTATION_PROXY_PORT,
     ATTESTATION_PROXY_HEALTH_PATH,
@@ -415,6 +428,282 @@ class TeeMeasurementResponse(BaseModel):
     runtime_rtmrs: Dict[str, str]
     expected_gpus: List[str]
     gpu_count: int
+    # Topology fingerprint of the host class this measurement covers; None for entries predating it.
+    fingerprint: Optional[str] = None
+
+
+# Constrained scalars for miner-submitted host profiles. A submission is untrusted input that
+# reaches object metadata (HTTP headers), log lines, and an offline generation job, so every field
+# is bounded and pattern-checked.
+# Bounded, no control chars (the header/log injection vector); otherwise vendor text we can't predict.
+HostProfileText = Annotated[str, StringConstraints(max_length=256, pattern=r"^[^\x00-\x1f\x7f]*$")]
+# The 4 hex chars lspci prints after the vendor id (10de:2901 -> "2901").
+HostProfilePciId = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{4}$")]
+# PCI address, domain:bus:device.function ("0000:1b:00.0").
+HostProfileBdf = Annotated[
+    str, StringConstraints(pattern=r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$")
+]
+# CPUID leaf-1 EAX|EDX as hex (16 chars), null when unreadable.
+HostProfileProcessorId = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{1,32}$")]
+HostProfileVendor = Annotated[
+    str, StringConstraints(max_length=64, pattern=r"^[A-Za-z0-9 _.()-]*$")
+]
+# Bare version number ("10.1.0"); the full distro string is HostProfileText.
+HostProfileVersion = Annotated[
+    str, StringConstraints(max_length=64, pattern=r"^[0-9][0-9A-Za-z.+~:_-]*$")
+]
+HostProfileVbios = Annotated[str, StringConstraints(max_length=64, pattern=r"^[0-9A-Za-z.-]*$")]
+# QEMU argument strings. Excludes shell metacharacters: these describe a command line, and the
+# offline job that consumes them may build one.
+HostProfileQemuArgs = Annotated[
+    str, StringConstraints(max_length=256, pattern=r"^[A-Za-z0-9_,.=+-]*$")
+]
+# sysfs cpulist ("0-47,96-143"), or "?" when unreadable.
+HostProfileCpuList = Annotated[str, StringConstraints(max_length=256, pattern=r"^[0-9,?-]*$")]
+# The lspci -tv tree: drawn with newlines and tabs, so those are allowed; other control chars aren't.
+HostProfileTopology = Annotated[
+    str,
+    StringConstraints(
+        max_length=HOST_PROFILE_MAX_TOPOLOGY_CHARS, pattern=r"^[^\x00-\x08\x0b-\x1f\x7f]*$"
+    ),
+]
+# NUMA node index, or -1 where sysfs reported none.
+HostProfileNumaIndex = Annotated[int, Field(ge=-1, le=HOST_PROFILE_MAX_NUMA_NODES)]
+
+
+class HostProfilePlatform(BaseModel):
+    """DMI/SMBIOS identity (board, BIOS, chassis) plus OS release. Recorded, not fingerprinted --
+    BIOS revisions move independently of the host class."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    product_name: HostProfileText = ""
+    board_vendor: HostProfileText = ""
+    board_name: HostProfileText = ""
+    bios_vendor: HostProfileText = ""
+    bios_version: HostProfileText = ""
+    bios_date: HostProfileText = ""
+    os_version_id: HostProfileText = ""
+
+
+class HostProfileQemu(BaseModel):
+    """QEMU build and the ``-cpu`` string it launches with -- both RTMR0 determinants.
+
+    Wire key is ``launch_determinism``. Its last three members restate ``numa`` and ``cpu``; they
+    are declared so real submissions validate, but nothing reads them (``fingerprint`` takes those
+    values from their canonical block, so a disagreeing copy cannot shift it).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    qemu_version: HostProfileVersion
+    qemu_version_full: HostProfileText = ""
+    cpu_args: HostProfileQemuArgs = ""
+
+    # Restated from `numa` / `cpu`; declared, never read.
+    numa_node_count: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_NUMA_NODES)
+    numa_topology_eligible: bool = False
+    host_cpu_topology: HostProfileQemuArgs = ""
+
+
+class HostProfileGpu(BaseModel):
+    """Passthrough GPU inventory: PCI ids and addresses, count, BAR/VRAM sizing, VBIOS."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pci_device_ids: List[HostProfilePciId] = Field(
+        default_factory=list, max_length=HOST_PROFILE_MAX_GPUS
+    )
+    bdfs: List[HostProfileBdf] = Field(default_factory=list, max_length=HOST_PROFILE_MAX_GPUS)
+    count: int = Field(ge=0, le=HOST_PROFILE_MAX_GPUS)
+    vram_gb: Optional[float] = Field(default=None, ge=0, le=HOST_PROFILE_MAX_VRAM_GB)
+    bar_size_mb: int = Field(default=-1, ge=-1, le=HOST_PROFILE_MAX_BAR_MB)
+    numa_nodes: List[HostProfileNumaIndex] = Field(
+        default_factory=list, max_length=HOST_PROFILE_MAX_GPUS
+    )
+    vbios: List[HostProfileVbios] = Field(default_factory=list, max_length=HOST_PROFILE_MAX_GPUS)
+
+
+class HostProfileCpu(BaseModel):
+    """Host CPU topology and the identity fields RTMR0 depends on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total: int = Field(ge=1, le=HOST_PROFILE_MAX_CPUS)
+    sockets: int = Field(ge=1, le=HOST_PROFILE_MAX_SOCKETS)
+    cores_per_socket: int = Field(ge=1, le=HOST_PROFILE_MAX_CPUS)
+    threads_per_core: int = Field(ge=1, le=HOST_PROFILE_MAX_THREADS_PER_CORE)
+    cpu_vendor: HostProfileVendor = ""
+    cpu_processor_id: Optional[HostProfileProcessorId] = None
+
+
+class HostProfileMemory(BaseModel):
+    """Host RAM, which some profiles (e.g. B200) derive guest RAM from. The ``suggested_*`` fields
+    are the script's own sizing advice, recorded but unused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    total_gb: float = Field(ge=0, le=HOST_PROFILE_MAX_RAM_GB)
+    suggested_ram_per_gpu_gb: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_RAM_GB)
+    suggested_total_vm_ram_gb: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_RAM_GB)
+
+
+class HostProfileNuma(BaseModel):
+    """NUMA layout: node count, node indices, per-node cpulists."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    node_count: int = Field(ge=0, le=HOST_PROFILE_MAX_NUMA_NODES)
+    nodes: List[HostProfileNumaIndex] = Field(
+        default_factory=list, max_length=HOST_PROFILE_MAX_NUMA_NODES
+    )
+    cpus_per_node: Dict[HostProfileText, HostProfileCpuList] = Field(
+        default_factory=dict, max_length=HOST_PROFILE_MAX_NUMA_NODES
+    )
+
+
+class HostProfileNic(BaseModel):
+    """InfiniBand / Ethernet inventory, including passthrough-eligible NICs."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ib_class_count: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_NICS)
+    eth_class_count: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_NICS)
+    ib_devices: List[HostProfileBdf] = Field(default_factory=list, max_length=HOST_PROFILE_MAX_NICS)
+    bridge_pfs: List[HostProfileBdf] = Field(default_factory=list, max_length=HOST_PROFILE_MAX_NICS)
+    passthrough_candidates: List[HostProfileBdf] = Field(
+        default_factory=list, max_length=HOST_PROFILE_MAX_NICS
+    )
+    passthrough_numa_nodes: List[HostProfileNumaIndex] = Field(
+        default_factory=list, max_length=HOST_PROFILE_MAX_NICS
+    )
+
+
+class HostProfileNvswitch(BaseModel):
+    """NVSwitch inventory (passthrough stubs are reproduced offline per switch)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    present: bool = False
+    count: int = Field(default=0, ge=0, le=HOST_PROFILE_MAX_NICS)
+    devices: List[HostProfileBdf] = Field(default_factory=list, max_length=HOST_PROFILE_MAX_NICS)
+    numa_nodes: List[HostProfileNumaIndex] = Field(
+        default_factory=list, max_length=HOST_PROFILE_MAX_NICS
+    )
+
+
+class HostProfile(BaseModel):
+    """The document sek8s ``discover-profile.sh`` emits for one machine -- the whole submitted
+    body, and what gets stored.
+
+    Every key the script emits is modeled and every block forbids extras, so compatibility is
+    one-way: an older script still validates (defaults fill in), but a script that adds a key 422s
+    until the API models it. Add the field here, deploy, then roll out the script.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    # Accepted so a real discover-profile.sh document validates, but `exclude=True` keeps them out
+    # of every model_dump -- so they never reach the stored column, and a published profile cannot
+    # leak them however it is serialised. They identify one machine; a host CLASS does not have a
+    # hostname.
+    hostname: Optional[HostProfileText] = Field(default=None, exclude=True)
+    timestamp: Optional[HostProfileText] = Field(default=None, exclude=True)
+    platform: HostProfilePlatform = Field(default_factory=HostProfilePlatform, alias="host")
+    qemu: HostProfileQemu = Field(alias="launch_determinism")
+    gpu: HostProfileGpu
+    pci_topology: Optional[HostProfileTopology] = None
+    cpu: HostProfileCpu
+    memory: HostProfileMemory
+    numa: HostProfileNuma
+    nic: HostProfileNic = Field(default_factory=HostProfileNic)
+    nvswitch: HostProfileNvswitch = Field(default_factory=HostProfileNvswitch)
+
+    @field_validator("gpu")
+    @classmethod
+    def _require_gpus(cls, gpu: HostProfileGpu) -> HostProfileGpu:
+        """A profile with no GPUs cannot produce a measurement."""
+        if gpu.count <= 0 or not gpu.pci_device_ids:
+            raise ValueError("host profile must report at least one GPU")
+        return gpu
+
+    @property
+    def fingerprint(self) -> str:
+        """Stable id for the host CLASS -- the storage key, and the unit measurements are generated
+        for.
+
+        Covers only what changes the generated measurement: passthrough inventory, CPU identity and
+        topology, host RAM, NUMA layout, QEMU/-cpu args. Hostname, BIOS strings and the lspci tree
+        are stored but excluded, so every host of one class fingerprints identically. Changing this
+        set re-keys every future submission.
+        """
+        identity = {
+            "gpu_pci_device_ids": sorted(set(self.gpu.pci_device_ids)),
+            "gpu_count": self.gpu.count,
+            "gpu_vram_gb": self.gpu.vram_gb,
+            "gpu_bar_size_mb": self.gpu.bar_size_mb,
+            "cpu_vendor": self.cpu.cpu_vendor,
+            "cpu_processor_id": self.cpu.cpu_processor_id,
+            "cpu_total": self.cpu.total,
+            "cpu_sockets": self.cpu.sockets,
+            "cpu_cores_per_socket": self.cpu.cores_per_socket,
+            "cpu_threads_per_core": self.cpu.threads_per_core,
+            "memory_total_gb": self.memory.total_gb,
+            "numa_node_count": self.numa.node_count,
+            "qemu_version": self.qemu.qemu_version,
+            "cpu_args": self.qemu.cpu_args,
+            "nvswitch_count": self.nvswitch.count,
+            "ib_class_count": self.nic.ib_class_count,
+            "passthrough_nic_count": len(self.nic.passthrough_candidates),
+        }
+        canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class HostProfileResponse(BaseModel):
+    """Public entry for GET /servers/tdx/host_profiles: one generated host class."""
+
+    fingerprint: str
+    # The stored discover-profile document in its wire shape, minus the machine-identifying
+    # fields. Typed loosely on purpose -- it is republished as recorded, and a verifier feeds it
+    # straight back into RTMR0 generation.
+    profile: Dict[str, Any]
+
+
+class HostProfileSubmissionResponse(BaseModel):
+    """Response for POST /servers/tdx/host_profiles."""
+
+    fingerprint: str
+    status: HostProfileStatus
+    stored: bool
+    detail: str
+
+
+class HostProfileRecord(Base):
+    """A submitted host profile: one row per host CLASS, keyed by its topology fingerprint.
+
+    ``measured_at`` is the whole lifecycle -- NULL means pending (awaiting measurement generation),
+    set means a measurement was published for this fingerprint and the row is retained permanently.
+    Retention is not optional: a fingerprint cannot be inverted back to the topology inputs, so this
+    row is the only copy of what an RTMR0 regen would need after a firmware or QEMU change.
+
+    ``miner_hotkey`` is attribution, not proof: the request signature is admission control at the
+    endpoint, so a row existing already means it verified.
+    """
+
+    __tablename__ = "host_profiles"
+
+    fingerprint = Column(String, primary_key=True)
+    profile = Column(JSONB, nullable=False)
+    miner_hotkey = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    measured_at = Column(DateTime(timezone=True), nullable=True)
+    notified_at = Column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_host_profiles_measured_at", "measured_at"),
+        Index("idx_host_profiles_profile", "profile", postgresql_using="gin"),
+    )
 
 
 class VmBootRecord(Base):

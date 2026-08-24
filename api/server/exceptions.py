@@ -65,7 +65,10 @@ class NoClientCertError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "no_client_cert"
-    default_message = "No client certificate found."
+    default_message = (
+        "No mTLS client certificate presented. Attestation must be performed through the CVM "
+        "proxy (cvm.chutes.ai) so the VM's per-boot certificate is attached."
+    )
 
 
 class InvalidClientCertError(AttestationError):
@@ -73,7 +76,10 @@ class InvalidClientCertError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "invalid_client_cert"
-    default_message = "Invalid client certificate provided."
+    default_message = (
+        "The mTLS client certificate does not match the one bound to this attestation. The VM "
+        "must present the same per-boot certificate whose hash is in the quote's report data."
+    )
 
 
 class InvalidQuoteError(AttestationError):
@@ -81,7 +87,10 @@ class InvalidQuoteError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "invalid_quote"
-    default_message = "Invalid TDX quote."
+    default_message = (
+        "The TDX quote could not be parsed. Check that the guest is running on TDX hardware and "
+        "that the attestation service produced a complete quote."
+    )
 
 
 class InvalidSignatureError(AttestationError):
@@ -89,7 +98,10 @@ class InvalidSignatureError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "invalid_quote_signature"
-    default_message = "Invalid TDX quote signature. The attestation quote could not be verified."
+    default_message = (
+        "TDX quote signature verification failed. The quote could not be verified against Intel's "
+        "collateral -- check the host's TDX module and PCCS/collateral freshness."
+    )
 
 
 class MeasurementMismatchError(AttestationError):
@@ -104,8 +116,13 @@ class MeasurementMismatchError(AttestationError):
 
     http_status = status.HTTP_403_FORBIDDEN
     code = "measurement_mismatch"
+    # Read aloud by the sek8s initramfs on a failed boot, so it says what to DO. The wording is
+    # identical for "nothing matched" and "rc you aren't authorized for" -- that is the point: the
+    # two must stay indistinguishable, so the message may not name which one happened.
     default_message = (
-        "Quote does not match expected measurements. Ensure you are running a supported VM."
+        "No registered measurement matches this host's topology x QEMU version. If this hardware "
+        "is new, run `chutes-cvm discover-profile` and submit the profile so measurements can be "
+        "generated; otherwise check that the VM image and QEMU version are supported."
     )
 
 
@@ -132,7 +149,10 @@ class NonceError(AttestationError):
 
     http_status = status.HTTP_400_BAD_REQUEST
     code = "nonce_error"
-    default_message = "Invalid or expired nonce"
+    default_message = (
+        "Nonce is invalid, expired, or already used. Fetch a fresh one from GET /servers/nonce "
+        "immediately before attesting; nonces are single-use and short-lived."
+    )
 
 
 class GetEvidenceError(AttestationError):
