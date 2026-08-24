@@ -81,7 +81,7 @@ MIN_HOST_PROFILE_MEASUREMENT_VERSION = "1.4.0"
 # counted only AFTER the signature verifies, so a forged hotkey can't burn a real miner's quota.
 HOST_PROFILE_MAX_BYTES = 256 * 1024
 
-# Stripped from a host profile before it is published on GET /servers/tdx/topologies: these
+# Stripped from a host profile before it is published on GET /servers/tdx/host_profiles: these
 # identify the individual machine that submitted it, not the host class. Everything else --
 # gpu/cpu/memory/numa/qemu plus BIOS, board and the lspci tree -- is generic host-class data and
 # is exactly what a third party needs to reproduce RTMR0.
@@ -118,9 +118,9 @@ HOST_PROFILE_SUBMISSIONS_PER_HOTKEY = 10
 HOST_PROFILE_SUBMISSIONS_GLOBAL = 120
 HOST_PROFILE_WINDOW_SECONDS = 3600
 
-# GET /servers/tdx/topologies: public and unauthenticated, so it carries an anonymous global cap
+# GET /servers/tdx/host_profiles: public and unauthenticated, so it carries an anonymous global cap
 # like the other public TEE endpoints. Responses are redis-cached, so this bounds cache misses.
-TOPOLOGIES_RATE_LIMIT_PER_MINUTE = 60
+HOST_PROFILES_RATE_LIMIT_PER_MINUTE = 60
 
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25

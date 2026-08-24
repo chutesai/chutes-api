@@ -18,9 +18,8 @@ data:
     # Each hardware entry may carry `fingerprint`: the 64-hex topology fingerprint of the host
     # class it covers, linking it to the submitted host profile
     # (POST /servers/tdx/host_profiles). The measurement generator PROPAGATES this value -- it is
-    # the bucket object key for submitted topologies, or `python -m
-    # api.server.host_profile_fingerprint <profile.json>` for seed topologies -- and must never
-    # recompute it another way. Optional (existing entries predate it), but an entry without one
+    # returned by POST and GET /servers/tdx/host_profiles -- and must
+    # never recompute it another way. Optional (existing entries predate it), but an entry without one
     # is unmatchable: its host class reports "pending" forever even though it launches.
     measurements:
 {{ .Values.teeMeasurements.measurements | toYaml | indent 6 }}

@@ -4,7 +4,6 @@ Unit tests for miner host profile submissions (POST /servers/tdx/host_profiles).
 
 import copy
 import inspect
-import io
 import pytest
 import orjson as json
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,14 +14,13 @@ from fastapi.params import Depends as DependsMarker
 from api.config import TeeMeasurementConfig
 from api.constants import HostProfileStatus
 from api.rate_limit import rate_limit_miner
-from api.server import host_profile_fingerprint
 from api.server.router import submit_host_profile
 from api.server.schemas import HostProfile
 from api.server.util import (
     host_profile_is_known,
     resolve_host_profile_status,
     store_host_profile,
-    topology_measurement_status,
+    host_profile_measurement_status,
 )
 
 
@@ -587,7 +585,7 @@ class TestMeasurementStatus:
     def test_published_measurement_is_accepted(self, mock_settings):
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64)]
 
-        assert topology_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
 
     @patch("api.server.util.settings")
     def test_rc_only_measurement_does_not_qualify(self, mock_settings):
@@ -597,7 +595,7 @@ class TestMeasurementStatus:
         """
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, rc=True)]
 
-        assert topology_measurement_status("a" * 64) is None
+        assert host_profile_measurement_status("a" * 64) is None
 
     @patch("api.server.util.settings")
     def test_published_wins_over_rc_for_the_same_topology(self, mock_settings):
@@ -607,20 +605,20 @@ class TestMeasurementStatus:
             _measurement(fingerprint="a" * 64),
         ]
 
-        assert topology_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
 
     @patch("api.server.util.settings")
     def test_unmentioned_topology_has_no_status(self, mock_settings):
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64)]
 
-        assert topology_measurement_status("b" * 64) is None
+        assert host_profile_measurement_status("b" * 64) is None
 
     @patch("api.server.util.settings")
     def test_entries_without_a_fingerprint_never_match(self, mock_settings):
         """Backward compat: entries predating the field load fine, they are just unmatchable."""
         mock_settings.tee_measurements = [_measurement(fingerprint=None)]
 
-        assert topology_measurement_status(_profile().fingerprint) is None
+        assert host_profile_measurement_status(_profile().fingerprint) is None
 
     @pytest.mark.parametrize("version", ["1.3.0", "1.3.1", "0.9.0"])
     @patch("api.server.util.settings")
@@ -632,15 +630,15 @@ class TestMeasurementStatus:
         """
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version=version)]
 
-        assert topology_measurement_status("a" * 64) is None
+        assert host_profile_measurement_status("a" * 64) is None
 
     @patch("api.server.util.settings")
     def test_1_4_0_and_newer_count(self, mock_settings):
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version="1.4.0")]
-        assert topology_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
 
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version="1.5.2")]
-        assert topology_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
 
     @patch("api.server.util.settings")
     def test_gated_old_entry_does_not_mask_a_current_one(self, mock_settings):
@@ -650,7 +648,7 @@ class TestMeasurementStatus:
             _measurement(fingerprint="a" * 64, version="1.4.0"),
         ]
 
-        assert topology_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
 
     @patch("api.server.util.settings")
     def test_malformed_version_is_treated_as_too_old(self, mock_settings):
@@ -659,16 +657,16 @@ class TestMeasurementStatus:
             _measurement(fingerprint="a" * 64, version="not-a-version")
         ]
 
-        assert topology_measurement_status("a" * 64) is None
+        assert host_profile_measurement_status("a" * 64) is None
 
     @patch("api.server.util.settings")
     def test_reflects_the_config_map_immediately(self, mock_settings):
         """Read live, so a newly published measurement takes effect on ConfigMap remount."""
         mock_settings.tee_measurements = []
-        assert topology_measurement_status("a" * 64) is None
+        assert host_profile_measurement_status("a" * 64) is None
 
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64)]
-        assert topology_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
 
 
 class TestStatusResolution:
@@ -679,7 +677,7 @@ class TestStatusResolution:
         db = MagicMock()
         with (
             patch(
-                "api.server.util.topology_measurement_status",
+                "api.server.util.host_profile_measurement_status",
                 MagicMock(return_value=config_status),
             ),
             patch("api.server.util.host_profile_is_known", AsyncMock(return_value=known)) as head,
@@ -707,7 +705,7 @@ class TestStatusResolution:
     @pytest.mark.asyncio
     async def test_rc_only_topology_falls_through_to_the_bucket(self):
         """
-        topology_measurement_status returns None for an rc-only fingerprint, so the bucket decides:
+        host_profile_measurement_status returns None for an rc-only fingerprint, so the bucket decides:
         held -> PENDING. There is no separate measured-but-rc status.
         """
         (_, profile_status, _), _, _ = await self._resolve(config_status=None, known=True)
@@ -808,7 +806,7 @@ class TestStatusResolution:
             return HostProfileStatus.ACCEPTED
 
         with (
-            patch("api.server.util.topology_measurement_status", _status),
+            patch("api.server.util.host_profile_measurement_status", _status),
             patch(
                 "api.server.util.store_host_profile",
                 AsyncMock(return_value=(profile.fingerprint, False)),
@@ -821,38 +819,3 @@ class TestStatusResolution:
         assert seen["asked"] == profile.fingerprint
         assert fingerprint == profile.fingerprint
         assert profile_status == HostProfileStatus.ACCEPTED
-
-
-class TestFingerprintIsSingleSourced:
-    """One definition, reachable by every consumer that needs it."""
-
-    def test_cli_prints_the_model_fingerprint(self, tmp_path, capsys):
-        """
-        The release workflow calls `python -m api.server.host_profile_fingerprint` for seed
-        topologies. It must agree with the API exactly, or a stamped measurement never matches.
-        """
-        path = tmp_path / "profile.json"
-        path.write_text(json.dumps(SAMPLE_PROFILE).decode())
-
-        assert host_profile_fingerprint.main(["prog", str(path)]) == 0
-        assert capsys.readouterr().out.strip() == _profile().fingerprint
-
-    def test_cli_reads_stdin(self, monkeypatch, capsys):
-        monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(SAMPLE_PROFILE).decode()))
-
-        assert host_profile_fingerprint.main(["prog", "-"]) == 0
-        assert capsys.readouterr().out.strip() == _profile().fingerprint
-
-    def test_cli_rejects_a_bad_document(self, capsys):
-        monkeypatched = io.StringIO("not json")
-        with patch("sys.stdin", monkeypatched):
-            assert host_profile_fingerprint.main(["prog", "-"]) == 1
-        assert "error" in capsys.readouterr().err
-
-    def test_bucket_key_and_measurement_match_on_the_same_value(self):
-        """The bucket object key and the measurement's `fingerprint` are the same string."""
-        profile = _profile()
-        bucket_key = f"host-profiles/pending/{profile.fingerprint}.json"
-        measurement = _measurement(fingerprint=profile.fingerprint)
-
-        assert bucket_key == f"host-profiles/pending/{measurement.fingerprint}.json"

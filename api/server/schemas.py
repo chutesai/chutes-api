@@ -656,8 +656,8 @@ class HostProfile(BaseModel):
         return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-class TopologyResponse(BaseModel):
-    """Public entry for GET /servers/tdx/topologies: one generated host class."""
+class HostProfileResponse(BaseModel):
+    """Public entry for GET /servers/tdx/host_profiles: one generated host class."""
 
     fingerprint: str
     # The stored discover-profile document in its wire shape, minus the machine-identifying

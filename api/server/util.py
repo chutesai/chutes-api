@@ -1334,7 +1334,7 @@ async def store_host_profile(
     return fingerprint, True
 
 
-def topology_measurement_status(fingerprint: str) -> Optional[HostProfileStatus]:
+def host_profile_measurement_status(fingerprint: str) -> Optional[HostProfileStatus]:
     """
     What the measurement config says about a host class, or None if it says nothing.
 
@@ -1396,7 +1396,7 @@ async def resolve_host_profile_status(
     Returns (fingerprint, status, stored).
     """
     fingerprint = profile.fingerprint
-    config_status = topology_measurement_status(fingerprint)
+    config_status = host_profile_measurement_status(fingerprint)
 
     if dry_run:
         if config_status is not None:
@@ -1422,7 +1422,7 @@ async def list_pending_profiles(db: AsyncSession) -> list[HostProfileRecord]:
     return list(result.scalars().all())
 
 
-async def list_measured_topologies(db: AsyncSession) -> list[dict]:
+async def list_measured_host_profiles(db: AsyncSession) -> list[dict]:
     """
     The published topology set: every generated host class, as {fingerprint, profile}.
 

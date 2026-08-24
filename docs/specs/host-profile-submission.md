@@ -17,13 +17,12 @@ a fingerprint of the host class, and answers whether that class can launch yet. 
 generates measurements and ships them in a release; the reconciler then marks the row measured.
 
 - **Key files**:
-  - `api/server/router.py` — `submit_host_profile`, `get_topologies`
+  - `api/server/router.py` — `submit_host_profile`, `list_host_profiles`
   - `api/server/schemas.py` — `HostProfile` (+ `HostProfile.fingerprint`), `HostProfileRecord` ORM
-    model, `HostProfileSubmissionResponse`, `TopologyResponse`
+    model, `HostProfileSubmissionResponse`, `HostProfileResponse`
   - `api/server/util.py` — `store_host_profile`, `resolve_host_profile_status`,
-    `topology_measurement_status`, `host_profile_is_known`, `list_pending_profiles`,
-    `list_measured_topologies`, `reconcile_host_profiles`
-  - `api/server/host_profile_fingerprint.py` — `python -m` fingerprint utility for the generator
+    `host_profile_measurement_status`, `host_profile_is_known`, `list_pending_profiles`,
+    `list_measured_host_profiles`, `reconcile_host_profiles`
   - `api/migrations/20260821120000_host_profiles.sql`
   - `host_profile_reconciler.py` + `charts/templates/host-profile-reconciler-cronjob.yaml`
   - `api/notify.py` — Discord webhook alerts
@@ -81,7 +80,7 @@ generates measurements and ships them in a release; the reconciler then marks th
 
   - **Queryability** — `WHERE profile @> '{"gpu": {"pci_device_ids": ["2901"]}}'` over a GIN index.
   - **An atomic lifecycle** — `measured_at` is one UPDATE, with no half-moved state.
-  - **Cheap reads** — the topologies endpoint is a single SELECT.
+  - **Cheap reads** — the public listing endpoint is a single SELECT.
   - **Attribution as a column** — `miner_hotkey` is queryable.
 
 - **The signed bytes are not retained.** The sr25519 signature is admission control at the endpoint:
@@ -132,7 +131,7 @@ describes hardware, and nothing proves they own it.
   limits (10/hotkey/hour, 120/hour overall) are counted only after the signature verifies.
 
 - **Why the field constraints matter**: `gpu.pci_device_ids` and `gpu.count` reach log lines,
-  Discord alerts, and the public topologies endpoint. Unconstrained, a CRLF in a device id is a
+  Discord alerts, and the public listing endpoint. Unconstrained, a CRLF in a device id is a
   log-injection primitive (loguru validates nothing). After validation every such value is provably
   constrained: 4-hex device ids, bounded counts.
 
@@ -200,7 +199,7 @@ Only measurements at or above `MIN_HOST_PROFILE_MEASUREMENT_VERSION` (1.4.0) are
 | none of the above | `unknown` — only reachable with `dry_run`, since a real submission is recorded |
 
 **rc is a property of a version, not of a topology.** A topology is measured or it is not, so there
-is no measured-but-rc state: rc measurements are skipped when reading topology status, and a
+is no measured-but-rc state: rc measurements are skipped when reading status, and a
 fingerprint carried only by an rc version reports `pending` off the table — nothing it can launch is
 published yet.
 
@@ -223,10 +222,10 @@ Release order: add the field to `HostProfile` (with a bound and a pattern), depl
 out the script. `tests/unit/test_host_profile_submission.py` holds a complete sample document and
 asserts it validates — that is the test that fails when the script grows a field.
 
-### `GET /servers/tdx/topologies` (public)
+### `GET /servers/tdx/host_profiles` (public)
 
-Unauthenticated, redis-cached, anonymously rate-limited — same shape as `GET /tee/measurements`, and
-designed to be read alongside it.
+The GET sibling of the submission endpoint: unauthenticated, redis-cached, anonymously
+rate-limited — same shape as `GET /tee/measurements`, and designed to be read alongside it.
 
 ```json
 [{"fingerprint": "<sha256 hex>", "profile": { ...discover-profile document... }}]
@@ -244,8 +243,8 @@ Two consumers:
 - **Independent verification.** Join to `GET /tee/measurements` on `fingerprint`: regenerate RTMR0
   from the inputs here and compare it to the published measurement. A quote holder can also see
   which host class their own RTMR0 corresponds to.
-- **The sek8s `chutes-cvm generate-measurements` CLI**, which reads topologies from here rather than
-  the database directly. That is why it is public: the generation side needs topologies, not
+- **The sek8s `chutes-cvm generate-measurements` CLI**, which reads profiles from here rather than
+  the database directly. That is why it is public: the generation side needs the profiles, not
   database credentials.
 
 ### Release-workflow contract (fingerprint propagation)
@@ -254,18 +253,14 @@ The generator **propagates** the fingerprint onto each `hardware` entry it publi
 recompute it with its own algorithm: a mismatch silently breaks accepted-detection, and a host class
 that has measurements keeps reporting `pending` forever.
 
-Two sources, both single-sourced from `HostProfile.fingerprint`:
+The fingerprint always comes from the API, which is the only thing that computes it:
 
-1. **Submission-driven topologies** — the fingerprint is the row's primary key. Read it from
-   `host_profiles` (or from the submission response) and copy it onto the entry.
-2. **Seed / build-time topologies** never submitted through the API:
-
-   ```
-   python -m api.server.host_profile_fingerprint <profile.json>   # or - for stdin
-   ```
-
-   (`dry_run=true` against a running API returns the same value, if invoking this repo is
-   inconvenient.)
+- **Submitted host classes** — `GET /servers/tdx/host_profiles` returns it alongside each profile,
+  and `POST /servers/tdx/host_profiles` returns it in the submission response.
+- **Seed / build-time host classes** — submit the `discover-profile.sh` document like any other.
+  That records it, returns its fingerprint, and makes the host class appear on the GET once
+  measured, so third parties can reproduce its RTMR0. `dry_run=true` returns the same value without
+  recording, for a look before committing to it.
 
 An entry ≥1.4.0 without a `fingerprint` is unmatchable: its host class reports `pending` forever even
 though it launches fine.
@@ -354,9 +349,9 @@ fingerprint from the submission response instead.
    there is nothing to reconstruct. Pre-1.4.0 entries sit below the version gate and need none; their
    fingerprints could not be recovered from source anyway, since `HostProfile.fingerprint` hashes
    host RAM, BAR size, VRAM, NUMA and NIC counts that a `TopologyFingerprint` does not carry.
-3. **Status is read live** from the measurement config, so a newly published measurement takes effect
-   as soon as the ConfigMap remount propagates. `GET /servers/tee/measurements` and
-   `GET /servers/tdx/topologies` are separately cached for `TEE_MEASUREMENTS_CACHE_TTL`, so new
+3. **Status is read live** from the measurement config, so a newly published measurement takes
+   effect as soon as the ConfigMap remount propagates. `GET /servers/tee/measurements` and
+   `GET /servers/tdx/host_profiles` are separately cached for `TEE_MEASUREMENTS_CACHE_TTL`, so new
    values appear *there* on that delay; status is unaffected.
 4. **Set `hostProfileReconciler.discordWebhookSecretName`** to enable submission alerts; unset
    disables alerting and reconcile still runs.

@@ -1,6 +1,6 @@
 """
-Unit tests for the host profile lifecycle: the public topologies endpoint, config-driven
-reconcile, retention, and new-submission notification.
+Unit tests for the host profile lifecycle: the public listing endpoint, config-driven reconcile,
+retention, and new-submission notification.
 """
 
 import copy
@@ -12,10 +12,10 @@ from fastapi import HTTPException
 
 import host_profile_reconciler
 from api.config import TeeMeasurementConfig
-from api.server.router import get_topologies
+from api.server.router import list_host_profiles
 from api.server.schemas import HostProfile
 from api.server.util import (
-    list_measured_topologies,
+    list_measured_host_profiles,
     list_pending_profiles,
     reconcile_host_profiles,
 )
@@ -68,12 +68,12 @@ def _session(rows=None, scalars=None):
     return db
 
 
-class TestPublishedTopology:
+class TestPublishedProfile:
     @pytest.mark.asyncio
     async def test_machine_identifying_fields_are_stripped(self):
         db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
 
-        profile = (await list_measured_topologies(db))[0]["profile"]
+        profile = (await list_measured_host_profiles(db))[0]["profile"]
 
         assert "hostname" not in profile
         assert "timestamp" not in profile
@@ -83,7 +83,7 @@ class TestPublishedTopology:
         """A verifier needs the full RTMR0 inputs, so everything else stays."""
         db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
 
-        profile = (await list_measured_topologies(db))[0]["profile"]
+        profile = (await list_measured_host_profiles(db))[0]["profile"]
 
         # Wire shape, not model field names -- a verifier feeds this straight back in.
         assert profile["launch_determinism"]["qemu_version"] == "8.2.2"
@@ -99,7 +99,7 @@ class TestPublishedTopology:
         """hotkey/nonce/signature are columns this query never selects."""
         db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
 
-        published = json.dumps(await list_measured_topologies(db)).decode()
+        published = json.dumps(await list_measured_host_profiles(db)).decode()
 
         for secret in ("hotkey", "nonce", "signature", "5F"):
             assert secret not in published
@@ -108,53 +108,53 @@ class TestPublishedTopology:
     async def test_fingerprint_joins_to_the_measurement(self):
         db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
 
-        assert (await list_measured_topologies(db))[0]["fingerprint"] == FP_A
+        assert (await list_measured_host_profiles(db))[0]["fingerprint"] == FP_A
 
     @pytest.mark.asyncio
     async def test_published_profile_still_fingerprints_the_same(self):
         """Publication must not alter the document the fingerprint was computed from."""
         db = _session(rows=[(FP_A, _profile().model_dump(by_alias=True))])
 
-        published = (await list_measured_topologies(db))[0]["profile"]
+        published = (await list_measured_host_profiles(db))[0]["profile"]
 
         assert HostProfile(**published).fingerprint == _profile().fingerprint
 
 
-class TestTopologiesEndpoint:
+class TestPublishedHostProfilesEndpoint:
     @pytest.mark.asyncio
-    @patch("api.server.router.list_measured_topologies", new_callable=AsyncMock)
+    @patch("api.server.router.list_measured_host_profiles", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_returns_and_caches(self, mock_settings, listing):
         mock_settings.redis_client.get = AsyncMock(return_value=None)
         mock_settings.redis_client.set = AsyncMock()
         listing.return_value = [{"fingerprint": FP_A, "profile": {"gpu": {"count": 8}}}]
 
-        result = await get_topologies(db=MagicMock(), _=None)
+        result = await list_host_profiles(db=MagicMock(), _=None)
 
         assert result[0]["fingerprint"] == FP_A
         key, payload = mock_settings.redis_client.set.await_args.args
-        assert key == "tdx_topologies"
+        assert key == "tdx_host_profiles"
         assert json.loads(payload)[0]["fingerprint"] == FP_A
 
     @pytest.mark.asyncio
-    @patch("api.server.router.list_measured_topologies", new_callable=AsyncMock)
+    @patch("api.server.router.list_measured_host_profiles", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_cache_hit_skips_the_query(self, mock_settings, listing):
         cached = [{"fingerprint": FP_A, "profile": {}}]
         mock_settings.redis_client.get = AsyncMock(return_value=json.dumps(cached))
 
-        assert await get_topologies(db=MagicMock(), _=None) == cached
+        assert await list_host_profiles(db=MagicMock(), _=None) == cached
         listing.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("api.server.router.list_measured_topologies", new_callable=AsyncMock)
+    @patch("api.server.router.list_measured_host_profiles", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_query_failure_is_503(self, mock_settings, listing):
         mock_settings.redis_client.get = AsyncMock(return_value=None)
         listing.side_effect = Exception("db unreachable")
 
         with pytest.raises(HTTPException) as exc:
-            await get_topologies(db=MagicMock(), _=None)
+            await list_host_profiles(db=MagicMock(), _=None)
 
         assert exc.value.status_code == 503
         assert "db unreachable" not in exc.value.detail
@@ -164,7 +164,7 @@ class TestTopologiesEndpoint:
         import inspect
         from fastapi.params import Depends as DependsMarker
 
-        params = inspect.signature(get_topologies).parameters
+        params = inspect.signature(list_host_profiles).parameters
         assert "hotkey" not in params
         assert isinstance(params["_"].default, DependsMarker)
         assert params["_"].default.dependency.__name__ == "_rate_limit"

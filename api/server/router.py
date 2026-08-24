@@ -26,7 +26,7 @@ from api.constants import (
     HOST_PROFILE_SUBMISSIONS_GLOBAL,
     HOST_PROFILE_WINDOW_SECONDS,
     HostProfileStatus,
-    TOPOLOGIES_RATE_LIMIT_PER_MINUTE,
+    HOST_PROFILES_RATE_LIMIT_PER_MINUTE,
 )
 from api.rate_limit import rate_limit, rate_limit_miner
 
@@ -53,7 +53,7 @@ from api.server.schemas import (
     TeeUpgradeWindow,
     UpgradeWindowInfo,
     TeeMeasurementResponse,
-    TopologyResponse,
+    HostProfileResponse,
     HostProfile,
     HostProfileSubmissionResponse,
 )
@@ -82,7 +82,7 @@ from api.server.service import (
     _count_active_maintenance_slots,
 )
 from api.server.util import (
-    list_measured_topologies,
+    list_measured_host_profiles,
     resolve_host_profile_status,
     extract_attestation_auth,
     extract_client_cert_hash,
@@ -538,16 +538,16 @@ async def get_tee_measurements():
     return result
 
 
-TOPOLOGIES_CACHE_KEY = "tdx_topologies"
+HOST_PROFILES_CACHE_KEY = "tdx_host_profiles"
 
 
-@router.get("/tdx/topologies", response_model=List[TopologyResponse])
-async def get_topologies(
+@router.get("/tdx/host_profiles", response_model=List[HostProfileResponse])
+async def list_host_profiles(
     db: AsyncSession = Depends(get_db_session),
-    _: None = Depends(rate_limit("tdx_topologies", TOPOLOGIES_RATE_LIMIT_PER_MINUTE)),
+    _: None = Depends(rate_limit("tdx_host_profiles", HOST_PROFILES_RATE_LIMIT_PER_MINUTE)),
 ):
     """
-    Return every generated host topology: the platform inputs each measurement was built from.
+    Return every generated host profile: the platform inputs each measurement was built from.
 
     Pairs with GET /servers/tee/measurements, joined on `fingerprint`. Together they make RTMR0
     independently reproducible: regenerate it from the inputs here and compare it to the published
@@ -555,31 +555,32 @@ async def get_topologies(
     corresponds to.
 
     Also the source the sek8s `chutes-cvm generate-measurements` CLI reads, which is why it is
-    public and unauthenticated -- the generation side needs topologies, not bucket credentials.
+    public and unauthenticated -- the generation side needs the profiles, not database
+    credentials.
 
     Machine-identifying fields (hostname, submission timestamp) are stripped, and the submitter's
     hotkey/nonce/signature are columns this query never selects. What remains is host-class data.
     No authentication required.
     """
-    cached = await settings.redis_client.get(TOPOLOGIES_CACHE_KEY)
+    cached = await settings.redis_client.get(HOST_PROFILES_CACHE_KEY)
     if cached:
         return json.loads(cached)
 
     try:
-        topologies = await list_measured_topologies(db)
+        profiles = await list_measured_host_profiles(db)
     except Exception as exc:
-        logger.error(f"Failed to list measured topologies: {exc}")
+        logger.error(f"Failed to list measured host profiles: {exc}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to read topologies, please try again later.",
+            detail="Failed to read host profiles, please try again later.",
         )
 
     await settings.redis_client.set(
-        TOPOLOGIES_CACHE_KEY,
-        json.dumps(topologies).decode(),
+        HOST_PROFILES_CACHE_KEY,
+        json.dumps(profiles).decode(),
         ex=TEE_MEASUREMENTS_CACHE_TTL,
     )
-    return topologies
+    return profiles
 
 
 @router.post("/tdx/host_profiles", response_model=HostProfileSubmissionResponse)
@@ -602,7 +603,7 @@ async def submit_host_profile(
     Submit a host profile (sek8s `discover-profile.sh` output) and get its status back.
 
     A VM only launches on a host class with published measurements, so new hardware is gated until
-    they exist. The API owns the topology fingerprint -- the miner sends raw platform metadata and
+    they exist. The API owns the fingerprint -- the miner sends raw platform metadata and
     gets a status word:
 
       * `accepted` -- the fingerprint is on a published measurement; this host class can launch
