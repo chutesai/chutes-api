@@ -168,6 +168,7 @@ ADD --chown=chutes data/cache_hit_cluster_params.json /app/cache_hit_cluster_par
 ADD --chown=chutes log_prober.py /app/log_prober.py
 ADD --chown=chutes conn_prober.py /app/conn_prober.py
 ADD --chown=chutes server_health_prober.py /app/server_health_prober.py
+ADD --chown=chutes host_profile_reconciler.py /app/host_profile_reconciler.py
 ADD --chown=chutes scripts /app/scripts
 
 ENV PYTHONPATH=/app
