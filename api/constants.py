@@ -69,13 +69,6 @@ MIN_ROOT_ROTATION_VERSION = "1.4.0"
 # key usage (TeeServerClient.create).
 MIN_VM_AUTH_KEY_VERSION = "1.4.0"
 
-# Minimum VM version whose measurements count toward host profile status. 1.4.0 is the first
-# version shipping the CLI that calls POST /servers/tdx/host_profiles, so nothing older ever asks.
-# The gate is also what makes the answer true: "accepted" means the version the caller runs can
-# launch here, and a host class measured only on 1.3.x cannot launch 1.4.0. It also scopes the
-# `fingerprint` backfill to 1.4.0 entries, which are generated with one from the start.
-MIN_HOST_PROFILE_MEASUREMENT_VERSION = "1.4.0"
-
 # Host profile submissions (POST /servers/tdx/host_profiles). Output is a few KB (the lspci tree
 # dominates), so the cap is generous but bounds what one miner can store. Both rate limits are
 # counted only AFTER the signature verifies, so a forged hotkey can't burn a real miner's quota.
@@ -83,13 +76,21 @@ HOST_PROFILE_MAX_BYTES = 256 * 1024
 
 
 class HostProfileStatus(str, Enum):
-    """Whether a submitted host class can launch yet."""
+    """Retention lifecycle of a submitted host class -- monotonic, only ever advances
+    (unknown -> pending -> accepted) and never regresses.
 
-    # Fingerprint is on a non-rc measurement hardware entry: this host class can launch.
+    ``accepted`` is class-level and version-agnostic: a measurement was generated for this
+    fingerprint at some point, so the class is on the attestable set and retained (its profile is
+    kept for RTMR0 regeneration). It is NOT the answer to "can version X launch here" -- that is the
+    per-version ``measurements`` list on GET /servers/tdx/host_profiles, which the caller reads
+    separately. Submission only reports which of the three the class is in.
+    """
+
+    # A measurement has been generated for this fingerprint at some point; retained from here on.
     ACCEPTED = "accepted"
-    # On file, awaiting measurement generation.
+    # On file, awaiting its first measurement generation.
     PENDING = "pending"
-    # Neither -- only reachable via dry_run, since a real submission is always recorded.
+    # Never submitted -- only reachable via dry_run, since a real submission is always recorded.
     UNKNOWN = "unknown"
 
 
@@ -111,6 +112,12 @@ HOST_PROFILE_MAX_TOPOLOGY_CHARS = 64 * 1024
 HOST_PROFILE_SUBMISSIONS_PER_HOTKEY = 10
 HOST_PROFILE_SUBMISSIONS_GLOBAL = 120
 HOST_PROFILE_WINDOW_SECONDS = 3600
+
+# POST /servers/tdx/preflight: a read-only launchability check a miner runs before every launch,
+# upgrade, or `host verify`, so the per-hotkey ceiling is far more generous than submission. It
+# stores nothing; the cap only bounds signature-verification cost per miner over the same window.
+TDX_PREFLIGHT_PER_HOTKEY = 120
+TDX_PREFLIGHT_GLOBAL = 1200
 
 # GET /servers/tdx/host_profiles: public and unauthenticated, so it carries an anonymous global cap
 # like the other public TEE endpoints. Responses are redis-cached, so this bounds cache misses.

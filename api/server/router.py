@@ -27,6 +27,8 @@ from api.constants import (
     HOST_PROFILE_WINDOW_SECONDS,
     HostProfileStatus,
     HOST_PROFILES_RATE_LIMIT_PER_MINUTE,
+    TDX_PREFLIGHT_PER_HOTKEY,
+    TDX_PREFLIGHT_GLOBAL,
 )
 from api.rate_limit import rate_limit, rate_limit_miner
 
@@ -56,6 +58,7 @@ from api.server.schemas import (
     HostProfileResponse,
     HostProfile,
     HostProfileSubmissionResponse,
+    PreflightResponse,
 )
 from api.server.service import (
     BootAttestationResult,
@@ -84,6 +87,7 @@ from api.server.service import (
 from api.server.util import (
     list_host_profile_records,
     resolve_host_profile_status,
+    measurements_for_fingerprint,
     extract_attestation_auth,
     extract_client_cert_hash,
     require_attestation_proxy,
@@ -103,12 +107,15 @@ from api.util import is_valid_host, semcomp
 router = APIRouter(dependencies=[Depends(bind_request_context)])
 
 HOST_PROFILE_STATUS_DETAIL = {
-    HostProfileStatus.ACCEPTED: "This host class already has published measurements and can launch.",
+    HostProfileStatus.ACCEPTED: (
+        "This host class has had measurements generated and is retained for attestation. See GET "
+        "/servers/tdx/host_profiles for the (version, rc) images that cover it."
+    ),
     HostProfileStatus.PENDING: (
         "Host profile stored; measurements will be generated and published."
     ),
     HostProfileStatus.UNKNOWN: (
-        "This host class has no measurements and no pending submission. Submit without dry_run to "
+        "This host class has no measurements and no submission on file. Submit the profile to "
         "request measurements."
     ),
 }
@@ -596,7 +603,6 @@ async def submit_host_profile(
     profile: HostProfile,
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    dry_run: bool = Query(False, description="Report status without storing the profile."),
     _: User = Depends(
         rate_limit_miner(
             "host_profile_submit",
@@ -607,18 +613,20 @@ async def submit_host_profile(
     ),
 ):
     """
-    Submit a host profile (sek8s `discover-profile.sh` output) and get its status back.
+    Register a host class (sek8s `discover-profile.sh` output) so Chutes can measure it.
 
-    A VM only launches on a host class with published measurements, so new hardware is gated until
-    they exist. The API owns the fingerprint -- the miner sends raw platform metadata and
-    gets a status word:
+    One of three distinct operations: this REGISTERS, POST /servers/tdx/preflight CHECKS
+    launchability, and GET /servers/tdx/host_profiles LISTS the generated set. A miner reaches this
+    only when preflight says the class is not yet launchable. The API owns the fingerprint -- the
+    miner sends raw platform metadata and gets back the class's retention lifecycle, which only ever
+    advances:
 
-      * `accepted` -- the fingerprint is on a published measurement; this host class can launch
-      * `pending`  -- parked in object storage, awaiting measurement generation
-      * `unknown`  -- neither, reachable only with `dry_run` (a real submission gets parked)
+      * `accepted` -- a measurement has already been generated for this class; retained from here on
+      * `pending`  -- parked in object storage, awaiting its first measurement generation
 
-    `dry_run` reports status without storing. Signed by the miner hotkey with no purpose, so the
-    signature covers the request body.
+    A real submission is always stored, so this never returns `unknown`. It answers only whether the
+    class has been measured at all; whether the caller's specific image can boot is preflight's job.
+    Signed by the miner hotkey, so the signature covers the request body.
     """
     raw_body = await request.body()
     if len(raw_body) > HOST_PROFILE_MAX_BYTES:
@@ -632,7 +640,6 @@ async def submit_host_profile(
             db=db,
             profile=profile,
             hotkey=hotkey,
-            dry_run=dry_run,
         )
     except Exception as exc:
         logger.error(f"Failed to resolve host profile status from {hotkey=}: {exc}")
@@ -646,6 +653,64 @@ async def submit_host_profile(
         status=profile_status,
         stored=stored,
         detail=HOST_PROFILE_STATUS_DETAIL[profile_status],
+    )
+
+
+@router.post("/tdx/preflight", response_model=PreflightResponse)
+async def tdx_preflight(
+    request: Request,
+    profile: HostProfile,
+    version: str = Query(..., description="VM image version the caller intends to boot."),
+    rc: bool = Query(
+        False, description="Whether that image is a release-candidate (debug) build."
+    ),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        rate_limit_miner(
+            "tdx_preflight",
+            TDX_PREFLIGHT_PER_HOTKEY,
+            window_seconds=HOST_PROFILE_WINDOW_SECONDS,
+            global_limit=TDX_PREFLIGHT_GLOBAL,
+        )
+    ),
+):
+    """
+    Can this exact image boot on this host? The one call a launch/upgrade preflight makes.
+
+    A check against both a host profile and the measurement set, so it hangs off neither. The API
+    fingerprints the submitted profile and answers whether a published measurement for the caller's
+    `(version, rc)` carries that fingerprint -- the whole launch decision in one boolean:
+
+      * `launchable: true`  -> the VM will attest; launch.
+      * `launchable: false` -> register the class (POST /servers/tdx/host_profiles), then retry once
+        Chutes publishes its measurement.
+
+    Stores nothing and reveals nothing beyond the answer -- not the full measurement set, not
+    whether a profile row exists. Signed by the miner hotkey, so the signature covers the body.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > HOST_PROFILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Host profile exceeds {HOST_PROFILE_MAX_BYTES} bytes.",
+        )
+
+    fingerprint = profile.fingerprint
+    launchable = any(
+        m["version"] == version and bool(m["rc"]) == rc
+        for m in measurements_for_fingerprint(fingerprint)
+    )
+    label = f"{version}{' (rc)' if rc else ''}"
+    detail = (
+        f"A published measurement for {label} covers this host class; it can launch."
+        if launchable
+        else (
+            f"No published measurement for {label} covers this host class yet. Register it with "
+            "POST /servers/tdx/host_profiles, then retry once Chutes publishes the measurement."
+        )
+    )
+    return PreflightResponse(
+        fingerprint=fingerprint, launchable=launchable, detail=detail
     )
 
 

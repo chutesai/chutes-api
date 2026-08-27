@@ -20,7 +20,7 @@ from api.server.util import (
     host_profile_is_known,
     resolve_host_profile_status,
     store_host_profile,
-    host_profile_measurement_status,
+    measurements_for_fingerprint,
 )
 
 
@@ -327,8 +327,10 @@ def _mock_session(created=True, known=False):
     db = MagicMock()
     result = MagicMock()
     result.scalar_one_or_none = MagicMock(return_value="fp" if created else None)
+    # host_profile_state reads (measured_at,) via one_or_none: a bare (None,) row means on file but
+    # still pending, no row means never seen.
+    result.one_or_none = MagicMock(return_value=(None,) if known else None)
     db.execute = AsyncMock(return_value=result)
-    db.scalar = AsyncMock(return_value="fp" if known else None)
     db.commit = AsyncMock()
     return db
 
@@ -492,14 +494,13 @@ class TestCheckRateLimit:
 class TestEndpoint:
     """The handler body -- auth, blacklist and metering are the dependency's job (above)."""
 
-    async def _submit(self, body=None, dry_run=False):
+    async def _submit(self, body=None):
         body = body if body is not None else json.dumps(SAMPLE_PROFILE)
         return await submit_host_profile(
             request=_mock_request(body),
             profile=_profile(),
             db=MagicMock(),
             hotkey="5Fhotkey",
-            dry_run=dry_run,
             _=None,
         )
 
@@ -514,7 +515,6 @@ class TestEndpoint:
         assert result.status == HostProfileStatus.PENDING
         assert result.fingerprint == _profile().fingerprint
         assert resolve.await_args.kwargs["hotkey"] == "5Fhotkey"
-        assert resolve.await_args.kwargs["dry_run"] is False
 
     @pytest.mark.asyncio
     @patch("api.server.router.resolve_host_profile_status", new_callable=AsyncMock)
@@ -530,7 +530,7 @@ class TestEndpoint:
     @pytest.mark.parametrize(
         "profile_status, expect",
         [
-            (HostProfileStatus.ACCEPTED, "can launch"),
+            (HostProfileStatus.ACCEPTED, "retained for attestation"),
             (HostProfileStatus.PENDING, "will be generated"),
             (HostProfileStatus.UNKNOWN, "no measurements"),
         ],
@@ -543,16 +543,6 @@ class TestEndpoint:
 
         assert result.status == profile_status
         assert expect in result.detail
-
-    @pytest.mark.asyncio
-    @patch("api.server.router.resolve_host_profile_status", new_callable=AsyncMock)
-    async def test_dry_run_is_passed_through(self, resolve):
-        resolve.return_value = (_profile().fingerprint, HostProfileStatus.UNKNOWN, False)
-
-        result = await self._submit(dry_run=True)
-
-        assert resolve.await_args.kwargs["dry_run"] is True
-        assert result.stored is False
 
     @pytest.mark.asyncio
     @patch("api.server.router.resolve_host_profile_status", new_callable=AsyncMock)
@@ -599,109 +589,94 @@ def _measurement(fingerprint=None, rc=False, name="8xh200", version="1.4.0"):
     )
 
 
-class TestMeasurementStatus:
-    """What the measurement config says about a host class -- the sole truth for attestability."""
+class TestMeasurementsForFingerprint:
+    """The live (version, rc) join between a host class and the images that can attest on it."""
 
     @patch("api.server.util.settings")
-    def test_published_measurement_is_accepted(self, mock_settings):
-        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64)]
+    def test_matching_measurement_is_returned_as_version_rc(self, mock_settings):
+        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version="1.4.0")]
 
-        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert measurements_for_fingerprint("a" * 64) == [{"version": "1.4.0", "rc": False}]
 
     @patch("api.server.util.settings")
-    def test_rc_only_measurement_does_not_qualify(self, mock_settings):
+    def test_rc_measurements_are_included(self, mock_settings):
         """
-        rc is a property of a VERSION, not a topology -- there is no measured-but-rc state. An
-        rc-only fingerprint returns None here and reports PENDING off the bucket instead.
+        rc is a property of the version, not the topology -- the caller decides which (version, rc)
+        it needs, so an rc entry is offered, not hidden.
         """
-        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, rc=True)]
+        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, rc=True, version="1.5.0")]
 
-        assert host_profile_measurement_status("a" * 64) is None
+        assert measurements_for_fingerprint("a" * 64) == [{"version": "1.5.0", "rc": True}]
 
     @patch("api.server.util.settings")
-    def test_published_wins_over_rc_for_the_same_topology(self, mock_settings):
-        """A topology carried by both an rc and a published measurement is attestable."""
+    def test_rc_and_release_of_the_same_version_are_distinct_entries(self, mock_settings):
         mock_settings.tee_measurements = [
-            _measurement(fingerprint="a" * 64, rc=True, name="8xh200-rc"),
-            _measurement(fingerprint="a" * 64),
+            _measurement(fingerprint="a" * 64, rc=True, name="8xh200-rc", version="1.5.0"),
+            _measurement(fingerprint="a" * 64, name="8xh200", version="1.5.0"),
         ]
 
-        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert measurements_for_fingerprint("a" * 64) == [
+            {"version": "1.5.0", "rc": False},
+            {"version": "1.5.0", "rc": True},
+        ]
 
     @patch("api.server.util.settings")
-    def test_unmentioned_topology_has_no_status(self, mock_settings):
+    def test_no_version_floor(self, mock_settings):
+        """
+        No floor here: the caller compares against its own target version. A fingerprinted entry of
+        any version is offered (older ones simply never carry a fingerprint to match).
+        """
+        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version="1.3.1")]
+
+        assert measurements_for_fingerprint("a" * 64) == [{"version": "1.3.1", "rc": False}]
+
+    @patch("api.server.util.settings")
+    def test_unmentioned_topology_is_empty(self, mock_settings):
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64)]
 
-        assert host_profile_measurement_status("b" * 64) is None
+        assert measurements_for_fingerprint("b" * 64) == []
 
     @patch("api.server.util.settings")
     def test_entries_without_a_fingerprint_never_match(self, mock_settings):
-        """Backward compat: entries predating the field load fine, they are just unmatchable."""
+        """Entries predating the field load fine; they are just unmatchable."""
         mock_settings.tee_measurements = [_measurement(fingerprint=None)]
 
-        assert host_profile_measurement_status(_profile().fingerprint) is None
-
-    @pytest.mark.parametrize("version", ["1.3.0", "1.3.1", "0.9.0"])
-    @patch("api.server.util.settings")
-    def test_pre_1_4_0_measurements_do_not_count(self, mock_settings, version):
-        """
-        The caller runs the 1.4.0 CLI. A host class measured only on an older version cannot
-        launch for them, so reporting accepted off that entry would be a lie -- and it is why the
-        24 pre-1.4.0 entries need no fingerprint backfill.
-        """
-        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version=version)]
-
-        assert host_profile_measurement_status("a" * 64) is None
+        assert measurements_for_fingerprint(_profile().fingerprint) == []
 
     @patch("api.server.util.settings")
-    def test_1_4_0_and_newer_count(self, mock_settings):
-        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version="1.4.0")]
-        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
-
-        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, version="1.5.2")]
-        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
-
-    @patch("api.server.util.settings")
-    def test_gated_old_entry_does_not_mask_a_current_one(self, mock_settings):
-        """A topology carried by both an ignored 1.3.1 entry and a 1.4.0 entry is accepted."""
+    def test_duplicate_pairs_are_collapsed_and_ordered(self, mock_settings):
         mock_settings.tee_measurements = [
-            _measurement(fingerprint="a" * 64, version="1.3.1", name="8xh200-old"),
-            _measurement(fingerprint="a" * 64, version="1.4.0"),
+            _measurement(fingerprint="a" * 64, name="dup", version="1.5.0"),
+            _measurement(fingerprint="a" * 64, name="8xh200", version="1.4.0"),
+            _measurement(fingerprint="a" * 64, name="8xh200-again", version="1.4.0"),
         ]
 
-        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
-
-    @patch("api.server.util.settings")
-    def test_malformed_version_is_treated_as_too_old(self, mock_settings):
-        """semcomp floors an unparseable version at 0.0.0, so it fails the gate rather than raising."""
-        mock_settings.tee_measurements = [
-            _measurement(fingerprint="a" * 64, version="not-a-version")
+        assert measurements_for_fingerprint("a" * 64) == [
+            {"version": "1.4.0", "rc": False},
+            {"version": "1.5.0", "rc": False},
         ]
-
-        assert host_profile_measurement_status("a" * 64) is None
 
     @patch("api.server.util.settings")
     def test_reflects_the_config_map_immediately(self, mock_settings):
         """Read live, so a newly published measurement takes effect on ConfigMap remount."""
         mock_settings.tee_measurements = []
-        assert host_profile_measurement_status("a" * 64) is None
+        assert measurements_for_fingerprint("a" * 64) == []
 
         mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64)]
-        assert host_profile_measurement_status("a" * 64) is HostProfileStatus.ACCEPTED
+        assert measurements_for_fingerprint("a" * 64) == [{"version": "1.4.0", "rc": False}]
 
 
 class TestStatusResolution:
-    """accepted / pending / unknown, and what each does to the bucket."""
+    """The monotonic retention status (unknown/pending/accepted), read from the profile row."""
 
-    async def _resolve(self, dry_run=False, config_status=None, known=False, stored=True):
+    async def _resolve(self, dry_run=False, on_file=False, measured_at=None, stored=True):
         profile = _profile()
         db = MagicMock()
         with (
             patch(
-                "api.server.util.host_profile_measurement_status",
-                MagicMock(return_value=config_status),
-            ),
-            patch("api.server.util.host_profile_is_known", AsyncMock(return_value=known)) as head,
+                "api.server.util.host_profile_state",
+                AsyncMock(return_value=(on_file, measured_at)),
+            ) as state,
             patch(
                 "api.server.util.store_host_profile",
                 AsyncMock(return_value=(profile.fingerprint, stored)),
@@ -710,133 +685,105 @@ class TestStatusResolution:
             result = await resolve_host_profile_status(
                 db=db, profile=profile, hotkey="5Fhotkey", dry_run=dry_run
             )
-        return result, store, head
+        return result, store, state
 
     @pytest.mark.asyncio
-    async def test_accepted_comes_from_the_config(self):
-        (fingerprint, profile_status, _), _, head = await self._resolve(
-            config_status=HostProfileStatus.ACCEPTED
+    async def test_accepted_from_measured_at(self):
+        """measured_at is the retention marker: once the reconciler stamps it the class is accepted,
+        for good and version-agnostically (rc counts, since the reconciler counts rc)."""
+        (fingerprint, status, _), _, _ = await self._resolve(
+            on_file=True, measured_at="2026-08-01T00:00:00Z"
         )
 
-        assert profile_status == HostProfileStatus.ACCEPTED
+        assert status == HostProfileStatus.ACCEPTED
         assert fingerprint == _profile().fingerprint
-        # Status never depends on the bucket when the config has an answer.
-        head.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_rc_only_topology_falls_through_to_the_bucket(self):
-        """
-        host_profile_measurement_status returns None for an rc-only fingerprint, so the bucket decides:
-        held -> PENDING. There is no separate measured-but-rc status.
-        """
-        (_, profile_status, _), _, _ = await self._resolve(config_status=None, known=True)
+    async def test_pending_when_on_file_but_unmeasured(self):
+        (_, status, stored), store, _ = await self._resolve(on_file=True)
 
-        assert profile_status == HostProfileStatus.PENDING
-
-    @pytest.mark.asyncio
-    async def test_accepted_is_not_derived_from_the_measured_prefix(self):
-        """
-        An object under measured/ means generated, NOT attestable. Only the config can say
-        accepted, or a measured-but-rc topology would wrongly report it.
-        """
-        (_, profile_status, _), _, _ = await self._resolve(config_status=None, known=True)
-
-        assert profile_status == HostProfileStatus.PENDING
-
-    @pytest.mark.asyncio
-    async def test_pending_when_stored(self):
-        (_, profile_status, stored), store, _ = await self._resolve()
-
-        assert profile_status == HostProfileStatus.PENDING
+        assert status == HostProfileStatus.PENDING
         assert stored is True
         store.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_pending_when_already_known(self):
-        (_, profile_status, stored), _, _ = await self._resolve(stored=False)
+    async def test_stored_flag_is_passed_through(self):
+        (_, _, stored), _, _ = await self._resolve(on_file=True, stored=False)
 
-        assert profile_status == HostProfileStatus.PENDING
         assert stored is False
 
     @pytest.mark.asyncio
     async def test_a_real_submission_is_never_unknown(self):
         """Without dry_run the profile gets parked, so pending is the floor."""
-        (_, profile_status, _), _, _ = await self._resolve(dry_run=False, known=False)
+        (_, status, _), store, _ = await self._resolve(dry_run=False, on_file=True)
 
-        assert profile_status != HostProfileStatus.UNKNOWN
+        assert status != HostProfileStatus.UNKNOWN
+        store.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_measured_topology_we_do_not_hold_is_still_captured(self):
+    async def test_accepted_class_we_do_not_hold_is_still_captured(self):
         """
-        A fingerprint cannot be inverted back to its topology inputs, so an accepted host class
-        with no stored profile could never have its RTMR0 regenerated. A real submission is the
-        chance to capture it; store_host_profile no-ops when either prefix already holds it.
+        A fingerprint cannot be inverted back to its topology inputs, so an accepted host class with
+        no stored profile could never have its RTMR0 regenerated. A real submission is the chance to
+        capture it; store_host_profile no-ops when the row already exists.
         """
-        (_, profile_status, stored), store, _ = await self._resolve(
-            config_status=HostProfileStatus.ACCEPTED, stored=True
+        (_, status, stored), store, _ = await self._resolve(
+            on_file=True, measured_at="2026-08-01T00:00:00Z", stored=True
         )
 
-        assert profile_status == HostProfileStatus.ACCEPTED
+        assert status == HostProfileStatus.ACCEPTED
         assert stored is True
         store.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_dry_run_unknown_when_neither(self):
-        (_, profile_status, stored), store, _ = await self._resolve(dry_run=True, known=False)
+    async def test_dry_run_unknown_when_absent(self):
+        (_, status, stored), store, _ = await self._resolve(dry_run=True, on_file=False)
 
-        assert profile_status == HostProfileStatus.UNKNOWN
+        assert status == HostProfileStatus.UNKNOWN
         assert stored is False
         store.assert_not_called()
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("known", [True, False])
-    async def test_dry_run_never_writes(self, known):
-        _, store, _ = await self._resolve(dry_run=True, known=known)
+    @pytest.mark.parametrize("on_file", [True, False])
+    async def test_dry_run_never_writes(self, on_file):
+        _, store, _ = await self._resolve(dry_run=True, on_file=on_file)
 
         store.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_dry_run_pending_when_bucket_has_it(self):
-        (_, profile_status, stored), store, _ = await self._resolve(dry_run=True, known=True)
+    async def test_dry_run_pending_when_on_file_only(self):
+        (_, status, stored), store, _ = await self._resolve(dry_run=True, on_file=True)
 
-        assert profile_status == HostProfileStatus.PENDING
+        assert status == HostProfileStatus.PENDING
         assert stored is False
         store.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_dry_run_accepted_does_not_touch_the_bucket(self):
-        (_, profile_status, _), store, head = await self._resolve(
-            dry_run=True, config_status=HostProfileStatus.ACCEPTED
+    async def test_dry_run_accepted_reports_without_writing(self):
+        (_, status, _), store, _ = await self._resolve(
+            dry_run=True, on_file=True, measured_at="2026-08-01T00:00:00Z"
         )
 
-        assert profile_status == HostProfileStatus.ACCEPTED
+        assert status == HostProfileStatus.ACCEPTED
         store.assert_not_called()
-        head.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_matching_uses_the_model_fingerprint(self):
-        """
-        The value matched against measurements is HostProfile.fingerprint -- the same value that
-        keys the bucket object. A second implementation here would silently break matching.
-        """
+    async def test_returns_the_model_fingerprint(self):
+        """The fingerprint echoed back is HostProfile.fingerprint -- the value that keys the row."""
         profile = _profile()
-        seen = {}
-
-        def _status(fingerprint):
-            seen["asked"] = fingerprint
-            return HostProfileStatus.ACCEPTED
-
         with (
-            patch("api.server.util.host_profile_measurement_status", _status),
+            patch(
+                "api.server.util.host_profile_state",
+                AsyncMock(return_value=(True, "2026-08-01T00:00:00Z")),
+            ),
             patch(
                 "api.server.util.store_host_profile",
                 AsyncMock(return_value=(profile.fingerprint, False)),
             ),
         ):
-            fingerprint, profile_status, _ = await resolve_host_profile_status(
+            fingerprint, status, _ = await resolve_host_profile_status(
                 db=MagicMock(), profile=profile, hotkey="5Fhotkey"
             )
 
-        assert seen["asked"] == profile.fingerprint
         assert fingerprint == profile.fingerprint
-        assert profile_status == HostProfileStatus.ACCEPTED
+        assert status == HostProfileStatus.ACCEPTED

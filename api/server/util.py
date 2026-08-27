@@ -7,6 +7,7 @@ import secrets
 import base64
 import json
 import tempfile
+from datetime import datetime
 from typing import Dict, List, Optional
 from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -54,7 +55,6 @@ from api.server.schemas import (
 )
 from api.constants import (
     HostProfileStatus,
-    MIN_HOST_PROFILE_MEASUREMENT_VERSION,
     MIN_ROOT_ROTATION_VERSION,
     ATTESTATION_PROXY_AUTH_HEADER,
     CVM_PROXY_AUTH_HEADER,
@@ -1333,45 +1333,67 @@ async def store_host_profile(
     return fingerprint, True
 
 
-def host_profile_measurement_status(fingerprint: str) -> Optional[HostProfileStatus]:
+def measurements_for_fingerprint(fingerprint: str) -> list[dict]:
     """
-    What the measurement config says about a host class, or None if it says nothing.
+    Every published measurement carrying this fingerprint, as ``{version, rc}`` pairs.
 
-    ACCEPTED when a published (non-rc) measurement at or above
-    MIN_HOST_PROFILE_MEASUREMENT_VERSION carries the fingerprint -- that is the only thing that
-    makes a host class attestable. Anything else returns None and the caller falls through to the
-    profile table (on file -> PENDING, otherwise UNKNOWN).
+    Surfaced on GET /servers/tdx/host_profiles so a reader can see which VM images are covered for
+    a host class. rc is a property of the version, not the topology, so both rc and non-rc entries
+    are listed -- a reader wanting the rc image and one wanting the release both see theirs.
 
-    rc is a property of a VERSION, not of a topology: a topology is measured or it is not, so
-    there is no measured-but-rc state to report. rc measurements are simply skipped here, which
-    means a fingerprint carried only by an rc version reports PENDING -- correct, since nothing it
-    can launch is published yet.
-
-    The version gate matters because the caller runs the CLI that ships with
-    MIN_HOST_PROFILE_MEASUREMENT_VERSION; a host class measured solely on an older version cannot
-    actually launch for them, so reporting ACCEPTED off a 1.3.x entry would be a lie.
-
-    The config is the sole truth for attestability. Deriving ACCEPTED from ``measured_at`` instead
-    would let the table and the config drift into disagreeing about what can launch.
+    No version floor: only ``1.4.0+`` measurements carry a fingerprint at all (older ones never
+    join), so the listed versions are already the full covered set. Independent of the profile
+    row's ``measured_at``, which can lag a fresh publish; the empty list is a real answer (nothing
+    published for the class right now). Deduplicated and ordered for a stable response.
     """
+    seen: dict[tuple[str, bool], dict] = {}
     for measurement in settings.tee_measurements:
-        if measurement.fingerprint != fingerprint or measurement.rc:
+        if measurement.fingerprint != fingerprint:
             continue
-        if semcomp(measurement.version, MIN_HOST_PROFILE_MEASUREMENT_VERSION) < 0:
-            continue
-        return HostProfileStatus.ACCEPTED
-    return None
+        seen.setdefault(
+            (measurement.version, bool(measurement.rc)),
+            {"version": measurement.version, "rc": bool(measurement.rc)},
+        )
+    return [seen[key] for key in sorted(seen)]
+
+
+async def host_profile_state(
+    db: AsyncSession, fingerprint: str
+) -> "tuple[bool, Optional[datetime]]":
+    """``(on_file, measured_at)`` for a host class: whether a row exists and, if so, when it was
+    first measured (None while still pending). One query backing the retention status."""
+    row = (
+        await db.execute(
+            select(HostProfileRecord.measured_at).where(
+                HostProfileRecord.fingerprint == fingerprint
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return False, None
+    return True, row[0]
 
 
 async def host_profile_is_known(db: AsyncSession, fingerprint: str) -> bool:
     """Whether a profile for this host class is on file, pending or measured."""
-    return (
-        await db.scalar(
-            select(HostProfileRecord.fingerprint).where(
-                HostProfileRecord.fingerprint == fingerprint
-            )
-        )
-    ) is not None
+    on_file, _ = await host_profile_state(db, fingerprint)
+    return on_file
+
+
+def _host_profile_status(on_file: bool, measured_at) -> HostProfileStatus:
+    """The monotonic retention status, from the profile row alone.
+
+    ACCEPTED once ``measured_at`` is stamped -- the reconciler sets it (rc-inclusive) the moment any
+    measurement carries the fingerprint, and never clears it, so the class stays accepted for good.
+    PENDING when a row exists but is not yet reconciled, UNKNOWN when even the row is absent. The
+    config is not consulted here: measured_at is the single retention marker, so the table and the
+    generator cannot drift into disagreeing about what has been measured.
+    """
+    if measured_at is not None:
+        return HostProfileStatus.ACCEPTED
+    if on_file:
+        return HostProfileStatus.PENDING
+    return HostProfileStatus.UNKNOWN
 
 
 async def resolve_host_profile_status(
@@ -1379,13 +1401,14 @@ async def resolve_host_profile_status(
     profile: HostProfile,
     hotkey: str,
     dry_run: bool = False,
-) -> tuple[str, HostProfileStatus, bool]:
+) -> "tuple[str, HostProfileStatus, bool]":
     """
-    Decide whether a submitted host class can launch, recording it if we do not already hold it.
+    Resolve a submitted host class into its retention ``status``, recording it unless a dry run.
 
-    Status comes from the measurement config first; the profile table only distinguishes "on file"
-    from "never seen" for a host class no measurement mentions. A real submission is always stored
-    when unknown, so it can never return UNKNOWN -- only ``dry_run`` can, because it writes nothing.
+    ``status`` is the monotonic retention lifecycle (unknown -> pending -> accepted) read from the
+    profile row plus ``measured_at``; a real submission is always stored, so it never returns
+    UNKNOWN -- only ``dry_run`` can, because it writes nothing. Submission answers only which of the
+    three the class is in: the per-version ``{version, rc}`` list lives on GET, not here.
 
     A real submission stores even when a measurement already covers the fingerprint, if we hold no
     profile for it: a fingerprint cannot be inverted back to its topology inputs, so an accepted
@@ -1395,20 +1418,15 @@ async def resolve_host_profile_status(
     Returns (fingerprint, status, stored).
     """
     fingerprint = profile.fingerprint
-    config_status = host_profile_measurement_status(fingerprint)
 
-    if dry_run:
-        if config_status is not None:
-            return fingerprint, config_status, False
-        known = await host_profile_is_known(db, fingerprint)
-        return (
-            fingerprint,
-            HostProfileStatus.PENDING if known else HostProfileStatus.UNKNOWN,
-            False,
-        )
+    if not dry_run:
+        _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
+    else:
+        stored = False
 
-    _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
-    return fingerprint, config_status or HostProfileStatus.PENDING, stored
+    on_file, measured_at = await host_profile_state(db, fingerprint)
+    status = _host_profile_status(on_file, measured_at)
+    return fingerprint, status, stored
 
 
 async def list_pending_profiles(db: AsyncSession) -> list[HostProfileRecord]:
@@ -1426,7 +1444,7 @@ async def list_host_profile_records(
     include_pending: bool = False,
 ) -> list[dict]:
     """
-    Host profiles for publication, as {fingerprint, measured, profile}.
+    Host profiles for publication, as {fingerprint, measured, measurements, profile}.
 
     Measured only by default: that is the set a third party can actually verify, by joining
     ``fingerprint`` to a published measurement. A pending row is an unverified claim, so nobody
@@ -1436,7 +1454,9 @@ async def list_host_profile_records(
     once measurements are generated for it, and generation has to fetch it first, so the queue has
     to be reachable somehow.
 
-    Returned as stored: the machine-identifying fields are dropped at submission (HostProfile
+    ``measurements`` is the per-fingerprint ``{version, rc}`` list from the config, so a reader sees
+    exactly which VM images are covered for the class (empty for a pending row). ``profile`` is
+    returned as stored: the machine-identifying fields are dropped at submission (HostProfile
     declares them ``exclude=True``), so the column holds only host-class data. ``miner_hotkey`` is
     a column this query never selects.
     """
@@ -1450,7 +1470,12 @@ async def list_host_profile_records(
 
     result = await db.execute(query)
     return [
-        {"fingerprint": fingerprint, "measured": measured_at is not None, "profile": profile}
+        {
+            "fingerprint": fingerprint,
+            "measured": measured_at is not None,
+            "measurements": measurements_for_fingerprint(fingerprint),
+            "profile": profile,
+        }
         for fingerprint, profile, measured_at in result.all()
     ]
 

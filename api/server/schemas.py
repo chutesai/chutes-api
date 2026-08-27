@@ -660,6 +660,13 @@ class HostProfile(BaseModel):
         return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+class HostProfileMeasurement(BaseModel):
+    """One published VM image that covers a host class: its version and rc flag."""
+
+    version: str
+    rc: bool
+
+
 class HostProfileResponse(BaseModel):
     """Public entry for GET /servers/tdx/host_profiles: one generated host class."""
 
@@ -667,6 +674,9 @@ class HostProfileResponse(BaseModel):
     # False = awaiting measurement generation (the generator's queue); True = measurements have
     # been published for this host class, so a verifier can join it to GET /servers/tee/measurements.
     measured: bool
+    # The (version, rc) VM images covered for this class, from the measurement config. Empty for a
+    # pending row; lets a reader see exactly which versions can attest here without a second lookup.
+    measurements: List[HostProfileMeasurement]
     # The stored discover-profile document in its wire shape, minus the machine-identifying
     # fields. Typed loosely on purpose -- it is republished as recorded, and a verifier feeds it
     # straight back into RTMR0 generation.
@@ -677,8 +687,26 @@ class HostProfileSubmissionResponse(BaseModel):
     """Response for POST /servers/tdx/host_profiles."""
 
     fingerprint: str
+    # Retention lifecycle of the class (unknown -> pending -> accepted). Monotonic. Answers whether
+    # the class has been measured at all; the per-version list lives on GET.
     status: HostProfileStatus
     stored: bool
+    detail: str
+
+
+class PreflightResponse(BaseModel):
+    """Response for POST /servers/tdx/preflight: can this exact image boot on this host?
+
+    A check against both a host profile and the measurement set, so it hangs off neither -- it
+    fingerprints the submitted profile and asks whether a measurement for the requested image
+    covers it.
+    """
+
+    fingerprint: str
+    # True iff a published measurement for the requested (version, rc) carries this fingerprint.
+    # The whole preflight answer: true -> launch; false -> submit the profile so Chutes measures
+    # it, then retry. The client never needs the raw measurement set or the profile-row state.
+    launchable: bool
     detail: str
 
 

@@ -219,6 +219,34 @@ class TestPendingProfilesAreReachable:
         assert entries[0]["measured"] is False
 
     @pytest.mark.asyncio
+    @patch("api.server.util.settings")
+    async def test_measurements_list_carries_covering_versions(self, mock_settings):
+        """Each entry lists the (version, rc) images covering its class -- rc included, ordered."""
+        mock_settings.tee_measurements = [
+            _measurement(fingerprint=FP_B, rc=True, version="1.5.0"),
+            _measurement(fingerprint=FP_B, version="1.4.0"),
+        ]
+        db = _session(rows=_rows((FP_B, None, "2026-08-21")))
+
+        entries = await list_host_profile_records(db)
+
+        assert entries[0]["measurements"] == [
+            {"version": "1.4.0", "rc": False},
+            {"version": "1.5.0", "rc": True},
+        ]
+
+    @pytest.mark.asyncio
+    @patch("api.server.util.settings")
+    async def test_pending_entry_has_no_measurements(self, mock_settings):
+        """A pending class is not covered by anything yet, so its list is empty."""
+        mock_settings.tee_measurements = [_measurement(fingerprint=FP_A, version="1.4.0")]
+        db = _session(rows=_rows((FP_B, None, None)))
+
+        entries = await list_host_profile_records(db, include_pending=True)
+
+        assert entries[0]["measurements"] == []
+
+    @pytest.mark.asyncio
     @patch("api.server.router.list_host_profile_records", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_each_variant_caches_separately(self, mock_settings, listing):
