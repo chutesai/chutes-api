@@ -230,27 +230,37 @@ asserts it validates — that is the test that fails when the script grows a fie
 
 ### `GET /servers/tdx/host_profiles` (public)
 
-The GET sibling of the submission endpoint: unauthenticated, redis-cached, anonymously
-rate-limited — same shape as `GET /tee/measurements`, and designed to be read alongside it.
+The GET sibling of the submission endpoint: unauthenticated, redis-cached (per variant), anonymously
+rate-limited.
 
-```json
-[{"fingerprint": "<sha256 hex>", "profile": { ...discover-profile document... }}]
+```
+GET /servers/tdx/host_profiles                       # measured only (default)
+GET /servers/tdx/host_profiles?include_pending=true  # + host classes awaiting generation
 ```
 
-One row per measured host class, returned exactly as stored — in the **wire shape** (`host`,
-`launch_determinism`, ...). Nothing is filtered on read, because the machine-identifying fields
-never enter the column in the first place (see below). `miner_hotkey` is a column this query never
-selects. What remains — gpu/cpu/memory/numa/qemu plus BIOS, board and the lspci tree — is generic
-host-class data and is exactly what reproducing RTMR0 needs.
+```json
+[{"fingerprint": "<sha256 hex>", "measured": true, "profile": { ...discover-profile document... }}]
+```
 
-Two consumers:
+**Measured only by default.** That is the set a third party can actually verify: join `fingerprint`
+to `GET /servers/tee/measurements`, regenerate RTMR0 from the inputs here, and compare. A quote
+holder can also see which host class their own RTMR0 corresponds to. No flags to reason about, and
+an unverified claim is never handed to someone who did not ask for one.
 
-- **Independent verification.** Join to `GET /tee/measurements` on `fingerprint`: regenerate RTMR0
-  from the inputs here and compare it to the published measurement. A quote holder can also see
-  which host class their own RTMR0 corresponds to.
-- **The sek8s `chutes-cvm generate-measurements` CLI**, which reads profiles from here rather than
-  the database directly. That is why it is public: the generation side needs the profiles, not
-  database credentials.
+**`include_pending=true` is for the measurement generator.** Pending host classes are its work
+queue, and they have to be reachable somehow: a profile becomes measured only once measurements are
+generated for it, and generation has to fetch it first. Publishing only the measured set would make
+a newly submitted host class permanently unreachable by the pipeline meant to act on it. Each entry
+carries `measured` so the generator can tell the queue from the rest.
+
+A pending entry records that some registered miner submitted this hardware shape; nothing attests
+that they own it. Only a measured entry with a matching published measurement says anything about
+what can launch.
+
+Profiles are returned exactly as stored, in the **wire shape** (`host`, `launch_determinism`, ...).
+Nothing is filtered on read, because the machine-identifying fields never enter the column;
+`miner_hotkey` is a column this query never selects. What remains — gpu/cpu/memory/numa/qemu plus
+BIOS, board and the lspci tree — is host-class data and is exactly what reproducing RTMR0 needs.
 
 ### Release-workflow contract (fingerprint propagation)
 

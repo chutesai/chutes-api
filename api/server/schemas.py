@@ -664,6 +664,9 @@ class HostProfileResponse(BaseModel):
     """Public entry for GET /servers/tdx/host_profiles: one generated host class."""
 
     fingerprint: str
+    # False = awaiting measurement generation (the generator's queue); True = measurements have
+    # been published for this host class, so a verifier can join it to GET /servers/tee/measurements.
+    measured: bool
     # The stored discover-profile document in its wire shape, minus the machine-identifying
     # fields. Typed loosely on purpose -- it is republished as recorded, and a verifier feeds it
     # straight back into RTMR0 generation.

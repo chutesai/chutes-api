@@ -1421,21 +1421,37 @@ async def list_pending_profiles(db: AsyncSession) -> list[HostProfileRecord]:
     return list(result.scalars().all())
 
 
-async def list_measured_host_profiles(db: AsyncSession) -> list[dict]:
+async def list_host_profile_records(
+    db: AsyncSession,
+    include_pending: bool = False,
+) -> list[dict]:
     """
-    The published topology set: every generated host class, as {fingerprint, profile}.
+    Host profiles for publication, as {fingerprint, measured, profile}.
+
+    Measured only by default: that is the set a third party can actually verify, by joining
+    ``fingerprint`` to a published measurement. A pending row is an unverified claim, so nobody
+    gets one without asking.
+
+    ``include_pending`` adds them, for the measurement generator -- a profile becomes measured only
+    once measurements are generated for it, and generation has to fetch it first, so the queue has
+    to be reachable somehow.
 
     Returned as stored: the machine-identifying fields are dropped at submission (HostProfile
-    declares them ``exclude=True``), so the column holds only host-class data and there is nothing
-    to filter here. ``miner_hotkey`` is a column this query never selects.
+    declares them ``exclude=True``), so the column holds only host-class data. ``miner_hotkey`` is
+    a column this query never selects.
     """
-    result = await db.execute(
-        select(HostProfileRecord.fingerprint, HostProfileRecord.profile)
-        .where(HostProfileRecord.measured_at.isnot(None))
-        .order_by(HostProfileRecord.fingerprint)
-    )
+    query = select(
+        HostProfileRecord.fingerprint,
+        HostProfileRecord.profile,
+        HostProfileRecord.measured_at,
+    ).order_by(HostProfileRecord.fingerprint)
+    if not include_pending:
+        query = query.where(HostProfileRecord.measured_at.isnot(None))
+
+    result = await db.execute(query)
     return [
-        {"fingerprint": fingerprint, "profile": profile} for fingerprint, profile in result.all()
+        {"fingerprint": fingerprint, "measured": measured_at is not None, "profile": profile}
+        for fingerprint, profile, measured_at in result.all()
     ]
 
 

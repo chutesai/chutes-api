@@ -82,7 +82,7 @@ from api.server.service import (
     _count_active_maintenance_slots,
 )
 from api.server.util import (
-    list_measured_host_profiles,
+    list_host_profile_records,
     resolve_host_profile_status,
     extract_attestation_auth,
     extract_client_cert_hash,
@@ -538,45 +538,52 @@ async def get_tee_measurements():
     return result
 
 
-HOST_PROFILES_CACHE_KEY = "tdx_host_profiles"
+# Per-variant, so a cached "with pending" is never served to a default request.
+HOST_PROFILES_CACHE_KEY = "tdx_host_profiles:{variant}"
 
 
 @router.get("/tdx/host_profiles", response_model=List[HostProfileResponse])
 async def list_host_profiles(
     db: AsyncSession = Depends(get_db_session),
+    include_pending: bool = Query(
+        False,
+        description="Also return host classes awaiting measurement generation.",
+    ),
     _: None = Depends(rate_limit("tdx_host_profiles", HOST_PROFILES_RATE_LIMIT_PER_MINUTE)),
 ):
     """
-    Return every generated host profile: the platform inputs each measurement was built from.
+    Return host profiles: the platform inputs a measurement is built from.
 
-    Pairs with GET /servers/tee/measurements, joined on `fingerprint`. Together they make RTMR0
-    independently reproducible: regenerate it from the inputs here and compare it to the published
-    measurement for the same fingerprint. A quote holder can also see which host class their RTMR0
-    corresponds to.
+    By default, only host classes that HAVE measurements. Join `fingerprint` to
+    GET /servers/tee/measurements, regenerate RTMR0 from the inputs here, and compare -- that makes
+    every published measurement independently reproducible, and a quote holder can see which host
+    class their own RTMR0 corresponds to. A third party needs no flags and can never be handed an
+    unverified claim.
 
-    Also the source the sek8s `chutes-cvm generate-measurements` CLI reads, which is why it is
-    public and unauthenticated -- the generation side needs the profiles, not database
-    credentials.
+    `include_pending=true` also returns host classes awaiting generation. That is the measurement
+    generator's queue: a profile becomes measured only once measurements are generated for it, and
+    generation has to fetch it first. Each entry's `measured` flag says which set it is in.
 
-    Machine-identifying fields (hostname, submission timestamp) are stripped, and the submitter's
-    hotkey/nonce/signature are columns this query never selects. What remains is host-class data.
-    No authentication required.
+    Public and unauthenticated, so the generation side needs no database credentials. Every entry
+    is host-class data: the machine-identifying fields are dropped at submission and never stored,
+    and the submitter's `miner_hotkey` is a column this query never selects.
     """
-    cached = await settings.redis_client.get(HOST_PROFILES_CACHE_KEY)
+    cache_key = HOST_PROFILES_CACHE_KEY.format(variant="all" if include_pending else "measured")
+    cached = await settings.redis_client.get(cache_key)
     if cached:
         return json.loads(cached)
 
     try:
-        profiles = await list_measured_host_profiles(db)
+        profiles = await list_host_profile_records(db, include_pending=include_pending)
     except Exception as exc:
-        logger.error(f"Failed to list measured host profiles: {exc}")
+        logger.error(f"Failed to list host profiles: {exc}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to read host profiles, please try again later.",
         )
 
     await settings.redis_client.set(
-        HOST_PROFILES_CACHE_KEY,
+        cache_key,
         json.dumps(profiles).decode(),
         ex=TEE_MEASUREMENTS_CACHE_TTL,
     )

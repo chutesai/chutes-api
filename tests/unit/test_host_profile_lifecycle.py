@@ -15,7 +15,7 @@ from api.config import TeeMeasurementConfig
 from api.server.router import list_host_profiles
 from api.server.schemas import HostProfile
 from api.server.util import (
-    list_measured_host_profiles,
+    list_host_profile_records,
     list_pending_profiles,
     reconcile_host_profiles,
 )
@@ -52,10 +52,18 @@ def _record(fingerprint=FP_A, profile=None, notified_at=None, measured_at=None):
     return record
 
 
+def _rows(*specs):
+    """(fingerprint, profile, measured_at) tuples as the listing select returns them."""
+    return [
+        (fingerprint, copy.deepcopy(profile or SAMPLE_PROFILE), measured_at)
+        for fingerprint, profile, measured_at in specs
+    ]
+
+
 def _session(rows=None, scalars=None):
     """
-    AsyncSession double. `rows` feeds result.all() (the (fingerprint, profile) select);
-    `scalars` feeds result.scalars().all() (RETURNING and the ORM select).
+    AsyncSession double. `rows` feeds result.all() (the listing select); `scalars` feeds
+    result.scalars().all() (RETURNING and the ORM select).
     """
     db = MagicMock()
     result = MagicMock()
@@ -76,16 +84,16 @@ class TestPublishedProfile:
         published profile is exactly the stored one.
         """
         stored = _profile().model_dump(by_alias=True)
-        db = _session(rows=[(FP_A, stored)])
+        db = _session(rows=_rows((FP_A, stored, "2026-08-21")))
 
-        assert (await list_measured_host_profiles(db))[0]["profile"] == stored
+        assert (await list_host_profile_records(db))[0]["profile"] == stored
 
     @pytest.mark.asyncio
     async def test_generic_host_class_data_is_published(self):
         """A verifier needs the full RTMR0 inputs, so everything else stays."""
-        db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
+        db = _session(rows=_rows((FP_A, None, "2026-08-21")))
 
-        profile = (await list_measured_host_profiles(db))[0]["profile"]
+        profile = (await list_host_profile_records(db))[0]["profile"]
 
         # Wire shape, not model field names -- a verifier feeds this straight back in.
         assert profile["launch_determinism"]["qemu_version"] == "8.2.2"
@@ -99,64 +107,66 @@ class TestPublishedProfile:
     @pytest.mark.asyncio
     async def test_submitter_identity_never_leaks(self):
         """hotkey/nonce/signature are columns this query never selects."""
-        db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
+        db = _session(rows=_rows((FP_A, None, "2026-08-21")))
 
-        published = json.dumps(await list_measured_host_profiles(db)).decode()
+        published = json.dumps(await list_host_profile_records(db)).decode()
 
         for secret in ("hotkey", "nonce", "signature", "5F"):
             assert secret not in published
 
     @pytest.mark.asyncio
     async def test_fingerprint_joins_to_the_measurement(self):
-        db = _session(rows=[(FP_A, copy.deepcopy(SAMPLE_PROFILE))])
+        db = _session(rows=_rows((FP_A, None, "2026-08-21")))
 
-        assert (await list_measured_host_profiles(db))[0]["fingerprint"] == FP_A
+        assert (await list_host_profile_records(db))[0]["fingerprint"] == FP_A
 
     @pytest.mark.asyncio
     async def test_published_profile_still_fingerprints_the_same(self):
         """Publication must not alter the document the fingerprint was computed from."""
-        db = _session(rows=[(FP_A, _profile().model_dump(by_alias=True))])
+        db = _session(rows=_rows((FP_A, _profile().model_dump(by_alias=True), "2026-08-21")))
 
-        published = (await list_measured_host_profiles(db))[0]["profile"]
+        published = (await list_host_profile_records(db))[0]["profile"]
 
         assert HostProfile(**published).fingerprint == _profile().fingerprint
 
 
 class TestPublishedHostProfilesEndpoint:
     @pytest.mark.asyncio
-    @patch("api.server.router.list_measured_host_profiles", new_callable=AsyncMock)
+    @patch("api.server.router.list_host_profile_records", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_returns_and_caches(self, mock_settings, listing):
         mock_settings.redis_client.get = AsyncMock(return_value=None)
         mock_settings.redis_client.set = AsyncMock()
-        listing.return_value = [{"fingerprint": FP_A, "profile": {"gpu": {"count": 8}}}]
+        listing.return_value = [
+            {"fingerprint": FP_A, "measured": True, "profile": {"gpu": {"count": 8}}}
+        ]
 
-        result = await list_host_profiles(db=MagicMock(), _=None)
+        result = await list_host_profiles(db=MagicMock(), include_pending=False, _=None)
 
         assert result[0]["fingerprint"] == FP_A
         key, payload = mock_settings.redis_client.set.await_args.args
-        assert key == "tdx_host_profiles"
+        assert key == "tdx_host_profiles:measured"
         assert json.loads(payload)[0]["fingerprint"] == FP_A
 
     @pytest.mark.asyncio
-    @patch("api.server.router.list_measured_host_profiles", new_callable=AsyncMock)
+    @patch("api.server.router.list_host_profile_records", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_cache_hit_skips_the_query(self, mock_settings, listing):
-        cached = [{"fingerprint": FP_A, "profile": {}}]
+        cached = [{"fingerprint": FP_A, "measured": False, "profile": {}}]
         mock_settings.redis_client.get = AsyncMock(return_value=json.dumps(cached))
 
-        assert await list_host_profiles(db=MagicMock(), _=None) == cached
+        assert await list_host_profiles(db=MagicMock(), include_pending=False, _=None) == cached
         listing.assert_not_called()
 
     @pytest.mark.asyncio
-    @patch("api.server.router.list_measured_host_profiles", new_callable=AsyncMock)
+    @patch("api.server.router.list_host_profile_records", new_callable=AsyncMock)
     @patch("api.server.router.settings")
     async def test_query_failure_is_503(self, mock_settings, listing):
         mock_settings.redis_client.get = AsyncMock(return_value=None)
         listing.side_effect = Exception("db unreachable")
 
         with pytest.raises(HTTPException) as exc:
-            await list_host_profiles(db=MagicMock(), _=None)
+            await list_host_profiles(db=MagicMock(), include_pending=False, _=None)
 
         assert exc.value.status_code == 503
         assert "db unreachable" not in exc.value.detail
@@ -170,6 +180,71 @@ class TestPublishedHostProfilesEndpoint:
         assert "hotkey" not in params
         assert isinstance(params["_"].default, DependsMarker)
         assert params["_"].default.dependency.__name__ == "_rate_limit"
+
+
+class TestPendingProfilesAreReachable:
+    """
+    Measured-only by default so a third party is never handed an unverified claim; the generator
+    opts in. Filtering pending out with no way back is a chicken-and-egg: a profile only becomes
+    measured once measurements are generated for it, and generation has to fetch it first.
+    """
+
+    @pytest.mark.asyncio
+    async def test_default_returns_only_measured(self):
+        db = _session(rows=_rows((FP_B, None, "2026-08-21")))
+
+        entries = await list_host_profile_records(db)
+
+        assert [e["fingerprint"] for e in entries] == [FP_B]
+        assert "measured_at IS NOT NULL" in str(db.execute.await_args.args[0])
+
+    @pytest.mark.asyncio
+    async def test_include_pending_lifts_the_filter(self):
+        db = _session(rows=_rows((FP_A, None, None), (FP_B, None, "2026-08-21")))
+
+        entries = await list_host_profile_records(db, include_pending=True)
+
+        assert {e["fingerprint"]: e["measured"] for e in entries} == {FP_A: False, FP_B: True}
+        clause = str(db.execute.await_args.args[0])
+        assert "measured_at IS NOT NULL" not in clause
+        assert "measured_at IS NULL" not in clause
+
+    @pytest.mark.asyncio
+    async def test_measured_flag_marks_the_queue(self):
+        """The generator reads this to know what still needs work."""
+        db = _session(rows=_rows((FP_A, None, None)))
+
+        entries = await list_host_profile_records(db, include_pending=True)
+
+        assert entries[0]["measured"] is False
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.list_host_profile_records", new_callable=AsyncMock)
+    @patch("api.server.router.settings")
+    async def test_each_variant_caches_separately(self, mock_settings, listing):
+        """A cached include_pending result must never be served to a default request."""
+        mock_settings.redis_client.get = AsyncMock(return_value=None)
+        mock_settings.redis_client.set = AsyncMock()
+        listing.return_value = []
+
+        seen = set()
+        for include_pending in (False, True):
+            await list_host_profiles(db=MagicMock(), include_pending=include_pending, _=None)
+            seen.add(mock_settings.redis_client.get.await_args.args[0])
+
+        assert seen == {"tdx_host_profiles:measured", "tdx_host_profiles:all"}
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.list_host_profile_records", new_callable=AsyncMock)
+    @patch("api.server.router.settings")
+    async def test_flag_is_passed_through(self, mock_settings, listing):
+        mock_settings.redis_client.get = AsyncMock(return_value=None)
+        mock_settings.redis_client.set = AsyncMock()
+        listing.return_value = []
+
+        await list_host_profiles(db=MagicMock(), include_pending=True, _=None)
+
+        assert listing.await_args.kwargs["include_pending"] is True
 
 
 class TestReconcile:
