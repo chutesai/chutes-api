@@ -441,7 +441,8 @@ HostProfileText = Annotated[str, StringConstraints(max_length=256, pattern=r"^[^
 HostProfilePciId = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{4}$")]
 # PCI address, domain:bus:device.function ("0000:1b:00.0").
 HostProfileBdf = Annotated[
-    str, StringConstraints(pattern=r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$")
+    str,
+    StringConstraints(pattern=r"^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$"),
 ]
 # CPUID leaf-1 EAX|EDX as hex (16 chars), null when unreadable.
 HostProfileProcessorId = Annotated[str, StringConstraints(pattern=r"^[0-9a-fA-F]{1,32}$")]
@@ -464,7 +465,8 @@ HostProfileCpuList = Annotated[str, StringConstraints(max_length=256, pattern=r"
 HostProfileTopology = Annotated[
     str,
     StringConstraints(
-        max_length=HOST_PROFILE_MAX_TOPOLOGY_CHARS, pattern=r"^[^\x00-\x08\x0b-\x1f\x7f]*$"
+        max_length=HOST_PROFILE_MAX_TOPOLOGY_CHARS,
+        pattern=r"^[^\x00-\x08\x0b-\x1f\x7f]*$",
     ),
 ]
 # NUMA node index, or -1 where sysfs reported none.
@@ -810,7 +812,11 @@ class TeeUpgradeWindow(Base):
     __table_args__ = (
         UniqueConstraint("target_measurement_version", name="uq_tee_upgrade_target"),
         CheckConstraint("upgrade_window_end > upgrade_window_start", name="chk_window_bounds"),
-        Index("idx_tee_upgrade_window_bounds", "upgrade_window_start", "upgrade_window_end"),
+        Index(
+            "idx_tee_upgrade_window_bounds",
+            "upgrade_window_start",
+            "upgrade_window_end",
+        ),
     )
 
 
@@ -929,7 +935,8 @@ class Server(Base):
         ),
         Index("idx_servers_last_health", "last_health_at"),
         ForeignKeyConstraint(
-            ["netuid", "miner_hotkey"], ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"]
+            ["netuid", "miner_hotkey"],
+            ["metagraph_nodes.netuid", "metagraph_nodes.hotkey"],
         ),
     )
 

@@ -491,7 +491,8 @@ async def create_server(
             exc_info=True,
         )
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server registration failed"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server registration failed",
         )
 
 
@@ -661,9 +662,7 @@ async def tdx_preflight(
     request: Request,
     profile: HostProfile,
     version: str = Query(..., description="VM image version the caller intends to boot."),
-    rc: bool = Query(
-        False, description="Whether that image is a release-candidate (debug) build."
-    ),
+    rc: bool = Query(False, description="Whether that image is a release-candidate (debug) build."),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(
         rate_limit_miner(
@@ -709,9 +708,7 @@ async def tdx_preflight(
             "POST /servers/tdx/host_profiles, then retry once Chutes publishes the measurement."
         )
     )
-    return PreflightResponse(
-        fingerprint=fingerprint, launchable=launchable, detail=detail
-    )
+    return PreflightResponse(fingerprint=fingerprint, launchable=launchable, detail=detail)
 
 
 @router.get("/signing-keys")
@@ -877,7 +874,8 @@ async def get_server_details(
     except Exception as e:
         logger.error(f"Failed to get server details: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get server details"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get server details",
         )
 
 
@@ -934,7 +932,8 @@ async def remove_server(
     except Exception as e:
         logger.error(f"Failed to remove server: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to remove server"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remove server",
         )
 
 
@@ -978,7 +977,8 @@ async def get_runtime_nonce(
     except Exception as e:
         logger.error(f"Failed to generate runtime nonce: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate nonce"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to generate nonce",
         )
 
 
@@ -1003,7 +1003,14 @@ async def verify_runtime_attestation(
         server = await check_server_ownership(db, server_id, hotkey)
         actual_ip = request.state.client_ip
         result = await process_runtime_attestation(
-            db, server.server_id, actual_ip, args, hotkey, nonce, expected_cert_hash, auth
+            db,
+            server.server_id,
+            actual_ip,
+            args,
+            hotkey,
+            nonce,
+            expected_cert_hash,
+            auth,
         )
 
         return RuntimeAttestationResponse(
@@ -1023,7 +1030,8 @@ async def verify_runtime_attestation(
     except Exception as e:
         logger.error(f"Unexpected error in runtime attestation: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Runtime attestation failed"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Runtime attestation failed",
         )
 
 

@@ -14,7 +14,7 @@ from fastapi.params import Depends as DependsMarker
 from api.config import TeeMeasurementConfig
 from api.constants import HostProfileStatus
 from api.rate_limit import rate_limit_miner
-from api.server.router import submit_host_profile
+from api.server.router import submit_host_profile, tdx_preflight
 from api.server.schemas import HostProfile
 from api.server.util import (
     host_profile_is_known,
@@ -68,7 +68,11 @@ SAMPLE_PROFILE = {
         "suggested_ram_per_gpu_gb": 128,
         "suggested_total_vm_ram_gb": 1024,
     },
-    "numa": {"node_count": 2, "nodes": [0, 1], "cpus_per_node": {"0": "0-47", "1": "48-95"}},
+    "numa": {
+        "node_count": 2,
+        "nodes": [0, 1],
+        "cpus_per_node": {"0": "0-47", "1": "48-95"},
+    },
     "nic": {
         "ib_class_count": 8,
         "eth_class_count": 2,
@@ -77,7 +81,12 @@ SAMPLE_PROFILE = {
         "passthrough_candidates": ["0000:1a:00.0", "0000:42:00.0"],
         "passthrough_numa_nodes": [0, 1],
     },
-    "nvswitch": {"present": True, "count": 4, "devices": ["0000:0a:00.0"], "numa_nodes": [0]},
+    "nvswitch": {
+        "present": True,
+        "count": 4,
+        "devices": ["0000:0a:00.0"],
+        "numa_nodes": [0],
+    },
 }
 
 
@@ -290,7 +299,10 @@ class TestValidation:
                 "cpu_args": "host,-avx10",
             },
             cpu={"cpu_vendor": "AuthenticAMD", "cpu_processor_id": "f26c0000fffba91f"},
-            host={"board_name": "PowerEdge XE9680 (Rev. 1.2)", "bios_date": "04/01/2026"},
+            host={
+                "board_name": "PowerEdge XE9680 (Rev. 1.2)",
+                "bios_date": "04/01/2026",
+            },
         )
         assert profile.qemu.cpu_args == "host,-avx10"
         assert profile.platform.board_name == "PowerEdge XE9680 (Rev. 1.2)"
@@ -410,7 +422,10 @@ class TestRateLimitMinerDependency:
 
         assert result is user
         assert check.await_args_list[0].args[:2] == ("host_profile_submit", 10)
-        assert check.await_args_list[0].kwargs == {"window_seconds": 3600, "identity": "5Fhotkey"}
+        assert check.await_args_list[0].kwargs == {
+            "window_seconds": 3600,
+            "identity": "5Fhotkey",
+        }
 
     @pytest.mark.asyncio
     @patch("api.rate_limit.check_rate_limit", new_callable=AsyncMock)
@@ -519,7 +534,11 @@ class TestEndpoint:
     @pytest.mark.asyncio
     @patch("api.server.router.resolve_host_profile_status", new_callable=AsyncMock)
     async def test_duplicate_submission_is_a_no_op(self, resolve):
-        resolve.return_value = (_profile().fingerprint, HostProfileStatus.PENDING, False)
+        resolve.return_value = (
+            _profile().fingerprint,
+            HostProfileStatus.PENDING,
+            False,
+        )
 
         result = await self._submit()
 
@@ -571,6 +590,68 @@ class TestEndpoint:
         assert params["_"].default.dependency.__name__ == "_rate_limit_miner"
 
 
+class TestPreflightEndpoint:
+    """POST /servers/tdx/preflight -- the one-boolean launchability check. Stores nothing; the
+    answer is just whether a measurement for the caller's (version, rc) carries the fingerprint.
+    """
+
+    async def _preflight(self, version="1.4.0", rc=False, body=None):
+        body = body if body is not None else json.dumps(SAMPLE_PROFILE)
+        return await tdx_preflight(
+            request=_mock_request(body),
+            profile=_profile(),
+            version=version,
+            rc=rc,
+            hotkey="5Fhotkey",
+            _=None,
+        )
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    async def test_launchable_when_version_rc_covered(self, measurements):
+        measurements.return_value = [{"version": "1.4.0", "rc": False}]
+
+        result = await self._preflight(version="1.4.0", rc=False)
+
+        assert result.launchable is True
+        assert result.fingerprint == _profile().fingerprint
+        assert "can launch" in result.detail
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    async def test_not_launchable_when_version_absent(self, measurements):
+        measurements.return_value = [{"version": "1.3.0", "rc": False}]
+
+        result = await self._preflight(version="1.4.0", rc=False)
+
+        assert result.launchable is False
+        assert "Register it" in result.detail
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    async def test_rc_must_match_not_just_version(self, measurements):
+        # A production measurement (rc=False) does not satisfy a debug image asking about rc=True.
+        measurements.return_value = [{"version": "1.4.0", "rc": False}]
+
+        result = await self._preflight(version="1.4.0", rc=True)
+
+        assert result.launchable is False
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    async def test_oversized_body_is_rejected(self, measurements):
+        with pytest.raises(HTTPException) as exc:
+            await self._preflight(body=b"x" * (256 * 1024 + 1))
+
+        assert exc.value.status_code == 413
+        measurements.assert_not_called()
+
+    def test_route_declares_the_miner_rate_limit_dependency(self):
+        params = inspect.signature(tdx_preflight).parameters
+        assert isinstance(params["_"].default, DependsMarker)
+        assert params["_"].default.dependency.__name__ == "_rate_limit_miner"
+
+
 def _measurement(fingerprint=None, rc=False, name="8xh200", version="1.4.0"):
     return TeeMeasurementConfig(
         version=version,
@@ -604,7 +685,9 @@ class TestMeasurementsForFingerprint:
         rc is a property of the version, not the topology -- the caller decides which (version, rc)
         it needs, so an rc entry is offered, not hidden.
         """
-        mock_settings.tee_measurements = [_measurement(fingerprint="a" * 64, rc=True, version="1.5.0")]
+        mock_settings.tee_measurements = [
+            _measurement(fingerprint="a" * 64, rc=True, version="1.5.0")
+        ]
 
         assert measurements_for_fingerprint("a" * 64) == [{"version": "1.5.0", "rc": True}]
 
@@ -690,7 +773,8 @@ class TestStatusResolution:
     @pytest.mark.asyncio
     async def test_accepted_from_measured_at(self):
         """measured_at is the retention marker: once the reconciler stamps it the class is accepted,
-        for good and version-agnostically (rc counts, since the reconciler counts rc)."""
+        for good and version-agnostically (rc counts, since the reconciler counts rc).
+        """
         (fingerprint, status, _), _, _ = await self._resolve(
             on_file=True, measured_at="2026-08-01T00:00:00Z"
         )

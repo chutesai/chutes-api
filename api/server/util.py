@@ -272,7 +272,8 @@ def get_public_key_hash(cert: Certificate) -> str:
 
     # Serialize public key to DER format (matching openssl pkey -outform der)
     public_key_der = public_key.public_bytes(
-        encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
 
     # Compute SHA-256 hash
@@ -1221,7 +1222,9 @@ def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:
     try:
         if isinstance(ca_pubkey, ec.EllipticCurvePublicKey):
             ca_pubkey.verify(
-                leaf.signature, leaf.tbs_certificate_bytes, ec.ECDSA(leaf.signature_hash_algorithm)
+                leaf.signature,
+                leaf.tbs_certificate_bytes,
+                ec.ECDSA(leaf.signature_hash_algorithm),
             )
         else:
             ca_pubkey.verify(
@@ -1264,7 +1267,13 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
             json.dump(evidence, fp)
             fp.flush()
 
-            verify_gpus_cmd = ["chutes-nvattest", "--nonce", expected_nonce, "--evidence", fp.name]
+            verify_gpus_cmd = [
+                "chutes-nvattest",
+                "--nonce",
+                expected_nonce,
+                "--evidence",
+                fp.name,
+            ]
 
             # Capture the verifier's output (stderr merged into stdout) so the actual
             # failure reason is logged rather than discarded. communicate() drains the
@@ -1361,7 +1370,8 @@ async def host_profile_state(
     db: AsyncSession, fingerprint: str
 ) -> "tuple[bool, Optional[datetime]]":
     """``(on_file, measured_at)`` for a host class: whether a row exists and, if so, when it was
-    first measured (None while still pending). One query backing the retention status."""
+    first measured (None while still pending). One query backing the retention status.
+    """
     row = (
         await db.execute(
             select(HostProfileRecord.measured_at).where(
