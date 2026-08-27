@@ -1366,9 +1366,11 @@ def _rsa_pub_pem(private_key) -> str:
     )
 
 
-def _rsa_sign_hex(private_key, nonce: str) -> str:
-    """openssl-equivalent: RSA PKCS#1 v1.5 SHA-256 over the raw nonce, hex-encoded."""
-    return private_key.sign(nonce.encode(), padding.PKCS1v15(), hashes.SHA256()).hex()
+def _rsa_sign_b64(private_key, nonce: str) -> str:
+    """initramfs-equivalent: RSA PKCS#1 v1.5 SHA-256 over the raw nonce, base64-encoded
+    (the `openssl dgst -sha256 -sign ... | base64 -w0` the measured rc-sign hook emits)."""
+    sig = private_key.sign(nonce.encode(), padding.PKCS1v15(), hashes.SHA256())
+    return base64.b64encode(sig).decode()
 
 
 def _rc_config(*, authorized_hotkeys=(), authorized_signing_keys=(), rc=True, name="rc-8xh200"):
@@ -1401,7 +1403,7 @@ def test_authorize_rc_noop_for_published_even_with_signature():
     key = _rsa_key()
     config = _rc_config(rc=False, authorized_signing_keys=[_rsa_pub_pem(key)])
     nonce = generate_nonce()
-    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(key, nonce)))
+    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_b64(key, nonce)))
 
 
 # signed mode (boot/provision): RSA signature over the nonce vs authorized_signing_keys.
@@ -1412,7 +1414,7 @@ def test_authorize_rc_signed_success_with_valid_signature_over_fresh_nonce():
     config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(key)])
     nonce = generate_nonce()
     # Must not raise.
-    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(key, nonce)))
+    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_b64(key, nonce)))
 
 
 def test_authorize_rc_signed_success_when_any_authorized_key_matches():
@@ -1420,7 +1422,7 @@ def test_authorize_rc_signed_success_when_any_authorized_key_matches():
     k1, k2 = _rsa_key(), _rsa_key()
     config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(k1), _rsa_pub_pem(k2)])
     nonce = generate_nonce()
-    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(k2, nonce)))
+    authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_b64(k2, nonce)))
 
 
 def test_authorize_rc_signed_rejects_unauthorized_key():
@@ -1430,7 +1432,7 @@ def test_authorize_rc_signed_rejects_unauthorized_key():
     nonce = generate_nonce()
     with pytest.raises(MeasurementMismatchError):
         authorize_rc_measurement(
-            config, nonce, AttestationAuth.signed(_rsa_sign_hex(attacker, nonce))
+            config, nonce, AttestationAuth.signed(_rsa_sign_b64(attacker, nonce))
         )
 
 
@@ -1440,10 +1442,13 @@ def test_authorize_rc_signed_rejects_missing_signature():
         authorize_rc_measurement(config, generate_nonce(), AttestationAuth.signed(None))
 
 
-def test_authorize_rc_signed_rejects_malformed_signature_hex():
+def test_authorize_rc_signed_rejects_malformed_signature_base64():
     config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(_rsa_key())])
     with pytest.raises(MeasurementMismatchError):
-        authorize_rc_measurement(config, generate_nonce(), AttestationAuth.signed("not-hex-zzzz"))
+        # Not valid base64 (spaces / '!' are outside the alphabet) -> decode fails, gate rejects.
+        authorize_rc_measurement(
+            config, generate_nonce(), AttestationAuth.signed("!!! not base64 !!!")
+        )
 
 
 def test_authorize_rc_signed_rejects_stale_nonce_signature():
@@ -1451,7 +1456,7 @@ def test_authorize_rc_signed_rejects_stale_nonce_signature():
     what bounds replay once the single-use nonce is consumed."""
     key = _rsa_key()
     config = _rc_config(authorized_signing_keys=[_rsa_pub_pem(key)])
-    sig = _rsa_sign_hex(key, generate_nonce())  # signed over some already-issued nonce
+    sig = _rsa_sign_b64(key, generate_nonce())  # signed over some already-issued nonce
     with pytest.raises(MeasurementMismatchError):
         authorize_rc_measurement(config, generate_nonce(), AttestationAuth.signed(sig))
 
@@ -1462,7 +1467,7 @@ def test_authorize_rc_signed_rejects_empty_signing_key_allowlist():
     config = _rc_config(authorized_signing_keys=[])  # empty
     nonce = generate_nonce()
     with pytest.raises(MeasurementMismatchError):
-        authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_hex(key, nonce)))
+        authorize_rc_measurement(config, nonce, AttestationAuth.signed(_rsa_sign_b64(key, nonce)))
 
 
 # hotkey mode (register/runtime): the gate RE-VERIFIES the standard sr25519 request signature,
@@ -1489,7 +1494,11 @@ def _hotkey_auth(kp, *, nonce=None, purpose="tee", body_sha256=None, sign_with=N
     if tamper:
         signature = "00" + signature[2:]
     return AttestationAuth.hotkey_signed(
-        kp.ss58_address, signature=signature, nonce=nonce, body_sha256=body_sha256, purpose=purpose
+        kp.ss58_address,
+        signature=signature,
+        nonce=nonce,
+        body_sha256=body_sha256,
+        purpose=purpose,
     )
 
 
@@ -1554,7 +1563,9 @@ def test_authorize_rc_hotkey_rejects_expired_nonce():
 
 
 @pytest.mark.asyncio
-async def test_verify_quote_enforces_rc_gate_rejecting_unauthorized_signature(sample_boot_quote):
+async def test_verify_quote_enforces_rc_gate_rejecting_unauthorized_signature(
+    sample_boot_quote,
+):
     """A full verify_quote pass matching an rc measurement rejects a signature by an unauthorized
     key -- proving the gate is enforced in the one central place, not just at the call sites."""
     attacker = _rsa_key()
@@ -1573,7 +1584,7 @@ async def test_verify_quote_enforces_rc_gate_rejecting_unauthorized_signature(sa
                 sample_boot_quote,
                 "thenonce",
                 "certhash",
-                auth=AttestationAuth.signed(_rsa_sign_hex(attacker, "thenonce")),
+                auth=AttestationAuth.signed(_rsa_sign_b64(attacker, "thenonce")),
             )
 
 
@@ -1594,7 +1605,7 @@ async def test_verify_quote_allows_rc_with_authorized_signing_key(sample_boot_qu
             sample_boot_quote,
             "thenonce",
             "certhash",
-            auth=AttestationAuth.signed(_rsa_sign_hex(key, "thenonce")),
+            auth=AttestationAuth.signed(_rsa_sign_b64(key, "thenonce")),
         )
     assert result.is_valid is True
 
@@ -1670,7 +1681,11 @@ async def test_extract_attestation_auth_no_headers_fails_closed():
     to verify and fails closed."""
     dep = extract_attestation_auth()
     auth = await dep(
-        _auth_request(), operator_signature=None, hotkey=None, signature=None, nonce=None
+        _auth_request(),
+        operator_signature=None,
+        hotkey=None,
+        signature=None,
+        nonce=None,
     )
     assert auth.rc_signature is None
     assert auth.miner_hotkey is None

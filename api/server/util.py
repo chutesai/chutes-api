@@ -707,24 +707,28 @@ def _require_valid_hotkey_signature(config: TeeMeasurementConfig, auth: "Attesta
 def _require_valid_rc_signature(
     config: TeeMeasurementConfig, nonce: str, rc_signature: Optional[str]
 ) -> None:
-    """``rc_signature`` (hex) must be an RSA PKCS#1 v1.5 / SHA-256 signature over the raw ``nonce``
-    (UTF-8 bytes) by one of the measurement's ``authorized_signing_keys`` (operator RSA public
-    keys) -- the boot/provision proof.
+    """``rc_signature`` (base64) must be an RSA PKCS#1 v1.5 / SHA-256 signature over the raw
+    ``nonce`` (UTF-8 bytes) by one of the measurement's ``authorized_signing_keys`` (operator RSA
+    public keys) -- the boot/provision proof.
 
     This is the exact primitive the VM initramfs already uses (``openssl dgst -sha256 -sign``) to
     verify the signing-keys bundle, so no sr25519/substrate signer has to be staged into the
-    measured initramfs. Detached signature over the nonce only -- it never touches the TDX quote or
-    its REPORTDATA. Fail closed on a missing, malformed, or non-verifying signature; replay is
-    bounded by the single-use, IP/vm-bound nonce that already gates the endpoint.
+    measured initramfs. The initramfs emits the signature as base64 (``base64 -w0`` -- the one
+    encoder guaranteed staged there, unlike ``xxd``/``od``), matching how it already sends the TDX
+    quote, so this decodes base64 to stay in lockstep with the measured boot image. Detached
+    signature over the nonce only -- it never touches the TDX quote or its REPORTDATA. Fail closed
+    on a missing, malformed, or non-verifying signature; replay is bounded by the single-use,
+    IP/vm-bound nonce that already gates the endpoint.
     """
     prefix = f"rc measurement '{config.name}' v{config.version} rejected:"
     if not rc_signature:
         logger.warning(f"{prefix} no proof-of-possession signature provided.")
         raise MeasurementMismatchError()
     try:
-        signature_bytes = bytes.fromhex(rc_signature)
+        # binascii.Error (invalid base64) is a ValueError subclass, so this covers it too.
+        signature_bytes = base64.b64decode(rc_signature, validate=True)
     except (ValueError, TypeError):
-        logger.warning(f"{prefix} signature is not valid hex.")
+        logger.warning(f"{prefix} signature is not valid base64.")
         raise MeasurementMismatchError()
 
     message = nonce.encode()

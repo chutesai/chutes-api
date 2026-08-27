@@ -169,9 +169,10 @@ class AttestationAuth:
     trusts a caller-supplied "already authenticated" flag; it proves possession from the material
     carried here. Two modes, each matched to its environment and each self-verifying:
 
-      * ``signed`` (boot/provision, initramfs): ``rc_signature`` is a hex RSA PKCS#1 v1.5 / SHA-256
-        signature over the server-issued nonce; the gate verifies it against the measurement's
-        ``authorized_signing_keys``. No hotkey/sr25519 (unavailable in the measured initramfs).
+      * ``signed`` (boot/provision, initramfs): ``rc_signature`` is a base64 RSA PKCS#1 v1.5 /
+        SHA-256 signature over the server-issued nonce (base64 is the one encoder guaranteed in the
+        measured initramfs, matching how it sends the TDX quote); the gate verifies it against the
+        measurement's ``authorized_signing_keys``. No hotkey/sr25519 (unavailable in the initramfs).
       * ``hotkey`` (register/runtime, userspace): the miner's STANDARD request auth material --
         ``miner_hotkey`` + the ``X-Chutes-Signature`` over ``get_signing_message(hotkey, nonce,
         body_sha256, purpose)``. The gate re-runs that exact verification (``nonce_is_valid`` +
@@ -183,7 +184,7 @@ class AttestationAuth:
     closed. See ``api.server.util.authorize_rc_measurement``.
     """
 
-    # signed mode: hex RSA PKCS#1 v1.5 / SHA-256 signature over the nonce by an operator key.
+    # signed mode: base64 RSA PKCS#1 v1.5 / SHA-256 signature over the nonce by an operator key.
     rc_signature: Optional[str] = None
     # hotkey mode: the miner's standard request-auth material, re-verified by the gate.
     miner_hotkey: Optional[str] = None
