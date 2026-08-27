@@ -1410,17 +1410,17 @@ async def resolve_host_profile_status(
     db: AsyncSession,
     profile: HostProfile,
     hotkey: str,
-    dry_run: bool = False,
 ) -> "tuple[str, HostProfileStatus, bool]":
     """
-    Resolve a submitted host class into its retention ``status``, recording it unless a dry run.
+    Store a submitted host class and return its retention ``status``.
 
     ``status`` is the monotonic retention lifecycle (unknown -> pending -> accepted) read from the
-    profile row plus ``measured_at``; a real submission is always stored, so it never returns
-    UNKNOWN -- only ``dry_run`` can, because it writes nothing. Submission answers only which of the
-    three the class is in: the per-version ``{version, rc}`` list lives on GET, not here.
+    profile row plus ``measured_at``; a submission is always stored, so it never returns UNKNOWN --
+    the class is at least PENDING once recorded. Submission answers only which of the three the class
+    is in; whether a specific image can boot is POST /servers/tdx/preflight, and the per-version
+    ``{version, rc}`` list lives on GET -- neither is decided here.
 
-    A real submission stores even when a measurement already covers the fingerprint, if we hold no
+    The profile is stored even when a measurement already covers the fingerprint, if we hold no
     profile for it: a fingerprint cannot be inverted back to its topology inputs, so an accepted
     host class with no stored profile cannot have its RTMR0 regenerated after a firmware change.
     store_host_profile no-ops when the row already exists.
@@ -1428,11 +1428,7 @@ async def resolve_host_profile_status(
     Returns (fingerprint, status, stored).
     """
     fingerprint = profile.fingerprint
-
-    if not dry_run:
-        _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
-    else:
-        stored = False
+    _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
 
     on_file, measured_at = await host_profile_state(db, fingerprint)
     status = _host_profile_status(on_file, measured_at)

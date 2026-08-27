@@ -752,7 +752,7 @@ class TestMeasurementsForFingerprint:
 class TestStatusResolution:
     """The monotonic retention status (unknown/pending/accepted), read from the profile row."""
 
-    async def _resolve(self, dry_run=False, on_file=False, measured_at=None, stored=True):
+    async def _resolve(self, on_file=False, measured_at=None, stored=True):
         profile = _profile()
         db = MagicMock()
         with (
@@ -765,9 +765,7 @@ class TestStatusResolution:
                 AsyncMock(return_value=(profile.fingerprint, stored)),
             ) as store,
         ):
-            result = await resolve_host_profile_status(
-                db=db, profile=profile, hotkey="5Fhotkey", dry_run=dry_run
-            )
+            result = await resolve_host_profile_status(db=db, profile=profile, hotkey="5Fhotkey")
         return result, store, state
 
     @pytest.mark.asyncio
@@ -797,9 +795,9 @@ class TestStatusResolution:
         assert stored is False
 
     @pytest.mark.asyncio
-    async def test_a_real_submission_is_never_unknown(self):
-        """Without dry_run the profile gets parked, so pending is the floor."""
-        (_, status, _), store, _ = await self._resolve(dry_run=False, on_file=True)
+    async def test_a_real_submission_always_stores_and_is_never_unknown(self):
+        """A submission always parks the profile, so the row exists and PENDING is the floor."""
+        (_, status, _), store, _ = await self._resolve(on_file=True)
 
         assert status != HostProfileStatus.UNKNOWN
         store.assert_called_once()
@@ -819,37 +817,14 @@ class TestStatusResolution:
         assert stored is True
         store.assert_called_once()
 
-    @pytest.mark.asyncio
-    async def test_dry_run_unknown_when_absent(self):
-        (_, status, stored), store, _ = await self._resolve(dry_run=True, on_file=False)
+    def test_status_helper_reports_unknown_only_without_a_row(self):
+        """UNKNOWN is a status-derivation state (no row, no measurement); submission can't reach it
+        because it always creates the row, but the helper still distinguishes it."""
+        from api.server.util import _host_profile_status
 
-        assert status == HostProfileStatus.UNKNOWN
-        assert stored is False
-        store.assert_not_called()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("on_file", [True, False])
-    async def test_dry_run_never_writes(self, on_file):
-        _, store, _ = await self._resolve(dry_run=True, on_file=on_file)
-
-        store.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_dry_run_pending_when_on_file_only(self):
-        (_, status, stored), store, _ = await self._resolve(dry_run=True, on_file=True)
-
-        assert status == HostProfileStatus.PENDING
-        assert stored is False
-        store.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_dry_run_accepted_reports_without_writing(self):
-        (_, status, _), store, _ = await self._resolve(
-            dry_run=True, on_file=True, measured_at="2026-08-01T00:00:00Z"
-        )
-
-        assert status == HostProfileStatus.ACCEPTED
-        store.assert_not_called()
+        assert _host_profile_status(False, None) == HostProfileStatus.UNKNOWN
+        assert _host_profile_status(True, None) == HostProfileStatus.PENDING
+        assert _host_profile_status(True, "2026-08-01T00:00:00Z") == HostProfileStatus.ACCEPTED
 
     @pytest.mark.asyncio
     async def test_returns_the_model_fingerprint(self):

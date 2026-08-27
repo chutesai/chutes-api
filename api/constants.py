@@ -81,16 +81,17 @@ class HostProfileStatus(str, Enum):
 
     ``accepted`` is class-level and version-agnostic: a measurement was generated for this
     fingerprint at some point, so the class is on the attestable set and retained (its profile is
-    kept for RTMR0 regeneration). It is NOT the answer to "can version X launch here" -- that is the
-    per-version ``measurements`` list on GET /servers/tdx/host_profiles, which the caller reads
-    separately. Submission only reports which of the three the class is in.
+    kept for RTMR0 regeneration). It is NOT the answer to "can version X launch here" -- that is
+    POST /servers/tdx/preflight, which joins the caller's (version, rc) to the class's measurements.
+    Submission only reports which of the three the class is in.
     """
 
     # A measurement has been generated for this fingerprint at some point; retained from here on.
     ACCEPTED = "accepted"
     # On file, awaiting its first measurement generation.
     PENDING = "pending"
-    # Never submitted -- only reachable via dry_run, since a real submission is always recorded.
+    # Never submitted. A status-derivation state only: no endpoint returns it, since a submission
+    # always records the class (>= PENDING). Kept so the derivation can distinguish "no row".
     UNKNOWN = "unknown"
 
 
