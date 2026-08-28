@@ -709,7 +709,7 @@ async def test_provision_threads_hotkey_and_signature_to_verify_quote(mock_db_se
     from api.server.service import process_provision_request
     from api.server.schemas import ProvisionRequest, StorageProvisionResult
 
-    body = ProvisionRequest(quote="ignored", volumes=["storage"])
+    body = ProvisionRequest(quote="ignored", volumes=["storage", "tdx-cache"])
     expected = StorageProvisionResult(volumes={}, confirm_nonce="cn", k3s_encryption_key="k")
     mock_vq = AsyncMock()
 
@@ -718,7 +718,10 @@ async def test_provision_threads_hotkey_and_signature_to_verify_quote(mock_db_se
         patch("api.server.service.verify_quote", mock_vq),
         patch("api.server.service.get_public_key_hash", return_value="hash"),
         patch("api.server.service.record_vm_ca_identity", new=AsyncMock()),
-        patch("api.server.service._issue_storage_secrets", new=AsyncMock(return_value=expected)),
+        patch(
+            "api.server.service._issue_storage_secrets",
+            new=AsyncMock(return_value=expected),
+        ),
     ):
         await process_provision_request(
             mock_db_session,
@@ -735,16 +738,102 @@ async def test_provision_threads_hotkey_and_signature_to_verify_quote(mock_db_se
     assert kwargs["auth"].miner_hotkey is None
 
 
+def test_provision_request_schema_accepts_empty_volumes():
+    """The schema accepts empty volumes (the rc-vs-prod gate is enforced later, in
+    process_provision_request, once the measurement is known)."""
+    from api.server.schemas import ProvisionRequest
+
+    assert ProvisionRequest(quote="q", volumes=[]).volumes == []
+
+
+def test_provision_request_still_rejects_unsupported_volume_names():
+    from api.server.schemas import ProvisionRequest
+
+    with pytest.raises(ValueError, match="Invalid volume name"):
+        ProvisionRequest(quote="q", volumes=["not-a-volume"])
+
+
+@pytest.mark.asyncio
+async def test_provision_with_empty_volumes_allowed_only_for_rc_measurement(
+    mock_db_session,
+):
+    """CA-registration-only path: empty volumes is allowed on an RC/debug measurement (no LUKS) —
+    the quote is still verified, the CA recorded, and secrets issued; rotation is skipped."""
+    from api.server.service import process_provision_request
+    from api.server.schemas import ProvisionRequest, StorageProvisionResult
+
+    body = ProvisionRequest(quote="ignored", volumes=[])
+    record = AsyncMock()
+    issue = AsyncMock(
+        return_value=StorageProvisionResult(volumes={}, confirm_nonce="cn", k3s_encryption_key="k")
+    )
+    with (
+        patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=Mock()),
+        patch("api.server.service.verify_quote", new=AsyncMock()),
+        patch("api.server.service.get_public_key_hash", return_value="hash"),
+        patch(
+            "api.server.service.get_matching_measurement_config",
+            return_value=Mock(version="1.4.0", rc=True),
+        ),
+        patch("api.server.service.record_vm_ca_identity", new=record),
+        patch("api.server.service._issue_storage_secrets", new=issue),
+    ):
+        result = await process_provision_request(
+            mock_db_session, "5Hk", "debug-vm", body, "quote-nonce", Mock()
+        )
+
+    record.assert_awaited_once()  # CA recorded even with no volumes to rotate
+    assert issue.await_args.args[-1] == []  # empty volume list flows through
+    assert result.k3s_encryption_key == "k"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_volumes", [[], ["storage"], ["tdx-cache"]])
+async def test_provision_rejects_incomplete_volumes_on_production_measurement(
+    mock_db_session, bad_volumes
+):
+    """A production (non-rc) image is LUKS-encrypted and must rotate EVERY volume on each provision,
+    so anything short of the full set — empty OR a partial subset — is rejected (422), and it fails
+    BEFORE the CA is recorded or any secret issued."""
+    from api.server.service import process_provision_request
+    from api.server.schemas import ProvisionRequest
+    from api.server.exceptions import AttestationError
+
+    body = ProvisionRequest(quote="ignored", volumes=bad_volumes)
+    record = AsyncMock()
+    issue = AsyncMock()
+    with (
+        patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=Mock()),
+        patch("api.server.service.verify_quote", new=AsyncMock()),
+        patch("api.server.service.get_public_key_hash", return_value="hash"),
+        patch(
+            "api.server.service.get_matching_measurement_config",
+            return_value=Mock(version="1.4.0", rc=False),
+        ),
+        patch("api.server.service.record_vm_ca_identity", new=record),
+        patch("api.server.service._issue_storage_secrets", new=issue),
+    ):
+        with pytest.raises(AttestationError) as exc:
+            await process_provision_request(
+                mock_db_session, "5Hk", "prod-vm", body, "quote-nonce", Mock()
+            )
+
+    assert exc.value.http_status == 422
+    record.assert_not_awaited()  # fails fast — no CA recorded
+    issue.assert_not_awaited()
+
+
 @pytest.mark.asyncio
 async def test_provision_propagates_rc_rejection_before_recording_ca(mock_db_session):
     from api.server.service import process_provision_request
     from api.server.schemas import ProvisionRequest
 
-    body = ProvisionRequest(quote="ignored", volumes=["storage"])
+    body = ProvisionRequest(quote="ignored", volumes=["storage", "tdx-cache"])
     with (
         patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=Mock()),
         patch(
-            "api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())
+            "api.server.service.verify_quote",
+            new=AsyncMock(side_effect=MeasurementMismatchError()),
         ),
         patch("api.server.service.get_public_key_hash", return_value="hash"),
         patch("api.server.service.record_vm_ca_identity", new=AsyncMock()) as mock_record,
@@ -775,7 +864,10 @@ async def test_verify_server_forwards_authenticated_auth_to_verify_quote(
     mock_client.get_server_evidence = AsyncMock(return_value=(sample_runtime_quote, [], Mock()))
 
     with (
-        patch("api.server.service.TeeServerClient.create", new=AsyncMock(return_value=mock_client)),
+        patch(
+            "api.server.service.TeeServerClient.create",
+            new=AsyncMock(return_value=mock_client),
+        ),
         patch("api.server.service.verify_quote", mock_vq),
         patch("api.server.service.get_public_key_hash", return_value="hash"),
         patch("api.server.service.get_boot_record_ca", new=AsyncMock(return_value=None)),
@@ -797,9 +889,13 @@ async def test_verify_server_propagates_rc_rejection(
     mock_client.get_server_evidence = AsyncMock(return_value=(sample_runtime_quote, [], Mock()))
 
     with (
-        patch("api.server.service.TeeServerClient.create", new=AsyncMock(return_value=mock_client)),
         patch(
-            "api.server.service.verify_quote", new=AsyncMock(side_effect=MeasurementMismatchError())
+            "api.server.service.TeeServerClient.create",
+            new=AsyncMock(return_value=mock_client),
+        ),
+        patch(
+            "api.server.service.verify_quote",
+            new=AsyncMock(side_effect=MeasurementMismatchError()),
         ),
         patch("api.server.service.get_public_key_hash", return_value="hash"),
         patch("api.server.service.get_boot_record_ca", new=AsyncMock(return_value=None)),
@@ -826,7 +922,10 @@ async def test_runtime_attestation_forwards_authenticated_auth_to_verify_quote(
     mock_db_session.refresh.side_effect = lambda o: setattr(o, "attestation_id", "r1")
     with (
         patch("api.server.service.check_server_ownership", return_value=sample_server),
-        patch("api.server.service.RuntimeTdxQuote.from_base64", return_value=sample_runtime_quote),
+        patch(
+            "api.server.service.RuntimeTdxQuote.from_base64",
+            return_value=sample_runtime_quote,
+        ),
         patch("api.server.service.verify_quote", mock_vq),
     ):
         await process_runtime_attestation(
@@ -1657,17 +1756,20 @@ async def test_tee_server_client_falls_back_to_validator_keypair(sample_server):
     mock_validator_keypair.ss58_address = "5ValidatorSS58"
     mock_validator_keypair.sign = Mock(return_value=b"\x00" * 64)
 
-    mock_result = Mock()
-    mock_result.scalar_one_or_none.return_value = None  # no vm_auth_key in DB
+    # version unset -> create() queries vm_auth_key then the boot record; both empty here.
+    mock_no_key = Mock()
+    mock_no_key.scalar_one_or_none.return_value = None
+    mock_no_boot = Mock()
+    mock_no_boot.scalar_one_or_none.return_value = None
     mock_db = AsyncMock(spec=AsyncSession)
-    mock_db.execute.return_value = mock_result
+    mock_db.execute.side_effect = [mock_no_key, mock_no_boot]
 
     with patch("api.server.client.settings") as mock_settings:
         mock_settings.validator_keypair = mock_validator_keypair
         client = await TeeServerClient.create(mock_db, sample_server)
 
     assert client._keypair is mock_validator_keypair
-    mock_db.execute.assert_called_once()
+    assert mock_db.execute.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -1701,12 +1803,73 @@ async def test_tee_server_client_legacy_version_ignores_vm_key(sample_server):
 
 
 @pytest.mark.asyncio
+async def test_tee_server_client_uses_vm_key_when_version_unset(sample_server):
+    """Unset server.version (registration) resolves via the boot record: 1.4.0 -> ephemeral key."""
+    from api.server.client import TeeServerClient
+    import secrets as _secrets
+    from bittensor_wallet.keypair import Keypair
+
+    seed_hex = "0x" + _secrets.token_hex(32)
+    real_keypair = Keypair.create_from_seed(seed_hex)
+
+    sample_server.version = None  # not yet populated during advertise
+    vm_auth_key = VmAuthKey(
+        miner_hotkey=sample_server.miner_hotkey,
+        vm_name=sample_server.name,
+        auth_seed="encrypted_seed_placeholder",
+    )
+    mock_key = Mock()
+    mock_key.scalar_one_or_none.return_value = vm_auth_key
+    mock_boot = Mock()
+    mock_boot.scalar_one_or_none.return_value = "1.4.0"  # latest boot record reports 1.4.0
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute.side_effect = [mock_key, mock_boot]
+
+    with patch("api.server.client.decrypt_passphrase", return_value=seed_hex):
+        client = await TeeServerClient.create(mock_db, sample_server)
+
+    # Signs with the per-VM ephemeral SS58, not the validator key -> no 401.
+    assert client._keypair.ss58_address == real_keypair.ss58_address
+    headers, _ = client._sign_request(purpose="attest")
+    assert headers["X-Chutes-Hotkey"] == real_keypair.ss58_address
+
+
+@pytest.mark.asyncio
+async def test_tee_server_client_downgraded_vm_ignores_stale_row(sample_server):
+    """Downgraded VM (stale row, but boot record is 1.3.x) uses the validator key, not the row."""
+    from api.server.client import TeeServerClient
+
+    mock_validator_keypair = Mock()
+    mock_validator_keypair.ss58_address = "5ValidatorSS58"
+
+    sample_server.version = None
+    stale_row = VmAuthKey(
+        miner_hotkey=sample_server.miner_hotkey,
+        vm_name=sample_server.name,
+        auth_seed="stale_seed_from_1_4_0_life",
+    )
+    mock_key = Mock()
+    mock_key.scalar_one_or_none.return_value = stale_row
+    mock_boot = Mock()
+    mock_boot.scalar_one_or_none.return_value = "1.3.1"
+    mock_db = AsyncMock(spec=AsyncSession)
+    mock_db.execute.side_effect = [mock_key, mock_boot]
+
+    with patch("api.server.client.settings") as mock_settings:
+        mock_settings.validator_keypair = mock_validator_keypair
+        client = await TeeServerClient.create(mock_db, sample_server)
+
+    assert client._keypair is mock_validator_keypair
+
+
+@pytest.mark.asyncio
 async def test_tee_server_client_always_reads_db(sample_server):
     """TeeServerClient.create() always reads from DB (no in-process cache)."""
     from api.server.client import TeeServerClient
     import secrets as _secrets
 
     seed_hex = "0x" + _secrets.token_hex(32)
+    sample_server.version = "1.4.0"  # set -> one query per call (no boot-record fallback)
     vm_auth_key = VmAuthKey(
         miner_hotkey=sample_server.miner_hotkey,
         vm_name=sample_server.name,
@@ -2083,7 +2246,10 @@ async def test_get_root_passphrase_for_boot_first_boot_no_prior_state(
     mock_db_session, mock_settings
 ):
     """first_boot=True with no existing root key: returns default passphrase + rotation fields."""
-    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
+    mock_settings.luks_passphrases = {
+        "1.3.0": "build-time-default",
+        "1.4.0": "build-time-default",
+    }
     vm_config = _make_vm_config({})  # no root key stored yet
 
     with (
@@ -2119,7 +2285,10 @@ async def test_get_root_passphrase_for_boot_first_boot_with_prior_root(
 
     old_encrypted = encrypt_passphrase("old-rotated-pass")
     vm_config = _make_vm_config({"root": old_encrypted})
-    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
+    mock_settings.luks_passphrases = {
+        "1.3.0": "build-time-default",
+        "1.4.0": "build-time-default",
+    }
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -2149,7 +2318,10 @@ async def test_get_root_passphrase_for_boot_normal_boot_stored_root(mock_db_sess
 
     stored_pass = "current-rotated-pass"
     vm_config = _make_vm_config({"root": encrypt_passphrase(stored_pass)})
-    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
+    mock_settings.luks_passphrases = {
+        "1.3.0": "build-time-default",
+        "1.4.0": "build-time-default",
+    }
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -2178,7 +2350,10 @@ async def test_get_root_passphrase_for_boot_normal_boot_no_stored_root(
 ):
     """first_boot=False with no stored root key: falls back to version default + rotation."""
     vm_config = _make_vm_config({})
-    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
+    mock_settings.luks_passphrases = {
+        "1.3.0": "build-time-default",
+        "1.4.0": "build-time-default",
+    }
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -2204,7 +2379,10 @@ async def test_get_root_passphrase_for_boot_normal_boot_no_stored_root(
 async def test_get_root_passphrase_for_boot_pre_rotation_version(mock_db_session, mock_settings):
     """VMs below 1.4.0 get no root_next or root_confirm_nonce."""
     vm_config = _make_vm_config({})
-    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
+    mock_settings.luks_passphrases = {
+        "1.3.0": "build-time-default",
+        "1.4.0": "build-time-default",
+    }
 
     with patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)):
         key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
@@ -2229,7 +2407,10 @@ async def test_get_root_passphrase_for_boot_discards_stale_pending(mock_db_sessi
     stale_enc = encrypt_passphrase("stale-pending")
     current_enc = encrypt_passphrase("current-root")
     vm_config = _make_vm_config({"root": current_enc, "pending_root": stale_enc})
-    mock_settings.luks_passphrases = {"1.3.0": "build-time-default", "1.4.0": "build-time-default"}
+    mock_settings.luks_passphrases = {
+        "1.3.0": "build-time-default",
+        "1.4.0": "build-time-default",
+    }
 
     with (
         patch("api.server.util._get_vm_cache_config", AsyncMock(return_value=vm_config)),
@@ -2438,7 +2619,10 @@ async def test_get_chute_instances_evidence_splits_success_and_failure(mock_db_s
     chute_result = Mock()
     chute_result.scalar_one_or_none = Mock(return_value=chute)
     instances_result = Mock()
-    instances_result.unique.return_value.scalars.return_value.all.return_value = [ok, bad]
+    instances_result.unique.return_value.scalars.return_value.all.return_value = [
+        ok,
+        bad,
+    ]
     mock_db_session.execute = AsyncMock(side_effect=[chute_result, instances_result])
 
     def _evidence(deployment_id, nonce=None):

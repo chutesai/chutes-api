@@ -348,7 +348,9 @@ async def test_provision_records_ca_and_returns_secrets():
         patch("api.server.service.decrypt_passphrase", return_value="k3s-key"),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = ProvisionRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
+        body = ProvisionRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
         result = await process_provision_request(db, "hk", "vm1", body, "nonce123", ca_cert)
 
     # The CA + provision quote are written onto the VM's current boot record.
@@ -396,7 +398,9 @@ async def test_provision_without_server_records_ca_in_boot_record():
         ),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = ProvisionRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
+        body = ProvisionRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
         # No ServerNotFoundError — provision succeeds pre-registration.
         result = await process_provision_request(db, "hk", "vm1", body, "nonce", ca_cert)
 
@@ -425,7 +429,9 @@ async def test_provision_no_matching_boot_record_fails_closed():
         ),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = ProvisionRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
+        body = ProvisionRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
         with pytest.raises(AttestationError):
             await process_provision_request(db, "hk", "vm1", body, "stale-nonce", ca_cert)
 
@@ -526,7 +532,9 @@ async def test_luks_attest_records_no_ca():
         patch("api.server.service.decrypt_passphrase", return_value="k3s-key"),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = LuksAttestRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
+        body = LuksAttestRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
         result = await process_luks_attest_request(db, "hk", "vm1", body, "nonce", "cert-hash")
 
     # The legacy path never looks up the server to record a CA (that only happens in /provision).

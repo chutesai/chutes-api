@@ -299,8 +299,9 @@ class ProvisionRequest(BaseModel):
     @field_validator("volumes")
     @classmethod
     def validate_volumes(cls, v: List[str]) -> List[str]:
-        if not v:
-            raise ValueError("volumes must be non-empty")
+        # Empty is allowed on purpose (CA-registration-only, e.g. debug VMs): it passes straight
+        # through and skips volume rotation while the quote is still verified and the CA recorded.
+        # Only reject UNSUPPORTED names.
         invalid = [vol for vol in v if vol not in SUPPORTED_LUKS_VOLUMES]
         if invalid:
             raise ValueError(

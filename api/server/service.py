@@ -29,6 +29,7 @@ from api.constants import (
     HOTKEY_HEADER,
     LUKS_STORAGE_VOLUME,
     MIN_VM_AUTH_KEY_VERSION,
+    SUPPORTED_LUKS_VOLUMES,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
@@ -787,7 +788,8 @@ async def verify_server(
         boot_ca_pem = await get_boot_record_ca(db, miner_hotkey, server.name)
         if boot_ca_pem:
             verify_leaf_cert_signed_by_ca(
-                cert, crypto_x509.load_pem_x509_certificate(boot_ca_pem.encode(), default_backend())
+                cert,
+                crypto_x509.load_pem_x509_certificate(boot_ca_pem.encode(), default_backend()),
             )
 
         expected_cert_hash = get_public_key_hash(cert)
@@ -1285,8 +1287,28 @@ async def process_provision_request(
     await verify_quote(quote, quote_nonce, get_public_key_hash(client_cert), auth=auth)
 
     measurement_config = get_matching_measurement_config(quote)
+
+    # A production (non-rc) image is always LUKS-encrypted and rotates EVERY volume on every
+    # provision (the prod initramfs sends the full set unconditionally), so require exactly that.
+    # An rc/debug image has no LUKS, so it may send an empty list (CA registration only) or any
+    # subset. The request schema can't enforce this because the measurement isn't known until the
+    # quote verifies, so the invariant lives here — after the rc gate, before recording the CA or
+    # issuing any secrets.
+    if not measurement_config.rc and set(body.volumes) != set(SUPPORTED_LUKS_VOLUMES):
+        raise AttestationError(
+            "A production VM must rotate all LUKS volumes on every provision; expected "
+            f"{sorted(SUPPORTED_LUKS_VOLUMES)}, got {sorted(set(body.volumes))}.",
+            status_code=422,
+        )
+
     await record_vm_ca_identity(
-        db, hotkey, vm_name, client_cert, body.quote, measurement_config.version, quote_nonce
+        db,
+        hotkey,
+        vm_name,
+        client_cert,
+        body.quote,
+        measurement_config.version,
+        quote_nonce,
     )
 
     return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
