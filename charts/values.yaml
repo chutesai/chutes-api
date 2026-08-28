@@ -856,7 +856,13 @@ registryProxy:
   config:
     workerProcesses: 64
     workerConnections: 4096
-    # tokenRealm: override the Www-Authenticate Bearer realm URL (default: https://registry.chutes.ai/v2/_token)
+    # tokenRealm: Www-Authenticate Bearer realm advertised to LEGACY clients only, i.e. those
+    # presenting no mTLS client cert (they reach us through the miner registry proxy). In prod
+    # this is the miner-proxy URL, http://<validator-hotkey>.localregistry.chutes.ai:30500/v2/_token.
+    # mTLS VMs (client cert present) are always sent to this proxy's own token endpoint,
+    # https://registry.chutes.ai/v2/_token, and ignore this value entirely -- see the
+    # $token_realm map in registry-proxy-cm.yaml.
+    # (default: https://registry.chutes.ai/v2/_token)
   replicaCount: 1
   nodeSelector: {}
   hpa:

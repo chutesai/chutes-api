@@ -23,6 +23,13 @@ data:
             "registry.chutes.ai"       "${DEPOT_REGISTRY}";
             default                    "${DEPOT_REGISTRY}";
         }
+        # Token realm follows the same cert-vs-hotkey split as /auth: mTLS VMs (cert present)
+        # get a token from the registry itself; legacy VMs (no cert, arriving via the miner
+        # proxy) keep the existing miner-proxy realm unchanged.
+        map $ssl_client_escaped_cert $token_realm {
+            default "https://registry.chutes.ai/v2/_token";
+            ""      "{{ .Values.registryProxy.config.tokenRealm | default "https://registry.chutes.ai/v2/_token" }}";
+        }
         log_format proxylog '$remote_addr\t$http_x_chutes_hotkey\t[$time_local] ($request_time) '
                     '"$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $content_length $http_host';
 
@@ -85,7 +92,7 @@ data:
                 proxy_hide_header Www-Authenticate;
                 proxy_hide_header Docker-Distribution-Api-Version;
                 proxy_hide_header X-Registry-Supports-Signatures;
-                add_header Www-Authenticate 'Bearer realm="{{ .Values.registryProxy.config.tokenRealm | default "https://registry.chutes.ai/v2/_token" }}",service="registry.chutes.ai"' always;
+                add_header Www-Authenticate 'Bearer realm="$token_realm",service="registry.chutes.ai"' always;
 
                 proxy_redirect https://${DEPOT_REGISTRY}/ https://registry.chutes.ai/;
 
