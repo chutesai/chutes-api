@@ -25,8 +25,9 @@ data:
         }
         # Token realm follows the same cert-vs-hotkey split as /auth: mTLS VMs (cert present)
         # get a token from the registry itself; legacy VMs (no cert, arriving via the miner
-        # proxy) keep the existing miner-proxy realm unchanged.
-        map $ssl_client_escaped_cert $token_realm {
+        # proxy) keep the existing miner-proxy realm unchanged. The cert is forwarded by the
+        # front-end LB as X-Client-Cert, so we key off that header.
+        map $http_x_client_cert $token_realm {
             default "https://registry.chutes.ai/v2/_token";
             ""      "{{ .Values.registryProxy.config.tokenRealm | default "https://registry.chutes.ai/v2/_token" }}";
         }
@@ -38,20 +39,20 @@ data:
             sendfile on;
             tcp_nopush on;
             listen 443 ssl;
-            # Registry auth resolves the VM by its source IP ($remote_addr -> X-Real-IP).
-            # registry.chutes.ai points straight at this Service's GCP L4 load balancer, which
-            # preserves the real client IP only when the Service uses externalTrafficPolicy:
-            # Local (set in registry-proxy-svc.yaml). Under the default Cluster policy the
-            # source is SNAT'd to a node IP and every VM falls back to legacy hotkey auth.
+            # Registry auth resolves the VM by its source IP. Behind the front-end LB, recover the
+            # real client IP it forwards as X-Real-IP (internalCidr covers the SNAT'd node IP under
+            # externalTrafficPolicy: Cluster; realIpFrom is the front-end sources).
+            set_real_ip_from {{ .Values.networkPolicies.internalCidr }};
+            {{- range .Values.registryProxy.realIpFrom }}
+            set_real_ip_from {{ . }};
+            {{- end }}
+            real_ip_header X-Real-IP;
             ssl_certificate     /etc/nginx/ssl/tls.crt;
             ssl_certificate_key /etc/nginx/ssl/tls.key;
             ssl_protocols       TLSv1.2 TLSv1.3;
             ssl_ciphers HIGH:!aNULL:!MD5;
             ssl_prefer_server_ciphers on;
-            # Request the VM's mTLS client cert but do NOT chain-validate it here: the per-VM
-            # CA is registered dynamically each boot, and the API verifies the presented leaf
-            # against the stored vm_root_ca_cert. Legacy VMs present no cert -> empty
-            # $ssl_client_escaped_cert -> the API falls back to hotkey auth. Non-breaking.
+            # Vestigial: the front-end does the VM mTLS now. Kept harmless.
             ssl_verify_client optional_no_ca;
 
             # Block pulls of intermediate build tags (never externally accessible).
@@ -112,9 +113,9 @@ data:
                 proxy_set_header X-Chutes-Hotkey $http_x_chutes_hotkey;
                 proxy_set_header X-Chutes-Signature $http_x_chutes_signature;
                 proxy_set_header X-Chutes-Nonce $http_x_chutes_nonce;
-                # Forward the cert negotiated in the TLS handshake (NOT a client-supplied
-                # header, which would be spoofable). Empty for legacy VMs that present none.
-                proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
+                # Forward the cert the front-end LB set (it overwrites any client value, so it is
+                # not spoofable). Empty for legacy VMs that present none.
+                proxy_set_header X-Client-Cert $http_x_client_cert;
                 proxy_set_header X-Client-Verify $ssl_client_verify;
                 # Prove this request arrived via the registry proxy so the API can trust
                 # X-Client-Cert / X-Real-IP. Empty unless proxyAuthSecret is configured.

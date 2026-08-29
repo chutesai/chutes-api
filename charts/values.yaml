@@ -853,6 +853,12 @@ registryProxy:
   proxyAuthSecret:
     name: ""
     key: "secret"
+  # Front-end nginx LB source IPs to trust for X-Real-IP recovery (set_real_ip_from). The
+  # front-end terminates the VM TLS and forwards X-Client-Cert + X-Real-IP; these are the same
+  # LBs that front tdx-attestation.chutes.ai (attestationProxy.realIpFrom). internalCidr (SNAT'd
+  # node IPs under externalTrafficPolicy: Cluster) is always trusted in addition. Empty = trust
+  # only internalCidr.
+  realIpFrom: []
   config:
     workerProcesses: 64
     workerConnections: 4096
@@ -893,6 +899,9 @@ registryProxy:
     # Reserved static IP to pin the LB across reconciles (set in the overlay once the address
     # is reserved in GCP). Empty = let GKE assign an ephemeral IP.
     loadBalancerIP: ""
+    # Optional: restrict the LB to the front-end proxy egress IPs (defense in depth for the
+    # forwarded-header trust). Empty = open (rely on the API's vm_root_ca_cert verification).
+    loadBalancerSourceRanges: []
 
 # autostaker runs as a CronJob (one-shot api/autostaker.py per tick), not a long-running
 # worker. validatorSs58 left empty here -> cronjobEnv falls back to the validator-credentials
