@@ -20,6 +20,11 @@ spec:
       {{- include "registryProxy.labels" . | nindent 6 }}
   template:
     metadata:
+      annotations:
+        # nginx.conf is rendered by the render-config init container at pod start, so a
+        # ConfigMap-only change syncs green in Argo and the running pods keep serving the old
+        # config forever. Roll the pods when the template changes.
+        checksum/config: {{ include (print $.Template.BasePath "/registry-proxy-cm.yaml") . | sha256sum }}
       labels:
         {{- include "registryProxy.labels" . | nindent 8 }}
     spec:

@@ -853,12 +853,6 @@ registryProxy:
   proxyAuthSecret:
     name: ""
     key: "secret"
-  # Front-end nginx LB source IPs to trust for X-Real-IP recovery (set_real_ip_from). The
-  # front-end terminates the VM TLS and forwards X-Client-Cert + X-Real-IP; these are the same
-  # LBs that front tdx-attestation.chutes.ai (attestationProxy.realIpFrom). internalCidr (SNAT'd
-  # node IPs under externalTrafficPolicy: Cluster) is always trusted in addition. Empty = trust
-  # only internalCidr.
-  realIpFrom: []
   config:
     workerProcesses: 64
     workerConnections: 4096
@@ -869,6 +863,20 @@ registryProxy:
     # https://registry.chutes.ai/v2/_token, and ignore this value entirely -- see the
     # $token_realm map in registry-proxy-cm.yaml.
     # (default: https://registry.chutes.ai/v2/_token)
+    # Per-IP rate limits. These replace the Cloud Armor throttle that fronted the L7 LB
+    # (500 req/60s per IP); once registry.chutes.ai points straight at this Service's LB there
+    # is no L7 in front. Set permissive on purpose -- throttling the fleet's image pulls is a
+    # worse outcome than the attack these bound. Tune from access-log percentiles.
+    rateLimit:
+      all:
+        rate: "20r/s"
+        burst: 200
+      # The token endpoint is the only location with auth_request, so each request there costs
+      # an API call. Tighter budget than the general one.
+      token:
+        rate: "5r/s"
+        burst: 50
+      connPerIp: 64
   replicaCount: 1
   nodeSelector: {}
   hpa:
@@ -879,6 +887,20 @@ registryProxy:
 
   affinity:
     nodeAffinity: {}
+    # Spread replicas across nodes: with externalTrafficPolicy: Local the LB only routes to nodes
+    # running a pod, so bunching on one node means uneven load and a blackhole if that node fails.
+    # preferred (not required) so it still schedules when nodes are short.
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - registry-proxy
+          topologyKey: kubernetes.io/hostname
   tolerations: []
   resources:
     requests:
