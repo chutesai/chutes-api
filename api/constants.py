@@ -33,6 +33,12 @@ NONCE_HEADER = "X-Chutes-Nonce"
 # signed proof from the sr25519 request signature by header presence alone (see
 # extract_attestation_auth / authorize_rc_measurement).
 OPERATOR_SIGNATURE_HEADER = "X-Operator-Signature"
+# Purpose the attestation proxy signs into its runtime hotkey proof-of-possession
+# ({ss58}:{nonce}:{purpose}). Reuses the existing TEE request-auth purpose ("tee") that the TEE
+# endpoints already verify hotkey-mode rc proofs under (extract_attestation_auth(purpose="tee")),
+# so the proxy's signature and this gate share one convention. Must match
+# attestation_proxy.signing.RC_ATTESTATION_PURPOSE.
+RC_ATTESTATION_PURPOSE = "tee"
 AUTHORIZATION_HEADER = "Authorization"
 PURPOSE_HEADER = "X-Chutes-Purpose"
 MINER_HEADER = "X-Chutes-Miner"

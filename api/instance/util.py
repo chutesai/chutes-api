@@ -22,6 +22,7 @@ from api.constants import (
     CASCADE_FAILURE_THRESHOLD,
     CASCADE_DETECTION_DELAY,
     CASCADE_PENDING_TTL,
+    RC_ATTESTATION_PURPOSE,
 )
 
 from api.chute.schemas import Chute
@@ -44,7 +45,7 @@ from sqlalchemy.orm import aliased, joinedload
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from api.server.client import TeeServerClient
-from api.server.schemas import Server
+from api.server.schemas import Server, AttestationAuth
 from api.node.schemas import Node
 from api.server.exceptions import AttestationError, GetEvidenceError
 from api.server.util import verify_quote, verify_gpu_evidence
@@ -1075,6 +1076,21 @@ async def verify_tee_chute(
         evidence = await client.get_chute_evidence(deployment_id)
         expected_cert_hash = get_public_key_hash(evidence.cert)
 
+        # Runtime rc proof-of-possession: the attestation proxy attaches a miner-hotkey signature
+        # when a seed is configured. Thread it into verify_quote's rc gate. None when the proxy
+        # doesn't sign -> the gate is a no-op for published measurements and fails closed for rc.
+        rc_auth = (
+            AttestationAuth.hotkey_signed(
+                evidence.hotkey,
+                signature=evidence.hotkey_signature,
+                nonce=evidence.hotkey_nonce,
+                body_sha256=None,
+                purpose=RC_ATTESTATION_PURPOSE,
+            )
+            if evidence.hotkey
+            else None
+        )
+
         # For chutes >= 0.6.0, report_data and GPU evidence use sha256(nonce + e2e_pubkey); else raw nonce
         if semcomp(instance.chutes_version or "0.0.0", "0.6.0") >= 0:
             e2e_pubkey = (instance.extra or {}).get("e2e_pubkey")
@@ -1086,10 +1102,14 @@ async def verify_tee_chute(
             expected_report_data = (
                 hashlib.sha256((expected_nonce + e2e_pubkey).encode()).hexdigest().lower()
             )
-            await verify_quote(evidence.quote, expected_report_data, expected_cert_hash)
+            await verify_quote(
+                evidence.quote, expected_report_data, expected_cert_hash, auth=rc_auth
+            )
             await verify_gpu_evidence(evidence.gpu_evidence, expected_report_data)
         else:
-            await verify_quote(evidence.quote, expected_nonce, expected_cert_hash)
+            await verify_quote(
+                evidence.quote, expected_nonce, expected_cert_hash, auth=rc_auth
+            )
             await verify_gpu_evidence(evidence.gpu_evidence, expected_nonce)
 
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")

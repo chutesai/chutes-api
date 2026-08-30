@@ -36,6 +36,8 @@ class ChuteEvidenceResponse:
     quote, gpu_evidence, and cert are always present.
     signature and attested_body are set only when the attestation proxy returns
     an X-Signature header (proxy >= 0.2.0); both are None on older proxies.
+    hotkey/hotkey_nonce/hotkey_signature are the miner-hotkey rc proof-of-possession the
+    proxy attaches when a seed is configured; all None on proxies/VMs that don't sign.
     """
 
     quote: TdxQuote
@@ -43,6 +45,9 @@ class ChuteEvidenceResponse:
     cert: Certificate
     signature: Optional[str] = None
     attested_body: Optional[str] = None
+    hotkey: Optional[str] = None
+    hotkey_nonce: Optional[str] = None
+    hotkey_signature: Optional[str] = None
 
 
 class TeeServerClient:
@@ -229,6 +234,10 @@ class TeeServerClient:
                         cert=cert,
                         signature=signature,
                         attested_body=attested_body_b64,
+                        # Miner-hotkey rc proof-of-possession (present only when the proxy signs).
+                        hotkey=resp.headers.get(HOTKEY_HEADER),
+                        hotkey_nonce=resp.headers.get(NONCE_HEADER),
+                        hotkey_signature=resp.headers.get(SIGNATURE_HEADER),
                     )
         except Exception as exc:
             logger.error(f"Failed to get chute evidence from {self._url}: {exc}")
