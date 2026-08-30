@@ -1107,9 +1107,7 @@ async def verify_tee_chute(
             )
             await verify_gpu_evidence(evidence.gpu_evidence, expected_report_data)
         else:
-            await verify_quote(
-                evidence.quote, expected_nonce, expected_cert_hash, auth=rc_auth
-            )
+            await verify_quote(evidence.quote, expected_nonce, expected_cert_hash, auth=rc_auth)
             await verify_gpu_evidence(evidence.gpu_evidence, expected_nonce)
 
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
