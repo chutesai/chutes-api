@@ -9,7 +9,7 @@ import httpx as _httpx
 import orjson as json
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
-from fastapi import APIRouter, Depends, Header, status, HTTPException, Response, Request
+from fastapi import APIRouter, Depends, Header, status, HTTPException, Request
 from starlette.responses import StreamingResponse
 from sqlalchemy import text
 from sqlalchemy.future import select
@@ -25,7 +25,16 @@ from api.node.schemas import Node
 from api.image.schemas import Image
 from api.instance.schemas import Instance, LaunchConfig
 from api.server.schemas import Server
-from api.miner.schemas import MinerServersResponse
+from api.miner.schemas import (
+    ActiveInstance,
+    MinerChute,
+    MinerInventoryEntry,
+    MinerMetagraphNode,
+    MinerScoresResponse,
+    MinerServersResponse,
+    MinerStatsResponse,
+    UniqueChuteHistoryEntry,
+)
 from api.job.schemas import Job
 from api.invocation.util import gather_metrics
 from api.user.service import get_current_user
@@ -243,7 +252,7 @@ async def release_job(
     )
 
 
-@router.get("/inventory")
+@router.get("/inventory", responses={200: {"model": list[MinerInventoryEntry]}})
 async def get_full_inventory(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     session: AsyncSession = Depends(get_db_session),
@@ -281,7 +290,7 @@ async def metrics(
     return StreamingResponse(_stream())
 
 
-@router.get("/active_instances/")
+@router.get("/active_instances/", responses={200: {"model": list[ActiveInstance]}})
 async def list_active_instances(
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
     session: AsyncSession = Depends(get_db_session),
@@ -317,7 +326,7 @@ async def list_active_instances(
     ]
 
 
-@router.get("/chutes/{chute_id}/{version}")
+@router.get("/chutes/{chute_id}/{version}", responses={200: {"model": MinerChute}})
 async def get_chute(
     chute_id: str,
     version: str,
@@ -341,13 +350,13 @@ async def get_chute(
         return await model_to_dict(chute)
 
 
-@router.get("/stats")
+@router.get("/stats", responses={200: {"model": MinerStatsResponse}})
 async def get_stats(
     miner_hotkey: Optional[str] = None,
     session: AsyncSession = Depends(get_db_session),
     per_chute: Optional[bool] = False,
     request: Request = None,
-) -> Response:
+):
     """
     Get miner stats over different intervals based on instance data (matching actual scoring).
 
@@ -570,7 +579,7 @@ async def get_stats(
     return _filter_by_key(results)
 
 
-@router.get("/scores")
+@router.get("/scores", responses={200: {"model": MinerScoresResponse}})
 async def get_scores(hotkey: Optional[str] = None, request: Request = None):
     cache_key = "get_scores"
     rv = None
@@ -593,7 +602,9 @@ async def get_scores(hotkey: Optional[str] = None, request: Request = None):
     return rv
 
 
-@router.get("/unique_chute_history/{hotkey}")
+@router.get(
+    "/unique_chute_history/{hotkey}", responses={200: {"model": list[UniqueChuteHistoryEntry]}}
+)
 async def unique_chute_history(hotkey: str, request: Request = None):
     if not await settings.redis_client.get(f"miner_exists:{hotkey}"):
         async with get_session(readonly=True) as session:
@@ -614,7 +625,7 @@ async def unique_chute_history(hotkey: str, request: Request = None):
     )
 
 
-@router.get("/thrash_cooldowns")
+@router.get("/thrash_cooldowns", responses={200: {"model": list[Any]}})
 async def get_thrash_cooldowns(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     session: AsyncSession = Depends(get_db_session),
@@ -626,7 +637,7 @@ async def get_thrash_cooldowns(
     return []
 
 
-@router.get("/metagraph")
+@router.get("/metagraph", responses={200: {"model": list[MinerMetagraphNode]}})
 async def get_metagraph():
     async with get_session(readonly=True) as session:
         return (
