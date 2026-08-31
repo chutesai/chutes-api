@@ -655,12 +655,11 @@ async def sign_image(
         image_digest = await get_image_digest(image_tag)
         image_digest_tag = f"{image_tag.rsplit(':', 1)[0]}@{image_digest}"
 
-        external_registry = "localregistry.chutes.ai"
-        internal_registry = "registry"
-
-        # Rebuild the full reference
+        # Rewrite the internal push target to the external registry host so cosign signs the
+        # ref the CVM verifies. Config-driven (settings.registry_external_host, the
+        # registry.chutes.ai mTLS frontend) instead of the old hardcoded localregistry.chutes.ai.
         image_digest_tag = image_digest_tag.replace(
-            f"{internal_registry}:5000", f"{external_registry}:5000"
+            settings.registry_host.rstrip("/"), settings.registry_external_host
         )
 
         process = await asyncio.create_subprocess_exec(
