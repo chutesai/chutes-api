@@ -1382,6 +1382,30 @@ async def admin_subscription_usage(
     return await _get_subscription_usage(user.user_id, db)
 
 
+async def _delete_locked_user(db: AsyncSession, user: User) -> None:
+    """Delete a locked, eligible user and invalidate credentials after commit."""
+
+    resources = await get_user_resources(db, user.user_id)
+    eligibility = check_user_deletable(user, resources)
+    if not eligibility.allowed:
+        logger.warning(f"user deletion blocked: {eligibility.message}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": eligibility.message,
+                "user_id": user.user_id,
+                **eligibility.context,
+            },
+        )
+
+    api_key_ids = await delete_user(db, user)
+    await db.commit()
+
+    # Auth caches must only be invalidated once the row deletion is durable.
+    for api_key_id in api_key_ids:
+        await invalidate_api_key_cache(api_key_id)
+
+
 @router.delete("/me")
 async def delete_my_user(
     db: AsyncSession = Depends(get_db_session),
@@ -1389,24 +1413,32 @@ async def delete_my_user(
         ..., description="Authorization header", alias=AUTHORIZATION_HEADER
     ),
 ):
-    """
-    Delete account.
-    """
+    """Hard-delete the authenticated account when its lifecycle is fully resolved."""
+
     fingerprint = authorization.strip().split(" ")[-1]
     fingerprint_hash = hashlib.blake2b(fingerprint.encode()).hexdigest()
     current_user = (
-        await db.execute(select(User).where(User.fingerprint_hash == fingerprint_hash))
-    ).scalar_one_or_none()
+        await db.execute(
+            select(User)
+            .where(User.fingerprint_hash == fingerprint_hash)
+            .with_for_update(of=User)
+        )
+    ).unique().scalar_one_or_none()
     if not current_user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authorized",
         )
 
-    await db.execute(
-        text("DELETE FROM users WHERE user_id = :user_id"), {"user_id": current_user.user_id}
+    update_log_context(
+        event=LifecycleEvent.USER_DELETE.value,
+        log_type=LogType.USER.value,
+        user_id=current_user.user_id,
+        username=current_user.username,
+        deleted_by=current_user.user_id,
     )
-    await db.commit()
+    await _delete_locked_user(db, current_user)
+    logger.warning("hard-deleted own user account")
     return {"deleted": True}
 
 
@@ -1422,12 +1454,17 @@ async def admin_delete_user(
 
     Removes the ``users`` row, which the ``on_user_delete`` DB trigger archives into
     ``deleted_users`` and which CASCADEs ``api_keys``/``jobs``/``logos``/``chute_shares``/
-    ``oauth_*``. Deletion requires: no special roles (``permissions_bitmask`` is 0), a balance
-    within +/-25, and no owned chutes/images/secrets (those have ``NO ACTION`` FKs and must be
-    removed manually first, via their own endpoints). Financial history
-    (``admin_balance_changes``, ``payments``) has no FK and is preserved.
+    ``oauth_*``. Deletion requires: no privileged roles (the ordinary ``free_account`` billing
+    flag is allowed), a balance within +/-25, no owned Chutes, images, secrets, or external
+    accounts, and no external operations with unresolved settlement. Settled/non-billable
+    operation history is retained and anonymized; financial history (``admin_balance_changes``,
+    ``payments``) has no FK and is preserved.
     """
-    user = await resolve_user(db, user_id_or_username)
+    # Operation inserts take a key-share lock while checking their user foreign key.
+    # Locking the target before scanning resources makes the decision and delete atomic:
+    # a new accepted operation either commits first and is observed below, or waits and
+    # fails its foreign-key check after this deletion commits.
+    user = await resolve_user(db, user_id_or_username, for_update=True)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"User not found: {user_id_or_username}"
@@ -1441,33 +1478,11 @@ async def admin_delete_user(
         deleted_by=current_user.user_id,
     )
 
-    resources = await get_user_resources(db, user.user_id)
-    eligibility = check_user_deletable(user, resources)
-    if eligibility.allowed:
-        # Delete the user row (DB work only; commit + cache flush below). No resources exist to
-        # tear down -- ownership of any is a hard block above.
-        api_key_ids = await delete_user(db, user)
-        await db.commit()
+    await _delete_locked_user(db, user)
 
-        # Post-commit (only safe once the delete is durable): flush the per-key auth caches.
-        for api_key_id in api_key_ids:
-            await invalidate_api_key_cache(api_key_id)
-
-        # Audit line; user_id/username/deleted_by/event come from the ambient context bound above.
-        logger.warning(f"hard-deleted user account (reason={body.reason!r})")
-        response = {"user_id": user.user_id, "deleted": True}
-    else:
-        logger.warning(f"user deletion blocked: {eligibility.message}")
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={
-                "message": eligibility.message,
-                "user_id": user.user_id,
-                **eligibility.context,
-            },
-        )
-
-    return response
+    # Audit line; user_id/username/deleted_by/event come from the ambient context bound above.
+    logger.warning(f"hard-deleted user account (reason={body.reason!r})")
+    return {"user_id": user.user_id, "deleted": True}
 
 
 @router.get("/set_logo", response_model=SelfResponse)

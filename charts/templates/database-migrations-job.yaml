@@ -1,0 +1,60 @@
+{{- if .Values.databaseMigrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ .Release.Name }}-database-migrations
+  labels:
+    app.kubernetes.io/name: database-migrations
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.databaseMigrations.backoffLimit | default 1 }}
+  activeDeadlineSeconds: {{ .Values.databaseMigrations.activeDeadlineSeconds | default 600 }}
+  ttlSecondsAfterFinished: {{ .Values.databaseMigrations.ttlSecondsAfterFinished | default 3600 }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: database-migrations
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.databaseMigrations.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.databaseMigrations.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.databaseMigrations.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      containers:
+        - name: dbmate
+          image: {{ include "chutes.image" (list . (.Values.databaseMigrations.image | default .Values.api.image)) | quote }}
+          imagePullPolicy: {{ .Values.databaseMigrations.imagePullPolicy | default .Values.api.imagePullPolicy }}
+          securityContext:
+            {{- include "chutes.containerSecurityContext" . | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ceu
+          args:
+            - |
+              export DATABASE_URL="${POSTGRESQL/postgresql+asyncpg:/postgresql:}"
+              exec dbmate --no-dump-schema --migrations-dir /app/api/migrations up
+          env:
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.databaseMigrations.postgresSecretName | default "postgres-secret" }}
+                  key: {{ .Values.databaseMigrations.postgresSecretKey | default "url" }}
+          resources:
+            {{- toYaml .Values.databaseMigrations.resources | nindent 12 }}
+{{- end }}

@@ -94,6 +94,7 @@ async def create_job(
             await db.execute(
                 select(Chute)
                 .where(Chute.chute_id == chute_id)
+                .where(Chute.execution_backend == "hosted")
                 .where(Chute.jobs.op("@>")([{"name": method}]))
                 .options(selectinload(Chute.instances))
             )

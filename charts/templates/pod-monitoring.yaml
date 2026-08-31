@@ -23,4 +23,26 @@ spec:
       - pod
       - top_level_controller_name
       - top_level_controller_type
+{{- if .Values.externalOperationWorker.enabled }}
+---
+apiVersion: monitoring.googleapis.com/v1
+kind: PodMonitoring
+metadata:
+  name: external-operation-worker
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: external-operation-worker
+  endpoints:
+    - port: health
+      path: /metrics
+      interval: {{ .Values.gmp.interval | default "30s" }}
+  targetLabels:
+    metadata:
+      - container
+      - pod
+      - top_level_controller_name
+      - top_level_controller_type
+{{- end }}
 {{- end }}

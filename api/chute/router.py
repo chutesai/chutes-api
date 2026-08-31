@@ -16,7 +16,7 @@ from slugify import slugify
 from fastapi import APIRouter, Depends, HTTPException, status, Response, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from starlette.responses import StreamingResponse
-from sqlalchemy import or_, exists, func, text
+from sqlalchemy import and_, or_, exists, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -41,6 +41,7 @@ from api.chute.templates import (
 )
 from api.gpu import SUPPORTED_GPUS
 from api.chute.response import ChuteResponse
+from api.chute.update_policy import plan_external_chute_update
 from api.chute.util import (
     selector_hourly_price,
     get_one,
@@ -49,6 +50,7 @@ from api.chute.util import (
     calculate_effective_compute_multiplier,
     get_manual_boosts,
     invalidate_chute_cache,
+    invalidate_price_override_cache,
     update_usage_data,
 )
 from api.server.service import get_chute_instances_evidence
@@ -71,6 +73,8 @@ from api.image.schemas import Image
 from api.graval_worker import handle_rolling_update
 from api.image.util import get_image_by_id_or_name
 from api.permissions import Permissioning
+from api.external_backend.deletion import ensure_no_active_external_operations
+from api.external_backend.model_compat import public_pricing_rules
 
 # XXX from api.instance.util import discover_chute_targets
 from api.database import get_db_session, get_session, db_scalar, db_scalars
@@ -129,6 +133,16 @@ async def _inject_current_estimated_price(chute: Chute, response: ChuteResponse)
     """
     Inject the current estimated price data into a response.
     """
+    if chute.execution_backend == "external":
+        price_override = await PriceOverride.get("__anyuser__", chute.chute_id)
+        response.current_estimated_price = {
+            "rules": public_pricing_rules(
+                list(getattr(price_override, "pricing_rules", None) or [])
+            )
+        }
+        response.node_selector = {}
+        return
+
     if chute.standard_template == "vllm":
         per_million_in, per_million_out, cache_discount = await get_mtoken_price(
             "global", chute.chute_id
@@ -221,6 +235,12 @@ async def _inject_effective_compute_multiplier(
     """
     Inject the effective compute multiplier and factors into a ChuteResponse.
     """
+    if chute.execution_backend == "external":
+        response.effective_compute_multiplier = None
+        response.compute_multiplier_factors = None
+        response.bounty = None
+        return
+
     result = await calculate_effective_compute_multiplier(
         chute, bounty_info=bounty_info, manual_boost=manual_boost
     )
@@ -423,6 +443,11 @@ async def make_public(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Chute not found: {chute_id_str}",
+            )
+        if source.execution_backend != "hosted":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This promotion workflow only supports hosted chutes.",
             )
 
         # Match chute to one of the user's subnets.
@@ -811,8 +836,11 @@ async def list_boosted_chutes():
                 FROM chutes c
                 LEFT JOIN chute_manual_boosts cmb ON cmb.chute_id = c.chute_id
                 WHERE
-                    (c.boost IS NOT NULL AND c.boost > 1)
-                    OR (cmb.boost IS NOT NULL AND cmb.boost > 1)
+                    c.execution_backend = 'hosted'
+                    AND (
+                        (c.boost IS NOT NULL AND c.boost > 1)
+                        OR (cmb.boost IS NOT NULL AND cmb.boost > 1)
+                    )
                 """
             )
         )
@@ -847,7 +875,8 @@ async def list_available_affine_chutes():
             LEFT JOIN metagraph_nodes n ON n.hotkey = u.hotkey
             LEFT JOIN instances i ON i.chute_id = c.chute_id AND i.active = true
             WHERE
-                c.name ILIKE '%affine%'
+                c.execution_backend = 'hosted'
+                AND c.name ILIKE '%affine%'
                 AND ((b.effective_balance > 0 AND n.netuid = 120) OR (u.permissions_bitmask & 1024) = 1024)
             GROUP BY c.chute_id, c.user_id, c.name, n.hotkey;
         """)
@@ -898,13 +927,24 @@ async def list_chutes(
                 or_(
                     Chute.public.is_(True),
                     Chute.user_id == current_user.user_id,
-                    Chute.name.ilike("%affine%"),
+                    and_(
+                        Chute.execution_backend == "hosted",
+                        Chute.name.ilike("%affine%"),
+                    ),
                 )
             )
         else:
             query = query.where(Chute.user_id == current_user.user_id)
     else:
-        query = query.where(or_(Chute.public.is_(True), Chute.name.ilike("%affine%")))
+        query = query.where(
+            or_(
+                Chute.public.is_(True),
+                and_(
+                    Chute.execution_backend == "hosted",
+                    Chute.name.ilike("%affine%"),
+                ),
+            )
+        )
 
     # Filter by name/tag/etc.
     if name and name.strip():
@@ -1010,6 +1050,7 @@ async def get_chute_miner_mean_index(db: AsyncSession = Depends(get_db_session))
         SELECT c.chute_id, c.name
         FROM chutes c
         WHERE c.standard_template = 'vllm'
+          AND c.execution_backend = 'hosted'
         ORDER BY invocation_count DESC
     """
     result = await db.execute(text(query))
@@ -1150,6 +1191,24 @@ async def get_chute_code(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
         )
+    if chute.execution_backend == "external":
+        authorized = bool(
+            chute.public
+            or (current_user and chute.user_id == current_user.user_id)
+            or (
+                current_user
+                and await is_shared(chute.chute_id, current_user.user_id)
+            )
+        )
+        if not authorized:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Chute not found, or does not belong to you",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="This chute does not have source code.",
+        )
     if not await can_view_chute_source(chute, current_user):
         if chute.public or "affine" in chute.name.lower():
             return Response(content=SOURCE_NOT_PUBLIC_PLACEHOLDER, media_type="text/plain")
@@ -1170,7 +1229,7 @@ async def _get_chute_hf_info(chute_id: str):
     Cached by chute_id via aiocache.
     """
     chute = await get_one(chute_id)
-    if not chute:
+    if not chute or chute.execution_backend != "hosted":
         return None
     repo_id = extract_hf_model_name(chute.chute_id, chute.code)
     if not repo_id:
@@ -1256,6 +1315,22 @@ async def warm_up_chute(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail=f"Account balance is ${balance}, please top-up with fiat or send tao to {current_user.payment_address}",
         )
+
+    if chute.execution_backend == "external":
+        payload = {
+            "chute_id": chute.chute_id,
+            "status": "hot",
+            "instance_count": 0,
+            "bounty": None,
+            "instances": [],
+        }
+        if quick:
+            return payload
+
+        async def _external_ready():
+            yield f"data: {json.dumps(payload).decode()}\n\n"
+
+        return StreamingResponse(_external_ready(), media_type="text/event-stream")
 
     if quick:
         # Stamp the first warmup request time for this chute (set-if-absent); activation reads it
@@ -1382,7 +1457,6 @@ async def get_tee_chute_evidence(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found",
         )
-
     # Auth check - same logic as get_chute
     authorized = False
     if (
@@ -1390,7 +1464,10 @@ async def get_tee_chute_evidence(
         or (current_user and chute.user_id == current_user.user_id)
         or (current_user and await is_shared(chute.chute_id, current_user.user_id))
         or (current_user and subnet_role_accessible(chute, current_user))
-        or "affine" in chute.name.lower()
+        or (
+            chute.execution_backend == "hosted"
+            and "affine" in chute.name.lower()
+        )
     ):
         authorized = True
 
@@ -1398,6 +1475,12 @@ async def get_tee_chute_evidence(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Chute not found, or does not belong to you",
+        )
+
+    if chute.execution_backend == "external":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="TEE evidence is unavailable for this execution backend.",
         )
 
     try:
@@ -1446,7 +1529,10 @@ async def get_chute(
             or (current_user and chute.user_id == current_user.user_id)
             or (current_user and await is_shared(chute.chute_id, current_user.user_id))
             or (current_user and subnet_role_accessible(chute, current_user))
-            or "affine" in chute.name.lower()
+            or (
+                chute.execution_backend == "hosted"
+                and "affine" in chute.name.lower()
+            )
         ):
             authorized = True
     if not authorized:
@@ -1502,6 +1588,9 @@ async def delete_chute(
             detail="Chute not found, or does not belong to you",
         )
 
+    if chute.execution_backend == "external":
+        await ensure_no_active_external_operations(db, chute.chute_id)
+
     # Perform the deletion.
     chute_id = chute.chute_id
     version = chute.version
@@ -1520,23 +1609,32 @@ async def delete_chute(
             {"instance_ids": instance_ids},
         )
 
+    if chute.execution_backend == "external":
+        await db.execute(
+            text("DELETE FROM price_overrides WHERE chute_id = :chute_id"),
+            {"chute_id": chute.chute_id},
+        )
     await db.delete(chute)
 
     await db.commit()
+    await invalidate_chute_cache(chute_id, chute.name, chute.slug)
+    if chute.execution_backend == "external":
+        await invalidate_price_override_cache(chute_id)
 
     # Clean up Redis connection tracking for all deleted instances.
     for instance_id in instance_ids:
         await cleanup_instance_conn_tracking(chute_id, instance_id)
 
-    await settings.redis_client.publish(
-        "miner_broadcast",
-        json.dumps(
-            {
-                "reason": "chute_deleted",
-                "data": {"chute_id": chute_id, "version": version},
-            }
-        ).decode(),
-    )
+    if chute.execution_backend == "hosted":
+        await settings.redis_client.publish(
+            "miner_broadcast",
+            json.dumps(
+                {
+                    "reason": "chute_deleted",
+                    "data": {"chute_id": chute_id, "version": version},
+                }
+            ).decode(),
+        )
     return {"chute_id": chute_id, "deleted": True}
 
 
@@ -1590,6 +1688,14 @@ async def _deploy_chute(
         .unique()
         .scalar_one_or_none()
     )
+    if chute and chute.execution_backend != "hosted":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "A non-hosted Chute with this name already exists. "
+                "Manage it through its external Chute endpoint."
+            ),
+        )
     if chute and chute.version == version and chute.public == chute_args.public:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -2497,14 +2603,25 @@ async def update_common_attributes(
             f"{current_user.username=} {chute.chute_id=} {chute.name=} "
             f"disabled={args.disabled} scaling_threshold={args.scaling_threshold} max_instances={args.max_instances}"
         )
-    chute = (
-        (
-            await db.execute(
-                select(Chute)
-                .where(Chute.chute_id == chute.chute_id)
-                .options(selectinload(Chute.instances))
-            )
+    chute_query = select(Chute).where(Chute.chute_id == chute.chute_id)
+    if chute.execution_backend == "external":
+        # External invocation acceptance and deletion both lock the binding before
+        # the Chute. Preserve that order for this shared management endpoint too.
+        await db.execute(
+            text(
+                "SELECT binding_id FROM external_chute_bindings "
+                "WHERE chute_id = :chute_id FOR UPDATE"
+            ),
+            {"chute_id": chute.chute_id},
         )
+        chute_query = chute_query.options(
+            selectinload(Chute.instances),
+            selectinload(Chute.external_binding),
+        ).with_for_update(of=Chute)
+    else:
+        chute_query = chute_query.options(selectinload(Chute.instances))
+    chute = (
+        (await db.execute(chute_query))
         .unique()
         .scalar_one_or_none()
     )
@@ -2515,6 +2632,40 @@ async def update_common_attributes(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="This chute is immutable and cannot be modified. Only deletion is allowed.",
         )
+
+    if chute.execution_backend == "external":
+        updates, unsupported = plan_external_chute_update(
+            args.model_dump(mode="python"),
+            args.model_fields_set,
+        )
+        if unsupported:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    "External Chutes do not support hosted scaling fields: "
+                    f"{', '.join(unsupported)}."
+                ),
+            )
+
+        for field_name in ("tagline", "readme", "tool_description", "logo_id"):
+            if field_name in updates:
+                setattr(chute, field_name, updates[field_name])
+        if "disabled" in updates:
+            if chute.external_binding is not None:
+                chute.external_binding.enabled = not updates["disabled"]
+                chute.disabled = not (
+                    chute.external_binding.enabled
+                    and chute.external_binding.account.enabled
+                )
+            else:
+                chute.disabled = updates["disabled"]
+        if updates:
+            chute.updated_at = func.now()
+
+        await db.commit()
+        await db.refresh(chute)
+        await invalidate_chute_cache(chute.chute_id, chute.name)
+        return chute
 
     if args.tagline and args.tagline.strip():
         chute.tagline = args.tagline

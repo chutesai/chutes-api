@@ -6,7 +6,7 @@ import re
 import uuid
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import or_, func
+from sqlalchemy import or_, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -36,7 +36,10 @@ async def list_secrets(
     """
     List secrets.
     """
-    query = select(Secret).where(Secret.user_id == current_user.user_id)
+    query = select(Secret).where(
+        Secret.user_id == current_user.user_id,
+        Secret.kind == "chute",
+    )
     total_query = select(func.count()).select_from(query.subquery())
     total_result = await db.execute(total_query)
     total = total_result.scalar() or 0
@@ -67,7 +70,9 @@ async def get_secret(
         (
             await db.execute(
                 select(Secret).where(
-                    Secret.user_id == current_user.user_id, Secret.secret_id == secret_id
+                    Secret.user_id == current_user.user_id,
+                    Secret.secret_id == secret_id,
+                    Secret.kind == "chute",
                 )
             )
         )
@@ -95,7 +100,9 @@ async def delete_secret(
         (
             await db.execute(
                 select(Secret).where(
-                    Secret.user_id == current_user.user_id, Secret.secret_id == secret_id
+                    Secret.user_id == current_user.user_id,
+                    Secret.secret_id == secret_id,
+                    Secret.kind == "chute",
                 )
             )
         )
@@ -106,6 +113,31 @@ async def delete_secret(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Secret not found, or does not belong to you",
+        )
+    managed_reference = f"secret://{secret.secret_id}"
+    is_managed_credential = (
+        await db.execute(
+            text("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM external_backend_accounts account
+                    CROSS JOIN LATERAL jsonb_each_text(
+                        account.credential_references
+                    ) AS credential(name, reference)
+                    WHERE account.user_id = :user_id
+                      AND credential.reference = :reference
+                )
+            """),
+            {
+                "user_id": current_user.user_id,
+                "reference": managed_reference,
+            },
+        )
+    ).scalar()
+    if is_managed_credential:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="This credential is managed by an external account.",
         )
     await db.delete(secret)
     await db.commit()
@@ -131,6 +163,7 @@ async def create_secret(
                         Chute.chute_id == args.purpose,
                     ),
                     Chute.user_id == current_user.user_id,
+                    Chute.execution_backend == "hosted",
                 )
             )
         )
@@ -178,6 +211,7 @@ async def create_secret(
             uuid.uuid5(uuid.NAMESPACE_OID, f"{current_user.user_id}:{chute.chute_id}:{args.key}")
         ),
         purpose=chute.chute_id,
+        kind="chute",
         key=args.key,
         value=encrypted_value,
         user_id=current_user.user_id,

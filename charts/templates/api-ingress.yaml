@@ -10,7 +10,7 @@ metadata:
     nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, OPTIONS, PUT, DELETE, PATCH"
     nginx.ingress.kubernetes.io/cors-expose-headers: "X-Chutes-Quota-Total,X-Chutes-Quota-Used,X-Chutes-Quota-Remaining,X-Chutes-RL-User,X-Chutes-RL-Chute,X-Chutes-InvocationID"
     nginx.ingress.kubernetes.io/cors-max-age: "1728000"
-    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-body-size: {{ .Values.ingress.proxyBodySize | default "128m" | quote }}
     nginx.ingress.kubernetes.io/proxy-buffering: "off"
     nginx.ingress.kubernetes.io/proxy-connect-timeout: "10"
     nginx.ingress.kubernetes.io/proxy-next-upstream: "error timeout http_500 http_502 http_503 http_504"
@@ -32,7 +32,7 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingress.className | default "nginx" }}
   rules:
-  - host: '*.chutes.ai'
+  - host: {{ printf "*.%s" (.Values.baseDomain | default "chutes.ai") | quote }}
     http:
       paths:
       - backend:
@@ -44,6 +44,6 @@ spec:
         pathType: Prefix
   tls:
   - hosts:
-    - '*.chutes.ai'
+    - {{ printf "*.%s" (.Values.baseDomain | default "chutes.ai") | quote }}
     secretName: {{ .Values.ingress.tlsSecretName | default "ingress-tls" }}
 {{- end }}

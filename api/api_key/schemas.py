@@ -61,8 +61,10 @@ class APIKeyScope(Base):
         """
         Limit which types of objects we can manipulate with API keys.
         """
-        if type_ not in ("images", "chutes", "invocations"):
-            raise ValueError("Invalid object_type, must be one of images, chutes, invocations")
+        if type_ not in ("images", "chutes", "invocations", "account"):
+            raise ValueError(
+                "Invalid object_type, must be one of account, images, chutes, invocations"
+            )
         return type_
 
 

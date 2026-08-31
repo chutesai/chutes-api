@@ -58,7 +58,14 @@ async def increase_chute_bounty(
         )
 
     chute = (
-        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
+        (
+            await db.execute(
+                select(Chute).where(
+                    Chute.chute_id == chute_id,
+                    Chute.execution_backend == "hosted",
+                )
+            )
+        )
         .unique()
         .scalar_one_or_none()
     )

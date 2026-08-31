@@ -1,0 +1,208 @@
+{{- if .Values.externalOperationWorker.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: external-operation-worker
+  labels:
+    {{- include "externalOperationWorker.labels" . | nindent 4 }}
+    {{- include "chutes.dbAccess" . | nindent 4 }}
+    {{- include "chutes.redisAccess" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.externalOperationWorker.replicaCount | default 1 }}
+  strategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "externalOperationWorker.labels" . | nindent 6 }}
+      {{- include "chutes.dbAccess" . | nindent 6 }}
+      {{- include "chutes.redisAccess" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "externalOperationWorker.labels" . | nindent 8 }}
+        {{- include "chutes.dbAccess" . | nindent 8 }}
+        {{- include "chutes.redisAccess" . | nindent 8 }}
+      {{- if not .Values.gmp.enabled }}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /metrics
+        prometheus.io/port: {{ .Values.externalOperationWorker.healthPort | default 8000 | quote }}
+      {{- end }}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.externalOperationWorker.terminationGracePeriodSeconds | default 60 }}
+      securityContext:
+        {{- include "chutes.podSecurityContext" . | nindent 8 }}
+      {{- with .Values.externalOperationWorker.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.externalOperationWorker.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{- include "chutes.defaultTolerations" . | nindent 8 }}
+        {{- with .Values.externalOperationWorker.tolerations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      volumes:
+        {{- include "chutes.redisCacertVolume" . | nindent 8 }}
+      containers:
+        - name: external-operation-worker
+          image: {{ include "chutes.image" (list . (.Values.externalOperationWorker.image | default .Values.api.image)) | quote }}
+          imagePullPolicy: {{ .Values.externalOperationWorker.imagePullPolicy | default .Values.api.imagePullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - uv
+            - run
+            - python
+            - /app/external_operation_worker.py
+          env:
+            {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: BASE_DOMAIN
+              value: {{ .Values.baseDomain | default "chutes.ai" | quote }}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: password
+            - name: POSTGRESQL
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: url
+            - name: POSTGRESQL_RO
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-secret
+                  key: readonly_url
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis-secret
+                  key: password
+            - name: REDIS_HOST
+              value: {{ .Values.redis.host | quote }}
+            - name: REDIS_PORT
+              value: {{ .Values.redis.port | quote }}
+            {{- if .Values.redis.cacertSecret }}
+            - name: REDIS_CACERT
+              value: /etc/redis-cacert/cacert.pem
+            {{- end }}
+            - name: WALLET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: wallet-key
+            - name: PG_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: wallet-secret
+                  key: pg-key
+            - name: DB_POOL_SIZE
+              value: {{ .Values.externalOperationWorker.dbPoolSize | default 8 | quote }}
+            - name: DB_OVERFLOW
+              value: {{ .Values.externalOperationWorker.dbOverflow | default 2 | quote }}
+            - name: MAX_REQUEST_BODY_BYTES
+              value: {{ .Values.api.maxRequestBodyBytes | default 134217728 | quote }}
+            - name: EXTERNAL_ALLOW_INSECURE_UPSTREAMS
+              value: {{ .Values.externalBackend.allowInsecureUpstreams | default false | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_TASKS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxActiveTasksPerUser | default 4 | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_TASKS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxActiveTasksPerAccount | default 256 | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_SYNC_REQUESTS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxActiveSyncRequestsPerUser | default 8 | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_SYNC_REQUESTS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxActiveSyncRequestsPerAccount | default 128 | quote }}
+            - name: EXTERNAL_MAX_REALTIME_SESSIONS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxRealtimeSessionsPerUser | default 2 | quote }}
+            - name: EXTERNAL_MAX_REALTIME_SESSIONS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxRealtimeSessionsPerAccount | default 64 | quote }}
+            - name: EXTERNAL_MAX_STREAMS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxStreamsPerUser | default 4 | quote }}
+            - name: EXTERNAL_MAX_STREAMS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxStreamsPerAccount | default 128 | quote }}
+            - name: EXTERNAL_MAX_DAILY_OPERATIONS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxDailyOperationsPerUser | default 1000 | quote }}
+            - name: EXTERNAL_MAX_DAILY_OPERATIONS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxDailyOperationsPerAccount | default 100000 | quote }}
+            - name: EXTERNAL_MAX_DAILY_PAYGO_USD_PER_USER
+              value: {{ .Values.externalBackend.governance.maxDailyPaygoUsdPerUser | default 25 | quote }}
+            - name: EXTERNAL_MAX_DAILY_PAYGO_USD_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxDailyPaygoUsdPerAccount | default 1000 | quote }}
+            - name: EXTERNAL_MAX_ESTIMATED_OPERATION_COST_USD
+              value: {{ .Values.externalBackend.governance.maxEstimatedOperationCostUsd | default 50 | quote }}
+            - name: EXTERNAL_ARTIFACT_REQUESTS_PER_MINUTE
+              value: {{ .Values.externalBackend.governance.artifactRequestsPerMinute | default 60 | quote }}
+            - name: EXTERNAL_ARTIFACT_MAX_CONCURRENT_PER_USER
+              value: {{ .Values.externalBackend.governance.artifactMaxConcurrentPerUser | default 3 | quote }}
+            - name: EXTERNAL_ARTIFACT_MAX_BYTES_PER_OPERATION
+              value: {{ .Values.externalBackend.governance.artifactMaxBytesPerOperation | default 10737418240 | quote }}
+            - name: EXTERNAL_ARTIFACT_MAX_DAILY_BYTES_PER_USER
+              value: {{ .Values.externalBackend.governance.artifactMaxDailyBytesPerUser | default 53687091200 | quote }}
+            - name: EXTERNAL_POLLER_ENABLED
+              value: "true"
+            - name: EXTERNAL_WORKER_HEALTH_PORT
+              value: {{ .Values.externalOperationWorker.healthPort | default 8000 | quote }}
+            - name: EXTERNAL_POLLER_BATCH_SIZE
+              value: {{ .Values.externalOperationWorker.poller.batchSize | default 16 | quote }}
+            - name: EXTERNAL_POLLER_CONCURRENCY
+              value: {{ .Values.externalOperationWorker.poller.concurrency | default 8 | quote }}
+            - name: EXTERNAL_POLLER_LEASE_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.leaseSeconds | default 60 | quote }}
+            - name: EXTERNAL_POLLER_IDLE_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.idleSeconds | default 1 | quote }}
+            - name: EXTERNAL_POLLER_SHUTDOWN_TIMEOUT_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.shutdownTimeoutSeconds | default 30 | quote }}
+            - name: EXTERNAL_SETTLEMENT_RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.settlementReconcileIntervalSeconds | default 5 | quote }}
+            - name: EXTERNAL_SETTLEMENT_BATCH_SIZE
+              value: {{ .Values.externalOperationWorker.poller.settlementBatchSize | default 64 | quote }}
+            - name: EXTERNAL_SETTLEMENT_QUARANTINE_ATTEMPTS
+              value: {{ .Values.externalOperationWorker.poller.settlementQuarantineAttempts | default 8 | quote }}
+            - name: EXTERNAL_OPERATION_MAINTENANCE_INTERVAL_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.maintenanceIntervalSeconds | default 60 | quote }}
+            - name: EXTERNAL_OPERATION_RETENTION_DAYS
+              value: {{ .Values.externalOperationWorker.poller.retentionDays | default 90 | quote }}
+            - name: EXTERNAL_OPERATION_RETENTION_BATCH_SIZE
+              value: {{ .Values.externalOperationWorker.poller.retentionBatchSize | default 1000 | quote }}
+            - name: EXTERNAL_CIRCUIT_AUTH_FAILURE_THRESHOLD
+              value: {{ .Values.externalBackend.circuit.authFailureThreshold | default 3 | quote }}
+            - name: EXTERNAL_CIRCUIT_SERVICE_FAILURE_THRESHOLD
+              value: {{ .Values.externalBackend.circuit.serviceFailureThreshold | default 10 | quote }}
+            - name: EXTERNAL_CIRCUIT_COOLDOWN_SECONDS
+              value: {{ .Values.externalBackend.circuit.cooldownSeconds | default 300 | quote }}
+          volumeMounts:
+            {{- include "chutes.redisCacertMount" . | nindent 12 }}
+          ports:
+            - name: health
+              containerPort: {{ .Values.externalOperationWorker.healthPort | default 8000 }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: {{ .Values.externalOperationWorker.livenessProbe.initialDelaySeconds | default 15 }}
+            periodSeconds: {{ .Values.externalOperationWorker.livenessProbe.periodSeconds | default 15 }}
+            timeoutSeconds: {{ .Values.externalOperationWorker.livenessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.externalOperationWorker.livenessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.externalOperationWorker.livenessProbe.failureThreshold | default 4 }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: health
+            initialDelaySeconds: {{ .Values.externalOperationWorker.readinessProbe.initialDelaySeconds | default 5 }}
+            periodSeconds: {{ .Values.externalOperationWorker.readinessProbe.periodSeconds | default 10 }}
+            timeoutSeconds: {{ .Values.externalOperationWorker.readinessProbe.timeoutSeconds | default 5 }}
+            successThreshold: {{ .Values.externalOperationWorker.readinessProbe.successThreshold | default 1 }}
+            failureThreshold: {{ .Values.externalOperationWorker.readinessProbe.failureThreshold | default 3 }}
+          resources:
+            {{- toYaml .Values.externalOperationWorker.resources | nindent 12 }}
+{{- end }}

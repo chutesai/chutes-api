@@ -1,5 +1,7 @@
 teeMinimumBootVersion: ""
 
+baseDomain: "chutes.ai"
+
 # Signing keys bundle served at GET /servers/signing-keys (rendered to JSON by
 # templates/signing-keys-cm.yaml). These are PUBLIC keys + their detached PGP signatures, so they
 # live in values (not a Secret) -- but the REAL base64 values belong in the env overlay, not here.
@@ -71,6 +73,9 @@ ingress:
   enabled: true
   className: "nginx"
   tlsSecretName: "ingress-tls"
+  # Keep this aligned with api.maxRequestBodyBytes. Individual external routes
+  # may impose a lower byte limit, but can never raise the process-wide ceiling.
+  proxyBodySize: "128m"
   # Source-IP allowlists are infra-specific (Cloudflare ranges, GCP NAT egress, ops IPs) and are
   # set per-environment in the overlay values. Left empty here so the whitelist annotation is
   # omitted entirely when unset (no allowlist == nginx allows all).
@@ -90,6 +95,32 @@ chuteDb:
   enabled: false
   secretName: "chutes-db"
 
+# External backends configurations.
+externalBackend:
+  allowInsecureUpstreams: false
+  governance:
+    maxActiveTasksPerUser: 4
+    maxActiveTasksPerAccount: 256
+    maxActiveSyncRequestsPerUser: 8
+    maxActiveSyncRequestsPerAccount: 128
+    maxRealtimeSessionsPerUser: 2
+    maxRealtimeSessionsPerAccount: 64
+    maxStreamsPerUser: 4
+    maxStreamsPerAccount: 128
+    maxDailyOperationsPerUser: 1000
+    maxDailyOperationsPerAccount: 100000
+    maxDailyPaygoUsdPerUser: 25
+    maxDailyPaygoUsdPerAccount: 1000
+    maxEstimatedOperationCostUsd: 50
+    artifactRequestsPerMinute: 60
+    artifactMaxConcurrentPerUser: 3
+    artifactMaxBytesPerOperation: 10737418240 # 10 GiB
+    artifactMaxDailyBytesPerUser: 53687091200 # 50 GiB
+  circuit:
+    authFailureThreshold: 3
+    serviceFailureThreshold: 10
+    cooldownSeconds: 300
+
 api:
   replicaCount: 1
   image: validator:latest
@@ -100,6 +131,7 @@ api:
   dbPoolSize: 24
   dbOverflow: 8
   rateLimitCount: 10
+  maxRequestBodyBytes: 134217728
   openclGravalUrl: "https://new-graval.chutes.ai:8443"
   rollingUpdate:
     maxSurge: "25%"
@@ -184,6 +216,54 @@ api:
               values:
               - api
           topologyKey: kubernetes.io/hostname
+  tolerations: []
+
+# External task polling/reconciliation (for async external tasks)
+externalOperationWorker:
+  enabled: false
+  runInApi: true
+  replicaCount: 1
+  image: "" # defaults to api.image
+  imagePullPolicy: "" # defaults to api.imagePullPolicy
+  terminationGracePeriodSeconds: 60
+  healthPort: 8000
+  dbPoolSize: 8
+  dbOverflow: 2
+  poller:
+    batchSize: 16
+    concurrency: 8
+    leaseSeconds: 60
+    idleSeconds: 1
+    shutdownTimeoutSeconds: 30
+    settlementReconcileIntervalSeconds: 5
+    settlementBatchSize: 64
+    settlementQuarantineAttempts: 8
+    maintenanceIntervalSeconds: 60
+    retentionDays: 90
+    retentionBatchSize: 1000
+  livenessProbe:
+    initialDelaySeconds: 15
+    periodSeconds: 15
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 4
+  readinessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+    successThreshold: 1
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+      ephemeral-storage: "1Gi"
+  nodeSelector: {}
+  affinity: {}
   tolerations: []
 
 socket:

@@ -15,6 +15,7 @@ from sqlalchemy import (
     Boolean,
     Integer,
     BigInteger,
+    CheckConstraint,
     ForeignKey,
     select,
     case,
@@ -120,6 +121,16 @@ class User(Base):
     jobs = relationship("Job", back_populates="user")
     instances = relationship("Instance", back_populates="billed_user")
     secrets = relationship("Secret", back_populates="user", cascade="all, delete-orphan")
+    external_backend_accounts = relationship(
+        "ExternalBackendAccount",
+        back_populates="user",
+        passive_deletes=True,
+    )
+    external_operations = relationship(
+        "ExternalOperation",
+        back_populates="user",
+        passive_deletes=True,
+    )
 
     # The "true" balance which also accounts for the private instances.
     current_balance = relationship(
@@ -360,6 +371,12 @@ class JobQuota(Base):
 
 class PriceOverride(Base):
     __tablename__ = "price_overrides"
+    __table_args__ = (
+        CheckConstraint(
+            "pricing_rules IS NULL OR jsonb_typeof(pricing_rules) = 'array'",
+            name="ck_price_overrides_pricing_rules",
+        ),
+    )
     user_id = Column(String, primary_key=True)
     chute_id = Column(String, primary_key=True)
     per_request = Column(Double, nullable=True)
@@ -367,6 +384,37 @@ class PriceOverride(Base):
     per_million_out = Column(Double, nullable=True)
     per_step = Column(Double, nullable=True)
     cache_discount = Column(Double, nullable=True)
+    pricing_rules = Column(JSONB, nullable=True)
+
+    @validates(
+        "per_request",
+        "per_million_in",
+        "per_million_out",
+        "per_step",
+        "cache_discount",
+    )
+    def validate_legacy_rate(self, name, value):
+        if value is None:
+            return None
+        from api.payment.pricing import validate_legacy_pricing_rates
+
+        validate_legacy_pricing_rates({name: value})
+        return value
+
+    @validates("pricing_rules")
+    def validate_pricing_rules(self, _, value):
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("pricing_rules must be an array")
+        # This ORM attribute is the common write boundary for hosted and
+        # external overrides.  Validate the complete rule language here so a
+        # malformed metric, condition, scope, or match group cannot be stored
+        # through a future/admin write path and only fail later at billing.
+        from api.payment.pricing import parse_pricing_rules
+
+        parse_pricing_rules(value)
+        return value
 
     @staticmethod
     async def get(user_id: str, chute_id: str):
@@ -403,6 +451,7 @@ class PriceOverride(Base):
                         "per_million_out": override.per_million_out,
                         "per_step": override.per_step,
                         "cache_discount": override.cache_discount,
+                        "pricing_rules": override.pricing_rules,
                         "user_id": override.user_id,
                         "chute_id": override.chute_id,
                     }

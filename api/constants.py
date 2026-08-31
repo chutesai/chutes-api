@@ -234,6 +234,7 @@ WITH chute_details AS (
     FROM chutes c
     LEFT JOIN instances i ON c.chute_id = i.chute_id
     LEFT JOIN rolling_updates ru ON c.chute_id = ru.chute_id
+    WHERE c.execution_backend = 'hosted'
     GROUP BY c.chute_id, c.name, c.public
 ),
 latest_logs AS (

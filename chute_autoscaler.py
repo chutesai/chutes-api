@@ -839,7 +839,7 @@ async def refresh_instance_compute_multipliers(chute_ids: List[str] = None):
         await session.execute(text("SET LOCAL statement_timeout = '10s'"))
 
         # Load chutes (optionally filtered)
-        query = select(Chute)
+        query = select(Chute).where(Chute.execution_backend == "hosted")
         if chute_ids:
             query = query.where(Chute.chute_id.in_(chute_ids))
         result = await session.execute(query)
@@ -1230,7 +1230,9 @@ async def get_all_chutes_from_db() -> Set[str]:
     Get all chute IDs from the database.
     """
     async with get_session() as session:
-        result = await session.execute(text("SELECT chute_id FROM chutes"))
+        result = await session.execute(
+            text("SELECT chute_id FROM chutes WHERE execution_backend = 'hosted'")
+        )
         return {row.chute_id for row in result}
 
 
@@ -1555,9 +1557,12 @@ async def _perform_autoscale_impl(
                         LEFT JOIN instances i ON c.chute_id = i.chute_id
                         LEFT JOIN user_current_balance ucb on ucb.user_id = c.user_id
                         LEFT JOIN chute_manual_boosts cmb on cmb.chute_id = c.chute_id
-                        WHERE c.jobs IS NULL
+                        WHERE c.execution_backend = 'hosted'
+                          AND (
+                              c.jobs IS NULL
                               OR c.jobs = '[]'::jsonb
                               OR c.jobs = '{}'::jsonb
+                          )
                         GROUP BY c.chute_id
                     """)
                 )

@@ -4,7 +4,7 @@ User logic/code.
 
 from typing import Optional
 from dataclasses import dataclass, field
-from sqlalchemy import exists, or_, delete
+from sqlalchemy import exists, or_, delete, func
 from sqlalchemy.future import select
 from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
 from bittensor_wallet.keypair import Keypair
@@ -50,19 +50,33 @@ class SecretRef:
 
 
 @dataclass
+class ExternalAccountRef:
+    account_id: str
+    name: str
+
+
+@dataclass
 class UserResources:
     """
-    A user's resources whose ``NO ACTION`` foreign keys block a hard delete: chutes, images
-    and secrets. Internal domain object -- everything else CASCADEs or has no FK to ``users``.
+    A user's resources and unsettled work that block a hard delete.
     """
 
     chutes: list[ChuteRef] = field(default_factory=list)
     images: list[ImageRef] = field(default_factory=list)
     secrets: list[SecretRef] = field(default_factory=list)
+    external_accounts: list[ExternalAccountRef] = field(default_factory=list)
+    external_operation_count: int = 0
+    unresolved_external_operation_count: int = 0
 
     @property
     def is_empty(self) -> bool:
-        return not (self.chutes or self.images or self.secrets)
+        return not (
+            self.chutes
+            or self.images
+            or self.secrets
+            or self.external_accounts
+            or self.unresolved_external_operation_count
+        )
 
 
 @dataclass
@@ -100,7 +114,9 @@ def get_current_user(
         Helper to authenticate requests.
         """
 
-        if (hotkey or signature or nonce) and (not hotkey or not signature or not nonce):
+        if (hotkey or signature or nonce) and (
+            not hotkey or not signature or not nonce
+        ):
             hotkey, signature, nonce = None, None, None
         use_hotkey_auth = registered_to is not None or (hotkey and signature)
         if registered_to is not None and raise_not_found:
@@ -236,45 +252,99 @@ def get_current_user(
     return _authenticate
 
 
-async def resolve_user(session: AsyncSession, identifier: str) -> Optional[User]:
+async def resolve_user(
+    session: AsyncSession,
+    identifier: str,
+    *,
+    for_update: bool = False,
+) -> Optional[User]:
     """Resolve a user by ``user_id`` or ``username``; return ``None`` if there's no match.
 
     A pure lookup with no HTTP concerns -- the caller decides what a missing user means.
+    ``for_update`` serializes destructive lifecycle checks with inserts that reference
+    the user through a foreign key.
     """
-    return (
-        (
-            await session.execute(
-                select(User).where(or_(User.username == identifier, User.user_id == identifier))
-            )
-        )
-        .unique()
-        .scalar_one_or_none()
+    query = select(User).where(
+        or_(User.username == identifier, User.user_id == identifier)
     )
+    if for_update:
+        query = query.with_for_update(of=User)
+    return (await session.execute(query)).unique().scalar_one_or_none()
 
 
 async def get_user_resources(session: AsyncSession, user_id: str) -> UserResources:
-    """Return the user-owned resources whose ``NO ACTION`` FKs block a hard delete.
+    """Return owned resources and unresolved work that block a hard delete.
 
-    These (chutes, images, secrets) must be torn down before the ``users`` row can be
-    deleted; everything else either CASCADEs or has no FK to ``users``.
+    Chutes, images, secrets, and external accounts must be torn down first. External
+    operation history may be retained only after its settlement has resolved.
     """
     chutes = (
         await session.execute(
-            select(Chute.chute_id, Chute.name, Chute.version).where(Chute.user_id == user_id)
+            select(Chute.chute_id, Chute.name, Chute.version).where(
+                Chute.user_id == user_id
+            )
         )
     ).all()
     images = (
         await session.execute(
-            select(Image.image_id, Image.name, Image.tag).where(Image.user_id == user_id)
+            select(Image.image_id, Image.name, Image.tag).where(
+                Image.user_id == user_id
+            )
         )
     ).all()
     secrets = (
-        await session.execute(select(Secret.secret_id, Secret.key).where(Secret.user_id == user_id))
+        await session.execute(
+            select(Secret.secret_id, Secret.key).where(Secret.user_id == user_id)
+        )
     ).all()
+    # Imported locally to keep ordinary authentication paths independent from the
+    # optional execution backend's ORM module.
+    from api.external_backend.schemas import (
+        ExternalBackendAccount,
+        ExternalOperation,
+        ExternalSettlementStatus,
+    )
+
+    external_accounts = (
+        await session.execute(
+            select(
+                ExternalBackendAccount.account_id, ExternalBackendAccount.name
+            ).where(ExternalBackendAccount.user_id == user_id)
+        )
+    ).all()
+    external_operation_count, unresolved_external_operation_count = (
+        await session.execute(
+            select(
+                func.count(ExternalOperation.operation_id),
+                func.count(ExternalOperation.operation_id).filter(
+                    ExternalOperation.settlement_status.in_(
+                        (
+                            ExternalSettlementStatus.PENDING.value,
+                            ExternalSettlementStatus.FAILED.value,
+                            ExternalSettlementStatus.QUARANTINED.value,
+                        )
+                    )
+                ),
+            ).where(
+                ExternalOperation.user_id == user_id,
+            )
+        )
+    ).one()
     return UserResources(
-        chutes=[ChuteRef(chute_id=c.chute_id, name=c.name, version=c.version) for c in chutes],
+        chutes=[
+            ChuteRef(chute_id=c.chute_id, name=c.name, version=c.version)
+            for c in chutes
+        ],
         images=[ImageRef(image_id=i.image_id, name=i.name, tag=i.tag) for i in images],
         secrets=[SecretRef(secret_id=s.secret_id, key=s.key) for s in secrets],
+        external_accounts=[
+            ExternalAccountRef(account_id=account.account_id, name=account.name)
+            for account in external_accounts
+        ],
+        external_operation_count=int(external_operation_count or 0),
+        unresolved_external_operation_count=int(
+            unresolved_external_operation_count or 0
+        ),
     )
 
 
@@ -288,23 +358,28 @@ def check_user_deletable(user: User, resources: UserResources) -> DeletionEligib
     """Single source of truth for whether a user may be hard-deleted.
 
     Two rules gate the account:
-      * ``permissions_bitmask`` must be 0 -- privileged accounts (admin/support/subnet/...) are
-        never deletable here; strip the roles first;
+      * privileged permission bits must be 0 -- admin/support/subnet/etc. accounts are never
+        deletable here; the benign ``free_account`` billing flag is ignored;
       * ``balance`` must sit within +/-``DELETABLE_BALANCE_THRESHOLD``; a larger magnitude must
         be reconciled manually first.
 
-    Plus a structural precondition: the account must own no chutes/images/secrets (those have
-    ``NO ACTION`` FKs to ``users``, so a delete would FK-error). They are removed manually via
-    their own endpoints, which enforce the public/shared/in-use safety we can't bypass here.
+    Plus lifecycle preconditions: the account must own no chutes/images/secrets (those have
+    ``NO ACTION`` FKs to ``users``), and every retained external operation must have a resolved
+    settlement. Owned resources are removed manually through their domain workflows. Settled
+    and non-billable operation history can remain and is anonymized by its ``ON DELETE SET
+    NULL`` owner foreign key.
 
     Returns a :class:`DeletionEligibility`; the caller decides how to surface a block.
     """
-    if user.permissions_bitmask:
+    blocking_permissions = (
+        int(user.permissions_bitmask or 0) & ~Permissioning.free_account.bitmask
+    )
+    if blocking_permissions:
         return DeletionEligibility(
             allowed=False,
             message="User has special roles/permissions and cannot be deleted. "
             "Remove their roles first.",
-            context={"permissions_bitmask": user.permissions_bitmask},
+            context={"permissions_bitmask": blocking_permissions},
         )
 
     balance = user.balance or 0.0
@@ -316,17 +391,47 @@ def check_user_deletable(user: User, resources: UserResources) -> DeletionEligib
             context={"balance": balance, "threshold": DELETABLE_BALANCE_THRESHOLD},
         )
 
+    if resources.unresolved_external_operation_count:
+        return DeletionEligibility(
+            allowed=False,
+            message=(
+                "User has external operations with unresolved billing. Settle or "
+                "reconcile them before deleting the account."
+            ),
+            context={
+                "external_operation_count": resources.external_operation_count,
+                "unresolved_external_operation_count": (
+                    resources.unresolved_external_operation_count
+                ),
+            },
+        )
+
     if not resources.is_empty:
         return DeletionEligibility(
             allowed=False,
-            message="User owns resources (chutes/images/secrets) that must be removed "
-            "manually before the account can be deleted.",
+            message=(
+                "User owns resources (Chutes, images, secrets, or external accounts) "
+                "that must be removed manually before the account can be deleted."
+            ),
             context={
-                "chutes": [{"chute_id": c.chute_id, "name": c.name} for c in resources.chutes],
-                "images": [
-                    {"image_id": i.image_id, "name": i.name, "tag": i.tag} for i in resources.images
+                "chutes": [
+                    {"chute_id": c.chute_id, "name": c.name} for c in resources.chutes
                 ],
-                "secrets": [{"secret_id": s.secret_id, "key": s.key} for s in resources.secrets],
+                "images": [
+                    {"image_id": i.image_id, "name": i.name, "tag": i.tag}
+                    for i in resources.images
+                ],
+                "secrets": [
+                    {"secret_id": s.secret_id, "key": s.key} for s in resources.secrets
+                ],
+                "external_accounts": [
+                    {"account_id": account.account_id, "name": account.name}
+                    for account in resources.external_accounts
+                ],
+                "external_operation_count": resources.external_operation_count,
+                "unresolved_external_operation_count": (
+                    resources.unresolved_external_operation_count
+                ),
             },
         )
 
@@ -336,9 +441,9 @@ def check_user_deletable(user: User, resources: UserResources) -> DeletionEligib
 async def delete_user(session: AsyncSession, user: User) -> list[str]:
     """Hard-delete a user row within ``session`` (does NOT commit).
 
-    Only valid once the account owns no chutes/images/secrets -- that is enforced by
-    :func:`check_user_deletable`, which requires those to be removed manually first (their
-    own delete endpoints enforce the public/shared/in-use safety we can't safely bypass here).
+    Only valid once the account owns no chutes/images/secrets and has no unresolved external
+    operation settlements. That is enforced by :func:`check_user_deletable`; resource delete
+    endpoints retain their own public/shared/in-use safeguards.
     Deleting the ``users`` row fires the ``on_user_delete`` trigger (archives to
     ``deleted_users``) and CASCADEs api_keys/jobs/logos/chute_shares/oauth_*.
 
@@ -346,7 +451,11 @@ async def delete_user(session: AsyncSession, user: User) -> list[str]:
     can flush the per-key auth caches after commit.
     """
     api_key_ids = list(
-        (await session.execute(select(APIKey.api_key_id).where(APIKey.user_id == user.user_id)))
+        (
+            await session.execute(
+                select(APIKey.api_key_id).where(APIKey.user_id == user.user_id)
+            )
+        )
         .scalars()
         .all()
     )
@@ -390,7 +499,11 @@ async def chutes_user_id():
         return user_id
     async with get_session(readonly=True) as session:
         router._chutes_user_id = (
-            (await session.execute(select(User.user_id).where(User.username == "chutes")))
+            (
+                await session.execute(
+                    select(User.user_id).where(User.username == "chutes")
+                )
+            )
             .unique()
             .scalar_one_or_none()
         )
@@ -410,6 +523,11 @@ async def chutes_user():
 
 
 def subnet_role_accessible(chute, user, admin: bool = False):
+    # Integrated-subnet privileges are part of the hosted execution trust model.
+    # External catalog entries may use arbitrary operator-selected names, so a
+    # name substring must never grant their callers invoke or management access.
+    if getattr(chute, "execution_backend", "hosted") != "hosted":
+        return False
     netuid = None
     for subnet, info in INTEGRATED_SUBNETS.items():
         if info["model_substring"] in chute.name.lower():
@@ -420,7 +538,11 @@ def subnet_role_accessible(chute, user, admin: bool = False):
     perms = [Permissioning.subnet_admin]
     if not admin:
         perms.append(Permissioning.subnet_invoke)
-    return user.netuids and netuid in user.netuids and any(user.has_role(perm) for perm in perms)
+    return (
+        user.netuids
+        and netuid in user.netuids
+        and any(user.has_role(perm) for perm in perms)
+    )
 
 
 async def bt_user_exists(session, hotkey: str) -> bool:

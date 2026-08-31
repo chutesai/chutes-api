@@ -2,6 +2,10 @@
 app.kubernetes.io/name: api
 {{- end }}
 
+{{- define "externalOperationWorker.labels" -}}
+app.kubernetes.io/name: external-operation-worker
+{{- end }}
+
 {{- define "socket.labels" -}}
 app.kubernetes.io/name: socket
 {{- end }}

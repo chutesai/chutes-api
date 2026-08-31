@@ -4,9 +4,10 @@ Multi-model routing: failover, latency-based, and throughput-based selection.
 
 import time
 import orjson as json
-from sqlalchemy import select, func
+from sqlalchemy import func, or_, select
 from api.config import settings
 from api.chute.schemas import Chute
+from api.chute.standard_templates import standard_template_matches
 from api.chute.util import get_one
 from api.database import get_session
 from api.instance.util import load_chute_target_ids
@@ -77,6 +78,32 @@ async def check_chute_availability(chute_id: str) -> bool:
     Lightweight check: does this chute have at least one instance with capacity?
     Uses Redis connection tracking keys; falls back to load_chute_target_ids for cold chutes.
     """
+    chute = await get_one(chute_id)
+    if chute and chute.execution_backend == "external":
+        if chute.disabled:
+            return False
+        from api.external_backend.schemas import (
+            ExternalBackendAccount,
+            ExternalChuteBinding,
+        )
+
+        async with get_session(readonly=True) as session:
+            result = await session.execute(
+                select(ExternalChuteBinding.binding_id)
+                .join(
+                    ExternalBackendAccount,
+                    ExternalBackendAccount.account_id
+                    == ExternalChuteBinding.account_id,
+                )
+                .where(
+                    ExternalChuteBinding.chute_id == chute.chute_id,
+                    ExternalChuteBinding.enabled.is_(True),
+                    ExternalBackendAccount.enabled.is_(True),
+                )
+                .limit(1)
+            )
+            return result.scalar_one_or_none() is not None
+
     instance_ids = await settings.redis_client.smembers(f"cc_inst:{chute_id}")
     if not instance_ids:
         nonce = int(time.time())
@@ -112,11 +139,56 @@ async def get_chute_perf(chute_id: str) -> dict[str, float | None]:
     }
 
 
-async def _load_chutes_map(chute_ids: list[str]) -> dict[str, Chute]:
+async def _get_routing_chute(
+    name_or_id: str,
+    *,
+    user_id: str,
+    execution_backend: str | None = None,
+) -> Chute | None:
+    """Load an exact routing candidate, optionally constrained by backend."""
+
+    if execution_backend is None:
+        return await get_one(name_or_id)
+    async with get_session(readonly=True) as session:
+        return (
+            (
+                await session.execute(
+                    select(Chute)
+                    .where(
+                        or_(
+                            Chute.name == name_or_id,
+                            Chute.chute_id == name_or_id,
+                        ),
+                        Chute.execution_backend == execution_backend,
+                        Chute.disabled.is_not(True),
+                    )
+                    .order_by(
+                        (Chute.user_id == user_id).desc(),
+                        Chute.public.desc(),
+                        Chute.created_at.desc(),
+                    )
+                    .limit(1)
+                )
+            )
+            .unique()
+            .scalar_one_or_none()
+        )
+
+
+async def _load_chutes_map(
+    chute_ids: list[str],
+    *,
+    user_id: str,
+    execution_backend: str | None = None,
+) -> dict[str, Chute]:
     """Load chute objects for a list of IDs/names, returning a map of id->Chute."""
     result = {}
     for cid in chute_ids:
-        chute = await get_one(cid)
+        chute = await _get_routing_chute(
+            cid,
+            user_id=user_id,
+            execution_backend=execution_backend,
+        )
         if chute is not None:
             result[cid] = chute
     return result
@@ -136,6 +208,10 @@ async def _rank_failover(chute_ids: list[str], chutes_map: dict[str, Chute]) -> 
             continue
         if await check_chute_availability(chute.chute_id):
             available.append(chute)
+        elif chute.execution_backend == "external":
+            # External availability is entirely binding/account based. Never
+            # fall through to hosted target discovery for this backend.
+            continue
         else:
             nonce = int(time.time())
             nonce -= nonce % 30
@@ -166,6 +242,11 @@ async def _rank_by_metric(
             continue
         if not await check_chute_availability(chute.chute_id):
             continue
+        if chute.execution_backend == "external":
+            # Provider-neutral external routes do not expose hosted OTPS/TTFT
+            # telemetry. Keep them available as unscored fallbacks.
+            unscored.append(chute)
+            continue
         perf = await get_chute_perf(chute.chute_id)
         score = perf.get(metric)
         if score is None:
@@ -184,11 +265,19 @@ async def _rank_by_metric(
 
 def _check_chute_access(chute: Chute, template: str, user_id: str) -> bool:
     """Check that chute matches template. Access checks happen downstream."""
-    return chute.standard_template == template
+    return standard_template_matches(
+        chute.standard_template,
+        template,
+        execution_backend=getattr(chute, "execution_backend", "hosted"),
+    )
 
 
 async def resolve_model_parameter(
-    model_str: str, user_id: str, template: str
+    model_str: str,
+    user_id: str,
+    template: str,
+    *,
+    execution_backend: str | None = None,
 ) -> tuple[list[Chute], str | None]:
     """
     Main entry point for multi-model resolution.
@@ -204,7 +293,11 @@ async def resolve_model_parameter(
     5. Else look up as user alias -> expand to ordered chute_ids list
     """
     # 1. Always try exact match first — colons and commas can appear in real model names.
-    exact = await get_one(model_str)
+    exact = await _get_routing_chute(
+        model_str,
+        user_id=user_id,
+        execution_backend=execution_backend,
+    )
     if exact is not None and _check_chute_access(exact, template, user_id):
         return [exact], None
 
@@ -217,7 +310,14 @@ async def resolve_model_parameter(
         expanded: list[str] = []
         for token in tokens:
             # Prefer direct model lookup over alias when names collide.
-            if await get_one(token) is not None:
+            if (
+                await _get_routing_chute(
+                    token,
+                    user_id=user_id,
+                    execution_backend=execution_backend,
+                )
+                is not None
+            ):
                 expanded.append(token)
                 continue
             alias_ids = await get_user_alias(user_id, token)
@@ -229,7 +329,11 @@ async def resolve_model_parameter(
     else:
         # Try single lookup on suffix-stripped name.
         if routing_mode is not None:
-            chute = await get_one(raw_model)
+            chute = await _get_routing_chute(
+                raw_model,
+                user_id=user_id,
+                execution_backend=execution_backend,
+            )
             if chute is not None and _check_chute_access(chute, template, user_id):
                 return [chute], routing_mode
 
@@ -243,7 +347,11 @@ async def resolve_model_parameter(
     if not chute_ids:
         return [], routing_mode
 
-    chutes_map = await _load_chutes_map(chute_ids)
+    chutes_map = await _load_chutes_map(
+        chute_ids,
+        user_id=user_id,
+        execution_backend=execution_backend,
+    )
 
     valid_ids = [
         cid
@@ -263,3 +371,53 @@ async def resolve_model_parameter(
         ranked = await _rank_failover(valid_ids, valid_map)
 
     return ranked, routing_mode
+
+
+async def resolve_exact_external_models(
+    model_str: str, user_id: str, template: str
+) -> list[Chute]:
+    """Resolve exact external candidates before legacy hosted name rewrites.
+
+    Access is intentionally checked by the common invocation filter. Keeping all
+    exact candidates here preserves sharing and subnet-role access semantics and
+    prevents an inaccessible duplicate from hiding an accessible one.
+    """
+
+    from api.external_backend.schemas import (
+        ExternalBackendAccount,
+        ExternalChuteBinding,
+    )
+
+    async with get_session(readonly=True) as session:
+        candidates = (
+            await session.execute(
+                select(Chute)
+                .join(
+                    ExternalChuteBinding,
+                    ExternalChuteBinding.chute_id == Chute.chute_id,
+                )
+                .join(
+                    ExternalBackendAccount,
+                    ExternalBackendAccount.account_id
+                    == ExternalChuteBinding.account_id,
+                )
+                .where(
+                    or_(Chute.name == model_str, Chute.chute_id == model_str),
+                    Chute.execution_backend == "external",
+                    Chute.disabled.is_(False),
+                    ExternalChuteBinding.enabled.is_(True),
+                    ExternalBackendAccount.enabled.is_(True),
+                )
+                .order_by(
+                    (Chute.user_id == user_id).desc(),
+                    Chute.public.desc(),
+                    Chute.created_at.desc(),
+                )
+            )
+        ).unique().scalars().all()
+    return [
+        candidate
+        for candidate in candidates
+        if not getattr(candidate, "disabled", False)
+        and _check_chute_access(candidate, template, user_id)
+    ]

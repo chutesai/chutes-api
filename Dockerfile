@@ -126,7 +126,12 @@ ENTRYPOINT ["uv", "run", "python", "-m", "api.image.forge"]
 # API
 ###
 FROM base AS api
-RUN curl -fsSL -o /usr/local/bin/dbmate https://github.com/amacneil/dbmate/releases/latest/download/dbmate-linux-amd64 && chmod +x /usr/local/bin/dbmate
+ARG DBMATE_VERSION=v2.35.0
+ARG DBMATE_LINUX_AMD64_SHA256=f60fd6c6dbed316de116a701945a3fb21d365a25a7e6a9b28ba3a50f49818d8f
+RUN curl -fsSL -o /usr/local/bin/dbmate \
+      "https://github.com/amacneil/dbmate/releases/download/${DBMATE_VERSION}/dbmate-linux-amd64" \
+    && echo "${DBMATE_LINUX_AMD64_SHA256}  /usr/local/bin/dbmate" | sha256sum -c - \
+    && chmod +x /usr/local/bin/dbmate
 RUN useradd chutes -s /bin/bash -d /home/chutes && mkdir -p /home/chutes && chown chutes:chutes /home/chutes
 RUN mkdir -p /app && chown chutes:chutes /app
 RUN ln -s /usr/bin/python3 /usr/bin/python
@@ -168,6 +173,7 @@ ADD --chown=chutes data/cache_hit_cluster_params.json /app/cache_hit_cluster_par
 ADD --chown=chutes log_prober.py /app/log_prober.py
 ADD --chown=chutes conn_prober.py /app/conn_prober.py
 ADD --chown=chutes server_health_prober.py /app/server_health_prober.py
+ADD --chown=chutes external_operation_worker.py /app/external_operation_worker.py
 ADD --chown=chutes scripts /app/scripts
 
 ENV PYTHONPATH=/app

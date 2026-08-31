@@ -417,7 +417,14 @@ async def _verify_instance_tls_live(host: str, port: int, expected_cert_pem: str
 
 async def _load_chute(db, chute_id: str) -> Chute:
     chute = (
-        (await db.execute(select(Chute).where(Chute.chute_id == chute_id)))
+        (
+            await db.execute(
+                select(Chute).where(
+                    Chute.chute_id == chute_id,
+                    Chute.execution_backend == "hosted",
+                )
+            )
+        )
         .unique()
         .scalar_one_or_none()
     )
@@ -2676,7 +2683,14 @@ async def _build_launch_config_verified_response(
 
     # Secrets, e.g. private HF tokens etc.
     secrets = (
-        (await db.execute(select(Secret).where(Secret.purpose == launch_config.chute_id)))
+        (
+            await db.execute(
+                select(Secret).where(
+                    Secret.purpose == launch_config.chute_id,
+                    Secret.kind == "chute",
+                )
+            )
+        )
         .unique()
         .scalars()
         .all()

@@ -100,7 +100,9 @@ class Settings(BaseSettings):
     @cached_property
     def validator_keypair(self) -> Optional[Keypair]:
         if not self._validator_keypair and os.getenv("VALIDATOR_SEED"):
-            self._validator_keypair = Keypair.create_from_seed(os.environ["VALIDATOR_SEED"])
+            self._validator_keypair = Keypair.create_from_seed(
+                os.environ["VALIDATOR_SEED"]
+            )
         return self._validator_keypair
 
     @cached_property
@@ -201,9 +203,7 @@ class Settings(BaseSettings):
     @property
     def redis_url(self) -> str:
         scheme = "rediss" if self.redis_cacert else "redis"
-        base = (
-            f"{scheme}://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
-        )
+        base = f"{scheme}://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
         if self.redis_cacert:
             return f"{base}?ssl_cert_reqs=required&ssl_ca_certs={self.redis_cacert}"
         return base
@@ -289,17 +289,27 @@ class Settings(BaseSettings):
         return self._cm_redis_client
 
     registry_host: str = os.getenv("REGISTRY_HOST", "registry:5000")
-    registry_external_host: str = os.getenv("REGISTRY_EXTERNAL_HOST", "registry.chutes.ai")
+    registry_external_host: str = os.getenv(
+        "REGISTRY_EXTERNAL_HOST", "registry.chutes.ai"
+    )
     registry_insecure: bool = os.getenv("REGISTRY_INSECURE", "false").lower() == "true"
     build_timeout: int = int(os.getenv("BUILD_TIMEOUT", "7200"))
     push_timeout: int = int(os.getenv("PUSH_TIMEOUT", "7200"))
     scan_timeout: int = int(os.getenv("SCAN_TIMEOUT", "7200"))
     netuid: int = int(os.getenv("NETUID", "64"))
-    subtensor: str = os.getenv("SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443")
-    mev_protection_enabled: bool = os.getenv("MEV_PROTECTION_ENABLED", "false").lower() == "true"
+    subtensor: str = os.getenv(
+        "SUBTENSOR_ADDRESS", "wss://entrypoint-finney.opentensor.ai:443"
+    )
+    mev_protection_enabled: bool = (
+        os.getenv("MEV_PROTECTION_ENABLED", "false").lower() == "true"
+    )
     payment_recovery_blocks: int = int(os.getenv("PAYMENT_RECOVERY_BLOCKS", "256"))
-    device_info_challenge_count: int = int(os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20"))
-    skip_gpu_verification: bool = os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
+    device_info_challenge_count: int = int(
+        os.getenv("DEVICE_INFO_CHALLENGE_COUNT", "20")
+    )
+    skip_gpu_verification: bool = (
+        os.getenv("SKIP_GPU_VERIFICATION", "false").lower() == "true"
+    )
     graval_url: str = os.getenv("GRAVAL_URL", "https://graval.chutes.ai:11443")
 
     # Database settings.
@@ -327,6 +337,127 @@ class Settings(BaseSettings):
     # Base domain.
     base_domain: Optional[str] = os.getenv("BASE_DOMAIN", "chutes.ai")
 
+    # Plaintext external upstream transport is disabled at the process boundary.
+    # A route-level opt-in alone must never be enough to expose provider credentials.
+    external_allow_insecure_upstreams: bool = (
+        os.getenv("EXTERNAL_ALLOW_INSECURE_UPSTREAMS", "false").lower() == "true"
+    )
+    # Process-wide request ceiling. Route configuration may choose a smaller
+    # limit, but can never cause an API worker to buffer more than this value.
+    max_request_body_bytes: int = Field(
+        default=128 * 1024 * 1024,
+        validation_alias="MAX_REQUEST_BODY_BYTES",
+        ge=1,
+        le=1024 * 1024 * 1024,
+    )
+    # Hard ceilings for spend funded through external backend accounts. Account
+    # configuration may lower these values, but cannot raise them at runtime.
+    external_max_active_tasks_per_user: int = int(
+        os.getenv("EXTERNAL_MAX_ACTIVE_TASKS_PER_USER", "4")
+    )
+    external_max_active_tasks_per_account: int = int(
+        os.getenv("EXTERNAL_MAX_ACTIVE_TASKS_PER_ACCOUNT", "256")
+    )
+    external_max_active_sync_requests_per_user: int = int(
+        os.getenv("EXTERNAL_MAX_ACTIVE_SYNC_REQUESTS_PER_USER", "8")
+    )
+    external_max_active_sync_requests_per_account: int = int(
+        os.getenv("EXTERNAL_MAX_ACTIVE_SYNC_REQUESTS_PER_ACCOUNT", "128")
+    )
+    external_max_realtime_sessions_per_user: int = int(
+        os.getenv("EXTERNAL_MAX_REALTIME_SESSIONS_PER_USER", "2")
+    )
+    external_max_realtime_sessions_per_account: int = int(
+        os.getenv("EXTERNAL_MAX_REALTIME_SESSIONS_PER_ACCOUNT", "64")
+    )
+    external_max_streams_per_user: int = int(
+        os.getenv("EXTERNAL_MAX_STREAMS_PER_USER", "4")
+    )
+    external_max_streams_per_account: int = int(
+        os.getenv("EXTERNAL_MAX_STREAMS_PER_ACCOUNT", "128")
+    )
+    external_max_daily_operations_per_user: int = int(
+        os.getenv("EXTERNAL_MAX_DAILY_OPERATIONS_PER_USER", "1000")
+    )
+    external_max_daily_operations_per_account: int = int(
+        os.getenv("EXTERNAL_MAX_DAILY_OPERATIONS_PER_ACCOUNT", "100000")
+    )
+    external_max_daily_paygo_usd_per_user: float = float(
+        os.getenv("EXTERNAL_MAX_DAILY_PAYGO_USD_PER_USER", "25")
+    )
+    external_max_daily_paygo_usd_per_account: float = float(
+        os.getenv("EXTERNAL_MAX_DAILY_PAYGO_USD_PER_ACCOUNT", "1000")
+    )
+    external_max_estimated_operation_cost_usd: float = float(
+        os.getenv(
+            "EXTERNAL_MAX_ESTIMATED_OPERATION_COST_USD",
+            os.getenv("EXTERNAL_MAX_ESTIMATED_TASK_COST_USD", "50"),
+        )
+    )
+    external_artifact_requests_per_minute: int = int(
+        os.getenv("EXTERNAL_ARTIFACT_REQUESTS_PER_MINUTE", "60")
+    )
+    external_artifact_max_concurrent_per_user: int = int(
+        os.getenv("EXTERNAL_ARTIFACT_MAX_CONCURRENT_PER_USER", "3")
+    )
+    external_artifact_max_bytes_per_operation: int = int(
+        os.getenv("EXTERNAL_ARTIFACT_MAX_BYTES_PER_OPERATION", str(10 * 1024**3))
+    )
+    external_artifact_max_daily_bytes_per_user: int = int(
+        os.getenv("EXTERNAL_ARTIFACT_MAX_DAILY_BYTES_PER_USER", str(50 * 1024**3))
+    )
+    external_operation_retention_days: int = int(
+        os.getenv("EXTERNAL_OPERATION_RETENTION_DAYS", "90")
+    )
+    external_operation_retention_batch_size: int = int(
+        os.getenv("EXTERNAL_OPERATION_RETENTION_BATCH_SIZE", "1000")
+    )
+    external_settlement_reconcile_interval_seconds: float = float(
+        os.getenv("EXTERNAL_SETTLEMENT_RECONCILE_INTERVAL_SECONDS", "5")
+    )
+    external_settlement_batch_size: int = int(
+        os.getenv("EXTERNAL_SETTLEMENT_BATCH_SIZE", "64")
+    )
+    external_settlement_quarantine_attempts: int = Field(
+        default=int(os.getenv("EXTERNAL_SETTLEMENT_QUARANTINE_ATTEMPTS", "8")),
+        ge=1,
+        le=100,
+    )
+    external_operation_maintenance_interval_seconds: float = float(
+        os.getenv("EXTERNAL_OPERATION_MAINTENANCE_INTERVAL_SECONDS", "60")
+    )
+    external_poller_enabled: bool = (
+        os.getenv("EXTERNAL_POLLER_ENABLED", "true").lower() == "true"
+    )
+    external_poller_batch_size: int = int(os.getenv("EXTERNAL_POLLER_BATCH_SIZE", "16"))
+    external_poller_concurrency: int = int(
+        os.getenv("EXTERNAL_POLLER_CONCURRENCY", "8")
+    )
+    external_poller_lease_seconds: float = float(
+        os.getenv("EXTERNAL_POLLER_LEASE_SECONDS", "60")
+    )
+    external_poller_idle_seconds: float = float(
+        os.getenv("EXTERNAL_POLLER_IDLE_SECONDS", "1")
+    )
+    external_poller_shutdown_timeout_seconds: float = float(
+        os.getenv("EXTERNAL_POLLER_SHUTDOWN_TIMEOUT_SECONDS", "30")
+    )
+    external_circuit_auth_failure_threshold: int = Field(
+        default=int(os.getenv("EXTERNAL_CIRCUIT_AUTH_FAILURE_THRESHOLD", "3")),
+        ge=1,
+        le=1000,
+    )
+    external_circuit_service_failure_threshold: int = Field(
+        default=int(os.getenv("EXTERNAL_CIRCUIT_SERVICE_FAILURE_THRESHOLD", "10")),
+        ge=1,
+        le=1000,
+    )
+    external_circuit_cooldown_seconds: int = Field(
+        default=int(os.getenv("EXTERNAL_CIRCUIT_COOLDOWN_SECONDS", "300")),
+        ge=10,
+        le=86400,
+    )
+
     # Launch config JWT signing key.
     launch_config_key: str = hashlib.sha256(
         os.getenv("LAUNCH_CONFIG_KEY", "launch-secret").encode()
@@ -340,7 +471,9 @@ class Settings(BaseSettings):
         if hasattr(self, "_launch_config_private_key"):
             return self._launch_config_private_key
         if (key_bytes := load_launch_config_private_key()) is not None:
-            self._launch_config_private_key = serialization.load_pem_private_key(key_bytes, None)
+            self._launch_config_private_key = serialization.load_pem_private_key(
+                key_bytes, None
+            )
         return self._launch_config_private_key
 
     # Default quotas/discounts.
@@ -372,7 +505,9 @@ class Settings(BaseSettings):
 
     # Cosign Settings
     cosign_password: Optional[str] = os.getenv("COSIGN_PASSWORD")
-    cosign_key: Optional[Path] = Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
+    cosign_key: Optional[Path] = (
+        Path(os.getenv("COSIGN_KEY")) if os.getenv("COSIGN_KEY") else None
+    )
 
     # hCaptcha
     hcaptcha_sitekey: Optional[str] = os.getenv("HCAPTCHA_SITEKEY")
@@ -427,7 +562,9 @@ class Settings(BaseSettings):
             mrtd = _hex96(version_config["mrtd"], "MRTD", version)
             rtmr1 = _hex96(version_config["rtmr1"], "RTMR1", version)
             rtmr2 = _hex96(version_config["rtmr2"], "RTMR2", version)
-            runtime_rtmr3 = _hex96(version_config["runtime_rtmr3"], "runtime RTMR3", version)
+            runtime_rtmr3 = _hex96(
+                version_config["runtime_rtmr3"], "runtime RTMR3", version
+            )
             rc = bool(version_config.get("rc", False))
 
             hardware = version_config.get("hardware") or []
@@ -530,7 +667,9 @@ class Settings(BaseSettings):
             raise ValueError(f"signing_keys_bundle: missing required keys: {missing}")
         missing_sigs = self._REQUIRED_SIGNING_KEY_NAMES - bundle["signatures"].keys()
         if missing_sigs:
-            raise ValueError(f"signing_keys_bundle: missing required signatures: {missing_sigs}")
+            raise ValueError(
+                f"signing_keys_bundle: missing required signatures: {missing_sigs}"
+            )
         # Validate keys and signatures separately: they share the same names, so
         # merging them into one dict would let a valid signature mask an empty key.
         for section in ("keys", "signatures"):
@@ -570,13 +709,17 @@ class Settings(BaseSettings):
     chute_logs_max_lines_per_shipment: int = int(
         os.getenv("CHUTE_LOGS_MAX_LINES_PER_SHIPMENT", "5000")
     )
-    chute_logs_max_line_bytes: int = int(os.getenv("CHUTE_LOGS_MAX_LINE_BYTES", "32768"))
+    chute_logs_max_line_bytes: int = int(
+        os.getenv("CHUTE_LOGS_MAX_LINE_BYTES", "32768")
+    )
     # Logs stream in as batches, often several back-to-back per poll. Cache the (expensive) mTLS
     # authentication per (config_id, cert) so we verify the leaf + do the lookups once, not per batch.
     # The auth result is immutable for the life of a boot, so the TTL is generous.
     # TTL for the Redis-shared auth cache (config+cert → resolved identity). The identity is stable
     # for the config's lifetime, so this only bounds staleness on CA/ownership changes.
-    chute_logs_auth_cache_seconds: int = int(os.getenv("CHUTE_LOGS_AUTH_CACHE_SECONDS", "300"))
+    chute_logs_auth_cache_seconds: int = int(
+        os.getenv("CHUTE_LOGS_AUTH_CACHE_SECONDS", "300")
+    )
 
     # Shared secret injected by the registry.chutes.ai nginx frontend as
     # X-Registry-Proxy-Auth.  When set, the /registry/auth handler refuses
@@ -624,7 +767,9 @@ class Settings(BaseSettings):
             raise ValueError(
                 "LUKS_PASSPHRASES must be a non-empty JSON object mapping version -> passphrase."
             )
-        if not all(isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()):
+        if not all(
+            isinstance(k, str) and isinstance(v, str) and v for k, v in parsed.items()
+        ):
             raise ValueError(
                 "LUKS_PASSPHRASES must map string versions to non-empty string passphrases."
             )
@@ -641,9 +786,15 @@ class Settings(BaseSettings):
     or_free_user_id: str = os.getenv("OR_FREE_USER_ID", "replaceme")
 
     # Agent registration settings.
-    agent_registration_threshold: float = float(os.getenv("AGENT_REGISTRATION_THRESHOLD", "50.0"))
-    agent_registration_tolerance: float = float(os.getenv("AGENT_REGISTRATION_TOLERANCE", "0.10"))
-    agent_registration_ttl_hours: int = int(os.getenv("AGENT_REGISTRATION_TTL_HOURS", "24"))
+    agent_registration_threshold: float = float(
+        os.getenv("AGENT_REGISTRATION_THRESHOLD", "50.0")
+    )
+    agent_registration_tolerance: float = float(
+        os.getenv("AGENT_REGISTRATION_TOLERANCE", "0.10")
+    )
+    agent_registration_ttl_hours: int = int(
+        os.getenv("AGENT_REGISTRATION_TTL_HOURS", "24")
+    )
 
     # TEE server health prober settings.
     # Age of last successful probe past which a server is flagged degraded (default 12h) / offline (default 72h).
@@ -653,7 +804,9 @@ class Settings(BaseSettings):
     server_health_offline_threshold_seconds: int = int(
         os.getenv("SERVER_HEALTH_OFFLINE_THRESHOLD_SECONDS", str(72 * 3600))
     )
-    server_health_max_concurrent: int = int(os.getenv("SERVER_HEALTH_MAX_CONCURRENT", "32"))
+    server_health_max_concurrent: int = int(
+        os.getenv("SERVER_HEALTH_MAX_CONCURRENT", "32")
+    )
 
 
 # Subscription tier: quota -> monthly price in USD (canonical values only).

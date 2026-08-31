@@ -1,3 +1,6 @@
+{{- if and (not .Values.externalOperationWorker.enabled) (not .Values.externalOperationWorker.runInApi) }}
+{{- fail "external operation polling must run in API pods or the dedicated externalOperationWorker deployment" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -105,6 +108,8 @@ spec:
             {{- include "chutes.sensitiveEnv" . | nindent 12 }}
             {{- include "chutes.commonEnv" . | nindent 12 }}
             {{- include "chutes.loggingEnv" . | nindent 12 }}
+            - name: BASE_DOMAIN
+              value: {{ .Values.baseDomain | default "chutes.ai" | quote }}
             - name: PASSPHRASE_ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
@@ -133,6 +138,74 @@ spec:
               value: {{ .Values.api.dbOverflow | default 8 | quote }}
             - name: PROMETHEUS_MULTIPROC_DIR
               value: /tmp/prometheus_multiproc
+            - name: MAX_REQUEST_BODY_BYTES
+              value: {{ .Values.api.maxRequestBodyBytes | default 134217728 | quote }}
+            - name: EXTERNAL_ALLOW_INSECURE_UPSTREAMS
+              value: {{ .Values.externalBackend.allowInsecureUpstreams | default false | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_TASKS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxActiveTasksPerUser | default 4 | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_TASKS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxActiveTasksPerAccount | default 256 | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_SYNC_REQUESTS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxActiveSyncRequestsPerUser | default 8 | quote }}
+            - name: EXTERNAL_MAX_ACTIVE_SYNC_REQUESTS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxActiveSyncRequestsPerAccount | default 128 | quote }}
+            - name: EXTERNAL_MAX_REALTIME_SESSIONS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxRealtimeSessionsPerUser | default 2 | quote }}
+            - name: EXTERNAL_MAX_REALTIME_SESSIONS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxRealtimeSessionsPerAccount | default 64 | quote }}
+            - name: EXTERNAL_MAX_STREAMS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxStreamsPerUser | default 4 | quote }}
+            - name: EXTERNAL_MAX_STREAMS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxStreamsPerAccount | default 128 | quote }}
+            - name: EXTERNAL_MAX_DAILY_OPERATIONS_PER_USER
+              value: {{ .Values.externalBackend.governance.maxDailyOperationsPerUser | default 1000 | quote }}
+            - name: EXTERNAL_MAX_DAILY_OPERATIONS_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxDailyOperationsPerAccount | default 100000 | quote }}
+            - name: EXTERNAL_MAX_DAILY_PAYGO_USD_PER_USER
+              value: {{ .Values.externalBackend.governance.maxDailyPaygoUsdPerUser | default 25 | quote }}
+            - name: EXTERNAL_MAX_DAILY_PAYGO_USD_PER_ACCOUNT
+              value: {{ .Values.externalBackend.governance.maxDailyPaygoUsdPerAccount | default 1000 | quote }}
+            - name: EXTERNAL_MAX_ESTIMATED_OPERATION_COST_USD
+              value: {{ .Values.externalBackend.governance.maxEstimatedOperationCostUsd | default 50 | quote }}
+            - name: EXTERNAL_ARTIFACT_REQUESTS_PER_MINUTE
+              value: {{ .Values.externalBackend.governance.artifactRequestsPerMinute | default 60 | quote }}
+            - name: EXTERNAL_ARTIFACT_MAX_CONCURRENT_PER_USER
+              value: {{ .Values.externalBackend.governance.artifactMaxConcurrentPerUser | default 3 | quote }}
+            - name: EXTERNAL_ARTIFACT_MAX_BYTES_PER_OPERATION
+              value: {{ .Values.externalBackend.governance.artifactMaxBytesPerOperation | default 10737418240 | quote }}
+            - name: EXTERNAL_ARTIFACT_MAX_DAILY_BYTES_PER_USER
+              value: {{ .Values.externalBackend.governance.artifactMaxDailyBytesPerUser | default 53687091200 | quote }}
+            - name: EXTERNAL_POLLER_ENABLED
+              value: {{ (and .Values.externalOperationWorker.runInApi (not .Values.externalOperationWorker.enabled)) | quote }}
+            - name: EXTERNAL_POLLER_BATCH_SIZE
+              value: {{ .Values.externalOperationWorker.poller.batchSize | default 16 | quote }}
+            - name: EXTERNAL_POLLER_CONCURRENCY
+              value: {{ .Values.externalOperationWorker.poller.concurrency | default 8 | quote }}
+            - name: EXTERNAL_POLLER_LEASE_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.leaseSeconds | default 60 | quote }}
+            - name: EXTERNAL_POLLER_IDLE_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.idleSeconds | default 1 | quote }}
+            - name: EXTERNAL_POLLER_SHUTDOWN_TIMEOUT_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.shutdownTimeoutSeconds | default 30 | quote }}
+            - name: EXTERNAL_SETTLEMENT_RECONCILE_INTERVAL_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.settlementReconcileIntervalSeconds | default 5 | quote }}
+            - name: EXTERNAL_SETTLEMENT_BATCH_SIZE
+              value: {{ .Values.externalOperationWorker.poller.settlementBatchSize | default 64 | quote }}
+            - name: EXTERNAL_SETTLEMENT_QUARANTINE_ATTEMPTS
+              value: {{ .Values.externalOperationWorker.poller.settlementQuarantineAttempts | default 8 | quote }}
+            - name: EXTERNAL_OPERATION_MAINTENANCE_INTERVAL_SECONDS
+              value: {{ .Values.externalOperationWorker.poller.maintenanceIntervalSeconds | default 60 | quote }}
+            - name: EXTERNAL_OPERATION_RETENTION_DAYS
+              value: {{ .Values.externalOperationWorker.poller.retentionDays | default 90 | quote }}
+            - name: EXTERNAL_OPERATION_RETENTION_BATCH_SIZE
+              value: {{ .Values.externalOperationWorker.poller.retentionBatchSize | default 1000 | quote }}
+            - name: EXTERNAL_CIRCUIT_AUTH_FAILURE_THRESHOLD
+              value: {{ .Values.externalBackend.circuit.authFailureThreshold | default 3 | quote }}
+            - name: EXTERNAL_CIRCUIT_SERVICE_FAILURE_THRESHOLD
+              value: {{ .Values.externalBackend.circuit.serviceFailureThreshold | default 10 | quote }}
+            - name: EXTERNAL_CIRCUIT_COOLDOWN_SECONDS
+              value: {{ .Values.externalBackend.circuit.cooldownSeconds | default 300 | quote }}
             - name: RATE_LIMIT_COUNT
               value: {{ .Values.api.rateLimitCount | default 10 | quote }}
             - name: OPENCL_GRAVAL_URL

@@ -125,7 +125,12 @@ async def _stream_items(clazz: Any, selector: Any = None, explicit_null: bool = 
 async def list_chutes(
     _: User = Depends(get_current_user(purpose="miner", registered_to=settings.netuid)),
 ):
-    return StreamingResponse(_stream_items(Chute))
+    return StreamingResponse(
+        _stream_items(
+            Chute,
+            selector=select(Chute).where(Chute.execution_backend == "hosted"),
+        )
+    )
 
 
 @router.get("/images/")
@@ -327,7 +332,10 @@ async def get_chute(
         chute = (
             (
                 await db.execute(
-                    select(Chute).where(Chute.chute_id == chute_id).where(Chute.version == version)
+                    select(Chute)
+                    .where(Chute.chute_id == chute_id)
+                    .where(Chute.version == version)
+                    .where(Chute.execution_backend == "hosted")
                 )
             )
             .unique()

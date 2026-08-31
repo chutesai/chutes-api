@@ -66,6 +66,11 @@ from api.util import (
     has_legacy_private_billing,
 )
 from api.chute.schemas import Chute, NodeSelector, ChuteShare, LLMDetail
+from api.external_backend.model_compat import external_llm_model_details
+from api.external_backend.schemas import (
+    ExternalBackendAccount,
+    ExternalChuteBinding,
+)
 from api.user.schemas import User, InvocationQuota, InvocationDiscount, PriceOverride
 from api.user.service import chutes_user_id
 from api.miner_client import sign_request
@@ -79,6 +84,13 @@ from api.instance.util import (
     cleanup_instance_conn_tracking,
 )
 from api.gpu import COMPUTE_UNIT_PRICE_BASIS
+from api.payment.pricing import (
+    NormalizedUsage,
+    PricingConfigurationError,
+    PricingContext,
+    UsageValidationError,
+    price_usage,
+)
 from api.metrics.vllm import track_usage as track_vllm_usage
 from api.metrics.perf import PERF_TRACKER
 from api.metrics.capacity import (
@@ -233,7 +245,9 @@ async def update_usage_data(
     compute_time: float = 0.0,
     paygo_amount: float = 0.0,
     app_id: str = None,
-) -> None:
+    event_id: str = None,
+    event_ttl_seconds: int = 400 * 86400,
+) -> bool:
     """
     Push usage data metrics to redis for async processing.
 
@@ -243,9 +257,6 @@ async def update_usage_data(
     - count omitted (always 1, handled by consumer)
     """
     from api.metrics.invocation import track_invocation_usage
-
-    # Track in Prometheus for miner metrics endpoint
-    track_invocation_usage(chute_id, balance_used, compute_time, paygo_amount)
 
     data = {
         "u": user_id,
@@ -261,7 +272,50 @@ async def update_usage_data(
     if app_id:
         data["d"] = app_id
     record = json.dumps(data).decode()
-    await settings.billing_redis_client.client.rpush("usage_queue", record)
+    redis = settings.billing_redis_client.client
+    queued = True
+    if event_id:
+        if (
+            not isinstance(event_id, str)
+            or not event_id
+            or len(event_id) > 255
+            or any(character in event_id for character in "\r\n\x00")
+        ):
+            raise ValueError("usage event_id must contain 1-255 safe characters")
+        if (
+            isinstance(event_ttl_seconds, bool)
+            or not isinstance(event_ttl_seconds, int)
+            or not 86400 <= event_ttl_seconds <= 5 * 366 * 86400
+        ):
+            raise ValueError("usage event TTL must be between 1 day and 5 years")
+        # The marker and queue append are one Redis transaction. A caller that
+        # loses its response can retry the same event safely: Redis reports the
+        # event as already queued, and the database settlement can then advance.
+        queued = bool(
+            await redis.eval(
+                """
+                local inserted = redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[2])
+                if not inserted then
+                    return 0
+                end
+                redis.call('RPUSH', KEYS[2], ARGV[1])
+                return 1
+                """,
+                2,
+                f"usage_event:{event_id}",
+                "usage_queue",
+                record,
+                event_ttl_seconds,
+            )
+        )
+    else:
+        await redis.rpush("usage_queue", record)
+
+    # Do not increment process-local metrics again when a reconciliation retry
+    # observes an event that was already queued by an earlier attempt.
+    if queued:
+        track_invocation_usage(chute_id, balance_used, compute_time, paygo_amount)
+    return queued
 
 
 async def store_invocation(
@@ -705,7 +759,11 @@ async def get_one(name_or_id: str, nonce: int = None):
     return await _get_one(name_or_id, nonce=nonce)
 
 
-async def invalidate_chute_cache(chute_id: str, chute_name: str = None):
+async def invalidate_chute_cache(
+    chute_id: str,
+    chute_name: str = None,
+    chute_slug: str = None,
+):
     """
     Invalidate all caches for a chute (both by ID and by name).
     """
@@ -713,11 +771,42 @@ async def invalidate_chute_cache(chute_id: str, chute_name: str = None):
     await settings.redis_client.delete(f"_chute:{chute_id}")
     if chute_name:
         await settings.redis_client.delete(f"_chute:{chute_name}")
+    normalized_slug = chute_slug.lower() if chute_slug else None
+    if normalized_slug:
+        await settings.redis_client.delete(f"idbyslug:{normalized_slug}")
+    await settings.redis_client.delete("all_llms_False", "all_llms_True")
 
     # Clear in-memory alru_cache
     _get_one.cache_invalidate(chute_id)
     if chute_name:
         _get_one.cache_invalidate(chute_name)
+    if normalized_slug:
+        chute_id_by_slug.cache_invalidate(normalized_slug)
+
+
+async def invalidate_price_override_cache(chute_id: str) -> None:
+    """Invalidate every user/global pricing cache entry for one Chute."""
+
+    keys: list[str | bytes] = []
+    for pattern in (
+        f"priceoverride2:*:{chute_id}",
+        f"mtokenprice3:*:{chute_id}",
+    ):
+        cursor = 0
+        while True:
+            scanned = await settings.redis_client.scan(
+                cursor=cursor,
+                match=pattern,
+                count=500,
+            )
+            if not scanned:
+                break
+            cursor, found = scanned
+            keys.extend(found)
+            if cursor == 0:
+                break
+    if keys:
+        await settings.redis_client.delete(*keys)
 
 
 @alru_cache(maxsize=5000, ttl=300)
@@ -1446,6 +1535,66 @@ async def _s3_upload(data: io.BytesIO, path: str):
         logger.error(f"failed to store: {path} -> {exc}")
 
 
+def _hosted_pricing_dimensions(value: object) -> dict:
+    """Copy request dimensions without letting arbitrary JSON break billing.
+
+    Request bodies are not pricing configuration.  In particular, an empty key
+    is valid JSON even though it cannot be addressed by the pricing rule DSL.
+    Ignore such keys instead of allowing a post-invocation pricing exception to
+    turn a successful hosted response into a miner failure and retry.
+    """
+
+    if not isinstance(value, dict):
+        return {}
+    copied = {}
+    for raw_key, item in value.items():
+        key = str(raw_key).strip()
+        if not key:
+            continue
+        copied[key] = (
+            _hosted_pricing_dimensions(item) if isinstance(item, dict) else item
+        )
+    return copied
+
+
+def _price_hosted_rule_override(
+    price_override_config: PriceOverride,
+    metrics: dict | None,
+    raw_payload: object,
+    *,
+    cord: str,
+    path: str,
+    method: str,
+    chute_id: str,
+):
+    """Evaluate only new rules; legacy hosted precedence stays with the caller."""
+
+    try:
+        dimensions = raw_payload or {}
+        if isinstance(dimensions, dict) and isinstance(dimensions.get("json"), dict):
+            dimensions = dimensions["json"]
+        dimensions = _hosted_pricing_dimensions(dimensions)
+        return price_usage(
+            NormalizedUsage.from_legacy_metrics(metrics, dimensions=dimensions),
+            price_override_config.pricing_rules,
+            PricingContext(
+                cord=cord,
+                path=path,
+                method=method,
+                dimensions=dimensions,
+            ),
+        )
+    except (PricingConfigurationError, UsageValidationError, RecursionError) as exc:
+        # Pricing failures happen after a successful hosted response. Never let
+        # one escape into the target-failure/retry handler; the established
+        # token, step, request, and compute-time fallbacks remain authoritative.
+        logger.error(
+            "Ignoring invalid hosted pricing rule configuration "
+            f"for chute_id={chute_id}: {exc}"
+        )
+        return None
+
+
 async def invoke(
     chute: Chute,
     user: User,
@@ -1589,9 +1738,35 @@ async def invoke(
                 override_applied = False
                 if compute_units:
                     hourly_price = await selector_hourly_price(chute.node_selector)
+                    price_override_config = await PriceOverride.get(user_id, chute.chute_id)
+
+                    # Rule-based overrides take precedence when a rule matches this Cord and
+                    # request. Legacy columns and hosted compute pricing remain the fallback.
+                    if price_override_config and price_override_config.pricing_rules:
+                        pricing_result = _price_hosted_rule_override(
+                            price_override_config,
+                            metrics,
+                            raw_payload,
+                            cord=function,
+                            path=request.url.path if request else path,
+                            method=request.method if request else "POST",
+                            chute_id=chute.chute_id,
+                        )
+                        if (
+                            pricing_result is not None
+                            and pricing_result.applied
+                            and pricing_result.complete
+                        ):
+                            balance_used = float(pricing_result.amount)
+                            override_applied = True
+                            if metrics is None:
+                                metrics = {}
+                            metrics["pricing"] = pricing_result.to_dict(
+                                decimal_as_string=False
+                            )
 
                     # Per megatoken pricing.
-                    if chute.standard_template == "vllm" and metrics:
+                    if not override_applied and chute.standard_template == "vllm" and metrics:
                         per_million_in, per_million_out, cache_discount = await get_mtoken_price(
                             user_id, chute.chute_id
                         )
@@ -1606,19 +1781,20 @@ async def invoke(
                         )
                         override_applied = True
 
-                    elif (
-                        price_override := await PriceOverride.get(user_id, chute.chute_id)
-                    ) is not None:
+                    elif not override_applied and price_override_config is not None:
                         if (
                             chute.standard_template == "diffusion"
-                            and price_override.per_step is not None
+                            and price_override_config.per_step is not None
                         ):
-                            balance_used = (metrics.get("steps", 0) or 0) * price_override.per_step
+                            balance_used = (
+                                (metrics.get("steps", 0) or 0)
+                                * price_override_config.per_step
+                            )
                             override_applied = True
 
                         # Per request pricing (fallback if specific pricing not available)
-                        elif price_override.per_request is not None:
-                            balance_used = price_override.per_request
+                        elif price_override_config.per_request is not None:
+                            balance_used = price_override_config.per_request
                             override_applied = True
 
                     # If no override was applied, use standard pricing
@@ -2133,7 +2309,10 @@ async def get_and_store_llm_details(chute_id: str):
             (
                 await session.execute(
                     select(Chute)
-                    .where(Chute.chute_id == chute_id)
+                    .where(
+                        Chute.chute_id == chute_id,
+                        Chute.execution_backend == "hosted",
+                    )
                     .options(selectinload(Chute.instances), selectinload(Chute.llm_detail))
                 )
             )
@@ -2141,7 +2320,7 @@ async def get_and_store_llm_details(chute_id: str):
             .scalar_one_or_none()
         )
         if not chute:
-            logger.error(f"Chute not found: {chute_id}")
+            logger.error(f"Hosted LLM Chute not found: {chute_id}")
             return
 
         # Load the price per million tokens (in USD).
@@ -2215,6 +2394,7 @@ async def refresh_all_llm_details():
         result = await session.execute(
             select(Chute.chute_id).where(
                 Chute.standard_template == "vllm",
+                Chute.execution_backend == "hosted",
                 Chute.user_id == await chutes_user_id(),
                 Chute.chute_id != "561e4875-254d-588f-a36f-57c9cdef8961",
                 Chute.public.is_(True),
@@ -2260,23 +2440,72 @@ async def get_llms(refresh: bool = False, request=None):
     else:
         await refresh_all_llm_details()
 
+    system_user_id = await chutes_user_id()
     async with get_session(readonly=True) as session:
-        filters = [
+        hosted_filters = [
             Chute.standard_template == "vllm",
+            Chute.execution_backend == "hosted",
             Chute.public.is_(True),
-            Chute.user_id == await chutes_user_id(),
+            Chute.user_id == system_user_id,
             LLMDetail.details.is_not(None),
         ]
         if openrouter:
-            filters.append(Chute.openrouter.is_(True))
+            hosted_filters.append(Chute.openrouter.is_(True))
 
         result = await session.execute(
-            select(LLMDetail.details)
+            select(LLMDetail.details, Chute.invocation_count)
             .join(Chute, LLMDetail.chute_id == Chute.chute_id)
-            .where(*filters)
+            .where(*hosted_filters)
             .order_by(Chute.invocation_count.desc())
         )
-        model_details = [row[0] for row in result if row[0]]
+        catalog: list[tuple[int, dict]] = [
+            (int(invocation_count or 0), details)
+            for details, invocation_count in result
+            if details
+        ]
+
+        external_filters = [
+            Chute.standard_template == "vllm",
+            Chute.execution_backend == "external",
+            Chute.public.is_(True),
+            Chute.user_id == system_user_id,
+            Chute.disabled.is_not(True),
+            ExternalChuteBinding.enabled.is_(True),
+            ExternalBackendAccount.enabled.is_(True),
+        ]
+        if openrouter:
+            external_filters.append(Chute.openrouter.is_(True))
+        external_result = await session.execute(
+            select(
+                Chute.chute_id,
+                Chute.name,
+                Chute.created_at,
+                Chute.invocation_count,
+            )
+            .join(
+                ExternalChuteBinding,
+                ExternalChuteBinding.chute_id == Chute.chute_id,
+            )
+            .join(
+                ExternalBackendAccount,
+                ExternalBackendAccount.account_id
+                == ExternalChuteBinding.account_id,
+            )
+            .where(*external_filters)
+        )
+        catalog.extend(
+            (
+                int(invocation_count or 0),
+                external_llm_model_details(
+                    chute_id=chute_id,
+                    name=name,
+                    created_at=created_at,
+                ),
+            )
+            for chute_id, name, created_at, invocation_count in external_result
+        )
+        catalog.sort(key=lambda item: item[0], reverse=True)
+        model_details = [details for _invocation_count, details in catalog]
         return_value = {"object": "list", "data": model_details}
         await settings.redis_client.set(cache_key, json.dumps(return_value), ex=300)
         return return_value

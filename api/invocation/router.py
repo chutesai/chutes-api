@@ -9,6 +9,7 @@ import asyncio
 import gzip
 import orjson as json
 import csv
+import copy
 import uuid
 import time
 import decimal
@@ -18,7 +19,9 @@ from datetime import date, datetime
 from io import BytesIO, StringIO
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Response
+from fastapi.routing import APIRoute
 from starlette.responses import StreamingResponse
+from starlette.routing import Match
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.config import settings
@@ -29,6 +32,7 @@ from api.chute.util import (
     is_shared,
     count_prompt_tokens,
 )
+from api.chute.standard_templates import standard_template_matches
 from api.util import recreate_vlm_payload
 from api.permissions import Permissioning
 from api.user.schemas import User
@@ -42,9 +46,32 @@ from api.invocation.util import (
     check_quota_and_balance,
 )
 from api.util import validate_tool_call_arguments
+from api.external_backend.service import invoke_external_resilient
+from api.external_backend.model_compat import (
+    credential_allows_chute,
+    routed_fallback_allowed,
+    routed_model_payload,
+    select_external_cord,
+)
 
 router = APIRouter()
 host_invocation_router = APIRouter()
+
+
+class _InvocationDispatchRoute(APIRoute):
+    """Match only requests explicitly classified for invocation middleware dispatch."""
+
+    def matches(self, scope):
+        match, child_scope = super().matches(scope)
+        if match != Match.FULL:
+            return match, child_scope
+        state = scope.get("state") or {}
+        if state.get("invocation_dispatch") is not True:
+            return Match.NONE, child_scope
+        return match, child_scope
+
+
+conditional_invocation_router = APIRouter(route_class=_InvocationDispatchRoute)
 
 # Date when usage_data table started being populated.
 USAGE_DATA_CUTOFF = date(2025, 8, 26)
@@ -66,6 +93,44 @@ class DiffusionInput(BaseModel):
 
     class Config:
         extra = "forbid"
+
+
+def _set_routed_model_payload(request: Request, payload: dict, model_name: str) -> None:
+    """Reset the cached/raw request body for each central-routing attempt."""
+
+    routed = routed_model_payload(payload, model_name)
+    request._json = routed
+    request._body = json.dumps(routed)
+
+
+async def _accessible_routed_chutes(
+    candidates: list,
+    *,
+    current_user: User,
+    template: str,
+    credential: object | None,
+) -> list:
+    """Apply one common access boundary to exact and compatibility routing."""
+
+    accessible = []
+    for candidate in candidates:
+        if not standard_template_matches(
+            candidate.standard_template,
+            template,
+            execution_backend=getattr(candidate, "execution_backend", "hosted"),
+        ):
+            continue
+        if (
+            not candidate.public
+            and candidate.user_id != current_user.user_id
+            and not await is_shared(candidate.chute_id, current_user.user_id)
+            and not subnet_role_accessible(candidate, current_user)
+        ):
+            continue
+        if not credential_allows_chute(credential, candidate.chute_id):
+            continue
+        accessible.append(candidate)
+    return accessible
 
 
 def _has_regex_pattern(schema: object) -> bool:
@@ -106,9 +171,7 @@ def _reject_regex_structured_output(body: object) -> None:
         return
 
     _detail_direct = "Regex-based structured output is temporarily disabled."
-    _detail_pattern = (
-        "Regex-based structured output (JSON schema 'pattern' fields) is temporarily disabled."
-    )
+    _detail_pattern = "Regex-based structured output (JSON schema 'pattern' fields) is temporarily disabled."
 
     # guided_regex — direct regex constraint
     if body.get("guided_regex"):
@@ -154,6 +217,41 @@ def _reject_regex_structured_output(body: object) -> None:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=_detail_pattern,
                 )
+
+
+def _apply_mega_request_guardrails(
+    request_body: object,
+    current_user: User,
+    chute: object,
+) -> None:
+    """Apply public mega-endpoint policy before either execution backend.
+
+    These are gateway guarantees, not hosted-engine implementation details.  In
+    particular they must run before an external dispatch can forward the body.
+    """
+
+    if not isinstance(request_body, dict):
+        return
+    if isinstance(request_body.get("messages"), list):
+        for message in request_body["messages"]:
+            if not isinstance(message, dict) or not isinstance(
+                message.get("content"), list
+            ):
+                continue
+            for content_item in message["content"]:
+                if isinstance(content_item, dict) and (
+                    "file" in content_item or "file_url" in content_item
+                ):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="File content not currently supported",
+                    )
+    _reject_regex_structured_output(request_body)
+    if not current_user.has_role(Permissioning.enhanced_inference):
+        if "affine" not in chute.name.lower():
+            request_body.pop("logprobs", None)
+            request_body.pop("top_logprobs", None)
+        request_body.pop("cache_salt", None)
 
 
 def _derive_upstream_status(error: object) -> int | None:
@@ -348,7 +446,8 @@ async def get_export(
     format_match = re.match(r"^(\d+)((?:-(jobs))?\.csv)$", hour_format)
     if not format_match:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid format: {hour_format}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid format: {hour_format}",
         )
     hour = int(format_match.group(1))
     suffix = format_match.group(2)
@@ -498,11 +597,61 @@ async def _invoke(
 
     await check_quota_and_balance(request, current_user, chute)
 
+    # External Chutes share authentication, access, quota, Cord selection, and
+    # billing admission with hosted Chutes, then cross a separate execution boundary.
+    # Branch before hosted request shaping and target discovery: external backends do
+    # not have images, miner instances, bounties, or TEE execution evidence.
+    if chute.execution_backend == "external":
+        public_path = getattr(request.state, "invocation_public_path", request.url.path)
+        stream = request.query_params.get("stream", False)
+        if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+            try:
+                # Mega endpoints are JSON APIs regardless of the caller-supplied
+                # Content-Type.  Starlette's JSON decoder deliberately ignores
+                # that header too, so applying gateway policy only when the
+                # header advertised JSON let a caller bypass those guarantees.
+                request_body = await request.json()
+                if isinstance(request_body, dict):
+                    stream = request_body.get("stream", stream)
+                    if getattr(request.state, "mega_request", False) and (
+                        chute.standard_template in {"vllm", "tei", "embedding"}
+                    ):
+                        _apply_mega_request_guardrails(
+                            request_body, current_user, chute
+                        )
+                        # The external transport consumes the raw cached body, so
+                        # persist the stripped gateway representation as well as
+                        # Starlette's parsed JSON cache.
+                        request._json = request_body
+                        request._body = json.dumps(request_body)
+            except (TypeError, ValueError):
+                # The external request validator returns the canonical client error.
+                pass
+        selected_cord = select_external_cord(
+            chute.cords,
+            public_path=public_path,
+            method=request.method,
+            stream=stream,
+        )
+        if not selected_cord:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No matching cord found!",
+            )
+        return await invoke_external_resilient(
+            request=request,
+            current_user=current_user,
+            chute=chute,
+            selected_cord=selected_cord,
+        )
+
     # Identify the cord that we'll trying to access by the public API path and method.
     selected_cord = None
     request_body = None
     try:
-        request_body = await request.json() if request.method in ("POST", "PUT", "PATCH") else {}
+        request_body = (
+            await request.json() if request.method in ("POST", "PUT", "PATCH") else {}
+        )
     except (TypeError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -511,9 +660,12 @@ async def _invoke(
 
     request_params = request.query_params._dict if request.query_params else {}
     stream = request_body.get("stream", request_params.get("stream", False))
+    effective_public_path = getattr(
+        request.state, "invocation_public_path", request.url.path
+    )
     for cord in chute.cords:
         public_path = cord.get("public_api_path", None)
-        if public_path and public_path == request.url.path:
+        if public_path and public_path == effective_public_path:
             if cord.get("public_api_method", "POST") == request.method:
                 if chute.standard_template != "vllm" or stream == cord.get("stream"):
                     selected_cord = cord
@@ -521,7 +673,9 @@ async def _invoke(
                         stream = True
                     break
     if not selected_cord:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No matching cord found!")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="No matching cord found!"
+        )
 
     # Wrap up the args/kwargs in the way the miner execution service expects them.
     args, kwargs = None, None
@@ -532,15 +686,23 @@ async def _invoke(
         request_body.pop("model", None)
         steps = request_body.get("num_inference_steps")
         max_steps = 30 if chute.name == "FLUX-1.dev" else 50
-        if steps and (isinstance(steps, int) or steps.isdigit()) and int(steps) > max_steps:
+        if (
+            steps
+            and (isinstance(steps, int) or steps.isdigit())
+            and int(steps) > max_steps
+        ):
             request_body["num_inference_steps"] = int(max_steps)
         try:
             _ = DiffusionInput(**request_body)
         except ValidationError:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail="bad request, naughty naughty"
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="bad request, naughty naughty",
             )
     elif chute.standard_template == "vllm":
+        if getattr(request.state, "mega_request", False):
+            _apply_mega_request_guardrails(request_body, current_user, chute)
+
         # Force usage metrics.
         if request_body.get("stream"):
             if "stream_options" not in request_body:
@@ -576,7 +738,9 @@ async def _invoke(
             logger.error(f"Failed to update VLM request payload: {str(exc)}")
 
         # Reject regex-based structured output (temporarily disabled).
-        if chute.name.startswith(("moonshotai/Kimi-K2.6-TEE", "moonshotai/Kimi-K2.5-TEE")):
+        if chute.name.startswith(
+            ("moonshotai/Kimi-K2.6-TEE", "moonshotai/Kimi-K2.5-TEE")
+        ):
             try:
                 _reject_regex_structured_output(request_body)
             except Exception as exc:
@@ -600,7 +764,9 @@ async def _invoke(
                         if "name" not in message:
                             message["name"] = message.get("tool_call_id", "__unknown__")
             except Exception as exc:
-                logger.warning(f"Failed to fix longcat flash thinking tool calls: {str(exc)}")
+                logger.warning(
+                    f"Failed to fix longcat flash thinking tool calls: {str(exc)}"
+                )
 
         # Load prompt prefixes so we can do more intelligent routing.
         prefix_hashes = get_prompt_prefix_hashes(request_body)
@@ -697,7 +863,10 @@ async def _invoke(
                         if not first_chunk_processed:
                             mapped_status = _derive_upstream_status(error)
                             if mapped_status is not None:
-                                if isinstance(error, dict) and 400 <= error.get("code", 0) < 500:
+                                if (
+                                    isinstance(error, dict)
+                                    and 400 <= error.get("code", 0) < 500
+                                ):
                                     logger.warning(
                                         f"Received error code from upstream streaming response: {error=}"
                                     )
@@ -736,7 +905,8 @@ async def _invoke(
                     else:
                         logger.error(f"Unhandled exception during processing: {str(e)}")
                         raise HTTPException(
-                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e)
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=str(e),
                         )
                 else:
                     logger.error(
@@ -863,13 +1033,19 @@ async def _invoke(
     )
 
 
+@conditional_invocation_router.api_route(
+    "/{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
+    include_in_schema=False,
+)
 @host_invocation_router.api_route(
-    "{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"]
+    "{path:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD"],
+    include_in_schema=False,
 )
 async def hostname_invocation(
     request: Request,
     current_user: User = Depends(get_current_user(raise_not_found=False)),
-    include_in_schema=False,
 ):
     request.state.started_at = time.time()
     fallback_chutes = []
@@ -884,13 +1060,28 @@ async def hostname_invocation(
 
     # The /v1/models endpoint can be checked with no auth, but otherwise we need users.
     if not current_user:
+        # Canonical Cord URLs are UUID-addressed. Do not reveal that a private
+        # Chute declares a particular Cord by returning 401 for known paths and
+        # 404 for unknown ones. Hostname and central routes retain their normal
+        # authentication response.
+        if getattr(request.state, "invocation_public_path", None) is not None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Not Found",
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required.",
         )
+    if getattr(request.state, "canonical_cord_declared", None) is False:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No matching chute found!",
+        )
 
     # Mega LLM/diffusion request handler.
     if request.state.chute_id in ("__megallm__", "__megadiffuser__", "__megaembed__"):
+        request.state.mega_request = True
         try:
             payload = await request.json()
         except Exception as exc:
@@ -898,6 +1089,8 @@ async def hostname_invocation(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid request JSON: {str(exc)}",
             )
+        original_payload = copy.deepcopy(payload)
+        original_model = payload.get("model", "")
 
         # MistralAI gated this model for some reason.......
         model = payload.get("model", "")
@@ -932,42 +1125,22 @@ async def hostname_invocation(
         elif model == "Qwen/Qwen3-235B-A22B-Thinking-2507":
             payload["model"] = "Qwen/Qwen3-235B-A22B-Thinking-2507-TEE"
 
-        # No file support currently.
-        if isinstance(payload.get("messages"), list):
-            for message in payload["messages"]:
-                if isinstance(message, dict) and isinstance(message.get("content"), list):
-                    for content_item in message["content"]:
-                        if (
-                            isinstance(content_item, dict)
-                            and "file" in content_item
-                            or "file_url" in content_item
-                        ):
-                            raise HTTPException(
-                                status_code=status.HTTP_400_BAD_REQUEST,
-                                detail="File content not currently supported",
-                            )
-
-        # Reject regex-based structured output (temporarily disabled).
-        _reject_regex_structured_output(payload)
-
         # Fix continue_final_message <=> add_generation_prompt incompatibility.
-        if payload.get("continue_final_message") and payload.get("add_generation_prompt", True):
+        if payload.get("continue_final_message") and payload.get(
+            "add_generation_prompt", True
+        ):
             messages = payload.get("messages", [])
-            if isinstance(messages, list) and messages and messages[-1].get("role") == "assistant":
+            if (
+                isinstance(messages, list)
+                and messages
+                and messages[-1].get("role") == "assistant"
+            ):
                 payload["add_generation_prompt"] = False
             else:
                 payload["continue_final_message"] = False
-            logger.warning("Resolved continue_final_message/add_generation_prompt conflict")
-
-        # Toggles based on user permissions to avoid.. problems.. on the engines.
-        if not current_user.has_role(Permissioning.enhanced_inference):
-            # logprobs spike memory badly depending on prompt size etc.
-            if "affine" not in model.lower():
-                payload.pop("logprobs", None)
-                payload.pop("top_logprobs", None)
-
-            # Likewise we don't want to blow up prefix cache...
-            payload.pop("cache_salt", None)
+            logger.warning(
+                "Resolved continue_final_message/add_generation_prompt conflict"
+            )
 
         # Header and/or model name options to enable thinking mode for various models.
         enable_thinking = False
@@ -988,9 +1161,9 @@ async def hostname_invocation(
 
         # Normalize the chat template kwargs thinking keys since there are two...
         if "chat_template_kwargs" in payload:
-            reasoning_effort = payload["chat_template_kwargs"].get("reasoning_effort") or payload[
-                "chat_template_kwargs"
-            ].get("effective_reasoning_effort")
+            reasoning_effort = payload["chat_template_kwargs"].get(
+                "reasoning_effort"
+            ) or payload["chat_template_kwargs"].get("effective_reasoning_effort")
             if reasoning_effort:
                 payload["chat_template_kwargs"].update(
                     {
@@ -1021,9 +1194,9 @@ async def hostname_invocation(
                 "enable_thinking" in payload["chat_template_kwargs"]
                 and "thinking" not in payload["chat_template_kwargs"]
             ):
-                payload["chat_template_kwargs"]["thinking"] = payload["chat_template_kwargs"][
-                    "enable_thinking"
-                ]
+                payload["chat_template_kwargs"]["thinking"] = payload[
+                    "chat_template_kwargs"
+                ]["enable_thinking"]
             if "thinking" not in payload["chat_template_kwargs"] and model.startswith(
                 (
                     "deepseek-ai/DeepSeek-V3.2-Speciale",
@@ -1050,9 +1223,15 @@ async def hostname_invocation(
             "moonshotai/Kimi-K2.5",
             "moonshotai/Kimi-K2.5-TEE",
         ):
-            payload["chat_template_kwargs"] = {"thinking": True, "enable_thinking": True}
+            payload["chat_template_kwargs"] = {
+                "thinking": True,
+                "enable_thinking": True,
+            }
         elif model == "XiaomiMiMo/MiMo-V2-Flash-TEE":
-            payload["chat_template_kwargs"] = {"thinking": False, "enable_thinking": False}
+            payload["chat_template_kwargs"] = {
+                "thinking": False,
+                "enable_thinking": False,
+            }
 
         # Auto tool choice default.
         if payload.get("tools") and "tool_choice" not in payload:
@@ -1069,29 +1248,56 @@ async def hostname_invocation(
             else "diffusion"
         )
         if model:
-            from api.model_routing import resolve_model_parameter
-
-            ranked_chutes, routing_mode = await resolve_model_parameter(
-                model, current_user.user_id, template
+            from api.model_routing import (
+                resolve_exact_external_models,
+                resolve_model_parameter,
             )
+
+            credential = getattr(request.state, "api_key", None)
+            exact_candidates = (
+                await resolve_exact_external_models(
+                    original_model, current_user.user_id, template
+                )
+                if original_model
+                else []
+            )
+            exact_external = await _accessible_routed_chutes(
+                exact_candidates,
+                current_user=current_user,
+                template=template,
+                credential=credential,
+            )
+            if exact_external:
+                # Hosted compatibility rewrites are deliberately applied only when
+                # no accessible exact external model exists. External Cords receive
+                # the public request shape they declared, without hosted mutations.
+                payload = original_payload
+                model = original_model
+                ranked_chutes = exact_external
+            else:
+                ranked_chutes, _routing_mode = await resolve_model_parameter(
+                    model,
+                    current_user.user_id,
+                    template,
+                    execution_backend="hosted",
+                )
             if not ranked_chutes:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail=f"model not found: {model}",
                 )
-            # Filter ranked chutes to only those accessible to this user.
-            accessible = []
-            for candidate in ranked_chutes:
-                if candidate.standard_template != template:
-                    continue
-                if (
-                    not candidate.public
-                    and candidate.user_id != current_user.user_id
-                    and not await is_shared(candidate.chute_id, current_user.user_id)
-                    and not subnet_role_accessible(candidate, current_user)
-                ):
-                    continue
-                accessible.append(candidate)
+            # Exact candidates were filtered before choosing whether to suppress
+            # hosted compatibility rewrites; other routing modes use the same gate.
+            accessible = (
+                ranked_chutes
+                if exact_external
+                else await _accessible_routed_chutes(
+                    ranked_chutes,
+                    current_user=current_user,
+                    template=template,
+                    credential=credential,
+                )
+            )
 
             if not accessible:
                 raise HTTPException(
@@ -1100,36 +1306,48 @@ async def hostname_invocation(
                 )
             chute = accessible[0]
             fallback_chutes = accessible[1:]
-            if fallback_chutes or routing_mode:
-                payload["model"] = chute.name
             request.state.chute_id = chute.chute_id
             request.state.auth_object_id = chute.chute_id
 
     # Try invocation with cross-chute failover for multi-model routing.
     if fallback_chutes:
+        _set_routed_model_payload(request, payload, chute.name)
         try:
             return await _invoke(request, current_user)
         except HTTPException as exc:
-            if exc.status_code not in (
-                status.HTTP_429_TOO_MANY_REQUESTS,
-                status.HTTP_503_SERVICE_UNAVAILABLE,
+            if not routed_fallback_allowed(
+                exc.status_code,
+                attempt_billable=bool(
+                    getattr(request.state, "external_attempt_billable", False)
+                ),
             ):
                 raise
             # Try each fallback chute on infra_overload (already access-filtered).
             for fallback in fallback_chutes:
                 request.state.chute_id = fallback.chute_id
                 request.state.auth_object_id = fallback.chute_id
-                payload["model"] = fallback.name
+                _set_routed_model_payload(request, payload, fallback.name)
                 try:
                     return await _invoke(request, current_user)
                 except HTTPException as inner_exc:
-                    if inner_exc.status_code not in (
-                        status.HTTP_429_TOO_MANY_REQUESTS,
-                        status.HTTP_503_SERVICE_UNAVAILABLE,
+                    if not routed_fallback_allowed(
+                        inner_exc.status_code,
+                        attempt_billable=bool(
+                            getattr(request.state, "external_attempt_billable", False)
+                        ),
                     ):
                         raise
                     continue
             # All chutes exhausted.
             raise
 
+    if request.state.chute_id in (
+        "__megallm__",
+        "__megadiffuser__",
+        "__megaembed__",
+    ):
+        # A mega request without a resolved model will fail in _invoke as before.
+        return await _invoke(request, current_user)
+    if "payload" in locals() and chute is not None:
+        _set_routed_model_payload(request, payload, chute.name)
     return await _invoke(request, current_user)

@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 from fastapi import Request, HTTPException, status
 from api.config import settings
+from api.api_key.access import credential_has_any_access
 from api.api_key.schemas import APIKey
 from api.database import get_session
 from api.user.schemas import User
@@ -113,7 +114,7 @@ class OAuthTokenWrapper:
         """
         Check if the OAuth token has access to the specified resource.
         """
-        from api.idp.schemas import check_scope_access
+        from api.idp.schemas import check_scope_access, parse_scope
 
         if self.admin:
             return True
@@ -125,8 +126,29 @@ class OAuthTokenWrapper:
         ):
             if check_scope_access(self.scopes, "chutes", None, "invoke"):
                 return True
+            # Mega routes cannot know the concrete model Chute until the request
+            # body is resolved. Admit any Chute-specific invoke scope provisionally;
+            # invocation routing rechecks that exact scope before dispatch.
+            for scope in self.scopes:
+                scope_type, _scope_id, scope_action = parse_scope(scope)
+                if scope_type == "chutes" and scope_action == "invoke":
+                    return True
 
         return check_scope_access(self.scopes, object_type, object_id, action)
+
+
+def credential_has_request_access(credential, request: Request) -> bool:
+    """Check the primary middleware scope and any server-resolved alternatives."""
+
+    return credential_has_any_access(
+        credential,
+        (
+            request.state.auth_object_type,
+            request.state.auth_object_id,
+            request.state.auth_method,
+        ),
+        getattr(request.state, "auth_alternative_scopes", ()),
+    )
 
 
 async def get_and_check_api_key(key: str, request: Request):
@@ -138,11 +160,7 @@ async def get_and_check_api_key(key: str, request: Request):
         user, scopes = await get_user_from_oauth_token(key, request)
         if user:
             wrapper = OAuthTokenWrapper(user, scopes)
-            if not wrapper.has_access(
-                request.state.auth_object_type,
-                request.state.auth_object_id,
-                request.state.auth_method,
-            ):
+            if not credential_has_request_access(wrapper, request):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Token does not have permission for this resource",
@@ -169,11 +187,7 @@ async def get_and_check_api_key(key: str, request: Request):
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token or user not found",
         )
-    if not api_token.has_access(
-        request.state.auth_object_type,
-        request.state.auth_object_id,
-        request.state.auth_method,
-    ):
+    if not credential_has_request_access(api_token, request):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid token or user not found",

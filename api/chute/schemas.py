@@ -13,6 +13,7 @@ from sqlalchemy import (
     Boolean,
     ForeignKey,
     BigInteger,
+    CheckConstraint,
     Integer,
     Float,
 )
@@ -24,6 +25,8 @@ from api.gpu import (
     COMPUTE_UNIT_PRICE_BASIS,
 )
 from api.fmv.fetcher import get_fetcher
+from api.chute.path_policy import is_reserved_canonical_chute_path
+from api.chute.standard_templates import STANDARD_TEMPLATES
 from pydantic import BaseModel, Field, computed_field, validator, constr, field_validator
 from typing import List, Optional, Dict, Any
 
@@ -215,6 +218,19 @@ class InvocationArgs(BaseModel):
 
 class Chute(Base):
     __tablename__ = "chutes"
+    __table_args__ = (
+        CheckConstraint(
+            "execution_backend IN ('hosted', 'external')",
+            name="ck_chutes_execution_backend",
+        ),
+        CheckConstraint(
+            "(execution_backend = 'hosted' AND image_id IS NOT NULL "
+            "AND code IS NOT NULL AND filename IS NOT NULL AND ref_str IS NOT NULL) "
+            "OR (execution_backend = 'external' AND image_id IS NULL "
+            "AND code IS NULL AND filename IS NULL AND ref_str IS NULL)",
+            name="ck_chutes_execution_backend_shape",
+        ),
+    )
     chute_id = Column(String, primary_key=True, default="replaceme")
     user_id = Column(String, ForeignKey("users.user_id"), nullable=False)
     name = Column(String)
@@ -229,9 +245,9 @@ class Chute(Base):
     jobs = Column(JSONB, nullable=True)
     node_selector = Column(JSONB, nullable=False)
     slug = Column(String)
-    code = Column(String, nullable=False)
-    filename = Column(String, nullable=False)
-    ref_str = Column(String, nullable=False)
+    code = Column(String, nullable=True)
+    filename = Column(String, nullable=True)
+    ref_str = Column(String, nullable=True)
     version = Column(String)
     concurrency = Column(Integer, nullable=True)
     boost = Column(Float, nullable=True)
@@ -249,7 +265,10 @@ class Chute(Base):
     tee = Column(Boolean, default=False)
     lock_modules = Column(Boolean, nullable=True, default=None)
     immutable = Column(Boolean, default=False)
-    disabled = Column(Boolean, default=False)
+    disabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    execution_backend = Column(
+        String(16), nullable=False, default="hosted", server_default="hosted"
+    )
 
     # Stats for sorting.
     invocation_count = Column(BigInteger, default=0)
@@ -285,6 +304,13 @@ class Chute(Base):
         lazy="select",
         viewonly=True,
     )
+    external_binding = relationship(
+        "ExternalChuteBinding",
+        back_populates="chute",
+        lazy="select",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
 
     @validates("name")
     def validate_name(self, _, name):
@@ -299,12 +325,18 @@ class Chute(Base):
             raise ValueError(f"Invalid chute name: {name}")
         return name
 
+    @validates("execution_backend")
+    def validate_execution_backend(self, _, value):
+        if value not in ("hosted", "external"):
+            raise ValueError("execution_backend must be hosted or external")
+        return value
+
     @validates("standard_template")
     def validate_standard_template(self, _, template):
         """
         Basic validation on standard templates, which for now requires either None or vllm.
         """
-        if template not in (None, "vllm", "diffusion", "tei", "embedding"):
+        if template is not None and template not in STANDARD_TEMPLATES:
             raise ValueError(f"Invalid standard template: {template}")
         return template
 
@@ -313,6 +345,8 @@ class Chute(Base):
         """
         Validate the filename (the entrypoint for chutes run ...)
         """
+        if filename is None:
+            return None
         if not isinstance(filename, str) or not re.match(r"^[a-z][a-z0-9_]*\.py$", filename):
             raise ValueError(f"Invalid entrypoint filename: '{filename}'")
         return filename
@@ -322,6 +356,8 @@ class Chute(Base):
         """
         Validate the reference string, which should be {filename (no .py ext)}:{chute var name}
         """
+        if ref_str is None:
+            return None
         if not isinstance(ref_str, str) or not re.match(
             r"^[a-z][a-z0-9_]*:[a-z][a-z0-9_]*$", ref_str
         ):
@@ -333,6 +369,8 @@ class Chute(Base):
         """
         Syntax check on the code.
         """
+        if code is None:
+            return None
         try:
             ast.parse(code)
         except SyntaxError as exc:
@@ -356,7 +394,18 @@ class Chute(Base):
                     r"^(/[a-z][a-z0-9_-]*)+$", public_path, re.I
                 ):
                     raise ValueError(f"Invalid cord public path: {public_path}")
-                if cord.public_api_method not in ("GET", "POST"):
+                if is_reserved_canonical_chute_path(public_path):
+                    raise ValueError(
+                        f"Reserved canonical Chute path cannot be used as a Cord: {public_path}"
+                    )
+                if cord.public_api_method not in (
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE",
+                    "HEAD",
+                ):
                     raise ValueError(f"Unsupported public API method: {cord.public_api_method}")
             stream = cord.stream
             if stream not in (None, True, False):
@@ -383,6 +432,8 @@ class Chute(Base):
         """
         Convert back to dict.
         """
+        if node_selector == {}:
+            return {}
         as_dict = node_selector.dict()
         as_dict.pop("compute_multiplier", None)
         as_dict.pop("supported_gpus", None)
@@ -391,11 +442,15 @@ class Chute(Base):
     @computed_field
     @property
     def supported_gpus(self) -> List[str]:
+        if self.execution_backend == "external":
+            return []
         return NodeSelector(**self.node_selector).supported_gpus
 
     @computed_field
     @property
     def preemptible(self) -> bool:
+        if self.execution_backend == "external":
+            return False
         from api.util import has_legacy_private_billing
 
         return (
@@ -415,16 +470,16 @@ class ChuteHistory(Base):
     tagline = Column(String, default="")
     readme = Column(String, default="")
     tool_description = Column(String, nullable=True)
-    image_id = Column(String, nullable=False)
+    image_id = Column(String, nullable=True)
     logo_id = Column(String)
     public = Column(Boolean, default=False)
     standard_template = Column(String)
     cords = Column(JSONB, nullable=False)
     node_selector = Column(JSONB, nullable=False)
     slug = Column(String)
-    code = Column(String, nullable=False)
-    filename = Column(String, nullable=False)
-    ref_str = Column(String, nullable=False)
+    code = Column(String, nullable=True)
+    filename = Column(String, nullable=True)
+    ref_str = Column(String, nullable=True)
     version = Column(String)
     chutes_version = Column(String, nullable=True)
     openrouter = Column(Boolean, default=False)

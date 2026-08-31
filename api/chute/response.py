@@ -18,10 +18,11 @@ class MinimalChuteResponse(BaseModel):
     public: bool
     version: str
     slug: str
-    chutes_version: str
+    chutes_version: Optional[str] = None
     preemptible: bool
     tee: Optional[bool] = False
-    image: MinimalImageResponse
+    execution_backend: str = "hosted"
+    image: Optional[MinimalImageResponse] = None
 
     class Config:
         from_attributes = True
@@ -42,10 +43,10 @@ class ChuteResponse(BaseModel):
     cord_ref_id: Optional[str] = None
     created_at: datetime
     updated_at: datetime
-    image: ImageResponse
+    image: Optional[ImageResponse] = None
     user: UserResponse
     supported_gpus: List[str]
-    node_selector: dict
+    node_selector: Optional[dict] = None
     invocation_count: Optional[int] = 0
     current_estimated_price: Optional[Dict[str, Any]] = None
     instances: Optional[List[MinimalInstanceResponse]] = []
@@ -65,6 +66,8 @@ class ChuteResponse(BaseModel):
     effective_compute_multiplier: Optional[float] = None
     compute_multiplier_factors: Optional[Dict[str, float]] = None
     bounty: Optional[int] = None
+    execution_backend: str = "hosted"
+    disabled: bool = False
 
     class Config:
         from_attributes = True
@@ -77,4 +80,6 @@ class ChuteResponse(BaseModel):
     @computed_field
     @property
     def hot(self) -> bool:
+        if self.execution_backend == "external":
+            return not self.disabled
         return any([instance.active and instance.verified for instance in self.instances])

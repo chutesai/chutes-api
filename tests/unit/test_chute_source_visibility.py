@@ -11,6 +11,7 @@ from api.chute.schemas import Chute, ChuteArgs, ChuteUpdateArgs, NodeSelector
 from api.constants import INTEGRATED_SUBNETS, is_chute_source_public
 from api.image.schemas import Image
 from api.user.schemas import User
+from api.user.service import subnet_role_accessible
 
 with patch("ctypes.CDLL", return_value=MagicMock()):
     from api.chute.router import (
@@ -44,13 +45,16 @@ def _minimal_chute_payload():
     }
 
 
-def _access_chute(*, name="chronoseek-source-visibility-test", public=True):
+def _access_chute(
+    *, name="chronoseek-source-visibility-test", public=True, execution_backend="hosted"
+):
     return SimpleNamespace(
         chute_id="chute-1",
         user_id="owner-id",
         name=name,
         public=public,
         code=SECRET_CODE,
+        execution_backend=execution_backend,
     )
 
 
@@ -121,6 +125,18 @@ def test_source_visibility_is_not_persisted_or_exposed_as_a_chute_field():
     assert "source_public" not in MinimalChuteResponse.model_fields
 
 
+def test_external_name_cannot_inherit_integrated_subnet_access():
+    external = _access_chute(
+        name="affine-compatible-external", execution_backend="external"
+    )
+    user = SimpleNamespace(
+        netuids=[120],
+        has_role=lambda _permission: True,
+    )
+
+    assert subnet_role_accessible(external, user) is False
+
+
 @pytest.mark.parametrize(
     ("name", "expected"),
     [
@@ -143,14 +159,19 @@ def test_minimal_chute_response_keeps_image_metadata():
     assert response.image.image_id == "image-1"
 
 
-def test_chute_response_still_requires_image_metadata():
-    assert ChuteResponse.model_fields["image"].is_required()
-    assert MinimalChuteResponse.model_fields["image"].is_required()
+def test_chute_responses_allow_source_free_external_image():
+    # Hosted rows retain their image invariant in the ORM/database. The shared
+    # catalog response must permit null because external Chutes intentionally do
+    # not manufacture an Image or source bundle.
+    assert not ChuteResponse.model_fields["image"].is_required()
+    assert not MinimalChuteResponse.model_fields["image"].is_required()
 
 
 @pytest.mark.asyncio
 async def test_source_access_allows_fully_public_chute_without_a_user():
-    assert await can_view_chute_source(_access_chute(name="ordinary-model"), None) is True
+    assert (
+        await can_view_chute_source(_access_chute(name="ordinary-model"), None) is True
+    )
 
 
 @pytest.mark.asyncio
@@ -174,7 +195,9 @@ async def test_source_access_allows_subnet_admin(_mock_is_shared, _mock_subnet_a
 @pytest.mark.asyncio
 @patch("api.chute.router.subnet_role_accessible", return_value=False)
 @patch("api.chute.router.is_shared", new_callable=AsyncMock, return_value=False)
-async def test_source_access_denies_hidden_source_outsider(_mock_is_shared, _mock_subnet_access):
+async def test_source_access_denies_hidden_source_outsider(
+    _mock_is_shared, _mock_subnet_access
+):
     assert await can_view_chute_source(_access_chute(), _user("outsider-id")) is False
 
 
@@ -226,6 +249,29 @@ async def test_get_chute_code_keeps_private_chute_hidden(
 
 
 @pytest.mark.asyncio
+@patch("api.chute.router.is_shared", new_callable=AsyncMock, return_value=False)
+@patch("api.chute.router.get_one", new_callable=AsyncMock)
+async def test_get_chute_code_does_not_reveal_private_external_backend(
+    mock_get_one,
+    _mock_is_shared,
+):
+    mock_get_one.return_value = _access_chute(
+        public=False, execution_backend="external"
+    )
+    db = _db_returning(mock_get_one.return_value)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await get_chute_code(
+            "chute-1",
+            db=db,
+            current_user=_user("outsider-id"),
+        )
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == "Chute not found, or does not belong to you"
+
+
+@pytest.mark.asyncio
 @patch("api.chute.router.get_one", new_callable=AsyncMock)
 async def test_get_chute_code_returns_hidden_source_to_owner(mock_get_one):
     mock_get_one.return_value = _access_chute()
@@ -258,8 +304,12 @@ async def test_get_chute_code_keeps_ordinary_public_source_visible(mock_get_one)
 
 
 @pytest.mark.asyncio
-@patch("api.miner.router.calculate_effective_compute_multiplier", new_callable=AsyncMock)
-async def test_miner_always_replaces_public_code_but_keeps_operational_image(mock_multiplier):
+@patch(
+    "api.miner.router.calculate_effective_compute_multiplier", new_callable=AsyncMock
+)
+async def test_miner_always_replaces_public_code_but_keeps_operational_image(
+    mock_multiplier,
+):
     mock_multiplier.return_value = {
         "effective_compute_multiplier": 1.0,
         "compute_multiplier_factors": {},
@@ -274,7 +324,9 @@ async def test_miner_always_replaces_public_code_but_keeps_operational_image(moc
 
 
 @pytest.mark.asyncio
-@patch("api.miner.router.calculate_effective_compute_multiplier", new_callable=AsyncMock)
+@patch(
+    "api.miner.router.calculate_effective_compute_multiplier", new_callable=AsyncMock
+)
 async def test_miner_always_replaces_private_code(mock_multiplier):
     mock_multiplier.return_value = {
         "effective_compute_multiplier": 1.0,

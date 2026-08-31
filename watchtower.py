@@ -727,6 +727,8 @@ async def check_chute(chute_id):
         if not chute:
             logger.warning(f"Chute not found: {chute_id=}")
             return
+        if chute.execution_backend != "hosted":
+            return
         if chute.rolling_update:
             logger.warning(f"Chute has a rolling update in progress: {chute_id=}")
             return
@@ -870,7 +872,11 @@ async def check_all_chutes():
     """
     started_at = int(time.time())
     async with get_session() as session:
-        chute_ids = (await session.execute(select(Chute.chute_id))).unique().scalars().all()
+        chute_ids = (
+            await session.execute(
+                select(Chute.chute_id).where(Chute.execution_backend == "hosted")
+            )
+        ).unique().scalars().all()
     if chute_ids and isinstance(chute_ids[0], tuple):
         chute_ids = [chute_id[0] for chute_id in chute_ids]
     chute_ids = list(sorted(chute_ids))
