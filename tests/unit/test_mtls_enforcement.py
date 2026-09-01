@@ -1,6 +1,6 @@
 """
 Unit tests for attestation proxy provenance enforcement:
-  - require_any_proxy() (either) / require_attestation_proxy() (1.3.x proxy only) /
+  - require_mtls_proxy() (either) / require_attestation_proxy() (1.3.x proxy only) /
     require_cvm_proxy() (1.4.0+ cvm proxy only) /
     gate_legacy_attestation() (version-gated permissive)
   - _get_client_certificate() two-secret proxy guard
@@ -54,7 +54,7 @@ def _configure(mock_settings, *, mtls=None, cvm=None):
 
 
 # ---------------------------------------------------------------------------
-# require_any_proxy — boot/attestation only (either proxy: every VM boots)
+# require_mtls_proxy — boot/attestation only (either proxy: every VM boots)
 # ---------------------------------------------------------------------------
 
 

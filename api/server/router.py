@@ -173,16 +173,16 @@ async def verify_boot_attestation(
     """
     Verify boot attestation and return LUKS passphrase.
 
-    auth (signed mode) carries the X-Chutes-Signature header, only consulted when the matched
-    measurement is a release candidate: it must be an RSA-SHA256 signature (openssl dgst) over the
-    boot nonce by one of the measurement's authorized operator signing keys, proving possession
-    (see authorize_rc_measurement). Ignored for published measurements, so existing VMs are
-    unaffected.
+    Both VM generations reach this route, so the hotkey proof is EXTRACTED rather than required:
+    a presented signature is verified here and 401s if it does not hold, but its absence is left
+    for the handler to judge once the quote names the attested image. See
+    process_boot_attestation, which requires a proof from any image whose measured initramfs
+    ships the signer.
 
-    This endpoint verifies the TDX quote against expected boot measurements
-    and returns the LUKS passphrase for disk decryption if valid.
-    For VMs running version >= 1.3.0, also returns a luks_quote_nonce for
-    the subsequent POST /luks/attest call.
+    Verifies the TDX quote against the expected boot measurements and returns the LUKS passphrase
+    for disk decryption if valid. For VMs >= 1.3.0 it also returns a luks_quote_nonce for the
+    following runtime call (POST /provision on 1.4.0+, POST /luks/attest on 1.3.x); for 1.4.0+ it
+    additionally returns root_next + root_confirm_nonce and the VM's ephemeral auth SS58.
     """
     try:
         server_ip = request.state.client_ip
@@ -314,10 +314,10 @@ async def provision(
     """
     Provision a new VM at runtime: record its root CA identity and issue storage secrets.
 
-    auth (signed mode) carries the X-Chutes-Signature header, only consulted when the matched
-    measurement is a release candidate: it must be an RSA-SHA256 signature (openssl dgst) over the
-    quote nonce by one of the measurement's authorized operator signing keys, proving possession
-    (see authorize_rc_measurement). Ignored for published measurements.
+    Only 1.4.0+ VMs reach this route (it is behind require_cvm_proxy), and every one of them
+    signs, so require_hotkey_auth demands a proven hotkey at the door -- no backwards-compatible
+    "unsigned is acceptable" case exists here, unlike boot attestation. The proven identity is
+    what the rc gate in verify_quote is given.
 
     The RTMR3-attested runtime entry point for new VMs (supersedes /luks/attest going
     forward). The VM presents its per-boot root CA as the mTLS client cert; the quote's

@@ -570,10 +570,13 @@ def _hotkey_auth_from_request(request: Request, purpose: Optional[str]) -> Hotke
 def extract_hotkey_auth(*, purpose: Optional[str] = None):
     """Dependency yielding the caller's proven ``HotkeyAuth``, or None when none was offered.
 
-    For routes both VM generations reach: an unsigned request is legitimate for an image whose
-    measured initramfs predates the sr25519 signer, so the service still accepts it. Use
-    ``require_hotkey_auth`` on routes only 1.4.0+ VMs reach. ``purpose`` must match the endpoint's
-    ``get_current_user`` purpose so the reconstructed signing message is identical.
+    For routes both VM generations reach. An unsigned request is legitimate from an image whose
+    measured initramfs predates the sr25519 signer, so absence is not decided here -- it is left
+    to the handler, which knows the attested version once the quote verifies. A signature that IS
+    offered is always verified, so a caller can never downgrade itself by sending a bad one.
+
+    Use ``require_hotkey_auth`` instead on routes only 1.4.0+ VMs reach. ``purpose`` must match the
+    endpoint's ``get_current_user`` purpose so the reconstructed signing message is identical.
     """
 
     async def _dep(request: Request) -> Optional[HotkeyAuth]:
@@ -586,8 +589,10 @@ def extract_hotkey_auth(*, purpose: Optional[str] = None):
 def require_hotkey_auth(*, purpose: Optional[str] = None):
     """Dependency yielding the caller's proven ``HotkeyAuth``, 401ing if none was offered.
 
-    For routes only a signing VM can reach, so the requirement is stated here rather than
-    re-derived from the attested version downstream.
+    For routes only a signing VM can reach (the /provision pair, behind require_cvm_proxy). The
+    requirement is stated here rather than re-derived from the attested version downstream, so it
+    holds before the handler runs and cannot be forgotten by one. Handlers that need nothing from
+    the result still declare it -- as a bare dependency -- to keep the check at the door.
     """
 
     async def _dep(request: Request) -> HotkeyAuth:
@@ -1241,10 +1246,11 @@ async def verify_quote(
     consistency, measurement match, and -- centrally, for every trust-granting flow -- the
     release-candidate authorization check.
 
-    ``auth`` (a ``HotkeyAuth``) gates access to release-candidate (``rc: true``)
-    measurements: for an rc match the caller's hotkey must be allowlisted and prove possession
-    (see ``authorize_rc_measurement``). It is a no-op for published measurements, so callers
-    verifying non-rc quotes may omit it (an empty caller then can only use published measurements).
+    ``auth`` gates access to release-candidate (``rc: true``) measurements: for an rc match the
+    caller must hold a proven hotkey that is on the measurement's allowlist (see
+    ``authorize_rc_measurement``). It is a no-op for published measurements, so callers that can
+    never present a proof may omit it -- doing so simply makes rc measurements unreachable for
+    them, which is the safe direction.
     This is the one place the rc check lives, so it cannot be bypassed by any endpoint that
     verifies a quote.
 

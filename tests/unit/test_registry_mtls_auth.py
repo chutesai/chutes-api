@@ -314,8 +314,8 @@ async def test_require_server_mtls_no_registered_ca():
 def _hotkey_auth(nonce, *, body_sha256="body-hash", keypair=None):
     """The auth a /provision request arrives with once the edge has verified it.
 
-    /provision attests at 1.4.0, which is at settings.tee_hotkey_pop_min_version, so a proven
-    hotkey is mandatory there -- these tests carry a real signature rather than lowering the gate.
+    Only 1.4.0+ VMs reach /provision and every one of them signs, so require_hotkey_auth demands a
+    proof at the door -- these tests carry a real signature rather than stubbing the dependency.
     """
     keypair = keypair or Keypair.create_from_seed("0x" + secrets.token_hex(32))
     message = get_signing_message(

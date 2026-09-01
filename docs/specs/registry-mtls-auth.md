@@ -97,7 +97,9 @@ Content-Type: application/json
 5. Return `200` `ProvisionResponse {volumes, k3s_encryption_key, confirm_nonce}`.
 
 `POST /servers/{vm_name}/provision/confirm` promotes/discards the pending passphrases via the
-shared `process_luks_confirm` (same as legacy `/luks/confirm`), gated by `require_confirm_nonce`.
+shared `process_luks_confirm` (same as legacy `/luks/confirm`), gated by `require_confirm_nonce`
+and `require_hotkey_auth()` — both provision routes are 1.4.0-only, and every VM that reaches them
+signs.
 
 **SECURITY INVARIANT**: `vm_root_ca_cert` is recorded ONLY from `/provision` (runtime, RTMR3
 measured) — never from boot attestation, whose quotes validate against RTMR3 = 0.
@@ -220,9 +222,9 @@ Success =
 
 2. **`POST /servers/{vm_name}/provision` + `/provision/confirm` routes** — in the server router:
    - Request models: `ProvisionRequest(quote: str, volumes: list[str])`; confirm reuses `LuksConfirmRequest`.
-   - `provision` deps: `require_attestation_proxy()`, `extract_client_cert()`, `require_luks_quote_nonce`; calls `process_provision_request` → `verify_quote(quote, nonce, SHA256(client_cert pubkey))` → `record_vm_ca_identity` (upsert `vm_root_ca_cert` = client cert PEM) → `_issue_storage_secrets`.
+   - `provision` deps: `require_cvm_proxy()`, `extract_client_cert()`, `require_luks_quote_nonce`, `require_hotkey_auth()`; calls `process_provision_request` → `verify_quote(quote, nonce, SHA256(client_cert pubkey))` → `record_vm_ca_identity` (upsert `vm_root_ca_cert` = client cert PEM) → `_issue_storage_secrets`.
    - Response model: `ProvisionResponse {volumes, k3s_encryption_key, confirm_nonce}`.
-   - `provision_confirm` deps: `require_attestation_proxy()`, `require_confirm_nonce`; delegates to the shared `process_luks_confirm`.
+   - `provision_confirm` deps: `require_cvm_proxy()`, `require_confirm_nonce`, `require_hotkey_auth()`; delegates to the shared `process_luks_confirm`.
 
 3. **`verify_leaf_cert_signed_by_ca(leaf: Certificate, ca_cert_pem: str) -> None`** utility — takes the already-parsed leaf `Certificate` and the stored CA PEM; uses `cryptography`; raises `HTTPException(403)` on failure. Suitable for unit testing in isolation.
 

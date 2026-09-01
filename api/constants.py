@@ -28,11 +28,11 @@ HOTKEY_HEADER = "X-Chutes-Hotkey"
 COLDKEY_HEADER = "X-Chutes-Coldkey"
 SIGNATURE_HEADER = "X-Chutes-Signature"
 NONCE_HEADER = "X-Chutes-Nonce"
-# Purpose the attestation proxy signs into its runtime hotkey proof-of-possession
-# ({ss58}:{nonce}:{purpose}). Reuses the existing TEE request-auth purpose ("tee") that the TEE
-# endpoints already verify hotkey-mode rc proofs under (extract_attestation_auth(purpose="tee")),
-# so the proxy's signature and this gate share one convention. Must match
-# attestation_proxy.signing.RC_ATTESTATION_PURPOSE.
+# Purpose the attestation proxy signs into the hotkey proof-of-possession it stamps on every
+# response ({ss58}:{nonce}:{purpose}). Reuses the platform's existing TEE request-auth purpose so
+# the proxy's signature and get_current_user share one convention; authenticate_proxy_evidence
+# verifies it with the same primitive. Must match attestation_proxy.signing.HOTKEY_SIGNING_PURPOSE
+# in the sek8s repo -- these are compared byte for byte.
 RC_ATTESTATION_PURPOSE = "tee"
 AUTHORIZATION_HEADER = "Authorization"
 PURPOSE_HEADER = "X-Chutes-Purpose"

@@ -11,9 +11,8 @@ data:
     # MRTD/RTMR1/RTMR2 (firmware, kernel/initrd) and runtime_rtmr3 are shared across all
     # hardware for a version; only RTMR0 (GPU topology) varies per hardware. Set `rc: true`
     # to mark a version a release candidate (attestable but excluded from the public list); an
-    # rc version MUST also list BOTH `authorized_hotkeys` (register/runtime) and
-    # `authorized_signing_keys` (boot/provision, operator RSA public keys in PEM) or it is dropped
-    # as unusable at load time.
+    # rc version MUST also list `authorized_hotkeys` -- the miner hotkeys allowed to run it -- or
+    # it is dropped as unusable at load time.
     #
     # Each hardware entry may carry `fingerprint`: the 64-hex topology fingerprint of the host
     # class it covers, linking it to the submitted host profile

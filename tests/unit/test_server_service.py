@@ -104,11 +104,6 @@ def mock_settings(mock_redis_client):
     # Provide a real Fernet cipher so encrypt_passphrase/decrypt_passphrase work in tests.
     settings.fernet_key = Fernet(Fernet.generate_key())
     settings.tee_minimum_boot_version = "0.0.0"
-    # These tests predate the miner-hotkey PoP gate and send no proof headers, i.e. they exercise
-    # the transition path where the proof is optional. Pushing the gate above every test
-    # measurement version keeps that intent explicit; the gate itself (required / absent / forged /
-    # replayed) is covered in test_hotkey_proof_of_possession.py.
-    settings.tee_hotkey_pop_min_version = "99.0.0"
 
     with (
         patch("api.server.service.settings", settings),

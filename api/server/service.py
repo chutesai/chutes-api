@@ -375,8 +375,8 @@ async def require_server_mtls(
     ``Server`` so the handler can use it directly.
 
     Use on any post-boot mTLS endpoint that expects a request from a registered VM identified
-    by hotkey + vm_name; pair it with ``require_any_proxy()`` (which proves the request
-    arrived via a trusted mTLS proxy). It applies only AFTER a VM has provisioned its CA -- the
+    by hotkey + vm_name; pair it with ``require_mtls_proxy()`` (which proves the request
+    arrived via one of the trusted mTLS proxies). It applies only AFTER a VM has provisioned its CA -- the
     ``POST /provision`` call itself records the CA (presenting the CA as the client cert), so
     it cannot use this dependency.
 
@@ -484,11 +484,15 @@ async def process_boot_attestation(
     """
     Process a boot attestation request.
 
-    A presented miner-hotkey proof-of-possession in ``auth`` is ALWAYS verified at the edge, and
-    when present it -- not the body's ``args.miner_hotkey`` -- is the caller's identity. Its
-    ABSENCE is not fatal: pre-1.4.0 images have no signer in their measured initramfs and must keep
-    booting. Those images therefore still ride on the bare ``args.miner_hotkey`` claim; that
-    closes when tee_minimum_boot_version reaches 1.4.0 and unsigned images stop attesting.
+    Both VM generations reach this route, so the attested measurement decides whether a hotkey
+    proof was required. An image whose measured initramfs ships the sr25519 signer
+    (>= MIN_VM_AUTH_KEY_VERSION) must have used it, and its PROVEN hotkey -- not the body's
+    ``args.miner_hotkey`` -- is what the boot record, the rotation, and the quote nonce are keyed
+    by. An older image could not have signed, so it still rides on that bare claim; that allowance
+    disappears when tee_minimum_boot_version reaches 1.4.0 and unsigned images stop attesting.
+
+    The version is safe to gate on because it comes from the QUOTE, not the caller: a miner can
+    choose which published image to run, but cannot claim to be running one they are not.
 
     Args:
         db: Database session
@@ -496,11 +500,12 @@ async def process_boot_attestation(
         args: Boot attestation arguments (includes miner_hotkey, vm_name, first_boot)
         nonce: Validated nonce
         expected_cert_hash: Expected certificate hash
-        auth: The caller's request auth headers (X-Chutes-Hotkey/-Nonce/-Signature), unverified
+        auth: The caller's proven identity, or None when no signature was offered
 
     Returns:
-        BootAttestationResult with root_key, luks_quote_nonce for the subsequent
-        POST /luks/attest flow, and (for VMs >= 1.4.0) root_next/root_confirm_nonce plus
+        BootAttestationResult with root_key, luks_quote_nonce for the subsequent runtime call
+        (POST /provision on 1.4.0+, POST /luks/attest on 1.3.x), and for VMs >= 1.4.0
+        root_next/root_confirm_nonce plus
         vm_auth_ss58 (the freshly-rotated per-VM signing key). vm_auth_ss58 is None for < 1.4.0.
 
     Raises:
@@ -519,10 +524,9 @@ async def process_boot_attestation(
     # Parse and verify quote
     try:  # Verify quote signature
         quote = BootTdxQuote.from_base64(args.quote)
-        # verify_quote centrally enforces the rc gate: if the matched measurement is a release
-        # candidate, the caller (miner hotkey + signature over the boot nonce) must be authorized.
-        # No-op for published measurements. Enforced before any secret (root LUKS key, root_next,
-        # vm_auth_ss58) is released.
+        # verify_quote centrally enforces the rc gate: a release-candidate measurement is usable
+        # only by a caller that PROVED an allowlisted hotkey. No-op for published measurements, and
+        # enforced before any secret (root LUKS key, root_next, vm_auth_ss58) is released.
         _, measurement_config = await verify_quote(quote, nonce, expected_cert_hash, auth=auth)
 
         miner_hotkey = args.miner_hotkey
@@ -1304,14 +1308,18 @@ async def process_provision_request(
     root CA. On success server.vm_root_ca_cert is recorded (idempotent) and passphrase
     rotation proceeds exactly as the legacy luks/attest flow.
 
-    The route requires a proven hotkey (extract_hotkey_auth(required=True)); it must also be the
-    hotkey the call acts as.
+    ``auth`` is the caller's proven identity, already verified by the route's
+    ``require_hotkey_auth`` dependency; it is here solely to hand the rc gate in verify_quote a
+    caller. It is not re-checked against ``miner_hotkey``: both come from the same
+    X-Chutes-Hotkey header, and the measured initramfs derives that header, the body's
+    miner_hotkey, and the signature from one miner seed -- so a signing image cannot present two
+    identities without changing its own measurement.
     """
 
     quote = RuntimeTdxQuote.from_base64(body.quote)
-    # verify_quote centrally enforces the rc gate: on an rc measurement the caller (miner hotkey +
-    # signature over the quote nonce) must be authorized. No-op for published measurements.
-    # Enforced before the VM CA is recorded or storage secrets are issued.
+    # verify_quote centrally enforces the rc gate: a release-candidate measurement is usable only
+    # by a caller that PROVED an allowlisted hotkey. No-op for published measurements, and enforced
+    # before the VM CA is recorded or any storage secret is issued.
     _, measurement_config = await verify_quote(
         quote, quote_nonce, get_public_key_hash(client_cert), auth=auth
     )
@@ -1383,9 +1391,10 @@ async def process_luks_confirm(
     Promotes pending passphrases to current for volumes that rotated successfully,
     or discards them for volumes that failed.
 
-    Whether a proven hotkey is required is settled by the route: /provision/confirm is 1.4.0-only
-    and uses extract_hotkey_auth(required=True); the legacy /luks/confirm serves 1.3.x VMs that
-    cannot sign and passes no auth at all.
+    Whether a proven hotkey is required is settled by the route, so nothing is checked here:
+    /provision/confirm is 1.4.0-only and carries require_hotkey_auth, while the legacy
+    /luks/confirm serves 1.3.x VMs that have no signer at all. Both identify the VM by the same
+    X-Chutes-Hotkey header, so by the time this runs the decision has been made.
     """
     vm_config = await _get_vm_cache_config(db, hotkey, vm_name)
     if vm_config is None:
