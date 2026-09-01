@@ -18,17 +18,17 @@ from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request, status
 from api.database import get_db_session
+from api.metagraph import get_miner_by_hotkey
 from loguru import logger
 import time
 from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
 from api.config import settings, TeeMeasurementConfig
 from cryptography import x509
 from cryptography.x509 import Certificate
-from cryptography.hazmat.primitives import serialization, hashes
+from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import padding, ec
 from cryptography.hazmat.backends import default_backend
 from cryptography.exceptions import InvalidSignature
-from bittensor_wallet.keypair import Keypair
 from api.server.exceptions import (
     AttestationError,
     GpuEvidenceError,
@@ -41,6 +41,7 @@ from api.server.exceptions import (
     NoClientCertError,
     NoServerCertError,
     NonceError,
+    UnauthorizedError,
 )
 from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
@@ -50,7 +51,7 @@ from api.server.schemas import (
     Server,
     VmCacheConfig,
     LuksVolumeRotation,
-    AttestationAuth,
+    HotkeyAuth,
     HostProfile,
 )
 from api.constants import (
@@ -62,9 +63,9 @@ from api.constants import (
     HOTKEY_HEADER,
     SIGNATURE_HEADER,
     NONCE_HEADER,
-    OPERATOR_SIGNATURE_HEADER,
+    RC_ATTESTATION_PURPOSE,
 )
-from api.util import semcomp, get_signing_message, nonce_is_valid
+from api.util import nonce_is_valid, semcomp, verify_request_signature
 
 
 def generate_nonce() -> str:
@@ -98,10 +99,10 @@ def _proxy_provenance(request: Request) -> tuple[bool, bool]:
     )
 
 
-def require_attestation_proxy():
+def require_mtls_proxy():
     """
-    FastAPI dependency for endpoints BOTH VM generations reach through a proxy
-    (boot/attestation, luks/attest): the legacy 1.3.x attestation proxy or the 1.4.0 cvm proxy.
+    FastAPI dependency for endpoints BOTH VM generations reach through a proxy: the legacy 1.3.x
+    attestation proxy or the 1.4.0 cvm proxy.
 
     Accepts either proxy's secret. Fails closed only when NEITHER is configured (503) -- so a
     deploy that predates provisioning doesn't 503 the fleet -- and 403s a request carrying no
@@ -127,6 +128,39 @@ def require_attestation_proxy():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Request did not arrive via a trusted attestation proxy.",
+            )
+
+    return _check
+
+
+def require_attestation_proxy():
+    """
+    FastAPI dependency for the 1.3.x-only endpoints (luks/attest): the request must arrive via the
+    attestation proxy. The mirror image of ``require_cvm_proxy``.
+    """
+
+    async def _check(request: Request):
+        _, via_att = _proxy_provenance(request)
+        if not settings.attestation_proxy_secret:
+            logger.error(
+                "attestation-proxy endpoint rejected: ATTESTATION_PROXY_SECRET is not configured "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attestation proxy secret is not configured.",
+            )
+        if not via_att:
+            logger.warning(
+                f"attestation-proxy endpoint rejected: not via the attestation proxy "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "This endpoint serves only legacy VMs, via the attestation proxy. Newer VMs "
+                    "provision through POST /servers/{vm_name}/provision."
+                ),
             )
 
     return _check
@@ -380,43 +414,187 @@ def _parse_client_cert_header(request: Request) -> Optional[Certificate]:
         ) from e
 
 
-def extract_attestation_auth(*, purpose: Optional[str] = None):
-    """One FastAPI dependency building the rc-gate ``AttestationAuth`` from request headers, for
-    both proof modes. Pure extraction -- it never verifies; the rc gate (``authorize_rc_measurement``)
-    verifies whatever is populated, so authorization never rests on an assumption about which
-    dependency ran.
+def verify_hotkey_auth(auth: HotkeyAuth) -> HotkeyAuth:
+    """Verify the caller's sr25519 signature, returning the same auth once it is proven.
 
-    The two modes are told apart by header presence, not by the endpoint, because their proofs now
-    live in distinct headers:
+    Called once, at the edge -- never from a service. Raises UnauthorizedError (401) on anything
+    but success, so a returned value always carries a proven ``miner_hotkey``; callers that have
+    no proof to check pass None onward instead of calling this. Does not check nonce freshness --
+    each caller's nonce is validated by its endpoint's nonce dependency or by get_current_user.
+    """
+    if not auth.miner_hotkey or not auth.signature or not auth.nonce:
+        logger.warning("Hotkey auth rejected: incomplete hotkey/signature/nonce material.")
+        raise UnauthorizedError()
+    if not auth.purpose and not auth.body_sha256:
+        # Only reachable if the body-hashing middleware did not run for this request.
+        logger.warning("Hotkey auth rejected: no request body hash available to verify.")
+        raise UnauthorizedError()
+    try:
+        verify_request_signature(
+            auth.miner_hotkey,
+            auth.signature,
+            auth.nonce,
+            payload_hash=auth.body_sha256,
+            purpose=auth.purpose,
+        )
+    except HTTPException as e:
+        logger.warning(
+            f"Hotkey auth rejected for {auth.miner_hotkey[:12]}...: {e.detail}"
+        )
+        raise UnauthorizedError() from e
 
-      * signed mode (initramfs boot/provision): the ``X-Operator-Signature`` header is an
-        RSA-SHA256 signature over the quote nonce by an authorized operator signing key. When
-        present it takes precedence -- initramfs has ``openssl`` but no sr25519.
-      * hotkey mode (register/runtime, userspace): the standard request auth material
-        (``X-Chutes-Hotkey`` + sr25519 ``X-Chutes-Signature`` over ``get_signing_message(hotkey,
-        X-Chutes-Nonce, body_sha256, purpose)``). ``purpose`` must match the endpoint's
-        ``get_current_user`` purpose so the gate reconstructs the identical signing message.
+    logger.info(f"Hotkey auth verified for {auth.miner_hotkey[:12]}...")
+    return auth
 
-    When neither header is present the returned ``AttestationAuth`` carries no proof and the gate
-    fails closed for rc measurements (a no-op for published ones).
+
+def authenticate_proxy_evidence(
+    hotkey: Optional[str],
+    nonce: Optional[str],
+    signature: Optional[str],
+    *,
+    host: str,
+) -> Optional[HotkeyAuth]:
+    """Authenticate the attestation proxy's miner-hotkey proof on an evidence RESPONSE.
+
+    Shared by the two evidence-fetch flows (server registration and chute admission): the proxy
+    stamps every response it serves, so both read the same three headers. Returns None when the
+    proxy sent no proof (older image, or no seed configured) -- the same "nothing was offered"
+    signal ``extract_hotkey_auth`` gives.
+
+    Unlike a request, this proof carries no endpoint nonce dependency to bound replay, so the
+    freshness check lives here -- the nonce is the proxy's own timestamp on a response we fetched.
+    """
+    if not hotkey:
+        return None
+
+    if not nonce_is_valid(nonce):
+        logger.warning(
+            f"Evidence rejected for {host}: the proxy's hotkey proof carries a stale or "
+            "malformed nonce."
+        )
+        raise UnauthorizedError(
+            "The attestation proxy's hotkey signature is stale. Check the VM's clock."
+        )
+
+    return verify_hotkey_auth(
+        HotkeyAuth(
+            miner_hotkey=hotkey,
+            signature=signature,
+            nonce=nonce,
+            purpose=RC_ATTESTATION_PURPOSE,
+        )
+    )
+
+
+async def _claimed_miner_hotkey(request: Request, header_hotkey: Optional[str]) -> Optional[str]:
+    """The hotkey this request claims to act as: the header, else the JSON body's miner_hotkey.
+
+    The body fallback exists for pre-1.4.0 boot attestation, whose initramfs sends the hotkey only
+    in the body -- the X-Chutes-Hotkey header on that route arrived with the 1.4.0 signer. Reading
+    the body here is safe: the body-hashing middleware has already consumed and cached it.
+    TODO: drop the fallback once tee_minimum_boot_version is 1.4.0 and every caller sends the header.
+    """
+    if header_hotkey:
+        return header_hotkey
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    return body.get("miner_hotkey") if isinstance(body, dict) else None
+
+
+def deny_blacklisted_miner():
+    """Dependency refusing miners that are blacklisted or not registered on the subnet.
+
+    Identifies the caller by X-Chutes-Hotkey, falling back to the body's ``miner_hotkey``. This is
+    a claim, not a proof -- pair it with hotkey auth where the identity must be proven. It gates
+    on membership, so a caller asserting someone else's hotkey only borrows their standing, never
+    their secrets.
+
+    The two refusals are distinct: a hotkey that is not registered on the subnet is 403; one that
+    is registered but blacklisted is 401, as is presenting no hotkey at all.
     """
 
     async def _dep(
         request: Request,
-        operator_signature: Optional[str] = Header(None, alias=OPERATOR_SIGNATURE_HEADER),
+        db: AsyncSession = Depends(get_db_session),
         hotkey: Optional[str] = Header(None, alias=HOTKEY_HEADER),
-        signature: Optional[str] = Header(None, alias=SIGNATURE_HEADER),
-        nonce: Optional[str] = Header(None, alias=NONCE_HEADER),
-    ) -> AttestationAuth:
-        if operator_signature is not None:
-            return AttestationAuth.signed(operator_signature)
-        return AttestationAuth.hotkey_signed(
-            hotkey,
-            signature=signature,
-            nonce=nonce,
-            body_sha256=getattr(request.state, "body_sha256", None),
-            purpose=purpose,
-        )
+    ) -> None:
+        miner_hotkey = await _claimed_miner_hotkey(request, hotkey)
+        if not miner_hotkey:
+            logger.warning(f"Rejected: no miner hotkey presented path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "No miner hotkey was presented. Send X-Chutes-Hotkey (or miner_hotkey in the "
+                    "request body)."
+                ),
+            )
+        node = await get_miner_by_hotkey(miner_hotkey, db)
+        if not node:
+            logger.warning(
+                f"Rejected {miner_hotkey[:12]}... path={request.url.path}: not registered on "
+                f"subnet {settings.netuid}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your hotkey is not registered on {settings.netuid}",
+            )
+
+        if node.blacklist_reason:
+            logger.warning(
+                f"MINERBLACKLIST: hotkey={miner_hotkey} path={request.url.path} "
+                f"reason={node.blacklist_reason}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Your hotkey has been blacklisted: {node.blacklist_reason}",
+            )
+
+    return _dep
+
+
+def _hotkey_auth_from_request(request: Request, purpose: Optional[str]) -> HotkeyAuth:
+    """The caller's auth material, read off the request. Nothing is verified here."""
+    return HotkeyAuth(
+        miner_hotkey=request.headers.get(HOTKEY_HEADER),
+        signature=request.headers.get(SIGNATURE_HEADER),
+        nonce=request.headers.get(NONCE_HEADER),
+        body_sha256=getattr(request.state, "body_sha256", None),
+        purpose=purpose,
+    )
+
+
+def extract_hotkey_auth(*, purpose: Optional[str] = None):
+    """Dependency yielding the caller's proven ``HotkeyAuth``, or None when none was offered.
+
+    For routes both VM generations reach: an unsigned request is legitimate for an image whose
+    measured initramfs predates the sr25519 signer, so the service still accepts it. Use
+    ``require_hotkey_auth`` on routes only 1.4.0+ VMs reach. ``purpose`` must match the endpoint's
+    ``get_current_user`` purpose so the reconstructed signing message is identical.
+    """
+
+    async def _dep(request: Request) -> Optional[HotkeyAuth]:
+        auth = _hotkey_auth_from_request(request, purpose)
+        return verify_hotkey_auth(auth) if auth.offered else None
+
+    return _dep
+
+
+def require_hotkey_auth(*, purpose: Optional[str] = None):
+    """Dependency yielding the caller's proven ``HotkeyAuth``, 401ing if none was offered.
+
+    For routes only a signing VM can reach, so the requirement is stated here rather than
+    re-derived from the attested version downstream.
+    """
+
+    async def _dep(request: Request) -> HotkeyAuth:
+        auth = _hotkey_auth_from_request(request, purpose)
+        if not auth.offered:
+            raise UnauthorizedError()
+        return verify_hotkey_auth(auth)
 
     return _dep
 
@@ -624,7 +802,7 @@ def get_matching_measurement_config(quote: TdxQuote) -> TeeMeasurementConfig:
 
 
 def _require_nonempty_hotkey_allowlist(config: TeeMeasurementConfig) -> None:
-    """The register/runtime path's allowlist (``authorized_hotkeys``) must be non-empty.
+    """The rc allowlist (``authorized_hotkeys``) must be non-empty.
     _load_tee_measurements already drops such rc entries; defense in depth so an empty allowlist is
     never treated as "allow all"."""
     if not config.authorized_hotkeys:
@@ -635,124 +813,8 @@ def _require_nonempty_hotkey_allowlist(config: TeeMeasurementConfig) -> None:
         raise MeasurementMismatchError()
 
 
-def _require_nonempty_signing_keys(config: TeeMeasurementConfig) -> None:
-    """The boot/provision path's allowlist (``authorized_signing_keys``) must be non-empty.
-    _load_tee_measurements already drops such rc entries; defense in depth so an empty allowlist is
-    never treated as "allow all"."""
-    if not config.authorized_signing_keys:
-        logger.error(
-            f"rc measurement '{config.name}' v{config.version} rejected: authorized_signing_keys "
-            "allowlist is empty (config-loading bug)."
-        )
-        raise MeasurementMismatchError()
 
-
-def _require_authorized_hotkey(config: TeeMeasurementConfig, miner_hotkey: Optional[str]) -> None:
-    """The caller's hotkey must be in the rc measurement's ``authorized_hotkeys`` allowlist
-    (register/runtime path). Possession of the hotkey is verified separately by
-    ``_require_valid_hotkey_signature``."""
-    if not miner_hotkey or miner_hotkey not in config.authorized_hotkeys:
-        logger.warning(
-            f"rc measurement '{config.name}' v{config.version} rejected: hotkey "
-            f"{(miner_hotkey or 'None')[:12]}... is not in the authorized_hotkeys allowlist."
-        )
-        raise MeasurementMismatchError()
-
-
-def _require_valid_hotkey_signature(config: TeeMeasurementConfig, auth: "AttestationAuth") -> None:
-    """Prove possession of ``auth.miner_hotkey`` by re-verifying the caller's STANDARD request
-    hotkey signature -- the register/runtime (userspace) proof.
-
-    The gate reconstructs the exact signing message ``get_current_user`` builds
-    (``get_signing_message(hotkey, nonce, body_sha256, purpose)``) and re-runs ``nonce_is_valid`` +
-    ``Keypair.verify`` here, so authorization never rests on a caller-supplied "already
-    authenticated" flag: a fabricated auth without a genuine signature by the hotkey cannot pass.
-    (get_current_user still runs on the endpoint for its own concerns; this is an independent
-    check.) Fail closed on a missing/expired nonce or a missing/malformed/non-verifying signature.
-    """
-    prefix = f"rc measurement '{config.name}' v{config.version} rejected:"
-    if not auth.hotkey_signature or not auth.hotkey_nonce:
-        logger.warning(f"{prefix} no hotkey request signature/nonce provided.")
-        raise MeasurementMismatchError()
-    if not nonce_is_valid(auth.hotkey_nonce):
-        logger.warning(f"{prefix} hotkey request nonce is missing or expired.")
-        raise MeasurementMismatchError()
-    try:
-        signature_bytes = bytes.fromhex(auth.hotkey_signature)
-    except (ValueError, TypeError):
-        logger.warning(f"{prefix} hotkey signature is not valid hex.")
-        raise MeasurementMismatchError()
-    signing_message = get_signing_message(
-        hotkey=auth.miner_hotkey,
-        nonce=auth.hotkey_nonce,
-        payload_str=None,
-        payload_hash=auth.body_sha256,
-        purpose=auth.purpose,
-    )
-    try:
-        verified = Keypair(ss58_address=auth.miner_hotkey).verify(signing_message, signature_bytes)
-    except Exception as e:
-        # Keypair(...).verify can raise on a malformed ss58 / unsupported crypto; treat any failure
-        # as a rejection rather than letting it surface as a 500.
-        logger.warning(f"{prefix} hotkey signature verification raised: {e}")
-        raise MeasurementMismatchError()
-    if not verified:
-        logger.warning(
-            f"{prefix} hotkey request signature does not verify for "
-            f"{(auth.miner_hotkey or 'None')[:12]}..."
-        )
-        raise MeasurementMismatchError()
-
-
-def _require_valid_rc_signature(
-    config: TeeMeasurementConfig, nonce: str, rc_signature: Optional[str]
-) -> None:
-    """``rc_signature`` (base64) must be an RSA PKCS#1 v1.5 / SHA-256 signature over the raw
-    ``nonce`` (UTF-8 bytes) by one of the measurement's ``authorized_signing_keys`` (operator RSA
-    public keys) -- the boot/provision proof.
-
-    This is the exact primitive the VM initramfs already uses (``openssl dgst -sha256 -sign``) to
-    verify the signing-keys bundle, so no sr25519/substrate signer has to be staged into the
-    measured initramfs. The initramfs emits the signature as base64 (``base64 -w0`` -- the one
-    encoder guaranteed staged there, unlike ``xxd``/``od``), matching how it already sends the TDX
-    quote, so this decodes base64 to stay in lockstep with the measured boot image. Detached
-    signature over the nonce only -- it never touches the TDX quote or its REPORTDATA. Fail closed
-    on a missing, malformed, or non-verifying signature; replay is bounded by the single-use,
-    IP/vm-bound nonce that already gates the endpoint.
-    """
-    prefix = f"rc measurement '{config.name}' v{config.version} rejected:"
-    if not rc_signature:
-        logger.warning(f"{prefix} no proof-of-possession signature provided.")
-        raise MeasurementMismatchError()
-    try:
-        # binascii.Error (invalid base64) is a ValueError subclass, so this covers it too.
-        signature_bytes = base64.b64decode(rc_signature, validate=True)
-    except (ValueError, TypeError):
-        logger.warning(f"{prefix} signature is not valid base64.")
-        raise MeasurementMismatchError()
-
-    message = nonce.encode()
-    for pem in config.authorized_signing_keys:
-        try:
-            pubkey = serialization.load_pem_public_key(pem.encode())
-            pubkey.verify(signature_bytes, message, padding.PKCS1v15(), hashes.SHA256())
-            return  # verified against an authorized operator signing key
-        except InvalidSignature:
-            continue  # not this key; try the next
-        except Exception as e:
-            # A key that fails to load / unsupported type: load-time validation should prevent this,
-            # but never treat it as success or let it surface as a 500.
-            logger.warning(f"{prefix} candidate signing key could not be used: {e}")
-            continue
-    logger.warning(f"{prefix} signature does not verify against any authorized signing key.")
-    raise MeasurementMismatchError()
-
-
-def authorize_rc_measurement(
-    config: TeeMeasurementConfig,
-    nonce: str,
-    auth: "AttestationAuth",
-) -> None:
+def authorize_rc_measurement(config: TeeMeasurementConfig, auth: Optional["HotkeyAuth"]) -> None:
     """Central release-candidate (rc) authorization check, invoked from ``verify_quote`` so it
     covers every trust-granting flow at the single point where the measurement (hence version) is
     known.
@@ -760,14 +822,9 @@ def authorize_rc_measurement(
     No-op for published (non-rc) measurements: they lock down identical guest software for
     everyone, so operator identity is irrelevant and nothing changes for existing VMs.
 
-    For an rc match, fail closed. The gate VERIFIES the proof carried in ``auth`` (it never trusts a
-    caller-supplied flag); the proof differs by environment (each a linear checklist of
-    single-purpose ``_require_*`` helpers that raise on failure, so a later edit can't silently drop
-    a check):
-      * hotkey mode (``auth.miner_hotkey`` set; register/runtime, userspace): re-verify the caller's
-        standard sr25519 request signature and require ``miner_hotkey`` ∈ ``authorized_hotkeys``.
-      * signed mode (boot/provision, initramfs): require an RSA signature over the nonce by one of
-        ``authorized_signing_keys`` -- sr25519 isn't available in the measured initramfs.
+    For an rc match, fail closed: the caller must have PROVEN possession of a hotkey in
+    ``authorized_hotkeys``. ``auth`` is None unless it came back from ``verify_hotkey_auth`` at the
+    edge, so an unproven caller arrives here with nothing and is refused.
 
     Any failure surfaces a bare ``MeasurementMismatchError`` whose default message is the generic
     no-match text -- deliberately identical to what a caller whose quote matches nothing sees, so
@@ -777,17 +834,27 @@ def authorize_rc_measurement(
     if not config.rc:
         return  # published measurement: the gate is a no-op
 
-    if auth.miner_hotkey is not None:
-        _require_nonempty_hotkey_allowlist(config)
-        _require_authorized_hotkey(config, auth.miner_hotkey)
-        _require_valid_hotkey_signature(config, auth)
-        subject = f"hotkey {auth.miner_hotkey[:12]}..."
-    else:
-        _require_nonempty_signing_keys(config)
-        _require_valid_rc_signature(config, nonce, auth.rc_signature)
-        subject = "an authorized operator signing key"
+    _require_nonempty_hotkey_allowlist(config)
 
-    logger.info(f"rc measurement '{config.name}' v{config.version} authorized via {subject}.")
+    if auth is None:
+        # Never leak that this measurement is rc-gated: the caller sees the generic no-match text.
+        logger.warning(
+            f"rc measurement '{config.name}' v{config.version} rejected: caller proved no hotkey."
+        )
+        raise MeasurementMismatchError()
+
+
+    if auth.miner_hotkey not in config.authorized_hotkeys:
+        logger.warning(
+            f"rc measurement '{config.name}' v{config.version} rejected: hotkey "
+            f"{auth.miner_hotkey[:12]}... is not in the authorized_hotkeys allowlist."
+        )
+        raise MeasurementMismatchError()
+
+    logger.info(
+        f"rc measurement '{config.name}' v{config.version} authorized via hotkey "
+        f"{auth.miner_hotkey[:12]}..."
+    )
 
 
 def verify_measurements(quote: TdxQuote) -> TeeMeasurementConfig:
@@ -1168,18 +1235,21 @@ async def verify_quote(
     expected_nonce: str,
     expected_cert_hash: str,
     *,
-    auth: Optional["AttestationAuth"] = None,
-) -> TdxVerificationResult:
+    auth: Optional["HotkeyAuth"] = None,
+) -> tuple[TdxVerificationResult, TeeMeasurementConfig]:
     """Verify a TDX quote end to end: nonce + cert-hash binding, DCAP signature, quote/DCAP
     consistency, measurement match, and -- centrally, for every trust-granting flow -- the
     release-candidate authorization check.
 
-    ``caller`` (an ``AttestationAuth``) gates access to release-candidate (``rc: true``)
+    ``auth`` (a ``HotkeyAuth``) gates access to release-candidate (``rc: true``)
     measurements: for an rc match the caller's hotkey must be allowlisted and prove possession
     (see ``authorize_rc_measurement``). It is a no-op for published measurements, so callers
     verifying non-rc quotes may omit it (an empty caller then can only use published measurements).
     This is the one place the rc check lives, so it cannot be bypassed by any endpoint that
     verifies a quote.
+
+    Returns ``(report, measurement_config)`` -- the measurement the quote MATCHED, so callers never
+    re-look it up (settings.tee_measurements re-reads the ConfigMap on every access).
     """
     nonce, cert_hash = extract_report_data(quote)
 
@@ -1196,9 +1266,9 @@ async def verify_quote(
 
     # Central rc gate: verify_measurements has matched the config (so we know the version/rc flag);
     # restrict rc measurements to authorized hotkeys with proof of possession. No-op for published.
-    authorize_rc_measurement(measurement_config, expected_nonce, auth or AttestationAuth())
+    authorize_rc_measurement(measurement_config, auth)
 
-    return result
+    return result, measurement_config
 
 
 def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:

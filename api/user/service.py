@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from sqlalchemy import exists, or_, delete
 from sqlalchemy.future import select
 from fastapi import APIRouter, Depends, Header, Request, HTTPException, Security, status
-from bittensor_wallet.keypair import Keypair
 from api.config import settings
 from api.metagraph import MetagraphNode
 from api.database import get_session
@@ -21,7 +20,7 @@ from api.user.tokens import get_user_from_token
 from fastapi.security import APIKeyHeader
 from api.constants import HOTKEY_HEADER, SIGNATURE_HEADER, AUTHORIZATION_HEADER
 from api.constants import NONCE_HEADER, INTEGRATED_SUBNETS
-from api.util import nonce_is_valid, get_signing_message
+from api.util import nonce_is_valid, verify_request_signature
 from api.permissions import Permissioning, Role
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -164,43 +163,10 @@ def get_current_user(
                         detail=f"Unauthorized IP address: {client_ip=}",
                     )
 
-        # Now get the Signing message
         body_sha256 = getattr(request.state, "body_sha256", None)
-
-        signing_message = get_signing_message(
-            hotkey=hotkey,
-            nonce=nonce,
-            payload_hash=body_sha256,
-            purpose=purpose,
-            payload_str=None,
+        verify_request_signature(
+            hotkey, signature, nonce, payload_hash=body_sha256, purpose=purpose
         )
-
-        if not signing_message:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Bad signing message: {signing_message}",
-            )
-
-        # Verify the signature
-        try:
-            signature_hex = bytes.fromhex(signature)
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid signature: {signature}, with error: {e}",
-            )
-        try:
-            keypair = Keypair(hotkey)
-            if not keypair.verify(signing_message, signature_hex):
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Invalid request signature for hotkey {hotkey}. Message: {signing_message}",
-                )
-        except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Invalid request signature for hotkey {hotkey}. Message: {signing_message}",
-            ) from e
 
         # Requires a hotkey registered to a netuid?
         if registered_to is not None:
