@@ -1027,6 +1027,7 @@ async def update_shutdown_timestamp(instance_id: str):
         except Exception:
             pass
 
+
 async def _require_rc_chute_owner(
     db, launch_config, measurement_config: TeeMeasurementConfig
 ) -> None:

@@ -331,7 +331,6 @@ def _hotkey_auth(nonce, *, body_sha256="body-hash", keypair=None):
     )
 
 
-
 @pytest.mark.asyncio
 async def test_provision_records_ca_and_returns_secrets():
     """

@@ -539,7 +539,7 @@ async def process_boot_attestation(
                     f"VM version {measurement_config.version} requires a verified hotkey."
                 )
             miner_hotkey = auth.miner_hotkey
-        
+
         minimum_version = settings.tee_minimum_boot_version
         if semcomp(measurement_config.version, minimum_version) < 0:
             logger.warning(
@@ -705,9 +705,7 @@ async def sync_vm_root_ca_from_boot_record(db: AsyncSession, server: Server) -> 
         )
 
 
-async def register_server(
-    db: AsyncSession, args: ServerArgs, miner_hotkey: str
-):
+async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
     """
     Register a TEE server: create Server, verify attestation (creating a ServerAttestation
     record on success or failure), then track nodes. ServerAttestation is always inserted

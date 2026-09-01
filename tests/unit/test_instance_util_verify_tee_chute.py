@@ -480,7 +480,9 @@ async def test_unsigned_response_proves_nothing_but_is_not_itself_an_error(
 
 
 @pytest.mark.asyncio
-async def test_unsigned_response_from_a_legacy_version_is_accepted(mock_db, sample_quote, mock_cert):
+async def test_unsigned_response_from_a_legacy_version_is_accepted(
+    mock_db, sample_quote, mock_cert
+):
     """Below the gate the proxy has no seed injected and cannot sign; those VMs still verify."""
     evidence = ChuteEvidenceResponse(quote=sample_quote, gpu_evidence=[], cert=mock_cert)
     await _run_with_evidence(mock_db, evidence, version="1.3.0")

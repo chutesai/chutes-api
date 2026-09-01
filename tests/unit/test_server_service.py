@@ -1104,7 +1104,7 @@ async def test_process_runtime_attestation_success(
                     miner_hotkey,
                     TEST_NONCE,
                     TEST_CERT_HASH,
-     HotkeyAuth(miner_hotkey=miner_hotkey),
+                    HotkeyAuth(miner_hotkey=miner_hotkey),
                 )
 
             assert result["attestation_id"] == "runtime-attest-123"
@@ -1460,7 +1460,9 @@ async def test_nonce_validation_error_cases(mock_settings, redis_value, expected
 
 
 @pytest.mark.asyncio
-async def test_full_boot_flow_end_to_end(mock_db_session, mock_settings, mock_verify_measurements, boot_auth):
+async def test_full_boot_flow_end_to_end(
+    mock_db_session, mock_settings, mock_verify_measurements, boot_auth
+):
     """Test complete boot attestation flow."""
     # Step 1: Create nonce
     mock_settings.redis_client.get.return_value = json.dumps(
@@ -1620,7 +1622,7 @@ async def test_full_runtime_flow_end_to_end(
                     miner_hotkey,
                     TEST_NONCE,
                     TEST_CERT_HASH,
-     HotkeyAuth(miner_hotkey=miner_hotkey),
+                    HotkeyAuth(miner_hotkey=miner_hotkey),
                 )
 
                 assert result["status"] == "verified"
@@ -2164,7 +2166,9 @@ async def test_get_server_attestation_status_failed_attestation(mock_db_session,
 
 @pytest.mark.asyncio
 async def test_boot_attestation_database_rollback_on_error(
-    mock_db_session, boot_attestation_args, sample_boot_quote,
+    mock_db_session,
+    boot_attestation_args,
+    sample_boot_quote,
     boot_auth,
 ):
     """Test that database operations are rolled back on errors."""

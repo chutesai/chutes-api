@@ -438,9 +438,7 @@ def verify_hotkey_auth(auth: HotkeyAuth) -> HotkeyAuth:
             purpose=auth.purpose,
         )
     except HTTPException as e:
-        logger.warning(
-            f"Hotkey auth rejected for {auth.miner_hotkey[:12]}...: {e.detail}"
-        )
+        logger.warning(f"Hotkey auth rejected for {auth.miner_hotkey[:12]}...: {e.detail}")
         raise UnauthorizedError() from e
 
     logger.info(f"Hotkey auth verified for {auth.miner_hotkey[:12]}...")
@@ -818,7 +816,6 @@ def _require_nonempty_hotkey_allowlist(config: TeeMeasurementConfig) -> None:
         raise MeasurementMismatchError()
 
 
-
 def authorize_rc_measurement(config: TeeMeasurementConfig, auth: Optional["HotkeyAuth"]) -> None:
     """Central release-candidate (rc) authorization check, invoked from ``verify_quote`` so it
     covers every trust-granting flow at the single point where the measurement (hence version) is
@@ -847,7 +844,6 @@ def authorize_rc_measurement(config: TeeMeasurementConfig, auth: Optional["Hotke
             f"rc measurement '{config.name}' v{config.version} rejected: caller proved no hotkey."
         )
         raise MeasurementMismatchError()
-
 
     if auth.miner_hotkey not in config.authorized_hotkeys:
         logger.warning(
