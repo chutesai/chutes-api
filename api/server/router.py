@@ -368,6 +368,7 @@ async def provision_confirm(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _mtls=Depends(require_cvm_proxy()),
     _=Depends(require_confirm_nonce),
+    _auth=Depends(require_hotkey_auth()),
 ):
     """
     Confirm or discard pending storage-passphrase rotations from POST /provision.

@@ -10,6 +10,7 @@ Covers:
 
 import hashlib
 import datetime
+import secrets
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
@@ -23,8 +24,12 @@ from cryptography.hazmat.backends import default_backend
 import pybase64
 from urllib.parse import quote as url_quote
 
+from bittensor_wallet.keypair import Keypair
+
 from api.registry.router import registry_auth
+from api.util import get_signing_message
 from api.server.util import (
+    verify_hotkey_auth,
     verify_leaf_cert_signed_by_ca,
     verify_server_cert,
     get_public_key_hash,
@@ -43,7 +48,7 @@ from api.server.schemas import (
     LuksAttestRequest,
     LuksVolumeRotation,
     StorageProvisionResult,
-    AttestationAuth,
+    HotkeyAuth,
 )
 from api.server.exceptions import AttestationError, ServerNotFoundError, InvalidClientCertError
 
@@ -306,6 +311,27 @@ async def test_require_server_mtls_no_registered_ca():
 # ---------------------------------------------------------------------------
 
 
+def _hotkey_auth(nonce, *, body_sha256="body-hash", keypair=None):
+    """The auth a /provision request arrives with once the edge has verified it.
+
+    /provision attests at 1.4.0, which is at settings.tee_hotkey_pop_min_version, so a proven
+    hotkey is mandatory there -- these tests carry a real signature rather than lowering the gate.
+    """
+    keypair = keypair or Keypair.create_from_seed("0x" + secrets.token_hex(32))
+    message = get_signing_message(
+        hotkey=keypair.ss58_address, nonce=nonce, payload_str=None, payload_hash=body_sha256
+    )
+    return keypair, verify_hotkey_auth(
+        HotkeyAuth(
+            miner_hotkey=keypair.ss58_address,
+            signature=keypair.sign(message).hex(),
+            nonce=nonce,
+            body_sha256=body_sha256,
+        )
+    )
+
+
+
 @pytest.mark.asyncio
 async def test_provision_records_ca_and_returns_secrets():
     """
@@ -329,11 +355,10 @@ async def test_provision_records_ca_and_returns_secrets():
 
     with (
         patch("api.server.service.RuntimeTdxQuote") as mock_quote_cls,
-        patch("api.server.service.verify_quote", new_callable=AsyncMock) as mock_verify,
         patch(
-            "api.server.service.get_matching_measurement_config",
-            return_value=MagicMock(version="1.4.0", rc=False),
-        ),
+            "api.server.service.verify_quote",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock(version="1.4.0", rc=False))),
+        ) as mock_verify,
         patch("api.server.service.get_server_by_name", return_value=mock_server),
         patch(
             "api.server.service.rotate_luks_passphrases",
@@ -351,7 +376,10 @@ async def test_provision_records_ca_and_returns_secrets():
         body = ProvisionRequest(
             quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
         )
-        result = await process_provision_request(db, "hk", "vm1", body, "nonce123", ca_cert)
+        keypair, auth = _hotkey_auth("nonce123")
+        result = await process_provision_request(
+            db, keypair.ss58_address, "vm1", body, "nonce123", ca_cert, auth=auth
+        )
 
     # The CA + provision quote are written onto the VM's current boot record.
     assert boot_record.vm_root_ca_cert == _cert_pem(ca_cert)
@@ -383,10 +411,9 @@ async def test_provision_without_server_records_ca_in_boot_record():
 
     with (
         patch("api.server.service.RuntimeTdxQuote") as mock_quote_cls,
-        patch("api.server.service.verify_quote", new_callable=AsyncMock),
         patch(
-            "api.server.service.get_matching_measurement_config",
-            return_value=MagicMock(version="1.4.0", rc=False),
+            "api.server.service.verify_quote",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock(version="1.4.0", rc=False))),
         ),
         patch(
             "api.server.service.get_server_by_name",
@@ -402,7 +429,10 @@ async def test_provision_without_server_records_ca_in_boot_record():
             quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
         )
         # No ServerNotFoundError — provision succeeds pre-registration.
-        result = await process_provision_request(db, "hk", "vm1", body, "nonce", ca_cert)
+        keypair, auth = _hotkey_auth("nonce")
+        result = await process_provision_request(
+            db, keypair.ss58_address, "vm1", body, "nonce", ca_cert, auth=auth
+        )
 
     assert result is expected
     # CA recorded on the boot record; no server, so no write-through.
@@ -422,10 +452,9 @@ async def test_provision_no_matching_boot_record_fails_closed():
 
     with (
         patch("api.server.service.RuntimeTdxQuote") as mock_quote_cls,
-        patch("api.server.service.verify_quote", new_callable=AsyncMock),
         patch(
-            "api.server.service.get_matching_measurement_config",
-            return_value=MagicMock(version="1.4.0", rc=False),
+            "api.server.service.verify_quote",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock(version="1.4.0", rc=False))),
         ),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
@@ -483,7 +512,11 @@ async def test_verify_server_rejects_evidence_cert_not_signed_by_boot_record_ca(
     quote = MagicMock()
     quote.raw_bytes = b"q"
     client = MagicMock()
-    client.get_server_evidence = AsyncMock(return_value=(quote, [], evidence_cert))
+    from api.server.client import ServerEvidenceResponse
+
+    client.get_server_evidence = AsyncMock(
+        return_value=ServerEvidenceResponse(quote=quote, gpu_evidence=[], cert=evidence_cert)
+    )
     db = AsyncMock()
 
     with (
@@ -499,7 +532,7 @@ async def test_verify_server_rejects_evidence_cert_not_signed_by_boot_record_ca(
         patch("api.server.service.verify_quote", new_callable=AsyncMock) as mock_vq,
     ):
         with pytest.raises(AttestationError) as exc_info:
-            await verify_server(db, server, "hk", [], AttestationAuth.hotkey_signed("hk"))
+            await verify_server(db, server, "hk", [])
     assert exc_info.value.status_code == 403
     # Rejected at the CA binding, before the quote is even verified.
     mock_vq.assert_not_awaited()
@@ -561,9 +594,16 @@ async def test_provision_confirm_delegates_to_shared_helper():
         return_value=LuksConfirmResult(volumes={"storage": {"result": "promoted"}}),
     ) as mock_confirm:
         resp = await provision_confirm(
-            vm_name="vm1", body=body, db=db, hotkey="hk", _mtls=None, _=None
+            vm_name="vm1",
+            body=body,
+            db=db,
+            hotkey="hk",
+            _mtls=None,
+            _=None,
         )
 
+    # The route's require_hotkey_auth dependency has already proven the hotkey this call acts as,
+    # so the shared service is handed the same identity the legacy route passes.
     mock_confirm.assert_awaited_once_with(db, "hk", "vm1", body)
     assert resp.status == "confirmed"
     assert resp.volumes == {"storage": {"result": "promoted"}}
