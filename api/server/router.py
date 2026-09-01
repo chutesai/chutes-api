@@ -28,6 +28,8 @@ from api.constants import (
     HOST_PROFILES_RATE_LIMIT_PER_MINUTE,
     TDX_PREFLIGHT_PER_HOTKEY,
     TDX_PREFLIGHT_GLOBAL,
+    TDX_HOST_PROFILE_STATUS_PER_HOTKEY,
+    TDX_HOST_PROFILE_STATUS_GLOBAL,
 )
 from api.rate_limit import rate_limit, rate_limit_miner
 
@@ -55,6 +57,8 @@ from api.server.schemas import (
     HostProfileResponse,
     HostProfile,
     HostProfileSubmissionResponse,
+    HostProfileStatusResponse,
+    HostProfileMeasurement,
     PreflightResponse,
 )
 from api.server.service import (
@@ -83,6 +87,7 @@ from api.server.util import (
     require_hotkey_auth,
     deny_blacklisted_miner,
     resolve_host_profile_status,
+    host_profile_status,
     measurements_for_fingerprint,
     extract_hotkey_auth,
     extract_client_cert_hash,
@@ -593,11 +598,12 @@ async def submit_host_profile(
     """
     Register a host class (sek8s `discover-profile.sh` output) so Chutes can measure it.
 
-    One of three distinct operations: this REGISTERS, POST /servers/tdx/preflight CHECKS
-    launchability, and GET /servers/tdx/host_profiles LISTS the generated set. A miner reaches this
-    only when preflight says the class is not yet launchable. The API owns the fingerprint -- the
-    miner sends raw platform metadata and gets back the class's retention lifecycle, which only ever
-    advances:
+    One of four distinct operations: this REGISTERS, POST /servers/tdx/host_profiles/status
+    RESOLVES a class (is it known, and for which images), POST /servers/tdx/preflight CHECKS whether
+    one specific image can boot, and GET /servers/tdx/host_profiles LISTS the generated set. A miner
+    reaches this only when the status lookup reports the class is not on file. The API owns the
+    fingerprint -- the miner sends raw platform metadata and gets back the class's retention
+    lifecycle, which only ever advances:
 
       * `accepted` -- a measurement has already been generated for this class; retained from here on
       * `pending`  -- parked in object storage, awaiting its first measurement generation
@@ -631,6 +637,87 @@ async def submit_host_profile(
         status=profile_status,
         stored=stored,
         detail=HOST_PROFILE_STATUS_DETAIL[profile_status],
+    )
+
+
+@router.post("/tdx/host_profiles/status", response_model=HostProfileStatusResponse)
+async def tdx_host_profile_status(
+    request: Request,
+    profile: HostProfile,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        rate_limit_miner(
+            "tdx_host_profile_status",
+            TDX_HOST_PROFILE_STATUS_PER_HOTKEY,
+            window_seconds=HOST_PROFILE_WINDOW_SECONDS,
+            global_limit=TDX_HOST_PROFILE_STATUS_GLOBAL,
+        )
+    ),
+):
+    """
+    Is this host class known, and which VM images cover it? The check `chutes-cvm host verify` runs.
+
+    Deliberately version-free: a miner verifies a host BEFORE downloading any image, so this asks
+    only about the topology -- "can this host run anything at all, and if so what". Whether one
+    specific image can boot is POST /servers/tdx/preflight, which the launch path runs against the
+    version it actually holds.
+
+      * `measurements` non-empty -> the class is attestable; those are the images it can launch.
+      * empty, `status: pending`  -> registered, awaiting measurement generation. Nothing to do but
+        retry later; re-submitting will not speed it up.
+      * empty, `status: unknown`  -> never submitted. Register it with
+        POST /servers/tdx/host_profiles.
+
+    A POST because the API owns the fingerprint: a caller cannot ask about "my topology" without
+    handing over the profile to be fingerprinted. Stores nothing -- the read-only counterpart to the
+    submission route. Signed by the miner hotkey, so the signature covers the request body.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > HOST_PROFILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Host profile exceeds {HOST_PROFILE_MAX_BYTES} bytes.",
+        )
+
+    fingerprint = profile.fingerprint
+    try:
+        profile_status = await host_profile_status(db, fingerprint)
+    except Exception as exc:
+        logger.error(f"Failed to read host profile status from {hotkey=}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to look up host profile, please try again later.",
+        )
+
+    measurements = measurements_for_fingerprint(fingerprint)
+    if measurements:
+        covered = ", ".join(f"{m['version']}{' (rc)' if m['rc'] else ''}" for m in measurements)
+        detail = (
+            f"This host class is measured; published images that cover it: {covered}. Check a "
+            "specific image with POST /servers/tdx/preflight."
+        )
+    elif profile_status is HostProfileStatus.PENDING:
+        detail = (
+            "This host class is registered and awaiting measurement generation. Nothing to do -- "
+            "retry once Chutes publishes its measurements."
+        )
+    elif profile_status is HostProfileStatus.ACCEPTED:
+        detail = (
+            "This host class has been measured before, but no published image currently covers it. "
+            "Retry once Chutes publishes measurements for a current image."
+        )
+    else:
+        detail = (
+            "This host class is not on file. Register it with POST /servers/tdx/host_profiles, "
+            "then retry once Chutes publishes its measurements."
+        )
+
+    return HostProfileStatusResponse(
+        fingerprint=fingerprint,
+        status=profile_status,
+        measurements=[HostProfileMeasurement(**m) for m in measurements],
+        detail=detail,
     )
 
 

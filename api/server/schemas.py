@@ -660,6 +660,28 @@ class HostProfileSubmissionResponse(BaseModel):
     detail: str
 
 
+class HostProfileStatusResponse(BaseModel):
+    """Response for POST /servers/tdx/host_profiles/status: is this host class known, and for
+    which images?
+
+    The read-only counterpart to the submission response, and the gate `chutes-cvm host verify`
+    runs. Deliberately version-free -- a host is verified before it has downloaded any image, so
+    nothing here depends on what the caller happens to have on disk. Whether one SPECIFIC image can
+    boot is POST /servers/tdx/preflight.
+    """
+
+    fingerprint: str
+    # Retention lifecycle of the class (unknown -> pending -> accepted), read from the profile row.
+    # UNKNOWN -> the miner must register it; PENDING -> on file, awaiting generation, nothing to do.
+    status: HostProfileStatus
+    # The (version, rc) images covered for this class, from the measurement config; empty means
+    # nothing can launch here yet. This -- not `status` -- is the launchability signal: measured_at
+    # is stamped by the reconciler and can lag a fresh publish, so a class can still read PENDING
+    # while measurements already cover it.
+    measurements: List[HostProfileMeasurement]
+    detail: str
+
+
 class PreflightResponse(BaseModel):
     """Response for POST /servers/tdx/preflight: can this exact image boot on this host?
 

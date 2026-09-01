@@ -84,7 +84,8 @@ class HostProfileStatus(str, Enum):
     fingerprint at some point, so the class is on the attestable set and retained (its profile is
     kept for RTMR0 regeneration). It is NOT the answer to "can version X launch here" -- that is
     POST /servers/tdx/preflight, which joins the caller's (version, rc) to the class's measurements.
-    Submission only reports which of the three the class is in.
+    Submission only reports which of the three the class is in; POST
+    /servers/tdx/host_profiles/status reports the same lifecycle without storing anything.
     """
 
     # A measurement has been generated for this fingerprint at some point; retained from here on.
@@ -120,6 +121,14 @@ HOST_PROFILE_WINDOW_SECONDS = 3600
 # stores nothing; the cap only bounds signature-verification cost per miner over the same window.
 TDX_PREFLIGHT_PER_HOTKEY = 120
 TDX_PREFLIGHT_GLOBAL = 1200
+
+# POST /servers/tdx/host_profiles/status: the read-only host-class lookup behind `chutes-cvm host
+# verify` -- is this topology known, and which images cover it. Version-free, so a miner runs it on
+# a host that has downloaded nothing yet, and reruns it while waiting for a measurement to be
+# published. Stores nothing, so it carries preflight's generous ceiling rather than submission's;
+# it costs one indexed row read on top of signature verification.
+TDX_HOST_PROFILE_STATUS_PER_HOTKEY = 120
+TDX_HOST_PROFILE_STATUS_GLOBAL = 1200
 
 # GET /servers/tdx/host_profiles: public and unauthenticated, so it carries an anonymous global cap
 # like the other public TEE endpoints. Responses are redis-cached, so this bounds cache misses.

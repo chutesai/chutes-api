@@ -14,7 +14,11 @@ from fastapi.params import Depends as DependsMarker
 from api.config import TeeMeasurementConfig
 from api.constants import HostProfileStatus
 from api.rate_limit import rate_limit_miner
-from api.server.router import submit_host_profile, tdx_preflight
+from api.server.router import (
+    submit_host_profile,
+    tdx_preflight,
+    tdx_host_profile_status,
+)
 from api.server.schemas import HostProfile
 from api.server.util import (
     host_profile_is_known,
@@ -845,3 +849,117 @@ class TestStatusResolution:
 
         assert fingerprint == profile.fingerprint
         assert status == HostProfileStatus.ACCEPTED
+
+
+class TestHostProfileStatusEndpoint:
+    """POST /servers/tdx/host_profiles/status -- is this host class known, and for what images?
+
+    The version-free gate `chutes-cvm host verify` runs: a miner checks a host before it has
+    downloaded any image, so nothing about the answer may depend on a version.
+    """
+
+    async def _status(self, body=None):
+        body = body if body is not None else json.dumps(SAMPLE_PROFILE)
+        return await tdx_host_profile_status(
+            request=_mock_request(body),
+            profile=_profile(),
+            db=MagicMock(),
+            hotkey="5Fhotkey",
+            _=None,
+        )
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    @patch("api.server.router.host_profile_status", new_callable=AsyncMock)
+    async def test_measured_class_lists_its_covered_images(self, status, measurements):
+        status.return_value = HostProfileStatus.ACCEPTED
+        measurements.return_value = [
+            {"version": "1.4.0", "rc": False},
+            {"version": "1.4.0", "rc": True},
+        ]
+
+        result = await self._status()
+
+        assert result.fingerprint == _profile().fingerprint
+        assert result.status == HostProfileStatus.ACCEPTED
+        assert [(m.version, m.rc) for m in result.measurements] == [
+            ("1.4.0", False),
+            ("1.4.0", True),
+        ]
+        assert "1.4.0 (rc)" in result.detail
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    @patch("api.server.router.host_profile_status", new_callable=AsyncMock)
+    async def test_pending_class_is_told_to_wait_not_resubmit(self, status, measurements):
+        status.return_value = HostProfileStatus.PENDING
+        measurements.return_value = []
+
+        result = await self._status()
+
+        assert result.measurements == []
+        assert "awaiting measurement generation" in result.detail
+        assert "POST /servers/tdx/host_profiles" not in result.detail
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    @patch("api.server.router.host_profile_status", new_callable=AsyncMock)
+    async def test_unknown_class_is_told_to_register(self, status, measurements):
+        status.return_value = HostProfileStatus.UNKNOWN
+        measurements.return_value = []
+
+        result = await self._status()
+
+        assert result.status == HostProfileStatus.UNKNOWN
+        assert result.measurements == []
+        assert "POST /servers/tdx/host_profiles" in result.detail
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    @patch("api.server.router.host_profile_status", new_callable=AsyncMock)
+    async def test_measurements_win_over_a_lagging_row(self, status, measurements):
+        """measured_at is stamped by the reconciler and can lag a publish, so a class can read
+        PENDING while measurements already cover it -- the list is the launchability signal."""
+        status.return_value = HostProfileStatus.PENDING
+        measurements.return_value = [{"version": "1.4.0", "rc": False}]
+
+        result = await self._status()
+
+        assert result.status == HostProfileStatus.PENDING
+        assert len(result.measurements) == 1
+        assert "is measured" in result.detail
+
+    def test_signature_is_version_free(self):
+        """Deliberately version-free -- a caller holding no image can still ask. A version
+        parameter creeping in here would reintroduce the image dependency `host verify` had."""
+        params = inspect.signature(tdx_host_profile_status).parameters
+
+        assert "version" not in params
+        assert "rc" not in params
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.measurements_for_fingerprint")
+    @patch("api.server.router.host_profile_status", new_callable=AsyncMock)
+    async def test_oversized_body_is_rejected_before_any_lookup(self, status, measurements):
+        with pytest.raises(HTTPException) as exc:
+            await self._status(body=b"x" * (256 * 1024 + 1))
+
+        assert exc.value.status_code == 413
+        status.assert_not_called()
+        measurements.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("api.server.router.host_profile_status", new_callable=AsyncMock)
+    async def test_lookup_failure_surfaces_as_503(self, status):
+        status.side_effect = Exception("db unreachable")
+
+        with pytest.raises(HTTPException) as exc:
+            await self._status()
+
+        assert exc.value.status_code == 503
+        assert "db unreachable" not in exc.value.detail
+
+    def test_route_declares_the_miner_rate_limit_dependency(self):
+        params = inspect.signature(tdx_host_profile_status).parameters
+        assert isinstance(params["_"].default, DependsMarker)
+        assert params["_"].default.dependency.__name__ == "_rate_limit_miner"

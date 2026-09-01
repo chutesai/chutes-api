@@ -1466,6 +1466,17 @@ async def host_profile_is_known(db: AsyncSession, fingerprint: str) -> bool:
     return on_file
 
 
+async def host_profile_status(db: AsyncSession, fingerprint: str) -> HostProfileStatus:
+    """The retention status of a host class, read without storing anything.
+
+    The read-only counterpart to ``resolve_host_profile_status`` (which registers): backs
+    POST /servers/tdx/host_profiles/status, where a miner asks about a class it may never have
+    submitted -- so UNKNOWN is a real answer here, unlike on the submission path.
+    """
+    on_file, measured_at = await host_profile_state(db, fingerprint)
+    return _host_profile_status(on_file, measured_at)
+
+
 def _host_profile_status(on_file: bool, measured_at) -> HostProfileStatus:
     """The monotonic retention status, from the profile row alone.
 
@@ -1493,8 +1504,9 @@ async def resolve_host_profile_status(
     ``status`` is the monotonic retention lifecycle (unknown -> pending -> accepted) read from the
     profile row plus ``measured_at``; a submission is always stored, so it never returns UNKNOWN --
     the class is at least PENDING once recorded. Submission answers only which of the three the class
-    is in; whether a specific image can boot is POST /servers/tdx/preflight, and the per-version
-    ``{version, rc}`` list lives on GET -- neither is decided here.
+    is in; the same lifecycle without storing is POST /servers/tdx/host_profiles/status, whether a
+    specific image can boot is POST /servers/tdx/preflight, and the per-version
+    ``{version, rc}`` list lives on GET -- none of which is decided here.
 
     The profile is stored even when a measurement already covers the fingerprint, if we hold no
     profile for it: a fingerprint cannot be inverted back to its topology inputs, so an accepted
