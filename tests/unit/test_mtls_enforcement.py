@@ -1,6 +1,7 @@
 """
 Unit tests for attestation proxy provenance enforcement:
-  - require_attestation_proxy()  (either proxy) / require_cvm_proxy() (cvm only) /
+  - require_mtls_proxy() (either) / require_attestation_proxy() (1.3.x proxy only) /
+    require_cvm_proxy() (1.4.0+ cvm proxy only) /
     gate_legacy_attestation() (version-gated permissive)
   - _get_client_certificate() two-secret proxy guard
   - require_proxy_secret / require_registry_proxy_secret
@@ -12,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
 
 from api.server.util import (
+    require_mtls_proxy,
     require_attestation_proxy,
     require_cvm_proxy,
     gate_legacy_attestation,
@@ -52,7 +54,7 @@ def _configure(mock_settings, *, mtls=None, cvm=None):
 
 
 # ---------------------------------------------------------------------------
-# require_attestation_proxy — boot/attestation, luks/attest (either proxy)
+# require_mtls_proxy — boot/attestation only (either proxy: every VM boots)
 # ---------------------------------------------------------------------------
 
 
@@ -60,14 +62,14 @@ def _configure(mock_settings, *, mtls=None, cvm=None):
 @patch("api.server.util.settings")
 async def test_attestation_accepts_attestation_secret(mock_settings):
     _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
-    await require_attestation_proxy()(_make_request(mtls_auth="att-secret"))
+    await require_mtls_proxy()(_make_request(mtls_auth="att-secret"))
 
 
 @pytest.mark.asyncio
 @patch("api.server.util.settings")
 async def test_attestation_accepts_cvm_secret(mock_settings):
     _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
-    await require_attestation_proxy()(_make_request(cvm_auth="cvm-secret"))
+    await require_mtls_proxy()(_make_request(cvm_auth="cvm-secret"))
 
 
 @pytest.mark.asyncio
@@ -75,7 +77,7 @@ async def test_attestation_accepts_cvm_secret(mock_settings):
 async def test_attestation_only_attestation_configured_still_works(mock_settings):
     # During early rollout only the attestation secret may be set; legacy VMs still pass.
     _configure(mock_settings, mtls="att-secret", cvm=None)
-    await require_attestation_proxy()(_make_request(mtls_auth="att-secret"))
+    await require_mtls_proxy()(_make_request(mtls_auth="att-secret"))
 
 
 @pytest.mark.asyncio
@@ -83,7 +85,7 @@ async def test_attestation_only_attestation_configured_still_works(mock_settings
 async def test_attestation_no_valid_secret_rejected(mock_settings):
     _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
     with pytest.raises(HTTPException) as exc:
-        await require_attestation_proxy()(_make_request(mtls_auth="wrong"))
+        await require_mtls_proxy()(_make_request(mtls_auth="wrong"))
     assert exc.value.status_code == 403
 
 
@@ -92,7 +94,7 @@ async def test_attestation_no_valid_secret_rejected(mock_settings):
 async def test_attestation_no_secret_configured_fails_closed(mock_settings):
     _configure(mock_settings, mtls=None, cvm=None)
     with pytest.raises(HTTPException) as exc:
-        await require_attestation_proxy()(_make_request(mtls_auth="x"))
+        await require_mtls_proxy()(_make_request(mtls_auth="x"))
     assert exc.value.status_code == 503
 
 
@@ -124,6 +126,52 @@ async def test_cvm_unconfigured_fails_closed(mock_settings):
     _configure(mock_settings, mtls="att-secret", cvm=None)
     with pytest.raises(HTTPException) as exc:
         await require_cvm_proxy()(_make_request(cvm_auth="x"))
+    assert exc.value.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# require_attestation_proxy — luks/attest (1.3.x proxy only)
+#
+# The mirror of require_cvm_proxy. /luks/attest is superseded by /provision and no current guest
+# calls it, so accepting the cvm proxy there would leave a second, weaker way into storage-secret
+# issuance that nothing legitimately uses. Each generation gets exactly one route.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch("api.server.util.settings")
+async def test_attestation_proxy_accepts_its_own_secret(mock_settings):
+    _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
+    await require_attestation_proxy()(_make_request(mtls_auth="att-secret"))
+
+
+@pytest.mark.asyncio
+@patch("api.server.util.settings")
+async def test_attestation_proxy_rejects_cvm_secret(mock_settings):
+    """A 1.4.0+ VM must not reach the legacy storage route -- it has /provision, which requires a
+    proven hotkey unconditionally."""
+    _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
+    with pytest.raises(HTTPException) as exc:
+        await require_attestation_proxy()(_make_request(cvm_auth="cvm-secret"))
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@patch("api.server.util.settings")
+async def test_attestation_proxy_rejects_unproxied_request(mock_settings):
+    _configure(mock_settings, mtls="att-secret", cvm="cvm-secret")
+    with pytest.raises(HTTPException) as exc:
+        await require_attestation_proxy()(_make_request())
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@patch("api.server.util.settings")
+async def test_attestation_proxy_unconfigured_fails_closed(mock_settings):
+    """No attestation-proxy secret also means the legacy path is retired and the route can go."""
+    _configure(mock_settings, mtls=None, cvm="cvm-secret")
+    with pytest.raises(HTTPException) as exc:
+        await require_attestation_proxy()(_make_request(mtls_auth="x"))
     assert exc.value.status_code == 503
 
 

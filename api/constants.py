@@ -28,16 +28,11 @@ HOTKEY_HEADER = "X-Chutes-Hotkey"
 COLDKEY_HEADER = "X-Chutes-Coldkey"
 SIGNATURE_HEADER = "X-Chutes-Signature"
 NONCE_HEADER = "X-Chutes-Nonce"
-# RSA operator signature over the quote nonce, used only by the initramfs (signed) attestation
-# path where sr25519 is unavailable. Distinct from SIGNATURE_HEADER so the rc gate can tell the
-# signed proof from the sr25519 request signature by header presence alone (see
-# extract_attestation_auth / authorize_rc_measurement).
-OPERATOR_SIGNATURE_HEADER = "X-Operator-Signature"
-# Purpose the attestation proxy signs into its runtime hotkey proof-of-possession
-# ({ss58}:{nonce}:{purpose}). Reuses the existing TEE request-auth purpose ("tee") that the TEE
-# endpoints already verify hotkey-mode rc proofs under (extract_attestation_auth(purpose="tee")),
-# so the proxy's signature and this gate share one convention. Must match
-# attestation_proxy.signing.RC_ATTESTATION_PURPOSE.
+# Purpose the attestation proxy signs into the hotkey proof-of-possession it stamps on every
+# response ({ss58}:{nonce}:{purpose}). Reuses the platform's existing TEE request-auth purpose so
+# the proxy's signature and get_current_user share one convention; authenticate_proxy_evidence
+# verifies it with the same primitive. Must match attestation_proxy.signing.HOTKEY_SIGNING_PURPOSE
+# in the sek8s repo -- these are compared byte for byte.
 RC_ATTESTATION_PURPOSE = "tee"
 AUTHORIZATION_HEADER = "Authorization"
 PURPOSE_HEADER = "X-Chutes-Purpose"

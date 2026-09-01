@@ -155,6 +155,18 @@ class NonceError(AttestationError):
     )
 
 
+class UnauthorizedError(AttestationError):
+    """Raised when the caller failed to prove it holds the hotkey it is acting for."""
+
+    http_status = status.HTTP_401_UNAUTHORIZED
+    code = "unauthorized"
+    default_message = (
+        "Hotkey authentication is missing or invalid. Send X-Chutes-Hotkey, X-Chutes-Nonce (the "
+        "server-issued nonce used for this call), and X-Chutes-Signature -- a hex sr25519 "
+        "signature over '{hotkey}:{nonce}:{sha256(body)}'."
+    )
+
+
 class GetEvidenceError(AttestationError):
     """Raised when unable to retrieve attestation evidence from the server."""
 

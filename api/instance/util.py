@@ -22,12 +22,11 @@ from api.constants import (
     CASCADE_FAILURE_THRESHOLD,
     CASCADE_DETECTION_DELAY,
     CASCADE_PENDING_TTL,
-    RC_ATTESTATION_PURPOSE,
 )
 
 from api.chute.schemas import Chute
 from api.instance.schemas import Instance, LaunchConfig
-from api.config import settings
+from api.config import TeeMeasurementConfig, settings
 from api.job.schemas import Job
 from api.database import get_session
 from api.util import notify_deleted, notify_job_deleted, semcomp
@@ -45,10 +44,14 @@ from sqlalchemy.orm import aliased, joinedload
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import ec
 from api.server.client import TeeServerClient
-from api.server.schemas import Server, AttestationAuth
+from api.server.schemas import Server
 from api.node.schemas import Node
 from api.server.exceptions import AttestationError, GetEvidenceError
-from api.server.util import verify_quote, verify_gpu_evidence
+from api.server.util import (
+    authenticate_proxy_evidence,
+    verify_quote,
+    verify_gpu_evidence,
+)
 from api.server.util import get_public_key_hash
 
 # Define an alias for the Instance model to use in a subquery
@@ -1025,6 +1028,46 @@ async def update_shutdown_timestamp(instance_id: str):
             pass
 
 
+async def _require_rc_chute_owner(
+    db, launch_config, measurement_config: TeeMeasurementConfig
+) -> None:
+    """Keep public traffic off release-candidate VMs: only settings.rc_chute_user_id's chutes may
+    deploy on a VM whose attested measurement is ``rc: true``.
+
+    ``measurement_config`` is the entry verify_quote MATCHED and returned, not a fresh lookup.
+    Fails closed when no rc user is configured.
+    """
+    if not measurement_config.rc:
+        return
+
+    chute = (
+        await db.execute(select(Chute).where(Chute.chute_id == launch_config.chute_id))
+    ).scalar_one_or_none()
+    owner = chute.user_id if chute else None
+    allowed = settings.rc_chute_user_id
+
+    if not allowed or owner != allowed:
+        logger.warning(
+            f"rc deployment rejected: chute {launch_config.chute_id} (owner "
+            f"{(owner or 'unknown')}) may not run on rc measurement "
+            f"'{measurement_config.name}' v{measurement_config.version}; only the configured rc "
+            f"test account may. miner_hotkey={launch_config.miner_hotkey}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This server is running a release-candidate image, which only accepts chutes "
+                "owned by the Chutes test account. Deploy this chute on a server running a "
+                "published image."
+            ),
+        )
+
+    logger.info(
+        f"rc deployment allowed: chute {launch_config.chute_id} is owned by the rc test account "
+        f"(measurement '{measurement_config.name}' v{measurement_config.version})."
+    )
+
+
 async def verify_tee_chute(
     db,
     instance,
@@ -1076,19 +1119,11 @@ async def verify_tee_chute(
         evidence = await client.get_chute_evidence(deployment_id)
         expected_cert_hash = get_public_key_hash(evidence.cert)
 
-        # Runtime rc proof-of-possession: the attestation proxy attaches a miner-hotkey signature
-        # when a seed is configured. Thread it into verify_quote's rc gate. None when the proxy
-        # doesn't sign -> the gate is a no-op for published measurements and fails closed for rc.
-        rc_auth = (
-            AttestationAuth.hotkey_signed(
-                evidence.hotkey,
-                signature=evidence.hotkey_signature,
-                nonce=evidence.hotkey_nonce,
-                body_sha256=None,
-                purpose=RC_ATTESTATION_PURPOSE,
-            )
-            if evidence.hotkey
-            else None
+        rc_auth = authenticate_proxy_evidence(
+            evidence.hotkey,
+            evidence.hotkey_nonce,
+            evidence.hotkey_signature,
+            host=instance.host,
         )
 
         # For chutes >= 0.6.0, report_data and GPU evidence use sha256(nonce + e2e_pubkey); else raw nonce
@@ -1102,13 +1137,17 @@ async def verify_tee_chute(
             expected_report_data = (
                 hashlib.sha256((expected_nonce + e2e_pubkey).encode()).hexdigest().lower()
             )
-            await verify_quote(
+            _, measurement = await verify_quote(
                 evidence.quote, expected_report_data, expected_cert_hash, auth=rc_auth
             )
             await verify_gpu_evidence(evidence.gpu_evidence, expected_report_data)
         else:
-            await verify_quote(evidence.quote, expected_nonce, expected_cert_hash, auth=rc_auth)
+            _, measurement = await verify_quote(
+                evidence.quote, expected_nonce, expected_cert_hash, auth=rc_auth
+            )
             await verify_gpu_evidence(evidence.gpu_evidence, expected_nonce)
+
+        await _require_rc_chute_owner(db, launch_config, measurement)
 
         logger.success(f"Successfully verified attestation for chute deployment {deployment_id}")
     except GetEvidenceError as exc:

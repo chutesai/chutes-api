@@ -163,61 +163,23 @@ class LuksConfirmResult:
 
 
 @dataclass
-class AttestationAuth:
-    """Authorization presented with an attestation: the raw proof that the caller may use the
-    matched measurement. Threaded to ``verify_quote``'s rc gate, which VERIFIES it -- the gate never
-    trusts a caller-supplied "already authenticated" flag; it proves possession from the material
-    carried here. Two modes, each matched to its environment and each self-verifying:
+class HotkeyAuth:
+    """A caller's miner-hotkey auth material.
 
-      * ``signed`` (boot/provision, initramfs): ``rc_signature`` is a base64 RSA PKCS#1 v1.5 /
-        SHA-256 signature over the server-issued nonce (base64 is the one encoder guaranteed in the
-        measured initramfs, matching how it sends the TDX quote); the gate verifies it against the
-        measurement's ``authorized_signing_keys``. No hotkey/sr25519 (unavailable in the initramfs).
-      * ``hotkey`` (register/runtime, userspace): the miner's STANDARD request auth material --
-        ``miner_hotkey`` + the ``X-Chutes-Signature`` over ``get_signing_message(hotkey, nonce,
-        body_sha256, purpose)``. The gate re-runs that exact verification (``nonce_is_valid`` +
-        ``Keypair.verify``) and then checks ``miner_hotkey`` against ``authorized_hotkeys``. This is
-        the same signature ``get_current_user`` checks, re-verified so the gate depends on no
-        upstream assumption.
-
-    An empty value proves nothing and may only use published (non-rc) measurements -- rc fails
-    closed. See ``api.server.util.authorize_rc_measurement``.
+    Verified once at the edge: ``verify_hotkey_auth`` raises on anything but success, so an
+    instance that reached a service came back from it and ``miner_hotkey`` is the PROVEN identity.
+    Callers spell absence as None rather than an unverified instance.
     """
 
-    # signed mode: base64 RSA PKCS#1 v1.5 / SHA-256 signature over the nonce by an operator key.
-    rc_signature: Optional[str] = None
-    # hotkey mode: the miner's standard request-auth material, re-verified by the gate.
-    miner_hotkey: Optional[str] = None
-    hotkey_signature: Optional[str] = None  # hex sr25519 X-Chutes-Signature
-    hotkey_nonce: Optional[str] = None  # X-Chutes-Nonce
+    miner_hotkey: Optional[str] = None  # X-Chutes-Hotkey
+    signature: Optional[str] = None  # hex sr25519 X-Chutes-Signature
+    nonce: Optional[str] = None  # X-Chutes-Nonce
     body_sha256: Optional[str] = None  # request.state.body_sha256 (payload hash)
     purpose: Optional[str] = None  # the endpoint's get_current_user purpose
 
-    @classmethod
-    def signed(cls, rc_signature: Optional[str]) -> "AttestationAuth":
-        # Boot/provision proof is purely the RSA signature; the identity is whichever authorized
-        # operator key verifies it, so no hotkey is carried.
-        return cls(rc_signature=rc_signature)
-
-    @classmethod
-    def hotkey_signed(
-        cls,
-        miner_hotkey: Optional[str],
-        *,
-        signature: Optional[str] = None,
-        nonce: Optional[str] = None,
-        body_sha256: Optional[str] = None,
-        purpose: Optional[str] = None,
-    ) -> "AttestationAuth":
-        # Register/runtime proof is the standard request hotkey signature; the gate re-verifies it
-        # (it is NOT trusted just because it was carried here).
-        return cls(
-            miner_hotkey=miner_hotkey,
-            hotkey_signature=signature,
-            hotkey_nonce=nonce,
-            body_sha256=body_sha256,
-            purpose=purpose,
-        )
+    @property
+    def offered(self) -> bool:
+        return bool(self.miner_hotkey and self.signature)
 
 
 class LuksAttestRequest(BaseModel):

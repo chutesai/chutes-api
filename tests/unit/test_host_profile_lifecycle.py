@@ -39,7 +39,6 @@ def _measurement(fingerprint=None, rc=False, version="1.4.0", name="8xh200"):
         fingerprint=fingerprint,
         rc=rc,
         authorized_hotkeys=["5Fop"] if rc else [],
-        authorized_signing_keys=["pem"] if rc else [],
     )
 
 

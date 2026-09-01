@@ -5,7 +5,7 @@ import hashlib
 import json
 import ssl
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
 import aiohttp
@@ -27,6 +27,25 @@ from api.server.schemas import Server, VmAuthKey, VmBootRecord
 from api.server.util import _get_server_certificate, decrypt_passphrase
 from api.config import settings
 from api.util import semcomp
+
+
+@dataclass
+class ServerEvidenceResponse:
+    """Structured response from TeeServerClient.get_server_evidence().
+
+    quote, gpu_evidence, and cert are always present.
+    hotkey/hotkey_nonce/hotkey_signature are the miner-hotkey proof-of-possession the attestation
+    proxy stamps on every response when a seed is configured; all None on proxies/VMs that don't
+    sign. Registration reads them so the rc gate learns which miner the VM belongs to from the VM
+    itself, rather than from the CLI caller who initiated the request.
+    """
+
+    quote: TdxQuote
+    gpu_evidence: Dict[str, Any]
+    cert: Certificate
+    hotkey: Optional[str] = None
+    hotkey_nonce: Optional[str] = None
+    hotkey_signature: Optional[str] = None
 
 
 @dataclass
@@ -173,7 +192,7 @@ class TeeServerClient:
         async with aiohttp.ClientSession(connector=connector, raise_for_status=True) as session:
             yield session
 
-    async def get_server_evidence(self, nonce: str) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
+    async def get_server_evidence(self, nonce: str) -> ServerEvidenceResponse:
         try:
             url = urljoin(self._url, "server/attest")
             headers, _ = self._sign_request(purpose="attest")
@@ -187,7 +206,15 @@ class TeeServerClient:
                     data = await resp.json()
                     quote = RuntimeTdxQuote.from_base64(data["tdx_quote"])
                     gpu_evidence = json.loads(data["nvtrust_evidence"])
-                    return quote, gpu_evidence, cert
+                    return ServerEvidenceResponse(
+                        quote=quote,
+                        gpu_evidence=gpu_evidence,
+                        cert=cert,
+                        # Miner-hotkey proof-of-possession (present only when the proxy signs).
+                        hotkey=resp.headers.get(HOTKEY_HEADER),
+                        hotkey_nonce=resp.headers.get(NONCE_HEADER),
+                        hotkey_signature=resp.headers.get(SIGNATURE_HEADER),
+                    )
         except Exception as exc:
             logger.error(f"Failed to get attestation evidence from {self._url}: {exc}")
             raise GetEvidenceError(f"Failed to get evidence for attestation: {str(exc)}")
