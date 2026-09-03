@@ -28,6 +28,12 @@ HOTKEY_HEADER = "X-Chutes-Hotkey"
 COLDKEY_HEADER = "X-Chutes-Coldkey"
 SIGNATURE_HEADER = "X-Chutes-Signature"
 NONCE_HEADER = "X-Chutes-Nonce"
+# Purpose the attestation proxy signs into the hotkey proof-of-possession it stamps on every
+# response ({ss58}:{nonce}:{purpose}). Reuses the platform's existing TEE request-auth purpose so
+# the proxy's signature and get_current_user share one convention; authenticate_proxy_evidence
+# verifies it with the same primitive. Must match attestation_proxy.signing.HOTKEY_SIGNING_PURPOSE
+# in the sek8s repo -- these are compared byte for byte.
+RC_ATTESTATION_PURPOSE = "tee"
 AUTHORIZATION_HEADER = "Authorization"
 PURPOSE_HEADER = "X-Chutes-Purpose"
 MINER_HEADER = "X-Chutes-Miner"
@@ -63,6 +69,70 @@ MIN_ROOT_ROTATION_VERSION = "1.4.0"
 # keypair -- signing with the ephemeral key 401s on the VM. Gates both key generation (boot) and
 # key usage (TeeServerClient.create).
 MIN_VM_AUTH_KEY_VERSION = "1.4.0"
+
+# Host profile submissions (POST /servers/tdx/host_profiles). Output is a few KB (the lspci tree
+# dominates), so the cap is generous but bounds what one miner can store. Both rate limits are
+# counted only AFTER the signature verifies, so a forged hotkey can't burn a real miner's quota.
+HOST_PROFILE_MAX_BYTES = 256 * 1024
+
+
+class HostProfileStatus(str, Enum):
+    """Retention lifecycle of a submitted host class -- monotonic, only ever advances
+    (unknown -> pending -> accepted) and never regresses.
+
+    ``accepted`` is class-level and version-agnostic: a measurement was generated for this
+    fingerprint at some point, so the class is on the attestable set and retained (its profile is
+    kept for RTMR0 regeneration). It is NOT the answer to "can version X launch here" -- that is
+    POST /servers/tdx/preflight, which joins the caller's (version, rc) to the class's measurements.
+    Submission only reports which of the three the class is in; POST
+    /servers/tdx/host_profiles/status reports the same lifecycle without storing anything.
+    """
+
+    # A measurement has been generated for this fingerprint at some point; retained from here on.
+    ACCEPTED = "accepted"
+    # On file, awaiting its first measurement generation.
+    PENDING = "pending"
+    # Never submitted. A status-derivation state only: no endpoint returns it, since a submission
+    # always records the class (>= PENDING). Kept so the derivation can distinguish "no row".
+    UNKNOWN = "unknown"
+
+
+# Bounds on the modeled fields of a submitted profile. The values are machine-generated, but a
+# submission is attacker-controlled and lands in log lines, a public endpoint, and in front of a
+# privileged offline job -- so nothing may be unbounded. Generous enough that plausible future
+# hardware still validates.
+HOST_PROFILE_MAX_GPUS = 64
+HOST_PROFILE_MAX_NUMA_NODES = 64
+HOST_PROFILE_MAX_SOCKETS = 64
+HOST_PROFILE_MAX_CPUS = 8192
+HOST_PROFILE_MAX_THREADS_PER_CORE = 16
+HOST_PROFILE_MAX_RAM_GB = 262144
+HOST_PROFILE_MAX_VRAM_GB = 65536
+HOST_PROFILE_MAX_BAR_MB = 16 * 1024 * 1024
+HOST_PROFILE_MAX_NICS = 256
+# The lspci -tv tree; a few KB on a large box.
+HOST_PROFILE_MAX_TOPOLOGY_CHARS = 64 * 1024
+HOST_PROFILE_SUBMISSIONS_PER_HOTKEY = 10
+HOST_PROFILE_SUBMISSIONS_GLOBAL = 120
+HOST_PROFILE_WINDOW_SECONDS = 3600
+
+# POST /servers/tdx/preflight: a read-only launchability check a miner runs before every launch,
+# upgrade, or `host verify`, so the per-hotkey ceiling is far more generous than submission. It
+# stores nothing; the cap only bounds signature-verification cost per miner over the same window.
+TDX_PREFLIGHT_PER_HOTKEY = 120
+TDX_PREFLIGHT_GLOBAL = 1200
+
+# POST /servers/tdx/host_profiles/status: the read-only host-class lookup behind `chutes-cvm host
+# verify` -- is this topology known, and which images cover it. Version-free, so a miner runs it on
+# a host that has downloaded nothing yet, and reruns it while waiting for a measurement to be
+# published. Stores nothing, so it carries preflight's generous ceiling rather than submission's;
+# it costs one indexed row read on top of signature verification.
+TDX_HOST_PROFILE_STATUS_PER_HOTKEY = 120
+TDX_HOST_PROFILE_STATUS_GLOBAL = 1200
+
+# GET /servers/tdx/host_profiles: public and unauthenticated, so it carries an anonymous global cap
+# like the other public TEE endpoints. Responses are redis-cached, so this bounds cache misses.
+HOST_PROFILES_RATE_LIMIT_PER_MINUTE = 60
 
 # Min balance to register via the CLI (tao units)
 MIN_REG_BALANCE = 0.25

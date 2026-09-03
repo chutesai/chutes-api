@@ -17,19 +17,31 @@ from api.config import settings
 from api.node.util import check_node_inventory
 from api.user.schemas import User
 from api.user.service import get_current_user
-from api.metagraph import get_miner_by_hotkey
-from api.constants import HOTKEY_HEADER, NoncePurpose
+from api.constants import (
+    HOTKEY_HEADER,
+    NoncePurpose,
+    HOST_PROFILE_MAX_BYTES,
+    HOST_PROFILE_SUBMISSIONS_PER_HOTKEY,
+    HOST_PROFILE_SUBMISSIONS_GLOBAL,
+    HOST_PROFILE_WINDOW_SECONDS,
+    HostProfileStatus,
+    HOST_PROFILES_RATE_LIMIT_PER_MINUTE,
+    TDX_PREFLIGHT_PER_HOTKEY,
+    TDX_PREFLIGHT_GLOBAL,
+    TDX_HOST_PROFILE_STATUS_PER_HOTKEY,
+    TDX_HOST_PROFILE_STATUS_GLOBAL,
+)
+from api.rate_limit import rate_limit, rate_limit_miner
 
 from api.server.schemas import (
+    HotkeyAuth,
     ProvisionRequest,
     ProvisionResponse,
     BootAttestationArgs,
-    RuntimeAttestationArgs,
     ServerArgs,
     Server,
     NonceResponse,
     BootAttestationResponse,
-    RuntimeAttestationResponse,
     LuksAttestRequest,
     LuksAttestResponse,
     LuksVolumeInfo,
@@ -42,6 +54,12 @@ from api.server.schemas import (
     TeeUpgradeWindow,
     UpgradeWindowInfo,
     TeeMeasurementResponse,
+    HostProfileResponse,
+    HostProfile,
+    HostProfileSubmissionResponse,
+    HostProfileStatusResponse,
+    HostProfileMeasurement,
+    PreflightResponse,
 )
 from api.server.service import (
     BootAttestationResult,
@@ -52,10 +70,7 @@ from api.server.service import (
     check_server_ownership,
     get_server_by_name_or_id,
     update_server_name,
-    process_runtime_attestation,
-    get_server_attestation_status,
     delete_server,
-    validate_request_nonce,
     validate_boot_nonce,
     require_luks_quote_nonce,
     require_confirm_nonce,
@@ -68,7 +83,15 @@ from api.server.service import (
     _count_active_maintenance_slots,
 )
 from api.server.util import (
+    list_host_profile_records,
+    require_hotkey_auth,
+    deny_blacklisted_miner,
+    resolve_host_profile_status,
+    host_profile_status,
+    measurements_for_fingerprint,
+    extract_hotkey_auth,
     extract_client_cert_hash,
+    require_mtls_proxy,
     require_attestation_proxy,
     require_cvm_proxy,
     gate_legacy_attestation,
@@ -79,11 +102,24 @@ from api.server.exceptions import (
     ServerNotFoundError,
     ServerRegistrationError,
 )
-from api.miner.util import is_miner_blacklisted
 from api.util import is_valid_host, semcomp
 
 
 router = APIRouter(dependencies=[Depends(bind_request_context)])
+
+HOST_PROFILE_STATUS_DETAIL = {
+    HostProfileStatus.ACCEPTED: (
+        "This host class has had measurements generated and is retained for attestation. See GET "
+        "/servers/tdx/host_profiles for the (version, rc) images that cover it."
+    ),
+    HostProfileStatus.PENDING: (
+        "Host profile stored; measurements will be generated and published."
+    ),
+    HostProfileStatus.UNKNOWN: (
+        "This host class has no measurements and no submission on file. Submit the profile to "
+        "request measurements."
+    ),
+}
 
 
 # Anonymous Boot Attestation Endpoints (Pre-registration)
@@ -118,7 +154,8 @@ async def get_nonce(
     except Exception as e:
         logger.error(f"Failed to generate boot nonce: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate nonce"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not issue a boot nonce (validator-side error). Retry shortly.",
         )
 
 
@@ -127,34 +164,36 @@ async def verify_boot_attestation(
     request: Request,
     args: BootAttestationArgs,
     db: AsyncSession = Depends(get_db_session),
-    _mtls=Depends(require_attestation_proxy()),
+    _mtls=Depends(require_mtls_proxy()),
     nonce: str = Depends(validate_boot_nonce()),
     expected_cert_hash=Depends(extract_client_cert_hash()),
+    auth: Optional[HotkeyAuth] = Depends(extract_hotkey_auth()),
+    _blacklist=Depends(deny_blacklisted_miner()),
 ):
     """
     Verify boot attestation and return LUKS passphrase.
 
-    This endpoint verifies the TDX quote against expected boot measurements
-    and returns the LUKS passphrase for disk decryption if valid.
-    For VMs running version >= 1.3.0, also returns a luks_quote_nonce for
-    the subsequent POST /luks/attest call.
+    Both VM generations reach this route, so the hotkey proof is EXTRACTED rather than required:
+    a presented signature is verified here and 401s if it does not hold, but its absence is left
+    for the handler to judge once the quote names the attested image. See
+    process_boot_attestation, which requires a proof from any image whose measured initramfs
+    ships the signer.
+
+    Verifies the TDX quote against the expected boot measurements and returns the LUKS passphrase
+    for disk decryption if valid. For VMs >= 1.3.0 it also returns a luks_quote_nonce for the
+    following runtime call (POST /provision on 1.4.0+, POST /luks/attest on 1.3.x); for 1.4.0+ it
+    additionally returns root_next + root_confirm_nonce and the VM's ephemeral auth SS58.
     """
     try:
         server_ip = request.state.client_ip
 
-        # Verify the miner hotkey is actually registered on the subnet.
-        miner_node = await get_miner_by_hotkey(args.miner_hotkey, db)
-        if not miner_node:
-            logger.warning(
-                f"Boot attestation rejected: miner hotkey {args.miner_hotkey} is not registered on subnet {settings.netuid}"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Miner hotkey is not registered on the subnet",
-            )
-
         result: BootAttestationResult = await process_boot_attestation(
-            db, server_ip, args, nonce, expected_cert_hash
+            db,
+            server_ip,
+            args,
+            nonce,
+            expected_cert_hash,
+            auth=auth,
         )
 
         return BootAttestationResponse(
@@ -171,7 +210,11 @@ async def verify_boot_attestation(
     except Exception as e:
         logger.error(f"Unexpected error in boot attestation: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Boot attestation failed"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Boot attestation failed with an unexpected validator-side error. Retry; if it "
+                "persists, contact the Chutes team with the VM name and time of this attempt."
+            ),
         )
 
 
@@ -266,9 +309,15 @@ async def provision(
     _mtls=Depends(require_cvm_proxy()),
     client_cert: Certificate = Depends(extract_client_cert()),
     validated_nonce: str = Depends(require_luks_quote_nonce),
+    auth: HotkeyAuth = Depends(require_hotkey_auth()),
 ):
     """
     Provision a new VM at runtime: record its root CA identity and issue storage secrets.
+
+    Only 1.4.0+ VMs reach this route (it is behind require_cvm_proxy), and every one of them
+    signs, so require_hotkey_auth demands a proven hotkey at the door -- no backwards-compatible
+    "unsigned is acceptable" case exists here, unlike boot attestation. The proven identity is
+    what the rc gate in verify_quote is given.
 
     The RTMR3-attested runtime entry point for new VMs (supersedes /luks/attest going
     forward). The VM presents its per-boot root CA as the mTLS client cert; the quote's
@@ -281,7 +330,13 @@ async def provision(
     """
     try:
         result = await process_provision_request(
-            db, hotkey, vm_name, body, validated_nonce, client_cert
+            db,
+            hotkey,
+            vm_name,
+            body,
+            validated_nonce,
+            client_cert,
+            auth=auth,
         )
         return ProvisionResponse(
             volumes={
@@ -313,6 +368,7 @@ async def provision_confirm(
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _mtls=Depends(require_cvm_proxy()),
     _=Depends(require_confirm_nonce),
+    _auth=Depends(require_hotkey_auth()),
 ):
     """
     Confirm or discard pending storage-passphrase rotations from POST /provision.
@@ -342,6 +398,7 @@ async def create_server(
     db: AsyncSession = Depends(get_db_session),
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     _: User = Depends(get_current_user(raise_not_found=False, registered_to=settings.netuid)),
+    _blacklist=Depends(deny_blacklisted_miner()),
 ):
     """
     Register a new server.
@@ -350,13 +407,6 @@ async def create_server(
     Links the server to any existing boot attestation history via server ip.
     """
     try:
-        reason = await is_miner_blacklisted(db, hotkey)
-        if reason:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=reason,
-            )
-
         gpu_uuids = [gpu.uuid for gpu in args.gpus]
         existing_nodes = await check_node_inventory(db, gpu_uuids)
         if existing_nodes:
@@ -423,7 +473,8 @@ async def create_server(
             exc_info=True,
         )
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server registration failed"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Server registration failed",
         )
 
 
@@ -464,6 +515,7 @@ async def get_tee_measurements():
             runtime_rtmrs=m.runtime_rtmrs,
             expected_gpus=m.expected_gpus,
             gpu_count=m.gpu_count,
+            fingerprint=m.fingerprint,
         )
         for m in measurements
         if not m.rc
@@ -474,6 +526,253 @@ async def get_tee_measurements():
         ex=TEE_MEASUREMENTS_CACHE_TTL,
     )
     return result
+
+
+# Per-variant, so a cached "with pending" is never served to a default request.
+HOST_PROFILES_CACHE_KEY = "tdx_host_profiles:{variant}"
+
+
+@router.get("/tdx/host_profiles", response_model=List[HostProfileResponse])
+async def list_host_profiles(
+    db: AsyncSession = Depends(get_db_session),
+    include_pending: bool = Query(
+        False,
+        description="Also return host classes awaiting measurement generation.",
+    ),
+    _: None = Depends(rate_limit("tdx_host_profiles", HOST_PROFILES_RATE_LIMIT_PER_MINUTE)),
+):
+    """
+    Return host profiles: the platform inputs a measurement is built from.
+
+    By default, only host classes that HAVE measurements. Join `fingerprint` to
+    GET /servers/tee/measurements, regenerate RTMR0 from the inputs here, and compare -- that makes
+    every published measurement independently reproducible, and a quote holder can see which host
+    class their own RTMR0 corresponds to. A third party needs no flags and can never be handed an
+    unverified claim.
+
+    `include_pending=true` also returns host classes awaiting generation. That is the measurement
+    generator's queue: a profile becomes measured only once measurements are generated for it, and
+    generation has to fetch it first. Each entry's `measured` flag says which set it is in.
+
+    Public and unauthenticated, so the generation side needs no database credentials. Every entry
+    is host-class data: the machine-identifying fields are dropped at submission and never stored,
+    and the submitter's `miner_hotkey` is a column this query never selects.
+    """
+    cache_key = HOST_PROFILES_CACHE_KEY.format(variant="all" if include_pending else "measured")
+    cached = await settings.redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
+
+    try:
+        profiles = await list_host_profile_records(db, include_pending=include_pending)
+    except Exception as exc:
+        logger.error(f"Failed to list host profiles: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to read host profiles, please try again later.",
+        )
+
+    await settings.redis_client.set(
+        cache_key,
+        json.dumps(profiles).decode(),
+        ex=TEE_MEASUREMENTS_CACHE_TTL,
+    )
+    return profiles
+
+
+@router.post("/tdx/host_profiles", response_model=HostProfileSubmissionResponse)
+async def submit_host_profile(
+    request: Request,
+    profile: HostProfile,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        rate_limit_miner(
+            "host_profile_submit",
+            HOST_PROFILE_SUBMISSIONS_PER_HOTKEY,
+            window_seconds=HOST_PROFILE_WINDOW_SECONDS,
+            global_limit=HOST_PROFILE_SUBMISSIONS_GLOBAL,
+        )
+    ),
+):
+    """
+    Register a host class (sek8s `discover-profile.sh` output) so Chutes can measure it.
+
+    One of four distinct operations: this REGISTERS, POST /servers/tdx/host_profiles/status
+    RESOLVES a class (is it known, and for which images), POST /servers/tdx/preflight CHECKS whether
+    one specific image can boot, and GET /servers/tdx/host_profiles LISTS the generated set. A miner
+    reaches this only when the status lookup reports the class is not on file. The API owns the
+    fingerprint -- the miner sends raw platform metadata and gets back the class's retention
+    lifecycle, which only ever advances:
+
+      * `accepted` -- a measurement has already been generated for this class; retained from here on
+      * `pending`  -- parked in object storage, awaiting its first measurement generation
+
+    A real submission is always stored, so this never returns `unknown`. It answers only whether the
+    class has been measured at all; whether the caller's specific image can boot is preflight's job.
+    Signed by the miner hotkey, so the signature covers the request body.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > HOST_PROFILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Host profile exceeds {HOST_PROFILE_MAX_BYTES} bytes.",
+        )
+
+    try:
+        fingerprint, profile_status, stored = await resolve_host_profile_status(
+            db=db,
+            profile=profile,
+            hotkey=hotkey,
+        )
+    except Exception as exc:
+        logger.error(f"Failed to resolve host profile status from {hotkey=}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to store host profile, please try again later.",
+        )
+
+    return HostProfileSubmissionResponse(
+        fingerprint=fingerprint,
+        status=profile_status,
+        stored=stored,
+        detail=HOST_PROFILE_STATUS_DETAIL[profile_status],
+    )
+
+
+@router.post("/tdx/host_profiles/status", response_model=HostProfileStatusResponse)
+async def tdx_host_profile_status(
+    request: Request,
+    profile: HostProfile,
+    db: AsyncSession = Depends(get_db_session),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        rate_limit_miner(
+            "tdx_host_profile_status",
+            TDX_HOST_PROFILE_STATUS_PER_HOTKEY,
+            window_seconds=HOST_PROFILE_WINDOW_SECONDS,
+            global_limit=TDX_HOST_PROFILE_STATUS_GLOBAL,
+        )
+    ),
+):
+    """
+    Is this host class known, and which VM images cover it? The check `chutes-cvm host verify` runs.
+
+    Deliberately version-free: a miner verifies a host BEFORE downloading any image, so this asks
+    only about the topology -- "can this host run anything at all, and if so what". Whether one
+    specific image can boot is POST /servers/tdx/preflight, which the launch path runs against the
+    version it actually holds.
+
+      * `measurements` non-empty -> the class is attestable; those are the images it can launch.
+      * empty, `status: pending`  -> registered, awaiting measurement generation. Nothing to do but
+        retry later; re-submitting will not speed it up.
+      * empty, `status: unknown`  -> never submitted. Register it with
+        POST /servers/tdx/host_profiles.
+
+    A POST because the API owns the fingerprint: a caller cannot ask about "my topology" without
+    handing over the profile to be fingerprinted. Stores nothing -- the read-only counterpart to the
+    submission route. Signed by the miner hotkey, so the signature covers the request body.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > HOST_PROFILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Host profile exceeds {HOST_PROFILE_MAX_BYTES} bytes.",
+        )
+
+    fingerprint = profile.fingerprint
+    try:
+        profile_status = await host_profile_status(db, fingerprint)
+    except Exception as exc:
+        logger.error(f"Failed to read host profile status from {hotkey=}: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Failed to look up host profile, please try again later.",
+        )
+
+    measurements = measurements_for_fingerprint(fingerprint)
+    if measurements:
+        covered = ", ".join(f"{m['version']}{' (rc)' if m['rc'] else ''}" for m in measurements)
+        detail = (
+            f"This host class is measured; published images that cover it: {covered}. Check a "
+            "specific image with POST /servers/tdx/preflight."
+        )
+    elif profile_status is HostProfileStatus.PENDING:
+        detail = (
+            "This host class is registered and awaiting measurement generation. Nothing to do -- "
+            "retry once Chutes publishes its measurements."
+        )
+    elif profile_status is HostProfileStatus.ACCEPTED:
+        detail = (
+            "This host class has been measured before, but no published image currently covers it. "
+            "Retry once Chutes publishes measurements for a current image."
+        )
+    else:
+        detail = (
+            "This host class is not on file. Register it with POST /servers/tdx/host_profiles, "
+            "then retry once Chutes publishes its measurements."
+        )
+
+    return HostProfileStatusResponse(
+        fingerprint=fingerprint,
+        status=profile_status,
+        measurements=[HostProfileMeasurement(**m) for m in measurements],
+        detail=detail,
+    )
+
+
+@router.post("/tdx/preflight", response_model=PreflightResponse)
+async def tdx_preflight(
+    request: Request,
+    profile: HostProfile,
+    version: str = Query(..., description="VM image version the caller intends to boot."),
+    rc: bool = Query(False, description="Whether that image is a release-candidate (debug) build."),
+    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
+    _: User = Depends(
+        rate_limit_miner(
+            "tdx_preflight",
+            TDX_PREFLIGHT_PER_HOTKEY,
+            window_seconds=HOST_PROFILE_WINDOW_SECONDS,
+            global_limit=TDX_PREFLIGHT_GLOBAL,
+        )
+    ),
+):
+    """
+    Can this exact image boot on this host? The one call a launch/upgrade preflight makes.
+
+    A check against both a host profile and the measurement set, so it hangs off neither. The API
+    fingerprints the submitted profile and answers whether a published measurement for the caller's
+    `(version, rc)` carries that fingerprint -- the whole launch decision in one boolean:
+
+      * `launchable: true`  -> the VM will attest; launch.
+      * `launchable: false` -> register the class (POST /servers/tdx/host_profiles), then retry once
+        Chutes publishes its measurement.
+
+    Stores nothing and reveals nothing beyond the answer -- not the full measurement set, not
+    whether a profile row exists. Signed by the miner hotkey, so the signature covers the body.
+    """
+    raw_body = await request.body()
+    if len(raw_body) > HOST_PROFILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+            detail=f"Host profile exceeds {HOST_PROFILE_MAX_BYTES} bytes.",
+        )
+
+    fingerprint = profile.fingerprint
+    launchable = any(
+        m["version"] == version and bool(m["rc"]) == rc
+        for m in measurements_for_fingerprint(fingerprint)
+    )
+    label = f"{version}{' (rc)' if rc else ''}"
+    detail = (
+        f"A published measurement for {label} covers this host class; it can launch."
+        if launchable
+        else (
+            f"No published measurement for {label} covers this host class yet. Register it with "
+            "POST /servers/tdx/host_profiles, then retry once Chutes publishes the measurement."
+        )
+    )
+    return PreflightResponse(fingerprint=fingerprint, launchable=launchable, detail=detail)
 
 
 @router.get("/signing-keys")
@@ -639,7 +938,8 @@ async def get_server_details(
     except Exception as e:
         logger.error(f"Failed to get server details: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to get server details"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to get server details",
         )
 
 
@@ -696,7 +996,8 @@ async def remove_server(
     except Exception as e:
         logger.error(f"Failed to remove server: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to remove server"
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to remove server",
         )
 
 
@@ -740,80 +1041,6 @@ async def get_runtime_nonce(
     except Exception as e:
         logger.error(f"Failed to generate runtime nonce: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to generate nonce"
-        )
-
-
-@router.post("/{server_id}/attestation", response_model=RuntimeAttestationResponse)
-async def verify_runtime_attestation(
-    request: Request,
-    server_id: str,
-    args: RuntimeAttestationArgs,
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(
-        get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
-    ),
-    nonce: str = Depends(validate_request_nonce(NoncePurpose.RUNTIME)),
-    expected_cert_hash=Depends(extract_client_cert_hash()),
-):
-    """
-    Verify runtime attestation with full measurement validation.
-    """
-    try:
-        server = await check_server_ownership(db, server_id, hotkey)
-        actual_ip = request.state.client_ip
-        result = await process_runtime_attestation(
-            db, server.server_id, actual_ip, args, hotkey, nonce, expected_cert_hash
-        )
-
-        return RuntimeAttestationResponse(
-            attestation_id=result["attestation_id"],
-            verified_at=result["verified_at"],
-            status=result["status"],
-        )
-
-    except ServerNotFoundError as e:
-        raise e
-    except AttestationError as e:
-        # Includes NonceError (400) and all quote/GPU errors. Already logged at the detection
-        # site (with ambient server identity); the boundary only maps to HTTP.
-        raise HTTPException(status_code=e.http_status, detail=e.message)
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Unexpected error in runtime attestation: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Runtime attestation failed"
-        )
-
-
-# ToDo: Also likely to remove this
-@router.get("/{server_id}/attestation/status", response_model=Dict[str, Any])
-async def get_attestation_status(
-    server_id: str,
-    db: AsyncSession = Depends(get_db_session),
-    hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
-    _: User = Depends(
-        get_current_user(purpose="tee", raise_not_found=False, registered_to=settings.netuid)
-    ),
-):
-    """
-    Get current attestation status for a server by miner hotkey and server id.
-    """
-    try:
-        server = await check_server_ownership(db, server_id, hotkey)
-        status_info = await get_server_attestation_status(db, server.server_id, hotkey)
-        status_info["name"] = server.name
-        return status_info
-
-    except ServerNotFoundError as e:
-        raise e
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get attestation status: {str(e)}")
-        raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get attestation status",
+            detail="Failed to generate nonce",
         )

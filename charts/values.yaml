@@ -423,6 +423,27 @@ watchtower:
   affinity: {}
   tolerations: []
 
+# Host profile bucket lifecycle. Notifies on new pending/ submissions (generation stays manual --
+# a human decides) and promotes pending/ -> measured/ once a fingerprint appears in the published
+# measurement config. Never triggers generation itself.
+hostProfileReconciler:
+  image: validator:latest
+  imagePullPolicy: Always
+  schedule: "*/15 * * * *"
+  suspend: false
+  # Secret holding the Discord webhook URL for "new host class submitted" alerts. Leave unset to
+  # disable alerting -- reconcile still runs.
+  discordWebhookSecretName: ""
+  discordWebhookSecretKey: webhook-url
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "512Mi"
+      ephemeral-storage: "1Gi"
+    limits:
+      cpu: "200m"
+      memory: "512Mi"
+
 cacher:
   image: validator:latest
   imagePullPolicy: Always
@@ -835,7 +856,27 @@ registryProxy:
   config:
     workerProcesses: 64
     workerConnections: 4096
-    # tokenRealm: override the Www-Authenticate Bearer realm URL (default: https://registry.chutes.ai/v2/_token)
+    # tokenRealm: Www-Authenticate Bearer realm advertised to LEGACY clients only, i.e. those
+    # presenting no mTLS client cert (they reach us through the miner registry proxy). In prod
+    # this is the miner-proxy URL, http://<validator-hotkey>.localregistry.chutes.ai:30500/v2/_token.
+    # mTLS VMs (client cert present) are always sent to this proxy's own token endpoint,
+    # https://registry.chutes.ai/v2/_token, and ignore this value entirely -- see the
+    # $token_realm map in registry-proxy-cm.yaml.
+    # (default: https://registry.chutes.ai/v2/_token)
+    # Per-IP rate limits. These replace the Cloud Armor throttle that fronted the L7 LB
+    # (500 req/60s per IP); once registry.chutes.ai points straight at this Service's LB there
+    # is no L7 in front. Set permissive on purpose -- throttling the fleet's image pulls is a
+    # worse outcome than the attack these bound. Tune from access-log percentiles.
+    rateLimit:
+      all:
+        rate: "20r/s"
+        burst: 200
+      # The token endpoint is the only location with auth_request, so each request there costs
+      # an API call. Tighter budget than the general one.
+      token:
+        rate: "5r/s"
+        burst: 50
+      connPerIp: 64
   replicaCount: 1
   nodeSelector: {}
   hpa:
@@ -846,6 +887,20 @@ registryProxy:
 
   affinity:
     nodeAffinity: {}
+    # Spread replicas across nodes: with externalTrafficPolicy: Local the LB only routes to nodes
+    # running a pod, so bunching on one node means uneven load and a blackhole if that node fails.
+    # preferred (not required) so it still schedules when nodes are short.
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+              - registry-proxy
+          topologyKey: kubernetes.io/hostname
   tolerations: []
   resources:
     requests:
@@ -866,6 +921,9 @@ registryProxy:
     # Reserved static IP to pin the LB across reconciles (set in the overlay once the address
     # is reserved in GCP). Empty = let GKE assign an ephemeral IP.
     loadBalancerIP: ""
+    # Optional: restrict the LB to the front-end proxy egress IPs (defense in depth for the
+    # forwarded-header trust). Empty = open (rely on the API's vm_root_ca_cert verification).
+    loadBalancerSourceRanges: []
 
 # autostaker runs as a CronJob (one-shot api/autostaker.py per tick), not a long-running
 # worker. validatorSs58 left empty here -> cronjobEnv falls back to the validator-credentials
@@ -1085,6 +1143,15 @@ teeMeasurements:
     # # configured). Each version must be unique (stored on attestation for audit trail). Set
     # # `rc: true` on a version to mark it a release candidate: attestable but excluded from
     # # GET /tee/measurements and the minimum-version fallback.
+    # #
+    # # An rc measurement is reproducible from source, so it authenticates software, not an
+    # # operator: ANYONE who can build the image could otherwise present it. A `rc: true` version is
+    # # therefore gated on WHO is attesting, and MUST declare:
+    # #   * authorized_hotkeys -- the miner hotkeys allowed to run this image. Every entry point
+    # #     (boot, registration, chute admission) proves possession with the same sr25519
+    # #     X-Chutes-Signature, so one allowlist covers them all.
+    # # An rc version with no authorized_hotkeys is dropped at load time (unusable). Omit the field
+    # # for published (non-rc) versions, where the gate is a no-op.
     # measurements:
     #   # Example measurement configuration - replace with actual values
     #   - version: "1.3.0"
@@ -1092,6 +1159,9 @@ teeMeasurements:
     #     rtmr1: "PLACEHOLDER_RTMR1_96_HEX_CHARS"
     #     rtmr2: "PLACEHOLDER_RTMR2_96_HEX_CHARS"
     #     runtime_rtmr3: "PLACEHOLDER_RUNTIME_RTMR3_96_HEX_CHARS"
+    #     # rc: true                       # uncomment for a release candidate, then set:
+    #     # authorized_hotkeys:            # REQUIRED when rc is true
+    #     #   - "5PLACEHOLDER_AUTHORIZED_MINER_HOTKEY"
     #     hardware:
     #       - name: "8xh200"
     #         rtmr0: "PLACEHOLDER_H200_RTMR0_96_HEX_CHARS"

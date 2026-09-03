@@ -7,15 +7,18 @@ import secrets
 import base64
 import json
 import tempfile
+from datetime import datetime
 from typing import Dict, List, Optional
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.sql import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from urllib.parse import unquote
 from aiohttp import ClientResponse
 from cryptography.fernet import Fernet
-from fastapi import Depends, HTTPException, Request, status
+from fastapi import Depends, Header, HTTPException, Request, status
 from api.database import get_db_session
+from api.metagraph import get_miner_by_hotkey
 from loguru import logger
 import time
 from dcap_qvl import get_collateral, verify, Quote, PHALA_PCCS_URL
@@ -38,18 +41,31 @@ from api.server.exceptions import (
     NoClientCertError,
     NoServerCertError,
     NonceError,
+    UnauthorizedError,
 )
 from api.server.quote import TdxQuote, TdxVerificationResult, resolve_tdx_tcb_status
 import hashlib
 
-from api.server.schemas import Server, VmCacheConfig, LuksVolumeRotation
+from api.server.schemas import (
+    HostProfileRecord,
+    Server,
+    VmCacheConfig,
+    LuksVolumeRotation,
+    HotkeyAuth,
+    HostProfile,
+)
 from api.constants import (
+    HostProfileStatus,
     MIN_ROOT_ROTATION_VERSION,
     ATTESTATION_PROXY_AUTH_HEADER,
     CVM_PROXY_AUTH_HEADER,
     REGISTRY_PROXY_AUTH_HEADER,
+    HOTKEY_HEADER,
+    SIGNATURE_HEADER,
+    NONCE_HEADER,
+    RC_ATTESTATION_PURPOSE,
 )
-from api.util import semcomp
+from api.util import nonce_is_valid, semcomp, verify_request_signature
 
 
 def generate_nonce() -> str:
@@ -83,10 +99,10 @@ def _proxy_provenance(request: Request) -> tuple[bool, bool]:
     )
 
 
-def require_attestation_proxy():
+def require_mtls_proxy():
     """
-    FastAPI dependency for endpoints BOTH VM generations reach through a proxy
-    (boot/attestation, luks/attest): the legacy 1.3.x attestation proxy or the 1.4.0 cvm proxy.
+    FastAPI dependency for endpoints BOTH VM generations reach through a proxy: the legacy 1.3.x
+    attestation proxy or the 1.4.0 cvm proxy.
 
     Accepts either proxy's secret. Fails closed only when NEITHER is configured (503) -- so a
     deploy that predates provisioning doesn't 503 the fleet -- and 403s a request carrying no
@@ -112,6 +128,39 @@ def require_attestation_proxy():
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Request did not arrive via a trusted attestation proxy.",
+            )
+
+    return _check
+
+
+def require_attestation_proxy():
+    """
+    FastAPI dependency for the 1.3.x-only endpoints (luks/attest): the request must arrive via the
+    attestation proxy. The mirror image of ``require_cvm_proxy``.
+    """
+
+    async def _check(request: Request):
+        _, via_att = _proxy_provenance(request)
+        if not settings.attestation_proxy_secret:
+            logger.error(
+                "attestation-proxy endpoint rejected: ATTESTATION_PROXY_SECRET is not configured "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Attestation proxy secret is not configured.",
+            )
+        if not via_att:
+            logger.warning(
+                f"attestation-proxy endpoint rejected: not via the attestation proxy "
+                f"path={request.url.path}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "This endpoint serves only legacy VMs, via the attestation proxy. Newer VMs "
+                    "provision through POST /servers/{vm_name}/provision."
+                ),
             )
 
     return _check
@@ -257,7 +306,8 @@ def get_public_key_hash(cert: Certificate) -> str:
 
     # Serialize public key to DER format (matching openssl pkey -outform der)
     public_key_der = public_key.public_bytes(
-        encoding=serialization.Encoding.DER, format=serialization.PublicFormat.SubjectPublicKeyInfo
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
 
     # Compute SHA-256 hash
@@ -362,6 +412,194 @@ def _parse_client_cert_header(request: Request) -> Optional[Certificate]:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Malformed client certificate.",
         ) from e
+
+
+def verify_hotkey_auth(auth: HotkeyAuth) -> HotkeyAuth:
+    """Verify the caller's sr25519 signature, returning the same auth once it is proven.
+
+    Called once, at the edge -- never from a service. Raises UnauthorizedError (401) on anything
+    but success, so a returned value always carries a proven ``miner_hotkey``; callers that have
+    no proof to check pass None onward instead of calling this. Does not check nonce freshness --
+    each caller's nonce is validated by its endpoint's nonce dependency or by get_current_user.
+    """
+    if not auth.miner_hotkey or not auth.signature or not auth.nonce:
+        logger.warning("Hotkey auth rejected: incomplete hotkey/signature/nonce material.")
+        raise UnauthorizedError()
+    if not auth.purpose and not auth.body_sha256:
+        # Only reachable if the body-hashing middleware did not run for this request.
+        logger.warning("Hotkey auth rejected: no request body hash available to verify.")
+        raise UnauthorizedError()
+    try:
+        verify_request_signature(
+            auth.miner_hotkey,
+            auth.signature,
+            auth.nonce,
+            payload_hash=auth.body_sha256,
+            purpose=auth.purpose,
+        )
+    except HTTPException as e:
+        logger.warning(f"Hotkey auth rejected for {auth.miner_hotkey[:12]}...: {e.detail}")
+        raise UnauthorizedError() from e
+
+    logger.info(f"Hotkey auth verified for {auth.miner_hotkey[:12]}...")
+    return auth
+
+
+def authenticate_proxy_evidence(
+    hotkey: Optional[str],
+    nonce: Optional[str],
+    signature: Optional[str],
+    *,
+    host: str,
+) -> Optional[HotkeyAuth]:
+    """Authenticate the attestation proxy's miner-hotkey proof on an evidence RESPONSE.
+
+    Shared by the two evidence-fetch flows (server registration and chute admission): the proxy
+    stamps every response it serves, so both read the same three headers. Returns None when the
+    proxy sent no proof (older image, or no seed configured) -- the same "nothing was offered"
+    signal ``extract_hotkey_auth`` gives.
+
+    Unlike a request, this proof carries no endpoint nonce dependency to bound replay, so the
+    freshness check lives here -- the nonce is the proxy's own timestamp on a response we fetched.
+    """
+    if not hotkey:
+        return None
+
+    if not nonce_is_valid(nonce):
+        logger.warning(
+            f"Evidence rejected for {host}: the proxy's hotkey proof carries a stale or "
+            "malformed nonce."
+        )
+        raise UnauthorizedError(
+            "The attestation proxy's hotkey signature is stale. Check the VM's clock."
+        )
+
+    return verify_hotkey_auth(
+        HotkeyAuth(
+            miner_hotkey=hotkey,
+            signature=signature,
+            nonce=nonce,
+            purpose=RC_ATTESTATION_PURPOSE,
+        )
+    )
+
+
+async def _claimed_miner_hotkey(request: Request, header_hotkey: Optional[str]) -> Optional[str]:
+    """The hotkey this request claims to act as: the header, else the JSON body's miner_hotkey.
+
+    The body fallback exists for pre-1.4.0 boot attestation, whose initramfs sends the hotkey only
+    in the body -- the X-Chutes-Hotkey header on that route arrived with the 1.4.0 signer. Reading
+    the body here is safe: the body-hashing middleware has already consumed and cached it.
+    TODO: drop the fallback once tee_minimum_boot_version is 1.4.0 and every caller sends the header.
+    """
+    if header_hotkey:
+        return header_hotkey
+    if request.method not in ("POST", "PUT", "PATCH"):
+        return None
+    try:
+        body = await request.json()
+    except Exception:
+        return None
+    return body.get("miner_hotkey") if isinstance(body, dict) else None
+
+
+def deny_blacklisted_miner():
+    """Dependency refusing miners that are blacklisted or not registered on the subnet.
+
+    Identifies the caller by X-Chutes-Hotkey, falling back to the body's ``miner_hotkey``. This is
+    a claim, not a proof -- pair it with hotkey auth where the identity must be proven. It gates
+    on membership, so a caller asserting someone else's hotkey only borrows their standing, never
+    their secrets.
+
+    The two refusals are distinct: a hotkey that is not registered on the subnet is 403; one that
+    is registered but blacklisted is 401, as is presenting no hotkey at all.
+    """
+
+    async def _dep(
+        request: Request,
+        db: AsyncSession = Depends(get_db_session),
+        hotkey: Optional[str] = Header(None, alias=HOTKEY_HEADER),
+    ) -> None:
+        miner_hotkey = await _claimed_miner_hotkey(request, hotkey)
+        if not miner_hotkey:
+            logger.warning(f"Rejected: no miner hotkey presented path={request.url.path}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=(
+                    "No miner hotkey was presented. Send X-Chutes-Hotkey (or miner_hotkey in the "
+                    "request body)."
+                ),
+            )
+        node = await get_miner_by_hotkey(miner_hotkey, db)
+        if not node:
+            logger.warning(
+                f"Rejected {miner_hotkey[:12]}... path={request.url.path}: not registered on "
+                f"subnet {settings.netuid}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Your hotkey is not registered on {settings.netuid}",
+            )
+
+        if node.blacklist_reason:
+            logger.warning(
+                f"MINERBLACKLIST: hotkey={miner_hotkey} path={request.url.path} "
+                f"reason={node.blacklist_reason}"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Your hotkey has been blacklisted: {node.blacklist_reason}",
+            )
+
+    return _dep
+
+
+def _hotkey_auth_from_request(request: Request, purpose: Optional[str]) -> HotkeyAuth:
+    """The caller's auth material, read off the request. Nothing is verified here."""
+    return HotkeyAuth(
+        miner_hotkey=request.headers.get(HOTKEY_HEADER),
+        signature=request.headers.get(SIGNATURE_HEADER),
+        nonce=request.headers.get(NONCE_HEADER),
+        body_sha256=getattr(request.state, "body_sha256", None),
+        purpose=purpose,
+    )
+
+
+def extract_hotkey_auth(*, purpose: Optional[str] = None):
+    """Dependency yielding the caller's proven ``HotkeyAuth``, or None when none was offered.
+
+    For routes both VM generations reach. An unsigned request is legitimate from an image whose
+    measured initramfs predates the sr25519 signer, so absence is not decided here -- it is left
+    to the handler, which knows the attested version once the quote verifies. A signature that IS
+    offered is always verified, so a caller can never downgrade itself by sending a bad one.
+
+    Use ``require_hotkey_auth`` instead on routes only 1.4.0+ VMs reach. ``purpose`` must match the
+    endpoint's ``get_current_user`` purpose so the reconstructed signing message is identical.
+    """
+
+    async def _dep(request: Request) -> Optional[HotkeyAuth]:
+        auth = _hotkey_auth_from_request(request, purpose)
+        return verify_hotkey_auth(auth) if auth.offered else None
+
+    return _dep
+
+
+def require_hotkey_auth(*, purpose: Optional[str] = None):
+    """Dependency yielding the caller's proven ``HotkeyAuth``, 401ing if none was offered.
+
+    For routes only a signing VM can reach (the /provision pair, behind require_cvm_proxy). The
+    requirement is stated here rather than re-derived from the attested version downstream, so it
+    holds before the handler runs and cannot be forgotten by one. Handlers that need nothing from
+    the result still declare it -- as a bare dependency -- to keep the check at the door.
+    """
+
+    async def _dep(request: Request) -> HotkeyAuth:
+        auth = _hotkey_auth_from_request(request, purpose)
+        if not auth.offered:
+            raise UnauthorizedError()
+        return verify_hotkey_auth(auth)
+
+    return _dep
 
 
 def extract_client_cert():
@@ -563,12 +801,64 @@ def get_matching_measurement_config(quote: TdxQuote) -> TeeMeasurementConfig:
     logger.info(
         f"No measurement config matched quote (MRTD + RTMRs)\n{quote.mrtd=}\n{quote.rtmrs=}"
     )
-    raise MeasurementMismatchError(
-        "Quote does not match expected measurements. Ensure you are running a supported VM."
+    raise MeasurementMismatchError()
+
+
+def _require_nonempty_hotkey_allowlist(config: TeeMeasurementConfig) -> None:
+    """The rc allowlist (``authorized_hotkeys``) must be non-empty.
+    _load_tee_measurements already drops such rc entries; defense in depth so an empty allowlist is
+    never treated as "allow all"."""
+    if not config.authorized_hotkeys:
+        logger.error(
+            f"rc measurement '{config.name}' v{config.version} rejected: authorized_hotkeys "
+            "allowlist is empty (config-loading bug)."
+        )
+        raise MeasurementMismatchError()
+
+
+def authorize_rc_measurement(config: TeeMeasurementConfig, auth: Optional["HotkeyAuth"]) -> None:
+    """Central release-candidate (rc) authorization check, invoked from ``verify_quote`` so it
+    covers every trust-granting flow at the single point where the measurement (hence version) is
+    known.
+
+    No-op for published (non-rc) measurements: they lock down identical guest software for
+    everyone, so operator identity is irrelevant and nothing changes for existing VMs.
+
+    For an rc match, fail closed: the caller must have PROVEN possession of a hotkey in
+    ``authorized_hotkeys``. ``auth`` is None unless it came back from ``verify_hotkey_auth`` at the
+    edge, so an unproven caller arrives here with nothing and is refused.
+
+    Any failure surfaces a bare ``MeasurementMismatchError`` whose default message is the generic
+    no-match text -- deliberately identical to what a caller whose quote matches nothing sees, so
+    the response never reveals that a measurement is rc-gated or who is allowed. The specific reason
+    is logged server-side only.
+    """
+    if not config.rc:
+        return  # published measurement: the gate is a no-op
+
+    _require_nonempty_hotkey_allowlist(config)
+
+    if auth is None:
+        # Never leak that this measurement is rc-gated: the caller sees the generic no-match text.
+        logger.warning(
+            f"rc measurement '{config.name}' v{config.version} rejected: caller proved no hotkey."
+        )
+        raise MeasurementMismatchError()
+
+    if auth.miner_hotkey not in config.authorized_hotkeys:
+        logger.warning(
+            f"rc measurement '{config.name}' v{config.version} rejected: hotkey "
+            f"{auth.miner_hotkey[:12]}... is not in the authorized_hotkeys allowlist."
+        )
+        raise MeasurementMismatchError()
+
+    logger.info(
+        f"rc measurement '{config.name}' v{config.version} authorized via hotkey "
+        f"{auth.miner_hotkey[:12]}..."
     )
 
 
-def verify_measurements(quote: TdxQuote) -> bool:
+def verify_measurements(quote: TdxQuote) -> TeeMeasurementConfig:
     """
     Verify quote measurements against allowed measurement values.
 
@@ -578,7 +868,8 @@ def verify_measurements(quote: TdxQuote) -> bool:
         quote: Parsed TDX quote
 
     Returns:
-        True if all measurements match
+        The matched TeeMeasurementConfig (so callers -- e.g. verify_quote's rc gate -- can reuse
+        it without a second lookup).
 
     Raises:
         MeasurementMismatchError: If any measurements don't match
@@ -594,9 +885,8 @@ def verify_measurements(quote: TdxQuote) -> bool:
         f"Verifying quote for measurement config '{measurement_config.name}' "
         f"(version={measurement_config.version}, RTMR0: {quote.rtmr0.upper()[:16]}...)"
     )
-    return _verify_measurements(
-        quote, expected_rtmrs, measurement_config.name, measurement_config.mrtd
-    )
+    _verify_measurements(quote, expected_rtmrs, measurement_config.name, measurement_config.mrtd)
+    return measurement_config
 
 
 def verify_result(quote: TdxQuote, result: TdxVerificationResult) -> bool:
@@ -942,8 +1232,27 @@ async def _track_server(
 
 
 async def verify_quote(
-    quote: TdxQuote, expected_nonce: str, expected_cert_hash: str
-) -> TdxVerificationResult:
+    quote: TdxQuote,
+    expected_nonce: str,
+    expected_cert_hash: str,
+    *,
+    auth: Optional["HotkeyAuth"] = None,
+) -> tuple[TdxVerificationResult, TeeMeasurementConfig]:
+    """Verify a TDX quote end to end: nonce + cert-hash binding, DCAP signature, quote/DCAP
+    consistency, measurement match, and -- centrally, for every trust-granting flow -- the
+    release-candidate authorization check.
+
+    ``auth`` gates access to release-candidate (``rc: true``) measurements: for an rc match the
+    caller must hold a proven hotkey that is on the measurement's allowlist (see
+    ``authorize_rc_measurement``). It is a no-op for published measurements, so callers that can
+    never present a proof may omit it -- doing so simply makes rc measurements unreachable for
+    them, which is the safe direction.
+    This is the one place the rc check lives, so it cannot be bypassed by any endpoint that
+    verifies a quote.
+
+    Returns ``(report, measurement_config)`` -- the measurement the quote MATCHED, so callers never
+    re-look it up (settings.tee_measurements re-reads the ConfigMap on every access).
+    """
     nonce, cert_hash = extract_report_data(quote)
 
     if nonce != expected_nonce:
@@ -955,9 +1264,13 @@ async def verify_quote(
 
     result = await verify_quote_signature(quote)
     verify_result(quote, result)
-    verify_measurements(quote)
+    measurement_config = verify_measurements(quote)
 
-    return result
+    # Central rc gate: verify_measurements has matched the config (so we know the version/rc flag);
+    # restrict rc measurements to authorized hotkeys with proof of possession. No-op for published.
+    authorize_rc_measurement(measurement_config, auth)
+
+    return result, measurement_config
 
 
 def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:
@@ -985,7 +1298,9 @@ def verify_leaf_cert_signed_by_ca(leaf: Certificate, ca: Certificate) -> None:
     try:
         if isinstance(ca_pubkey, ec.EllipticCurvePublicKey):
             ca_pubkey.verify(
-                leaf.signature, leaf.tbs_certificate_bytes, ec.ECDSA(leaf.signature_hash_algorithm)
+                leaf.signature,
+                leaf.tbs_certificate_bytes,
+                ec.ECDSA(leaf.signature_hash_algorithm),
             )
         else:
             ca_pubkey.verify(
@@ -1028,7 +1343,13 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
             json.dump(evidence, fp)
             fp.flush()
 
-            verify_gpus_cmd = ["chutes-nvattest", "--nonce", expected_nonce, "--evidence", fp.name]
+            verify_gpus_cmd = [
+                "chutes-nvattest",
+                "--nonce",
+                expected_nonce,
+                "--evidence",
+                fp.name,
+            ]
 
             # Capture the verifier's output (stderr merged into stdout) so the actual
             # failure reason is logged rather than discarded. communicate() drains the
@@ -1058,3 +1379,225 @@ async def verify_gpu_evidence(evidence: list[Dict[str, str]], expected_nonce: st
         raise InvalidGpuEvidenceError()
 
     logger.info("GPU evidence verified successfully." + (f"\n{output}" if output else ""))
+
+
+async def store_host_profile(
+    db: AsyncSession,
+    profile: HostProfile,
+    hotkey: str,
+) -> tuple[str, bool]:
+    """
+    Record a submitted host profile, first-write-wins.
+
+    A host class already on file -- pending or measured -- is left untouched; the row is keyed by
+    fingerprint, so ON CONFLICT DO NOTHING gives idempotency without a read-then-write race.
+
+    Returns (fingerprint, created); created=False means that host class was already known.
+    """
+    fingerprint = profile.fingerprint
+    result = await db.execute(
+        pg_insert(HostProfileRecord)
+        .values(
+            fingerprint=fingerprint,
+            profile=profile.model_dump(by_alias=True),
+            miner_hotkey=hotkey,
+        )
+        .on_conflict_do_nothing(index_elements=["fingerprint"])
+        .returning(HostProfileRecord.fingerprint)
+    )
+    created = result.scalar_one_or_none() is not None
+    if not created:
+        logger.info(f"Host profile {fingerprint} already known, ignoring {hotkey=}")
+        return fingerprint, False
+
+    await db.commit()
+    logger.success(
+        f"Stored host profile {fingerprint} from {hotkey=}: "
+        f"{profile.gpu.count}x{'/'.join(sorted(set(profile.gpu.pci_device_ids)))}"
+    )
+    return fingerprint, True
+
+
+def measurements_for_fingerprint(fingerprint: str) -> list[dict]:
+    """
+    Every published measurement carrying this fingerprint, as ``{version, rc}`` pairs.
+
+    Surfaced on GET /servers/tdx/host_profiles so a reader can see which VM images are covered for
+    a host class. rc is a property of the version, not the topology, so both rc and non-rc entries
+    are listed -- a reader wanting the rc image and one wanting the release both see theirs.
+
+    No version floor: only ``1.4.0+`` measurements carry a fingerprint at all (older ones never
+    join), so the listed versions are already the full covered set. Independent of the profile
+    row's ``measured_at``, which can lag a fresh publish; the empty list is a real answer (nothing
+    published for the class right now). Deduplicated and ordered for a stable response.
+    """
+    seen: dict[tuple[str, bool], dict] = {}
+    for measurement in settings.tee_measurements:
+        if measurement.fingerprint != fingerprint:
+            continue
+        seen.setdefault(
+            (measurement.version, bool(measurement.rc)),
+            {"version": measurement.version, "rc": bool(measurement.rc)},
+        )
+    return [seen[key] for key in sorted(seen)]
+
+
+async def host_profile_state(
+    db: AsyncSession, fingerprint: str
+) -> "tuple[bool, Optional[datetime]]":
+    """``(on_file, measured_at)`` for a host class: whether a row exists and, if so, when it was
+    first measured (None while still pending). One query backing the retention status.
+    """
+    row = (
+        await db.execute(
+            select(HostProfileRecord.measured_at).where(
+                HostProfileRecord.fingerprint == fingerprint
+            )
+        )
+    ).one_or_none()
+    if row is None:
+        return False, None
+    return True, row[0]
+
+
+async def host_profile_is_known(db: AsyncSession, fingerprint: str) -> bool:
+    """Whether a profile for this host class is on file, pending or measured."""
+    on_file, _ = await host_profile_state(db, fingerprint)
+    return on_file
+
+
+async def host_profile_status(db: AsyncSession, fingerprint: str) -> HostProfileStatus:
+    """The retention status of a host class, read without storing anything.
+
+    The read-only counterpart to ``resolve_host_profile_status`` (which registers): backs
+    POST /servers/tdx/host_profiles/status, where a miner asks about a class it may never have
+    submitted -- so UNKNOWN is a real answer here, unlike on the submission path.
+    """
+    on_file, measured_at = await host_profile_state(db, fingerprint)
+    return _host_profile_status(on_file, measured_at)
+
+
+def _host_profile_status(on_file: bool, measured_at) -> HostProfileStatus:
+    """The monotonic retention status, from the profile row alone.
+
+    ACCEPTED once ``measured_at`` is stamped -- the reconciler sets it (rc-inclusive) the moment any
+    measurement carries the fingerprint, and never clears it, so the class stays accepted for good.
+    PENDING when a row exists but is not yet reconciled, UNKNOWN when even the row is absent. The
+    config is not consulted here: measured_at is the single retention marker, so the table and the
+    generator cannot drift into disagreeing about what has been measured.
+    """
+    if measured_at is not None:
+        return HostProfileStatus.ACCEPTED
+    if on_file:
+        return HostProfileStatus.PENDING
+    return HostProfileStatus.UNKNOWN
+
+
+async def resolve_host_profile_status(
+    db: AsyncSession,
+    profile: HostProfile,
+    hotkey: str,
+) -> "tuple[str, HostProfileStatus, bool]":
+    """
+    Store a submitted host class and return its retention ``status``.
+
+    ``status`` is the monotonic retention lifecycle (unknown -> pending -> accepted) read from the
+    profile row plus ``measured_at``; a submission is always stored, so it never returns UNKNOWN --
+    the class is at least PENDING once recorded. Submission answers only which of the three the class
+    is in; the same lifecycle without storing is POST /servers/tdx/host_profiles/status, whether a
+    specific image can boot is POST /servers/tdx/preflight, and the per-version
+    ``{version, rc}`` list lives on GET -- none of which is decided here.
+
+    The profile is stored even when a measurement already covers the fingerprint, if we hold no
+    profile for it: a fingerprint cannot be inverted back to its topology inputs, so an accepted
+    host class with no stored profile cannot have its RTMR0 regenerated after a firmware change.
+    store_host_profile no-ops when the row already exists.
+
+    Returns (fingerprint, status, stored).
+    """
+    fingerprint = profile.fingerprint
+    _, stored = await store_host_profile(db=db, profile=profile, hotkey=hotkey)
+
+    on_file, measured_at = await host_profile_state(db, fingerprint)
+    status = _host_profile_status(on_file, measured_at)
+    return fingerprint, status, stored
+
+
+async def list_pending_profiles(db: AsyncSession) -> list[HostProfileRecord]:
+    """Host classes awaiting measurement generation, oldest first."""
+    result = await db.execute(
+        select(HostProfileRecord)
+        .where(HostProfileRecord.measured_at.is_(None))
+        .order_by(HostProfileRecord.created_at)
+    )
+    return list(result.scalars().all())
+
+
+async def list_host_profile_records(
+    db: AsyncSession,
+    include_pending: bool = False,
+) -> list[dict]:
+    """
+    Host profiles for publication, as {fingerprint, measured, measurements, profile}.
+
+    Measured only by default: that is the set a third party can actually verify, by joining
+    ``fingerprint`` to a published measurement. A pending row is an unverified claim, so nobody
+    gets one without asking.
+
+    ``include_pending`` adds them, for the measurement generator -- a profile becomes measured only
+    once measurements are generated for it, and generation has to fetch it first, so the queue has
+    to be reachable somehow.
+
+    ``measurements`` is the per-fingerprint ``{version, rc}`` list from the config, so a reader sees
+    exactly which VM images are covered for the class (empty for a pending row). ``profile`` is
+    returned as stored: the machine-identifying fields are dropped at submission (HostProfile
+    declares them ``exclude=True``), so the column holds only host-class data. ``miner_hotkey`` is
+    a column this query never selects.
+    """
+    query = select(
+        HostProfileRecord.fingerprint,
+        HostProfileRecord.profile,
+        HostProfileRecord.measured_at,
+    ).order_by(HostProfileRecord.fingerprint)
+    if not include_pending:
+        query = query.where(HostProfileRecord.measured_at.isnot(None))
+
+    result = await db.execute(query)
+    return [
+        {
+            "fingerprint": fingerprint,
+            "measured": measured_at is not None,
+            "measurements": measurements_for_fingerprint(fingerprint),
+            "profile": profile,
+        }
+        for fingerprint, profile, measured_at in result.all()
+    ]
+
+
+async def reconcile_host_profiles(db: AsyncSession) -> list[str]:
+    """
+    Mark every pending profile measured whose fingerprint now appears in the measurement config.
+
+    The config is the source of truth: a fingerprint published there means the topology has been
+    generated, so its profile moves into the retained set. One atomic UPDATE -- unlike the
+    copy-then-delete this replaces, there is no window where a crash leaves it half-moved. rc
+    counts here: an rc entry means the topology WAS generated, even though it cannot launch yet.
+    """
+    published = {m.fingerprint for m in settings.tee_measurements if m.fingerprint}
+    if not published:
+        return []
+
+    result = await db.execute(
+        update(HostProfileRecord)
+        .where(
+            HostProfileRecord.fingerprint.in_(published),
+            HostProfileRecord.measured_at.is_(None),
+        )
+        .values(measured_at=func.now())
+        .returning(HostProfileRecord.fingerprint)
+    )
+    promoted = sorted(result.scalars().all())
+    if promoted:
+        await db.commit()
+        logger.success(f"Reconciled {len(promoted)} host profile(s) as measured")
+    return promoted

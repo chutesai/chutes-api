@@ -5,7 +5,7 @@ import hashlib
 import json
 import ssl
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Optional
 from urllib.parse import urljoin
 
 import aiohttp
@@ -23,10 +23,29 @@ from api.constants import (
 )
 from api.server.exceptions import GetEvidenceError
 from api.server.quote import RuntimeTdxQuote, TdxQuote
-from api.server.schemas import Server, VmAuthKey
+from api.server.schemas import Server, VmAuthKey, VmBootRecord
 from api.server.util import _get_server_certificate, decrypt_passphrase
 from api.config import settings
 from api.util import semcomp
+
+
+@dataclass
+class ServerEvidenceResponse:
+    """Structured response from TeeServerClient.get_server_evidence().
+
+    quote, gpu_evidence, and cert are always present.
+    hotkey/hotkey_nonce/hotkey_signature are the miner-hotkey proof-of-possession the attestation
+    proxy stamps on every response when a seed is configured; all None on proxies/VMs that don't
+    sign. Registration reads them so the rc gate learns which miner the VM belongs to from the VM
+    itself, rather than from the CLI caller who initiated the request.
+    """
+
+    quote: TdxQuote
+    gpu_evidence: Dict[str, Any]
+    cert: Certificate
+    hotkey: Optional[str] = None
+    hotkey_nonce: Optional[str] = None
+    hotkey_signature: Optional[str] = None
 
 
 @dataclass
@@ -36,6 +55,8 @@ class ChuteEvidenceResponse:
     quote, gpu_evidence, and cert are always present.
     signature and attested_body are set only when the attestation proxy returns
     an X-Signature header (proxy >= 0.2.0); both are None on older proxies.
+    hotkey/hotkey_nonce/hotkey_signature are the miner-hotkey rc proof-of-possession the
+    proxy attaches when a seed is configured; all None on proxies/VMs that don't sign.
     """
 
     quote: TdxQuote
@@ -43,6 +64,9 @@ class ChuteEvidenceResponse:
     cert: Certificate
     signature: Optional[str] = None
     attested_body: Optional[str] = None
+    hotkey: Optional[str] = None
+    hotkey_nonce: Optional[str] = None
+    hotkey_signature: Optional[str] = None
 
 
 class TeeServerClient:
@@ -53,20 +77,12 @@ class TeeServerClient:
 
     @classmethod
     async def create(cls, db: AsyncSession, server: Server) -> "TeeServerClient":
-        """Async factory that resolves the signing keypair for validator->VM calls.
+        """Resolve the signing keypair for validator->VM calls.
 
-        Hard version gate: VMs attested at >= MIN_VM_AUTH_KEY_VERSION sign with their per-VM
-        ephemeral keypair (from vm_auth_keys) -- the firmware line that registers that ephemeral
-        SS58 as an allowed signer. Older VMs (1.3.x) only trust the validator key, so they sign
-        with the validator's global keypair; signing a 1.3.x call with the ephemeral key would 401.
-        Boot attestation only generates the ephemeral key for >= 1.4.0 VMs, so such a server should
-        always have a row -- a missing one is an error (raised below) rather than a silent fallback.
-
-        A DB read + keypair reconstruction costs ~1-5ms total, which is negligible
-        compared to the TDX quote verification and GPU evidence checks that always
-        surround these calls. Caching is deliberately omitted: these calls are
-        infrequent (boot/registration-time only) and multi-pod deployments make
-        an in-process cache ineffective anyway.
+        >= MIN_VM_AUTH_KEY_VERSION VMs trust only their per-VM ephemeral key (vm_auth_keys); older
+        VMs trust the validator key. The deciding version is the current-boot version: server.version
+        if set, else the latest VmBootRecord's measurement_version (server.version is None during
+        registration, and stale after a downgrade).
         """
         result = await db.execute(
             select(VmAuthKey).where(
@@ -76,12 +92,28 @@ class TeeServerClient:
         )
         vm_auth_key = result.scalar_one_or_none()
 
-        use_ephemeral = server.version and semcomp(server.version, MIN_VM_AUTH_KEY_VERSION) >= 0
+        # server.version is unset during registration; fall back to the current-boot version.
+        version = server.version
+        if not version:
+            boot_version_result = await db.execute(
+                select(VmBootRecord.measurement_version)
+                .where(
+                    VmBootRecord.miner_hotkey == server.miner_hotkey,
+                    VmBootRecord.vm_name == server.name,
+                    VmBootRecord.measurement_version.isnot(None),
+                )
+                .order_by(VmBootRecord.created_at.desc())
+                .limit(1)
+            )
+            version = boot_version_result.scalar_one_or_none()
+
+        use_ephemeral = bool(version) and semcomp(version, MIN_VM_AUTH_KEY_VERSION) >= 0
         if use_ephemeral:
             if vm_auth_key is None:
+                # >= 1.4.0 must have a row; a missing one is a real inconsistency, not a legacy VM.
                 raise GetEvidenceError(
                     f"No vm_auth_key row for {server.name} (miner: {server.miner_hotkey}) at "
-                    f"version {server.version} (>= {MIN_VM_AUTH_KEY_VERSION}); cannot sign VM calls"
+                    f"version {version} (>= {MIN_VM_AUTH_KEY_VERSION}); cannot sign VM calls"
                 )
             seed_hex = decrypt_passphrase(vm_auth_key.auth_seed)
             keypair = Keypair.create_from_seed(seed_hex)
@@ -90,10 +122,11 @@ class TeeServerClient:
                 f"(miner: {server.miner_hotkey}): {keypair.ss58_address}"
             )
         else:
+            # Legacy VM (or unknown version): validator key. A stale ephemeral row is ignored.
             keypair = settings.validator_keypair
             logger.debug(
                 f"Using validator keypair for {server.name} (miner: {server.miner_hotkey}); "
-                f"version={server.version!r} < {MIN_VM_AUTH_KEY_VERSION} (legacy signer path)"
+                f"resolved version={version!r} (legacy signer path)"
             )
 
         return cls(server=server, keypair=keypair)
@@ -159,7 +192,7 @@ class TeeServerClient:
         async with aiohttp.ClientSession(connector=connector, raise_for_status=True) as session:
             yield session
 
-    async def get_server_evidence(self, nonce: str) -> Tuple[TdxQuote, Dict[str, str], Certificate]:
+    async def get_server_evidence(self, nonce: str) -> ServerEvidenceResponse:
         try:
             url = urljoin(self._url, "server/attest")
             headers, _ = self._sign_request(purpose="attest")
@@ -173,7 +206,15 @@ class TeeServerClient:
                     data = await resp.json()
                     quote = RuntimeTdxQuote.from_base64(data["tdx_quote"])
                     gpu_evidence = json.loads(data["nvtrust_evidence"])
-                    return quote, gpu_evidence, cert
+                    return ServerEvidenceResponse(
+                        quote=quote,
+                        gpu_evidence=gpu_evidence,
+                        cert=cert,
+                        # Miner-hotkey proof-of-possession (present only when the proxy signs).
+                        hotkey=resp.headers.get(HOTKEY_HEADER),
+                        hotkey_nonce=resp.headers.get(NONCE_HEADER),
+                        hotkey_signature=resp.headers.get(SIGNATURE_HEADER),
+                    )
         except Exception as exc:
             logger.error(f"Failed to get attestation evidence from {self._url}: {exc}")
             raise GetEvidenceError(f"Failed to get evidence for attestation: {str(exc)}")
@@ -220,6 +261,10 @@ class TeeServerClient:
                         cert=cert,
                         signature=signature,
                         attested_body=attested_body_b64,
+                        # Miner-hotkey rc proof-of-possession (present only when the proxy signs).
+                        hotkey=resp.headers.get(HOTKEY_HEADER),
+                        hotkey_nonce=resp.headers.get(NONCE_HEADER),
+                        hotkey_signature=resp.headers.get(SIGNATURE_HEADER),
                     )
         except Exception as exc:
             logger.error(f"Failed to get chute evidence from {self._url}: {exc}")

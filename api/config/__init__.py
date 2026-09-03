@@ -8,7 +8,7 @@ from pathlib import Path
 import aioboto3
 import json
 import yaml
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from api.safe_redis import SafeRedis
 from functools import cached_property, lru_cache
 import redis.asyncio as redis
@@ -64,7 +64,15 @@ class TeeMeasurementConfig:
     runtime_rtmr3: str  # shared across hardware; runtime-only (boot RTMR3 is zero)
     expected_gpus: List[str]
     gpu_count: Optional[int] = None
+    # Topology fingerprint of the host class this hardware entry covers -- the same value
+    # HostProfile.fingerprint produces at submission, propagated here by the measurement generator.
+    # Optional: entries predating the field have none and are simply unmatchable.
+    fingerprint: Optional[str] = None
     rc: bool = False  # release candidate / in-test: attestable but unpublished
+    # rc authorization allowlist (required non-empty when rc is True; ignored for published
+    # measurements). Miner hotkeys allowed to attest this measurement, on every path.
+    # See api.server.util.authorize_rc_measurement.
+    authorized_hotkeys: List[str] = dataclass_field(default_factory=list)
 
     @property
     def boot_rtmrs(self) -> Dict[str, str]:
@@ -173,6 +181,10 @@ class Settings(BaseSettings):
 
     validator_ss58: Optional[str] = os.getenv("VALIDATOR_SS58")
     storage_bucket: str = os.getenv("STORAGE_BUCKET", "REPLACEME")
+
+    # Discord webhook for operational alerts (a new host class was submitted, ...). Unset
+    # disables alerting rather than failing.
+    discord_webhook_url: Optional[str] = os.getenv("DISCORD_WEBHOOK_URL")
 
     # Base redis settings.
     redis_host: str = Field(
@@ -409,6 +421,20 @@ class Settings(BaseSettings):
                 )
             return cleaned
 
+        def _fingerprint(value, owner: str) -> Optional[str]:
+            """Lower-case/strip a topology fingerprint and validate it is 64 hex chars."""
+            if value is None:
+                return None
+            cleaned = str(value).lower().strip()
+            if not cleaned:
+                return None
+            if len(cleaned) != 64 or any(c not in "0123456789abcdef" for c in cleaned):
+                raise ValueError(
+                    f"Invalid fingerprint for measurement config '{owner}': expected 64 hex "
+                    f"chars, got {cleaned!r}."
+                )
+            return cleaned
+
         measurements: List[TeeMeasurementConfig] = []
         for version_config in config.get("measurements", []):
             version = version_config.get("version")
@@ -429,6 +455,28 @@ class Settings(BaseSettings):
             rtmr2 = _hex96(version_config["rtmr2"], "RTMR2", version)
             runtime_rtmr3 = _hex96(version_config["runtime_rtmr3"], "runtime RTMR3", version)
             rc = bool(version_config.get("rc", False))
+
+            # rc authorization allowlists. Meaningful only for rc measurements (published ones lock
+            # down identical guest software for everyone, so operator identity is irrelevant there):
+            authorized_hotkeys = [
+                str(hk).strip()
+                for hk in (version_config.get("authorized_hotkeys") or [])
+                if str(hk).strip()
+            ]
+
+            # Load-time invariant: an rc measurement with no allowlist would be usable by anyone who
+            # can build the same image -- exactly the exposure rc gating exists to prevent. Drop the
+            # whole version (all hardware variants) and log loudly rather than raise, so one
+            # misconfigured rc entry can't take down attestation for published VMs; a dropped entry
+            # never matches any quote, so affected VMs fail closed.
+            if rc and not authorized_hotkeys:
+                logger.error(
+                    f"Refusing to load rc measurement version '{version}': 'authorized_hotkeys' "
+                    "allowlist is empty. rc measurements MUST declare a non-empty "
+                    "'authorized_hotkeys'. This version is UNUSABLE until fixed; VMs on it will "
+                    "fail attestation."
+                )
+                continue
 
             hardware = version_config.get("hardware") or []
             if not hardware:
@@ -460,7 +508,9 @@ class Settings(BaseSettings):
                         runtime_rtmr3=runtime_rtmr3,
                         expected_gpus=[gpu.lower() for gpu in hw["expected_gpus"]],
                         gpu_count=gpu_count,
+                        fingerprint=_fingerprint(hw.get("fingerprint"), owner),
                         rc=rc,
+                        authorized_hotkeys=authorized_hotkeys,
                     )
                 )
 
@@ -639,6 +689,10 @@ class Settings(BaseSettings):
 
     # OpenRouter free usage settings.
     or_free_user_id: str = os.getenv("OR_FREE_USER_ID", "replaceme")
+
+    # The only user whose chutes may deploy on a VM attesting an rc measurement (see
+    # api.instance.util.verify_tee_chute). Unset means none may.
+    rc_chute_user_id: Optional[str] = os.getenv("RC_CHUTE_USER_ID")
 
     # Agent registration settings.
     agent_registration_threshold: float = float(os.getenv("AGENT_REGISTRATION_THRESHOLD", "50.0"))

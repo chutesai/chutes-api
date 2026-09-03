@@ -10,6 +10,7 @@ Covers:
 
 import hashlib
 import datetime
+import secrets
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import HTTPException
@@ -23,8 +24,12 @@ from cryptography.hazmat.backends import default_backend
 import pybase64
 from urllib.parse import quote as url_quote
 
+from bittensor_wallet.keypair import Keypair
+
 from api.registry.router import registry_auth
+from api.util import get_signing_message
 from api.server.util import (
+    verify_hotkey_auth,
     verify_leaf_cert_signed_by_ca,
     verify_server_cert,
     get_public_key_hash,
@@ -34,8 +39,17 @@ from api.server.service import (
     process_provision_request,
     process_luks_attest_request,
     require_server_mtls,
+    verify_server,
+    sync_vm_root_ca_from_boot_record,
 )
-from api.server.schemas import Server, ProvisionRequest, LuksAttestRequest, LuksVolumeRotation
+from api.server.schemas import (
+    Server,
+    ProvisionRequest,
+    LuksAttestRequest,
+    LuksVolumeRotation,
+    StorageProvisionResult,
+    HotkeyAuth,
+)
 from api.server.exceptions import AttestationError, ServerNotFoundError, InvalidClientCertError
 
 
@@ -297,11 +311,32 @@ async def test_require_server_mtls_no_registered_ca():
 # ---------------------------------------------------------------------------
 
 
+def _hotkey_auth(nonce, *, body_sha256="body-hash", keypair=None):
+    """The auth a /provision request arrives with once the edge has verified it.
+
+    Only 1.4.0+ VMs reach /provision and every one of them signs, so require_hotkey_auth demands a
+    proof at the door -- these tests carry a real signature rather than stubbing the dependency.
+    """
+    keypair = keypair or Keypair.create_from_seed("0x" + secrets.token_hex(32))
+    message = get_signing_message(
+        hotkey=keypair.ss58_address, nonce=nonce, payload_str=None, payload_hash=body_sha256
+    )
+    return keypair, verify_hotkey_auth(
+        HotkeyAuth(
+            miner_hotkey=keypair.ss58_address,
+            signature=keypair.sign(message).hex(),
+            nonce=nonce,
+            body_sha256=body_sha256,
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_provision_records_ca_and_returns_secrets():
     """
     /provision verifies the runtime quote against SHA256(client cert pubkey), records the VM
-    root CA from the handshake client cert, and returns rotated volumes + k3s + confirm nonce.
+    root CA (upsert onto the VM's boot record + write-through onto an existing server), and
+    returns rotated volumes + k3s + confirm nonce.
     """
     ca_key = _gen_rsa_key()
     ca_cert = _make_ca_cert(ca_key)
@@ -310,11 +345,19 @@ async def test_provision_records_ca_and_returns_secrets():
     vm_config = MagicMock()
     vm_config.k3s_encryption_key = "encrypted-k3s"  # truthy -> reuse existing key path
     volumes_data = {"storage": LuksVolumeRotation(current="cur", next="nxt")}
+    # record_vm_ca_identity updates the VM's latest boot record (fetched via db.execute).
+    boot_record = MagicMock()
+    exec_result = MagicMock()
+    exec_result.scalar_one_or_none.return_value = boot_record
     db = AsyncMock()
+    db.execute = AsyncMock(return_value=exec_result)
 
     with (
         patch("api.server.service.RuntimeTdxQuote") as mock_quote_cls,
-        patch("api.server.service.verify_quote", new_callable=AsyncMock) as mock_verify,
+        patch(
+            "api.server.service.verify_quote",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock(version="1.4.0", rc=False))),
+        ) as mock_verify,
         patch("api.server.service.get_server_by_name", return_value=mock_server),
         patch(
             "api.server.service.rotate_luks_passphrases",
@@ -329,10 +372,18 @@ async def test_provision_records_ca_and_returns_secrets():
         patch("api.server.service.decrypt_passphrase", return_value="k3s-key"),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = ProvisionRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
-        result = await process_provision_request(db, "hk", "vm1", body, "nonce123", ca_cert)
+        body = ProvisionRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
+        keypair, auth = _hotkey_auth("nonce123")
+        result = await process_provision_request(
+            db, keypair.ss58_address, "vm1", body, "nonce123", ca_cert, auth=auth
+        )
 
-    # The CA is recorded from the mTLS handshake client cert.
+    # The CA + provision quote are written onto the VM's current boot record.
+    assert boot_record.vm_root_ca_cert == _cert_pem(ca_cert)
+    assert boot_record.provision_quote == body.quote
+    # The existing server's synced copy is written through.
     assert mock_server.vm_root_ca_cert == _cert_pem(ca_cert)
     # The runtime quote is verified against the nonce + SHA256(client cert pubkey).
     mock_verify.assert_awaited_once()
@@ -345,24 +396,147 @@ async def test_provision_records_ca_and_returns_secrets():
 
 
 @pytest.mark.asyncio
-async def test_provision_unknown_vm():
-    """/provision raises 404 (ServerNotFoundError) when the server is not found."""
+async def test_provision_without_server_records_ca_in_boot_record():
+    """/provision runs in initramfs BEFORE POST /servers, so it must NOT require a server row.
+    With no server, it records the CA on the VM's boot record (no 404, no write-through)."""
     ca_key = _gen_rsa_key()
     ca_cert = _make_ca_cert(ca_key)
+    expected = StorageProvisionResult(volumes={}, confirm_nonce="cn", k3s_encryption_key="k")
+    boot_record = MagicMock()
+    exec_result = MagicMock()
+    exec_result.scalar_one_or_none.return_value = boot_record
     db = AsyncMock()
+    db.execute = AsyncMock(return_value=exec_result)
 
     with (
         patch("api.server.service.RuntimeTdxQuote") as mock_quote_cls,
-        patch("api.server.service.verify_quote", new_callable=AsyncMock),
+        patch(
+            "api.server.service.verify_quote",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock(version="1.4.0", rc=False))),
+        ),
         patch(
             "api.server.service.get_server_by_name",
             side_effect=ServerNotFoundError("vm1"),
         ),
+        patch(
+            "api.server.service._issue_storage_secrets",
+            new=AsyncMock(return_value=expected),
+        ),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = ProvisionRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
-        with pytest.raises(ServerNotFoundError):
-            await process_provision_request(db, "hk", "vm1", body, "nonce", ca_cert)
+        body = ProvisionRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
+        # No ServerNotFoundError — provision succeeds pre-registration.
+        keypair, auth = _hotkey_auth("nonce")
+        result = await process_provision_request(
+            db, keypair.ss58_address, "vm1", body, "nonce", ca_cert, auth=auth
+        )
+
+    assert result is expected
+    # CA recorded on the boot record; no server, so no write-through.
+    assert boot_record.vm_root_ca_cert == _cert_pem(ca_cert)
+
+
+@pytest.mark.asyncio
+async def test_provision_no_matching_boot_record_fails_closed():
+    """The provision nonce must match a boot record from this boot; a miss (no boot attestation on
+    record for this VM/nonce) fails closed rather than fabricating a record or attaching to a
+    stale/failed one."""
+    ca_cert = _make_ca_cert(_gen_rsa_key())
+    exec_result = MagicMock()
+    exec_result.scalar_one_or_none.return_value = None  # no boot record matches the nonce
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=exec_result)
+
+    with (
+        patch("api.server.service.RuntimeTdxQuote") as mock_quote_cls,
+        patch(
+            "api.server.service.verify_quote",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock(version="1.4.0", rc=False))),
+        ),
+    ):
+        mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
+        body = ProvisionRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
+        with pytest.raises(AttestationError):
+            await process_provision_request(db, "hk", "vm1", body, "stale-nonce", ca_cert)
+
+
+@pytest.mark.asyncio
+async def test_sync_vm_root_ca_from_boot_record_stamps_latest_ca():
+    """register_server bridge: the latest provision-phase boot-record CA is stamped onto the
+    Server row so mTLS consumers (which read server.vm_root_ca_cert) see it."""
+    ca_cert = _make_ca_cert(_gen_rsa_key())
+    ca_pem = _cert_pem(ca_cert)
+
+    server = Server(server_id="s1", miner_hotkey="hk", name="vm1", ip="1.2.3.4")
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = ca_pem
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    await sync_vm_root_ca_from_boot_record(db, server)
+    assert server.vm_root_ca_cert == ca_pem
+
+
+@pytest.mark.asyncio
+async def test_sync_vm_root_ca_noop_when_no_boot_record():
+    """Legacy VM that never recorded a CA: sync is a no-op (server keeps CERT_NONE fallback)."""
+    server = Server(server_id="s1", miner_hotkey="hk", name="vm1", ip="1.2.3.4")
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = None
+    db = AsyncMock()
+    db.execute = AsyncMock(return_value=result)
+
+    await sync_vm_root_ca_from_boot_record(db, server)
+    assert server.vm_root_ca_cert is None
+
+
+@pytest.mark.asyncio
+async def test_verify_server_rejects_evidence_cert_not_signed_by_boot_record_ca():
+    """Registration attestation is bound to the initramfs-measured CA (read from the boot record,
+    since the server row's CA is only stamped after success): if the attestation proxy's server
+    cert is NOT signed by that CA, verification fails (403) before the quote is verified."""
+    ca_key = _gen_rsa_key()
+    ca_cert = _make_ca_cert(ca_key)
+    # Evidence cert signed by a DIFFERENT CA than the one on the boot record.
+    other_key = _gen_rsa_key()
+    other_ca = _make_ca_cert(other_key, subject_cn="other-ca")
+    evidence_cert = _make_leaf_cert(_gen_rsa_key(), other_key, other_ca)
+
+    # Server row has NO CA yet (not stamped until attestation passes).
+    server = Server(server_id="s1", miner_hotkey="hk", name="vm1", ip="1.2.3.4")
+    quote = MagicMock()
+    quote.raw_bytes = b"q"
+    client = MagicMock()
+    from api.server.client import ServerEvidenceResponse
+
+    client.get_server_evidence = AsyncMock(
+        return_value=ServerEvidenceResponse(quote=quote, gpu_evidence=[], cert=evidence_cert)
+    )
+    db = AsyncMock()
+
+    with (
+        patch("api.server.service.TeeServerClient.create", new=AsyncMock(return_value=client)),
+        patch(
+            "api.server.service.get_matching_measurement_config",
+            return_value=MagicMock(rc=False, version="1.4.0"),
+        ),
+        # The CA to bind against comes from the boot record.
+        patch(
+            "api.server.service.get_boot_record_ca", new=AsyncMock(return_value=_cert_pem(ca_cert))
+        ),
+        patch("api.server.service.verify_quote", new_callable=AsyncMock) as mock_vq,
+    ):
+        with pytest.raises(AttestationError) as exc_info:
+            await verify_server(db, server, "hk", [])
+    assert exc_info.value.status_code == 403
+    # Rejected at the CA binding, before the quote is even verified.
+    mock_vq.assert_not_awaited()
+    # The unverified CA is never stamped onto the server row.
+    assert server.vm_root_ca_cert is None
 
 
 @pytest.mark.asyncio
@@ -390,7 +564,9 @@ async def test_luks_attest_records_no_ca():
         patch("api.server.service.decrypt_passphrase", return_value="k3s-key"),
     ):
         mock_quote_cls.from_base64.return_value = _make_runtime_quote("0" * 128)
-        body = LuksAttestRequest(quote=pybase64.b64encode(b"q").decode(), volumes=["storage"])
+        body = LuksAttestRequest(
+            quote=pybase64.b64encode(b"q").decode(), volumes=["storage", "tdx-cache"]
+        )
         result = await process_luks_attest_request(db, "hk", "vm1", body, "nonce", "cert-hash")
 
     # The legacy path never looks up the server to record a CA (that only happens in /provision).
@@ -417,9 +593,16 @@ async def test_provision_confirm_delegates_to_shared_helper():
         return_value=LuksConfirmResult(volumes={"storage": {"result": "promoted"}}),
     ) as mock_confirm:
         resp = await provision_confirm(
-            vm_name="vm1", body=body, db=db, hotkey="hk", _mtls=None, _=None
+            vm_name="vm1",
+            body=body,
+            db=db,
+            hotkey="hk",
+            _mtls=None,
+            _=None,
         )
 
+    # The route's require_hotkey_auth dependency has already proven the hotkey this call acts as,
+    # so the shared service is handed the same identity the legacy route passes.
     mock_confirm.assert_awaited_once_with(db, "hk", "vm1", body)
     assert resp.status == "confirmed"
     assert resp.volumes == {"storage": {"result": "promoted"}}

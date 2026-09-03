@@ -23,6 +23,29 @@ data:
             "registry.chutes.ai"       "${DEPOT_REGISTRY}";
             default                    "${DEPOT_REGISTRY}";
         }
+        # Token realm follows the same cert-vs-hotkey split as /auth: mTLS VMs (cert present)
+        # get a token from the registry itself; legacy VMs (no cert, arriving via the miner
+        # proxy) keep the existing miner-proxy realm unchanged. registry.chutes.ai resolves
+        # straight to this Service's L4 passthrough LB, so the cert is negotiated in OUR
+        # handshake -- key off $ssl_client_escaped_cert, never a client-settable header.
+        map $ssl_client_escaped_cert $token_realm {
+            default "https://registry.chutes.ai/v2/_token";
+            ""      "{{ .Values.registryProxy.config.tokenRealm | default "https://registry.chutes.ai/v2/_token" }}";
+        }
+        # Per-IP rate limiting, replacing the Cloud Armor throttle that fronted the L7 LB
+        # (default-security-policy-for-backend-service-registry: 500 req/60s per IP). Keyed on
+        # $binary_remote_addr, which the realip module has already rewritten, so the limit
+        # applies to the true client on both sides of the DNS cutover.
+        # DELIBERATELY PERMISSIVE: throttling the fleet's pulls is a worse outcome than the
+        # attack these bound. Tune down from access-log percentiles once real traffic is seen.
+        limit_req_zone $binary_remote_addr zone=registry_all:16m rate={{ .Values.registryProxy.config.rateLimit.all.rate | default "20r/s" }};
+        # Tighter on the token endpoint: it is the only location with auth_request, so each
+        # request there costs an API call -- the amplification path.
+        limit_req_zone $binary_remote_addr zone=registry_token:16m rate={{ .Values.registryProxy.config.rateLimit.token.rate | default "5r/s" }};
+        limit_conn_zone $binary_remote_addr zone=registry_conn:16m;
+        limit_req_status 429;
+        limit_conn_status 429;
+
         log_format proxylog '$remote_addr\t$http_x_chutes_hotkey\t[$time_local] ($request_time) '
                     '"$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" $content_length $http_host';
 
@@ -31,21 +54,29 @@ data:
             sendfile on;
             tcp_nopush on;
             listen 443 ssl;
-            # Registry auth resolves the VM by its source IP ($remote_addr -> X-Real-IP).
-            # registry.chutes.ai points straight at this Service's GCP L4 load balancer, which
-            # preserves the real client IP only when the Service uses externalTrafficPolicy:
-            # Local (set in registry-proxy-svc.yaml). Under the default Cluster policy the
-            # source is SNAT'd to a node IP and every VM falls back to legacy hotkey auth.
+            # Direct L4 passthrough LB (externalTrafficPolicy: Local), so $remote_addr is already the
+            # real client -- registry auth resolves the VM by it directly. No real_ip / trusted-proxy
+            # handling: there is no intermediary to recover a client IP from, and trusting X-Real-IP
+            # would only add a spoofing surface.
             ssl_certificate     /etc/nginx/ssl/tls.crt;
             ssl_certificate_key /etc/nginx/ssl/tls.key;
             ssl_protocols       TLSv1.2 TLSv1.3;
             ssl_ciphers HIGH:!aNULL:!MD5;
             ssl_prefer_server_ciphers on;
-            # Request the VM's mTLS client cert but do NOT chain-validate it here: the per-VM
-            # CA is registered dynamically each boot, and the API verifies the presented leaf
-            # against the stored vm_root_ca_cert. Legacy VMs present no cert -> empty
-            # $ssl_client_escaped_cert -> the API falls back to hotkey auth. Non-breaking.
+            # This listener is the TLS edge, so handshakes are no longer absorbed by the L7 LB.
+            # Resumption keeps the cosign admission controller (~10x the pull traffic, constantly
+            # reconnecting) off the full-handshake path. Per-pod: a client landing on the other
+            # replica still does a full handshake unless ssl_session_ticket_key is shared.
+            ssl_session_cache   shared:registry:10m;
+            ssl_session_timeout 1h;
+            # Requests a client cert but never requires one, so a cert-less legacy containerd
+            # handshake still completes. The per-VM CA is registered per boot, so nginx cannot
+            # chain-validate the leaf -- the API verifies it against the stored vm_root_ca_cert.
+            # On a resumed session the client does not re-send its cert; OpenSSL restores it from
+            # the session, so $ssl_client_escaped_cert stays populated.
             ssl_verify_client optional_no_ca;
+
+            limit_conn registry_conn {{ .Values.registryProxy.config.rateLimit.connPerIp | default 64 }};
 
             # Block pulls of intermediate build tags (never externally accessible).
             location ~ "^/v2/.+/manifests/forgebuild-" {
@@ -54,6 +85,7 @@ data:
 
             # Token endpoint - verify hotkey, then proxy to Depot's token service with Depot creds.
             location /v2/_token {
+                limit_req zone=registry_token burst={{ .Values.registryProxy.config.rateLimit.token.burst | default 50 }} nodelay;
                 auth_request /auth;
 
                 resolver kube-dns.kube-system.svc.cluster.local;
@@ -67,6 +99,7 @@ data:
             }
 
             location /v2/ {
+                limit_req zone=registry_all burst={{ .Values.registryProxy.config.rateLimit.all.burst | default 200 }} nodelay;
                 limit_except GET HEAD {
                     deny all;
                 }
@@ -85,7 +118,7 @@ data:
                 proxy_hide_header Www-Authenticate;
                 proxy_hide_header Docker-Distribution-Api-Version;
                 proxy_hide_header X-Registry-Supports-Signatures;
-                add_header Www-Authenticate 'Bearer realm="{{ .Values.registryProxy.config.tokenRealm | default "https://registry.chutes.ai/v2/_token" }}",service="registry.chutes.ai"' always;
+                add_header Www-Authenticate 'Bearer realm="$token_realm",service="registry.chutes.ai"' always;
 
                 proxy_redirect https://${DEPOT_REGISTRY}/ https://registry.chutes.ai/;
 
@@ -105,8 +138,9 @@ data:
                 proxy_set_header X-Chutes-Hotkey $http_x_chutes_hotkey;
                 proxy_set_header X-Chutes-Signature $http_x_chutes_signature;
                 proxy_set_header X-Chutes-Nonce $http_x_chutes_nonce;
-                # Forward the cert negotiated in the TLS handshake (NOT a client-supplied
-                # header, which would be spoofable). Empty for legacy VMs that present none.
+                # Cert negotiated in OUR TLS handshake, NOT a client-supplied header -- this
+                # overwrites any X-Client-Cert the client sent, so it cannot be forged. Empty for
+                # legacy VMs that present none. nginx URL-escapes it; the API unquote()s it.
                 proxy_set_header X-Client-Cert $ssl_client_escaped_cert;
                 proxy_set_header X-Client-Verify $ssl_client_verify;
                 # Prove this request arrived via the registry proxy so the API can trust

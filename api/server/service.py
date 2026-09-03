@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from bittensor_wallet.keypair import Keypair
 from cryptography import x509 as crypto_x509
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives.serialization import Encoding
 
 from api.config import settings
@@ -28,6 +29,7 @@ from api.constants import (
     HOTKEY_HEADER,
     LUKS_STORAGE_VOLUME,
     MIN_VM_AUTH_KEY_VERSION,
+    SUPPORTED_LUKS_VOLUMES,
 )
 from api.gpu import SUPPORTED_GPUS
 from api.node.util import _track_nodes
@@ -36,7 +38,8 @@ from api.server.quote import BootTdxQuote, RuntimeTdxQuote, TdxQuote
 from api.server.schemas import (
     Server,
     ServerAttestation,
-    BootAttestation,
+    VmBootRecord,
+    HotkeyAuth,
     BootAttestationArgs,
     RuntimeAttestationArgs,
     ServerArgs,
@@ -63,8 +66,10 @@ from api.server.exceptions import (
     ServerRegistrationError,
     ChuteNotTeeError,
     InstanceNotFoundError,
+    UnauthorizedError,
 )
 from api.server.util import (
+    authenticate_proxy_evidence,
     _track_server,
     _get_vm_cache_config,
     get_matching_measurement_config,
@@ -74,6 +79,7 @@ from api.server.util import (
     verify_gpu_evidence,
     extract_client_cert,
     verify_server_cert,
+    verify_leaf_cert_signed_by_ca,
     rotate_luks_passphrases,
     generate_confirm_nonce,
     generate_luks_quote_nonce,
@@ -208,7 +214,10 @@ def validate_request_nonce(purpose: NoncePurpose):
             logger.error(f"Request nonce validation failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid nonce supplied",
+                detail=(
+                    f"Nonce is invalid, expired, or already used (purpose={purpose.value}). "
+                    "Request a fresh nonce immediately before this call; nonces are single-use."
+                ),
             )
 
     return _validate_request_nonce
@@ -240,7 +249,10 @@ def validate_boot_nonce():
             logger.error(f"Boot nonce validation failed: {e}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid nonce supplied",
+                detail=(
+                    "Boot nonce is invalid, expired, or already used. Fetch a fresh one from "
+                    "GET /servers/nonce immediately before attesting; nonces are single-use."
+                ),
             )
 
         # TODO: require a bound hotkey once all VMs >= 1.4.0.
@@ -251,7 +263,10 @@ def validate_boot_nonce():
             )
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Nonce hotkey mismatch",
+                detail=(
+                    "This nonce was issued for a different miner hotkey. Fetch the nonce with the "
+                    "same miner_hotkey used for attestation."
+                ),
             )
 
         return nonce
@@ -275,7 +290,10 @@ async def require_luks_quote_nonce(
     if not quote_nonce or not hotkey:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Quote nonce (X-Quote-Nonce) and hotkey are required",
+            detail=(
+                "Missing X-Quote-Nonce or X-Chutes-Hotkey header. Both are required; the quote "
+                "nonce is the luks_quote_nonce returned by boot attestation."
+            ),
         )
     redis_key = f"luks_quote_nonce:{hotkey}:{vm_name}"
     stored = await settings.redis_client.getdel(redis_key)
@@ -283,13 +301,19 @@ async def require_luks_quote_nonce(
         logger.warning(f"LUKS quote nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Quote nonce not found or expired",
+            detail=(
+                "Quote nonce not found or expired. Use the luks_quote_nonce from the boot "
+                "attestation response, and attest immediately -- it is single-use."
+            ),
         )
     if stored.decode() != quote_nonce:
         logger.warning(f"LUKS quote nonce mismatch for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Quote nonce mismatch",
+            detail=(
+                "Quote nonce does not match the one issued to this VM. Use the luks_quote_nonce "
+                "returned by this VM's own boot attestation."
+            ),
         )
     return quote_nonce
 
@@ -298,17 +322,21 @@ async def require_confirm_nonce(
     vm_name: str,
     hotkey: str | None = Header(None, alias=HOTKEY_HEADER),
     confirm_nonce: str | None = Header(None, alias="X-Confirm-Nonce"),
-) -> None:
+) -> str:
     """
-    FastAPI dependency for POST /luks/confirm.
+    FastAPI dependency for POST /luks/confirm and POST /provision/confirm.
 
     GETDEL confirm:{hotkey}:{vm_name}, verify X-Confirm-Nonce header matches
-    stored value. Raises 401 on mismatch or missing/expired nonce.
+    stored value. Raises 401 on mismatch or missing/expired nonce. Returns the validated nonce so
+    the handler can bind the caller's hotkey signature to it (process_luks_confirm).
     """
     if not confirm_nonce or not hotkey:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Confirm nonce (X-Confirm-Nonce) and hotkey are required",
+            detail=(
+                "Missing X-Confirm-Nonce or X-Chutes-Hotkey header. Both are required; the "
+                "confirm nonce is the one returned by the preceding attest call."
+            ),
         )
     redis_key = f"confirm:{hotkey}:{vm_name}"
     stored = await settings.redis_client.getdel(redis_key)
@@ -316,14 +344,21 @@ async def require_confirm_nonce(
         logger.warning(f"Confirm nonce not found or expired for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Confirm nonce not found or expired",
+            detail=(
+                "Confirm nonce not found or expired. Confirm immediately after the attest call "
+                "that issued it -- it is single-use and short-lived."
+            ),
         )
     if stored.decode() != confirm_nonce:
         logger.warning(f"Confirm nonce mismatch for VM {vm_name} (hotkey: {hotkey})")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Confirm nonce mismatch",
+            detail=(
+                "Confirm nonce does not match the one issued to this VM. Use the confirm nonce "
+                "returned by this VM's own attest call."
+            ),
         )
+    return confirm_nonce
 
 
 async def require_server_mtls(
@@ -340,8 +375,8 @@ async def require_server_mtls(
     ``Server`` so the handler can use it directly.
 
     Use on any post-boot mTLS endpoint that expects a request from a registered VM identified
-    by hotkey + vm_name; pair it with ``require_attestation_proxy()`` (which proves the request
-    arrived via a trusted mTLS proxy). It applies only AFTER a VM has provisioned its CA -- the
+    by hotkey + vm_name; pair it with ``require_mtls_proxy()`` (which proves the request
+    arrived via one of the trusted mTLS proxies). It applies only AFTER a VM has provisioned its CA -- the
     ``POST /provision`` call itself records the CA (presenting the CA as the client cert), so
     it cannot use this dependency.
 
@@ -444,9 +479,20 @@ async def process_boot_attestation(
     args: BootAttestationArgs,
     nonce: str,
     expected_cert_hash: str,
+    auth: Optional[HotkeyAuth] = None,
 ) -> "BootAttestationResult":
     """
     Process a boot attestation request.
+
+    Both VM generations reach this route, so the attested measurement decides whether a hotkey
+    proof was required. An image whose measured initramfs ships the sr25519 signer
+    (>= MIN_VM_AUTH_KEY_VERSION) must have used it, and its PROVEN hotkey -- not the body's
+    ``args.miner_hotkey`` -- is what the boot record, the rotation, and the quote nonce are keyed
+    by. An older image could not have signed, so it still rides on that bare claim; that allowance
+    disappears when tee_minimum_boot_version reaches 1.4.0 and unsigned images stop attesting.
+
+    The version is safe to gate on because it comes from the QUOTE, not the caller: a miner can
+    choose which published image to run, but cannot claim to be running one they are not.
 
     Args:
         db: Database session
@@ -454,10 +500,12 @@ async def process_boot_attestation(
         args: Boot attestation arguments (includes miner_hotkey, vm_name, first_boot)
         nonce: Validated nonce
         expected_cert_hash: Expected certificate hash
+        auth: The caller's proven identity, or None when no signature was offered
 
     Returns:
-        BootAttestationResult with root_key, luks_quote_nonce for the subsequent
-        POST /luks/attest flow, and (for VMs >= 1.4.0) root_next/root_confirm_nonce plus
+        BootAttestationResult with root_key, luks_quote_nonce for the subsequent runtime call
+        (POST /provision on 1.4.0+, POST /luks/attest on 1.3.x), and for VMs >= 1.4.0
+        root_next/root_confirm_nonce plus
         vm_auth_ss58 (the freshly-rotated per-VM signing key). vm_auth_ss58 is None for < 1.4.0.
 
     Raises:
@@ -470,15 +518,27 @@ async def process_boot_attestation(
     update_log_context(ip=server_ip, miner_hotkey=args.miner_hotkey, server_name=args.vm_name)
     logger.info(
         f"Processing boot attestation for VM {args.vm_name} (miner: {args.miner_hotkey}, IP: {server_ip}, "
-        f"first_boot={args.first_boot})"
+        f"first_boot={args.first_boot}, hotkey_pop={'verified' if auth else 'absent'})"
     )
 
     # Parse and verify quote
     try:  # Verify quote signature
         quote = BootTdxQuote.from_base64(args.quote)
-        await verify_quote(quote, nonce, expected_cert_hash)
+        # verify_quote centrally enforces the rc gate: a release-candidate measurement is usable
+        # only by a caller that PROVED an allowlisted hotkey. No-op for published measurements, and
+        # enforced before any secret (root LUKS key, root_next, vm_auth_ss58) is released.
+        _, measurement_config = await verify_quote(quote, nonce, expected_cert_hash, auth=auth)
 
-        measurement_config = get_matching_measurement_config(quote)
+        miner_hotkey = args.miner_hotkey
+        if semcomp(measurement_config.version, MIN_VM_AUTH_KEY_VERSION) >= 0:
+            if auth is None:
+                logger.warning(
+                    f"Boot attestation rejected: VM version {measurement_config.version} requires a verified hotkey."
+                )
+                raise UnauthorizedError(
+                    f"VM version {measurement_config.version} requires a verified hotkey."
+                )
+            miner_hotkey = auth.miner_hotkey
 
         minimum_version = settings.tee_minimum_boot_version
         if semcomp(measurement_config.version, minimum_version) < 0:
@@ -491,32 +551,37 @@ async def process_boot_attestation(
                 f"Please upgrade to the latest VM version ({minimum_version})."
             )
 
-        # Create boot attestation record
-        boot_attestation = BootAttestation(
-            quote_data=args.quote,
+        # Mint the runtime quote nonce now so it can be stored on this boot record: it is the token
+        # /provision presents (X-Quote-Nonce), which ties that call back to exactly this row.
+        luks_quote_nonce = await generate_luks_quote_nonce(miner_hotkey, args.vm_name)
+
+        # Append this boot to the VM's boot records (no server row exists yet). /provision will
+        # update this same row (matched by provision_nonce) with the runtime quote + CA.
+        boot_record = VmBootRecord(
+            boot_quote=args.quote,
             server_ip=server_ip,
-            miner_hotkey=args.miner_hotkey,
+            miner_hotkey=miner_hotkey,
             vm_name=args.vm_name,
             measurement_version=measurement_config.version,
+            provision_nonce=luks_quote_nonce,
             created_at=func.now(),
             verified_at=func.now(),
         )
-
-        db.add(boot_attestation)
+        db.add(boot_record)
         await db.commit()
-        await db.refresh(boot_attestation)
+        await db.refresh(boot_record)
 
-        logger.success(f"Boot attestation successful: {boot_attestation.attestation_id}")
+        logger.success(f"Boot attestation successful: {boot_record.attestation_id}")
 
         await _handle_boot_version_update(
-            db, args.miner_hotkey, args.vm_name, measurement_config.version
+            db, miner_hotkey, args.vm_name, measurement_config.version
         )
 
         # Resolve the root passphrase (current key + optional next rotation).
         # measurement_config.version serves as the image version for default-passphrase lookup.
         root_key, root_next, root_confirm_nonce = await get_root_passphrase_for_boot(
             db,
-            args.miner_hotkey,
+            miner_hotkey,
             args.vm_name,
             args.first_boot,
             measurement_config.version,
@@ -530,12 +595,8 @@ async def process_boot_attestation(
         # match TeeServerClient.create's usage gate.
         vm_auth_ss58 = None
         if semcomp(measurement_config.version, MIN_VM_AUTH_KEY_VERSION) >= 0:
-            vm_keypair = await _generate_and_store_vm_auth_key(db, args.miner_hotkey, args.vm_name)
+            vm_keypair = await _generate_and_store_vm_auth_key(db, miner_hotkey, args.vm_name)
             vm_auth_ss58 = vm_keypair.ss58_address
-
-        # All accepted VMs use the POST /luks/attest flow; the tee_minimum_boot_version
-        # gate above already rejects any VM older than the current minimum (>= 1.3.1).
-        luks_quote_nonce = await generate_luks_quote_nonce(args.miner_hotkey, args.vm_name)
 
         return BootAttestationResult(
             root_key=root_key,
@@ -546,7 +607,7 @@ async def process_boot_attestation(
         )
 
     except (InvalidQuoteError, MeasurementMismatchError) as e:
-        # Create failed attestation record; set measurement_version if quote matched a config
+        # Append a failed boot record for audit; set measurement_version if the quote matched a config.
         measurement_version = None
         try:
             quote = BootTdxQuote.from_base64(args.quote)
@@ -558,8 +619,8 @@ async def process_boot_attestation(
             logger.warning(
                 "Boot attestation failed with no matching measurement config (measurement_version will be NULL). "
             )
-        boot_attestation = BootAttestation(
-            quote_data=args.quote,
+        boot_record = VmBootRecord(
+            boot_quote=args.quote,
             server_ip=server_ip,
             miner_hotkey=args.miner_hotkey,
             vm_name=args.vm_name,
@@ -567,8 +628,7 @@ async def process_boot_attestation(
             measurement_version=measurement_version,
             created_at=func.now(),
         )
-
-        db.add(boot_attestation)
+        db.add(boot_record)
         await db.commit()
 
         logger.error(f"Boot attestation failed: {str(e)}")
@@ -612,6 +672,39 @@ async def _handle_boot_version_update(
     await db.commit()
 
 
+async def get_boot_record_ca(db: AsyncSession, miner_hotkey: str, vm_name: str) -> Optional[str]:
+    """Return the VM's current root CA PEM: the vm_root_ca_cert of its latest boot record that has
+    one, or None if it never recorded one (legacy VM / pre-migration image)."""
+    result = await db.execute(
+        select(VmBootRecord.vm_root_ca_cert)
+        .where(
+            VmBootRecord.miner_hotkey == miner_hotkey,
+            VmBootRecord.vm_name == vm_name,
+            VmBootRecord.vm_root_ca_cert.isnot(None),
+        )
+        .order_by(VmBootRecord.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def sync_vm_root_ca_from_boot_record(db: AsyncSession, server: Server) -> None:
+    """Stamp ``server.vm_root_ca_cert`` from the VM's boot record.
+
+    Bridges the initramfs boot record (keyed by hotkey/vm_name, written before the server existed)
+    to the Server row every mTLS consumer reads. No-op when the VM never recorded a CA -- attestation
+    then keeps the pre-migration CERT_NONE fallback for that legacy VM.
+    """
+    ca = await get_boot_record_ca(db, server.miner_hotkey, server.name)
+    if ca:
+        server.vm_root_ca_cert = ca
+        await db.flush()
+        logger.info(
+            f"Synced VM root CA from boot record onto server {server.server_id} "
+            f"({server.name}, miner {server.miner_hotkey})."
+        )
+
+
 async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str):
     """
     Register a TEE server: create Server, verify attestation (creating a ServerAttestation
@@ -629,12 +722,16 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
             for key in ["processors", "max_threads_per_processor"]:
                 setattr(gpu, key, gpu_info.get(key))
 
-        # Start verification process (pass GPUs for validation)
-        measurement_version = await verify_server(db, server, miner_hotkey, gpus=args.gpus)
+        # Verify attestation. verify_server checks the proxy's server cert against the CA recorded
+        # in measured initramfs (read from the boot record) -- so the caller is proven to hold that
+        # CA before we persist it.
+        measurement_version = await verify_server(db, server, miner_hotkey, args.gpus)
 
+        # Attestation passed -> stamp the now-verified VM root CA onto the server for mTLS consumers.
+        await sync_vm_root_ca_from_boot_record(db, server)
         if measurement_version is not None:
             server.version = measurement_version
-            await db.commit()
+        await db.commit()
 
         # Track nodes once verified
         await _track_nodes(db, miner_hotkey, server.server_id, args.gpus, "0", func.now())
@@ -676,7 +773,10 @@ async def register_server(db: AsyncSession, args: ServerArgs, miner_hotkey: str)
 
 
 async def verify_server(
-    db: AsyncSession, server: Server, miner_hotkey: str, gpus: list[NodeArgs]
+    db: AsyncSession,
+    server: Server,
+    miner_hotkey: str,
+    gpus: list[NodeArgs],
 ) -> Optional[str]:
     """
     Verify server attestation and validate GPUs match measurement configuration.
@@ -695,12 +795,36 @@ async def verify_server(
 
         nonce = generate_nonce()
         logger.info(f"Verifying server with nonce {nonce}")
-        quote, gpu_evidence, cert = await client.get_server_evidence(nonce)
+        evidence = await client.get_server_evidence(nonce)
+        quote, gpu_evidence, cert = evidence.quote, evidence.gpu_evidence, evidence.cert
         measurement_config = get_matching_measurement_config(quote)
+
+        # Bind this registration-time attestation to the CA the VM recorded in measured initramfs
+        # (/provision). Read it from the boot record -- the server row's CA is only stamped AFTER
+        # this verification succeeds -- and require the attestation proxy's server cert to chain to
+        # it, so the caller is proven to hold that CA. No-op for legacy VMs with no recorded CA.
+        boot_ca_pem = await get_boot_record_ca(db, miner_hotkey, server.name)
+        if boot_ca_pem:
+            verify_leaf_cert_signed_by_ca(
+                cert,
+                crypto_x509.load_pem_x509_certificate(boot_ca_pem.encode(), default_backend()),
+            )
+
         expected_cert_hash = get_public_key_hash(cert)
 
-        # Verify quote measurements (matches by full MRTD + RTMRs; multiple configs may share RTMR0)
-        await verify_quote(quote, nonce, expected_cert_hash)
+        # The rc gate needs to know which miner this VM belongs to. Take that from the VM's own
+        # signed response -- the attestation proxy stamps a hotkey proof on everything it serves --
+        # rather than from the CLI caller who initiated registration, who need not be the hotkey the
+        # VM is configured with. Empty for images whose proxy does not sign, which cannot use rc.
+        auth = authenticate_proxy_evidence(
+            evidence.hotkey,
+            evidence.hotkey_nonce,
+            evidence.hotkey_signature,
+            host=server.ip,
+        )
+
+        # Verify quote measurements (matches by full MRTD + RTMRs; multiple configs may share RTMR0).
+        await verify_quote(quote, nonce, expected_cert_hash, auth=auth)
 
         # Verify GPU evidence
         await verify_gpu_evidence(gpu_evidence, nonce)
@@ -898,6 +1022,7 @@ async def process_runtime_attestation(
     miner_hotkey: str,
     expected_nonce: str,
     expected_cert_hash: str,
+    auth: HotkeyAuth,
 ) -> Dict[str, str]:
     """
     Process a runtime attestation request.
@@ -933,9 +1058,11 @@ async def process_runtime_attestation(
 
     # Parse and verify quote
     try:
-        # Verify quote signature
+        # Verify quote signature. ``auth`` is the authenticated caller minted by the endpoint's auth
+        # dependency (the hotkey signature was verified there), so the central rc gate only enforces
+        # the allowlist.
         quote = RuntimeTdxQuote.from_base64(args.quote)
-        await verify_quote(quote, expected_nonce, expected_cert_hash)
+        await verify_quote(quote, expected_nonce, expected_cert_hash, auth=auth)
 
         # Create runtime attestation record
         measurement_config = get_matching_measurement_config(quote)
@@ -1096,30 +1223,78 @@ async def record_vm_ca_identity(
     hotkey: str,
     vm_name: str,
     client_cert: crypto_x509.Certificate,
+    quote_data: str,
+    measurement_version: Optional[str],
+    quote_nonce: str,
 ) -> None:
     """
-    Record the VM's root CA identity from the mTLS client cert of an RTMR3-attested
-    /provision call (idempotent upsert on every boot).
+    Record the VM's root CA identity from the mTLS client cert of an RTMR3-attested /provision call.
 
-    The VM presents its per-boot root CA as the mTLS client cert; completing the handshake
-    proves possession of the CA private key, and the caller (process_provision_request) has
-    already verified the runtime quote binds SHA256(client_cert pubkey). So the presented
-    cert IS the CA to record. Recorded only from the runtime /provision call (RTMR3-attested),
-    never boot attestation.
+    The VM presents its per-boot root CA as the mTLS client cert; completing the handshake proves
+    possession of the CA private key, and the caller (process_provision_request) has already
+    verified the runtime quote binds SHA256(client_cert pubkey). So the presented cert IS the CA.
+
+    This runs in initramfs, BEFORE the miner registers the VM via POST /servers -- so it must NOT
+    require a Server row. It updates the boot record of *this* boot (matched by ``quote_nonce`` ==
+    the ``provision_nonce`` /boot/attestation stored), setting the runtime quote + CA.
+    ``register_server`` later syncs the CA onto the Server; when the Server already exists
+    (subsequent boots, which regenerate the CA), the new CA is also written through to
+    ``servers.vm_root_ca_cert`` so mTLS consumers stay current.
+
+    Recorded only from the runtime /provision call (RTMR3-attested), never boot attestation.
     """
-    server = await get_server_by_name(db, hotkey, vm_name)
-    update_log_context(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
-    server.vm_root_ca_cert = client_cert.public_bytes(Encoding.PEM).decode()
+    ca_pem = client_cert.public_bytes(Encoding.PEM).decode()
+
+    # Find THIS boot's record by the nonce that ties the two calls together: /boot/attestation
+    # minted quote_nonce (the luks_quote_nonce) and stored it as provision_nonce; /provision
+    # presents the same nonce. This is deterministic -- unlike "latest row", it can't attach the CA
+    # to a later failed-boot row. The row must exist (the nonce was issued when it was created), so
+    # a miss is an anomaly we fail closed on rather than fabricate a boot-quote-less record.
+    result = await db.execute(
+        select(VmBootRecord)
+        .where(
+            VmBootRecord.miner_hotkey == hotkey,
+            VmBootRecord.vm_name == vm_name,
+            VmBootRecord.provision_nonce == quote_nonce,
+        )
+        .limit(1)
+    )
+    boot_record = result.scalar_one_or_none()
+    if boot_record is None:
+        logger.error(
+            f"No boot record matching the provision nonce for VM {vm_name} (miner {hotkey}); boot "
+            "attestation must precede provisioning."
+        )
+        raise AttestationError("No boot attestation on record for this VM.")
+    boot_record.provision_quote = quote_data
+    boot_record.vm_root_ca_cert = ca_pem
+    if measurement_version is not None:
+        boot_record.measurement_version = measurement_version
+
+    # If the server already exists (later boots, which regenerate the CA), keep its synced copy
+    # current so mTLS consumers use the latest CA.
+    try:
+        server = await get_server_by_name(db, hotkey, vm_name)
+        update_log_context(server_id=server.server_id, ip=server.ip, miner_hotkey=hotkey)
+        server.vm_root_ca_cert = ca_pem
+    except ServerNotFoundError:
+        # First boot: no server yet. The CA lives in the boot record and register_server syncs it.
+        logger.info(
+            f"Recorded VM root CA for {vm_name} (miner {hotkey}) in boot record; no server row yet "
+            "(pre-registration) -- will sync at POST /servers."
+        )
+
     await db.commit()
 
 
 async def process_provision_request(
     db: AsyncSession,
-    hotkey: str,
+    miner_hotkey: str,
     vm_name: str,
     body: ProvisionRequest,
     quote_nonce: str,
     client_cert: crypto_x509.Certificate,
+    auth: Optional[HotkeyAuth] = None,
 ) -> StorageProvisionResult:
     """
     Process POST /provision for new VMs: verify the RTMR3-attested runtime quote, record the
@@ -1130,13 +1305,47 @@ async def process_provision_request(
     /luks/attest, so no bespoke quote logic is needed; the presented client cert IS the VM's
     root CA. On success server.vm_root_ca_cert is recorded (idempotent) and passphrase
     rotation proceeds exactly as the legacy luks/attest flow.
+
+    ``auth`` is the caller's proven identity, already verified by the route's
+    ``require_hotkey_auth`` dependency; it is here solely to hand the rc gate in verify_quote a
+    caller. It is not re-checked against ``miner_hotkey``: both come from the same
+    X-Chutes-Hotkey header, and the measured initramfs derives that header, the body's
+    miner_hotkey, and the signature from one miner seed -- so a signing image cannot present two
+    identities without changing its own measurement.
     """
+
     quote = RuntimeTdxQuote.from_base64(body.quote)
-    await verify_quote(quote, quote_nonce, get_public_key_hash(client_cert))
+    # verify_quote centrally enforces the rc gate: a release-candidate measurement is usable only
+    # by a caller that PROVED an allowlisted hotkey. No-op for published measurements, and enforced
+    # before the VM CA is recorded or any storage secret is issued.
+    _, measurement_config = await verify_quote(
+        quote, quote_nonce, get_public_key_hash(client_cert), auth=auth
+    )
 
-    await record_vm_ca_identity(db, hotkey, vm_name, client_cert)
+    # A production (non-rc) image is always LUKS-encrypted and rotates EVERY volume on every
+    # provision (the prod initramfs sends the full set unconditionally), so require exactly that.
+    # An rc/debug image has no LUKS, so it may send an empty list (CA registration only) or any
+    # subset. The request schema can't enforce this because the measurement isn't known until the
+    # quote verifies, so the invariant lives here — after the rc gate, before recording the CA or
+    # issuing any secrets.
+    if not measurement_config.rc and set(body.volumes) != set(SUPPORTED_LUKS_VOLUMES):
+        raise AttestationError(
+            "A production VM must rotate all LUKS volumes on every provision; expected "
+            f"{sorted(SUPPORTED_LUKS_VOLUMES)}, got {sorted(set(body.volumes))}.",
+            status_code=422,
+        )
 
-    return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
+    await record_vm_ca_identity(
+        db,
+        miner_hotkey,
+        vm_name,
+        client_cert,
+        body.quote,
+        measurement_config.version,
+        quote_nonce,
+    )
+
+    return await _issue_storage_secrets(db, miner_hotkey, vm_name, body.volumes)
 
 
 async def process_luks_attest_request(
@@ -1159,6 +1368,9 @@ async def process_luks_attest_request(
     passphrases, manages the k3s encryption key, and issues a confirm nonce.
     """
     quote = RuntimeTdxQuote.from_base64(body.quote)
+    # Legacy path: new (rc-capable) VMs use POST /provision, not this endpoint, so the caller
+    # carries no rc proof at all. The central rc gate in verify_quote still fails closed if an rc
+    # measurement is ever presented here; published measurements pass through unchanged.
     await verify_quote(quote, quote_nonce, expected_cert_hash)
 
     return await _issue_storage_secrets(db, hotkey, vm_name, body.volumes)
@@ -1171,11 +1383,16 @@ async def process_luks_confirm(
     body: LuksConfirmRequest,
 ) -> LuksConfirmResult:
     """
-    Process POST /luks/confirm.
+    Process POST /luks/confirm and POST /provision/confirm.
 
     The confirm nonce has already been validated and consumed by require_confirm_nonce.
     Promotes pending passphrases to current for volumes that rotated successfully,
     or discards them for volumes that failed.
+
+    Whether a proven hotkey is required is settled by the route, so nothing is checked here:
+    /provision/confirm is 1.4.0-only and carries require_hotkey_auth, while the legacy
+    /luks/confirm serves 1.3.x VMs that have no signer at all. Both identify the VM by the same
+    X-Chutes-Hotkey header, so by the time this runs the decision has been made.
     """
     vm_config = await _get_vm_cache_config(db, hotkey, vm_name)
     if vm_config is None:

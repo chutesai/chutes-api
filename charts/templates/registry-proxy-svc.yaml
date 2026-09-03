@@ -15,6 +15,14 @@ spec:
   # The address must first be reserved in GCP (gcloud compute addresses create ... --addresses).
   loadBalancerIP: {{ . | quote }}
   {{- end }}
+  {{- with .Values.registryProxy.service.loadBalancerSourceRanges }}
+  # Restrict the LB to the front-end proxy IPs: the realm/auth trust X-Client-Cert + X-Real-IP
+  # forwarded by the front-end, so only it may reach this LB directly (defense in depth -- the
+  # API's vm_root_ca_cert verification is still the real gate). Set once the front-end egress IPs
+  # are confirmed; an empty list leaves the LB open (relying on the API-side verification).
+  loadBalancerSourceRanges:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
   sessionAffinity: None
   internalTrafficPolicy: Cluster
   # Local preserves the real client (VM) source IP on the GCP L4 LB so registry auth can

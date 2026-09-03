@@ -163,10 +163,15 @@ async def create_secret(
             detail=f"Banned secret key: {args.key}",
         )
 
-    if is_integrated_subnet(chute) and args.key.upper() not in [
-        "HF_TOKEN",
-        "HUGGING_FACE_HUB_TOKEN",
-    ]:
+    if (
+        is_integrated_subnet(chute)
+        and args.key.upper()
+        not in [
+            "HF_TOKEN",
+            "HUGGING_FACE_HUB_TOKEN",
+        ]
+        and not args.key.upper().startswith("COOKIE_")
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Only HF_TOKEN/HUGGING_FACE_HUB_TOKEN secrets are allowed for integrated subnet chutes",

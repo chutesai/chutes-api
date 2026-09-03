@@ -35,6 +35,7 @@ from api.constants import VLM_MAX_SIZE, MIN_REG_BALANCE, INTEGRATED_SUBNETS
 from api.metagraph import MetagraphNode
 from api.permissions import Permissioning
 from fastapi import status, HTTPException
+from bittensor_wallet.keypair import Keypair
 from sqlalchemy import func, or_, and_, exists
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import padding, hashes
@@ -158,6 +159,53 @@ def get_signing_message(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Either payload_str or purpose must be provided",
+        )
+
+
+def verify_request_signature(
+    hotkey: str,
+    signature: str,
+    nonce: str,
+    *,
+    payload_hash: str | None = None,
+    purpose: str | None = None,
+) -> None:
+    """Verify an sr25519 request signature. Raises HTTPException(401) if it does not verify.
+
+    Shared by get_current_user and api.server.util.verify_hotkey_auth. Does not check nonce
+    freshness -- callers differ on how they prove it.
+    """
+    signing_message = get_signing_message(
+        hotkey=hotkey,
+        nonce=nonce,
+        payload_hash=payload_hash,
+        purpose=purpose,
+        payload_str=None,
+    )
+    if not signing_message:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Bad signing message: {signing_message}",
+        )
+    try:
+        signature_bytes = bytes.fromhex(signature)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid signature: {signature}, with error: {e}",
+        )
+    try:
+        verified = Keypair(hotkey).verify(signing_message, signature_bytes)
+    except Exception as e:
+        # A malformed ss58 is a rejection, not a 500.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid request signature for hotkey {hotkey}. Message: {signing_message}",
+        ) from e
+    if not verified:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid request signature for hotkey {hotkey}. Message: {signing_message}",
         )
 
 
