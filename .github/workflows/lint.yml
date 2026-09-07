@@ -5,6 +5,9 @@ on:
   push:
     branches-ignore: [main, master]
 
+
+permissions:
+  contents: read
 jobs:
   ruff:
     runs-on: ubuntu-latest
