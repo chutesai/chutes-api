@@ -376,6 +376,14 @@ def build_response_headers(request, base_headers=None):
     Build response headers dict with quota, rate limit, and invoice billing info.
     """
     headers = dict(base_headers or {})
+
+    # Mirror the invocation ID onto `Inference-Id`. Hugging Face uses this header
+    # to key the billing callback in api/partners/router.py; it is the name they
+    # suggest to providers who don't already have one. Purely additive —
+    # X-Chutes-InvocationID stays exactly as it is.
+    if "X-Chutes-InvocationID" in headers and "Inference-Id" not in headers:
+        headers["Inference-Id"] = headers["X-Chutes-InvocationID"]
+
     if getattr(request.state, "quota_total", None) is not None:
         headers["X-Chutes-Quota-Total"] = str(int(request.state.quota_total))
         headers["X-Chutes-Quota-Used"] = str(int(request.state.quota_used))
