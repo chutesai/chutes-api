@@ -3,14 +3,15 @@ Payments router.
 """
 
 import orjson as json
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from fastapi import APIRouter, status, HTTPException, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from api.gpu import SUPPORTED_GPUS, COMPUTE_UNIT_PRICE_BASIS, COMPUTE_MIN
 from api.config import settings
 from api.fmv.fetcher import get_fetcher
-from api.database import get_db_session
+from api.database import get_db_session, get_inv_session
 from api.user.util import refund_deposit
 from api.user.schemas import User
 from api.user.service import get_current_user
@@ -22,6 +23,34 @@ router = APIRouter()
 
 class ReturnDepositArgs(BaseModel):
     address: str
+
+
+class HuggingFaceBillingArgs(BaseModel):
+    requestIds: list[str] = Field(default_factory=list, max_length=10000)
+
+
+class HuggingFaceBillingItem(BaseModel):
+    requestId: str
+    costNanoUsd: int
+
+
+class HuggingFaceBillingResponse(BaseModel):
+    requests: list[HuggingFaceBillingItem]
+
+
+NANO_USD = Decimal("1000000000")
+
+
+def usd_to_nano_usd(value) -> int:
+    """
+    Convert a USD amount to HF's integer nano-USD billing unit.
+    """
+    try:
+        usd_amount = Decimal(str(value if value is not None else 0))
+    except (InvalidOperation, ValueError):
+        return 0
+    nano_usd = (usd_amount * NANO_USD).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return max(int(nano_usd), 0)
 
 
 @router.get("/daily_revenue_summary")
@@ -143,6 +172,65 @@ async def get_pricing():
         },
         "gpu_price_estimates": gpu_price,
     }
+
+
+@router.post(
+    "/partners/huggingface/billing",
+    response_model=HuggingFaceBillingResponse,
+)
+async def huggingface_billing(
+    args: HuggingFaceBillingArgs,
+    current_user: User = Depends(get_current_user()),
+):
+    """
+    Hugging Face billing callback.
+
+    HF sends request IDs copied from the Inference-Id response header. Those IDs
+    are Chutes parent_invocation_id values, and the persisted metrics["b"] value
+    is the actual USD amount charged to the authenticated Chutes account.
+    Missing/unknown request IDs intentionally return 0.
+    """
+    request_ids = args.requestIds or []
+    unique_ids = list(dict.fromkeys(request_ids))
+    if not unique_ids:
+        return HuggingFaceBillingResponse(requests=[])
+
+    async with get_inv_session() as session:
+        result = await session.execute(
+            text(
+                """
+                SELECT
+                    parent_invocation_id,
+                    SUM(
+                        CASE
+                            WHEN jsonb_typeof(metrics->'b') = 'number'
+                            THEN GREATEST((metrics->>'b')::numeric, 0)
+                            ELSE 0
+                        END
+                    ) AS usd_amount
+                FROM invocations
+                WHERE user_id = :user_id
+                  AND parent_invocation_id = ANY(:request_ids)
+                GROUP BY parent_invocation_id
+                """
+            ),
+            {
+                "user_id": current_user.user_id,
+                "request_ids": unique_ids,
+            },
+        )
+        rows = result.fetchall()
+
+    costs_by_id = {row.parent_invocation_id: usd_to_nano_usd(row.usd_amount) for row in rows}
+    return HuggingFaceBillingResponse(
+        requests=[
+            HuggingFaceBillingItem(
+                requestId=request_id,
+                costNanoUsd=costs_by_id.get(request_id, 0),
+            )
+            for request_id in request_ids
+        ]
+    )
 
 
 @router.post("/return_developer_deposit")

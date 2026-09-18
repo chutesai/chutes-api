@@ -767,6 +767,7 @@ async def _invoke(
                     request,
                     {
                         "X-Chutes-InvocationID": parent_invocation_id,
+                        "Inference-Id": parent_invocation_id,
                         "Cache-Control": "no-cache, no-transform",
                         "X-Accel-Buffering": "no",
                     },
@@ -816,6 +817,7 @@ async def _invoke(
                         request,
                         {
                             "X-Chutes-InvocationID": parent_invocation_id,
+                            "Inference-Id": parent_invocation_id,
                             "Cache-Control": "no-cache, no-transform",
                             "X-Accel-Buffering": "no",
                         },
@@ -826,7 +828,11 @@ async def _invoke(
                     content=result["text"],
                     media_type=result["content_type"],
                     headers=build_response_headers(
-                        request, {"X-Chutes-InvocationID": parent_invocation_id}
+                        request,
+                        {
+                            "X-Chutes-InvocationID": parent_invocation_id,
+                            "Inference-Id": parent_invocation_id,
+                        },
                     ),
                 )
             else:
@@ -838,6 +844,7 @@ async def _invoke(
                         {
                             "Content-type": "application/json",
                             "X-Chutes-InvocationID": parent_invocation_id,
+                            "Inference-Id": parent_invocation_id,
                         },
                     ),
                 )
