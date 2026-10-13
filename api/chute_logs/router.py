@@ -4,26 +4,37 @@ The mTLS *ingest* endpoint lives on the instance router
 (``POST /instances/launch_config/{config_id}/logs``) so all config-keyed lifecycle
 operations stay together.
 
-The owner-facing read is intentionally **not exposed yet**: reads go through the
-internal Grafana until a standalone, security-reviewed follow-up wires the
-user-facing read (see spec §5). The primitive it will use —
-``service.read_config_logs``, server-forced to the owner's ``user_id`` (spec §6) —
-already exists and is unit-tested, so the follow-up only needs to add the route and
-its auth. Loki is never client-reachable; clients never supply raw LogQL.
+Owner and miner reads of stored Loki lines live on this same router. Clients never
+supply raw LogQL; ``service.read_config_logs`` forces the matcher server-side.
 """
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+import jwt
 from sqlalchemy import select
 
 from api.chute_logs import service
+from api.chute_logs.exceptions import LogCaptureError
+from api.chute_logs.read_access import (
+    authorize_miner_read,
+    authorize_user_read,
+    decode_launch_jwt,
+    get_catalog,
+    get_log_reader,
+    lines_before_activation,
+    require_instance,
+    require_launch_config,
+)
 from api.chute.schemas import Chute
 from api.database import get_session
 from api.permissions import Permissioning
-from api.user.service import require_role
+from api.user.service import get_current_user, require_role
 
 router = APIRouter()
+
+# Hotkey signature is bound to purpose "logs", same as the live pod stream.
+logs_user = get_current_user(purpose="logs")
 
 # Access control is declarative: every debug route depends on this gate, so the
 # chutes_support requirement lives in the signature and is enforced before the handler
@@ -68,3 +79,56 @@ async def clear_debug_override(chute_id: str):
     """Disable the per-chute log-capture debug override."""
     await service.clear_debug(chute_id)
     return {"chute_id": chute_id, "enabled": False}
+
+
+@router.get("/instances/{instance_id}")
+async def read_instance_logs(
+    instance_id: str,
+    current_user=Depends(logs_user),
+    catalog=Depends(get_catalog),
+    read_logs=Depends(get_log_reader),
+):
+    try:
+        instance = require_instance(await catalog.get_instance(instance_id))
+        chute = await catalog.get_chute(instance.chute_id)
+        shared = await catalog.is_shared_with(chute.chute_id, current_user.user_id)
+        authorize_user_read(chute, current_user, shared)
+    except LogCaptureError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
+    return await read_logs(instance.config_id, {"user_id": chute.user_id})
+
+
+@router.get("/miner")
+async def read_miner_logs(
+    authorization: str | None = Header(None),
+    catalog=Depends(get_catalog),
+    read_logs=Depends(get_log_reader),
+):
+    # JWT sub selects the launch row. This route does not re-check the caller hotkey.
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired launch token.",
+        )
+    token = authorization.strip().split(" ")[-1]
+    try:
+        payload = decode_launch_jwt(token)
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired launch token.",
+        ) from None
+    config_id = payload.get("sub")
+    try:
+        launch = require_launch_config(await catalog.get_launch_config(config_id))
+        chute = await catalog.get_chute(launch.chute_id)
+        authorize_miner_read(chute)
+    except LogCaptureError as exc:
+        raise HTTPException(status_code=exc.http_status, detail=exc.message) from exc
+    # UNCLEAR: failed_at set, activated_at null, and no instance row. The live miner
+    # stream returns 422 in that state. This read names activated_at only, so a public
+    # config here returns the stored lines with no time cutoff. Raise with PaperMoney.
+    instance = launch.instance
+    activated_at = None if instance is None else instance.activated_at
+    lines = await read_logs(config_id, {"miner_hotkey": launch.miner_hotkey})
+    return lines_before_activation(lines, activated_at)

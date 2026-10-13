@@ -93,5 +93,19 @@ chutes = { git = "https://github.com/chutesai/chutes.git", rev = "08d79872854a66
 "tests/*" = ["E402"]
 "**/conftest.py" = ["E401", "E402"]
 
+[tool.pytest.ini_options]
+norecursedirs = [
+  "*.egg",
+  ".*",
+  "_darcs",
+  "build",
+  "CVS",
+  "dist",
+  "node_modules",
+  "venv",
+  "{arch}",
+  "tdd",
+]
+
 [tool.ruff]
 extend-exclude = ["nv-attest"]

@@ -42,3 +42,24 @@ class LogCaptureNotAuthorized(LogCaptureError):
     default_message = (
         "Log shipment mTLS leaf does not match a registered VM CA for this launch config."
     )
+
+
+class LogReadForbidden(LogCaptureError):
+    """The caller may not read this chute's stored logs."""
+
+    http_status = status.HTTP_403_FORBIDDEN
+    default_message = "You may only view logs for your own (private) chutes."
+
+
+class LogReadNotFound(LogCaptureError):
+    """No instance for this id."""
+
+    http_status = status.HTTP_404_NOT_FOUND
+    default_message = "Instance not found."
+
+
+class MinerLogsNotPublic(LogCaptureError):
+    """Miner reads are limited to public chutes."""
+
+    http_status = status.HTTP_403_FORBIDDEN
+    default_message = "Logs are only available for public chutes."
